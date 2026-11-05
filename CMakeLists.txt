@@ -24,9 +24,11 @@ add_custom_target(kernel
     USES_TERMINAL
 )
 
-foreach(variant IN ITEMS mac eeprom-timeout)
+foreach(variant IN ITEMS mac eeprom-timeout boot-memory)
     if(variant STREQUAL "eeprom-timeout")
         set(cmdline "test=eeprom-timeout")
+    elseif(variant STREQUAL "boot-memory")
+        set(cmdline "test=boot-memory")
     else()
         set(cmdline "")
     endif()
@@ -43,9 +45,10 @@ endforeach()
 add_custom_target(images DEPENDS
     "${CMAKE_BINARY_DIR}/mac.iso"
     "${CMAKE_BINARY_DIR}/eeprom-timeout.iso"
+    "${CMAKE_BINARY_DIR}/boot-memory.iso"
 )
 
-foreach(case IN ITEMS known alternate missing unsupported ambiguous eeprom-timeout repeat provenance)
+foreach(case IN ITEMS known alternate missing unsupported ambiguous eeprom-timeout memory low-memory repeat provenance)
     add_test(NAME "mac-${case}"
         COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
             --case "${case}" --build-dir "${CMAKE_BINARY_DIR}"
@@ -57,3 +60,11 @@ add_test(NAME harness-unit
     COMMAND ${Python3_EXECUTABLE} -m unittest discover -s tests -v
 )
 set_tests_properties(harness-unit PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+add_test(NAME boot-memory-unit
+    COMMAND ${CARGO} test --locked -p moss-boot-memory --target x86_64-unknown-linux-gnu
+)
+set_tests_properties(boot-memory-unit PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    TIMEOUT 65
+    RUN_SERIAL TRUE
+)

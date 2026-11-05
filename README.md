@@ -4,6 +4,11 @@ A small x86_64 Rust kernel exploring reuse of Linux device-driver source.
 The first milestone reads a QEMU Intel 82540EM NIC's permanent MAC address
 using **unchanged upstream Linux e1000 hardware code**.
 
+It also uses a fixed-capacity port of Moss's `Smalloc` bootstrap allocator
+for physical RAM and MMIO page-table frames. See
+[third-party notices](THIRDPARTY-NOTICES.md) for the pinned source, original
+MIT license, and the port's changes.
+
 This is hardware-helper reuse, not a complete Linux driver port or LinuxKPI
 implementation. There is no packet data path yet. See the
 [milestone design](docs/linux-e1000-mac.md) for its scope and acceptance goals.
@@ -35,17 +40,25 @@ The build produces:
 - `target/x86_64-unknown-none/release/kutox`: freestanding kernel ELF.
 - `build/mac.iso`: normal Limine BIOS/UEFI image.
 - `build/eeprom-timeout.iso`: the same kernel with EEPROM-grant fault injection.
+- `build/boot-memory.iso`: allocator self-tests followed by the normal MAC probe.
 - `build/test-logs/`: serial output for each acceptance run.
 
 The acceptance suite boots with the BIOS firmware supplied by QEMU. The ISO
 also includes UEFI boot files; the automated suite does not verify UEFI boot.
-Guests use TCG, one CPU, 128 MiB of RAM, restricted user-mode networking,
+Guests use TCG, one CPU, 128 MiB of RAM (32 MiB for the low-memory test), restricted user-mode networking,
 no port forwarding, and no host hardware passthrough. Tests run sequentially.
 
 Run one case without rebuilding:
 
 ```sh
 python3 scripts/qemu_test.py --case known --build-dir build
+```
+
+Allocator checks can also be run independently:
+
+```sh
+cargo test --locked -p moss-boot-memory --target x86_64-unknown-linux-gnu
+python3 scripts/qemu_test.py --case memory --build-dir build
 ```
 
 A successful guest reports:
@@ -72,6 +85,12 @@ The CTest suite covers:
 - Pinned, clean upstream source and linked hardware-helper provenance.
 - Host-side checks that reject wrong MACs, missing EEPROM evidence, conflicting
   terminal results, and success-shaped output followed by a crash or timeout.
+- Allocator host tests for alignment, reserved holes, coalescing, exhaustion,
+  release/reuse, capacity failure atomicity, overflow, and deterministic stress.
+- A guest allocator self-test with real RAM readback, page-table frame reuse,
+  and a forced mid-mapping allocation failure that must release partial tables.
+- A 32 MiB guest and checks that every boot reports the pinned Moss allocator
+  and every mapped MAC probe releases its allocated page-table frames.
 
 The fault image selects `test=eeprom-timeout` through the Limine command line.
 The compatibility MMIO backend then clears the EEPROM grant bit in register
@@ -83,6 +102,7 @@ Formatting and Rust lint checks:
 ```sh
 cargo fmt --all -- --check
 cargo clippy --locked --release -- -D warnings
+cargo clippy --locked -p moss-boot-memory --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
 ```
 
 C compilation enables warnings as errors. Unused parameter warnings are
@@ -90,6 +110,17 @@ disabled for deliberately unsupported hardware entry points.
 
 ## Implementation boundaries
 
+- [Moss bootstrap memory](third_party/moss-boot-memory/) is a dependency-free,
+  `no_std`, fixed-capacity adaptation, not the complete upstream `libkernel`.
+  Its borrowed region storage cannot be shallow-cloned or outlive its owner.
+- Limine supplies the memory map. Only `USABLE` RAM enters the allocation
+  pool; all other types, including unknown and bootloader-reclaimable entries,
+  remain reserved. Low memory, the kernel image, and the active root page table
+  receive explicit reservations. Bootloader memory is not reclaimed, preserving
+  active tables, the boot stack, and response/metadata storage.
+- The MMIO mapper owns its initially unused PML4 slot and its intermediate
+  table frames. It unmaps leaves, detaches the private subtree, flushes the TLB,
+  and only then releases frames. Failed mappings follow the same cleanup path.
 - [Rust platform code](src/) provides Limine requests, polled serial output,
   bus-zero CF8/CFC PCI discovery, BAR validation, an owned uncacheable MMIO
   mapping, and PIT-channel-2-calibrated TSC delays. It needs no heap or scheduler.
@@ -125,4 +156,6 @@ small-helper approach used by [rko](https://github.com/youyuanwu/rko), without
 depending on its Linux-backed runtime wrappers.
 
 Linux source retains its upstream notices and remains in the submodule.
-kutox's license is [GPLv2](LICENSE).
+Moss-derived source retains its [MIT notice](third_party/moss-boot-memory/LICENSE).
+See [third-party notices](THIRDPARTY-NOTICES.md) for provenance and scope.
+Other kutox code remains under [GPLv2](LICENSE). No Ginux source is incorporated.

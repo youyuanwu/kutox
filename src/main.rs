@@ -75,11 +75,29 @@ pub extern "C" fn kmain() -> ! {
 
 fn probe() -> Result<[u8; 6], Failure> {
     let boot = boot::collect();
+    let mut memory_storage = memory::MemoryStorage::new();
+    let mut allocator = memory::initialize(&boot, &mut memory_storage)?;
+    let managed_bytes: usize = allocator.iter_memory().map(|region| region.size()).sum();
+    println!(
+        "BOOT_MEMORY_OK source=moss revision={} managed_bytes={} regions={}",
+        moss_boot_memory::UPSTREAM_REVISION,
+        managed_bytes,
+        allocator.iter_memory().count()
+    );
+    if boot.test_memory {
+        memory::self_test(&boot, &mut allocator)?;
+    }
     let ticks = time::calibrate()?;
     println!("TSC ticks_per_us={ticks}");
     let device = pci::discover()?;
     let bar = device.enable_mmio()?;
-    let mapping = memory::map_mmio(&boot, bar.base)?;
+    if boot.test_memory {
+        let count = memory::test_mapping_reuse(&boot, bar.base, &mut allocator)?;
+        println!(
+            "BOOT_MEMORY_TEST_OK alignment=ok reservations=ok exhaustion=ok reuse=ok failed_map_cleanup=ok table_frames={count}"
+        );
+    }
+    let mapping = memory::map_mmio(&boot, bar.base, &mut allocator)?;
     println!(
         "E1000_MMIO phys={:#x} bytes={}",
         bar.base,
@@ -101,6 +119,9 @@ fn probe() -> Result<[u8; 6], Failure> {
         "E1000_EEPROM reads={} denied_grants={}",
         result.eeprom_reads, result.denied_grants
     );
+    let table_count = mapping.table_frame_count();
+    drop(mapping);
+    println!("BOOT_MEMORY_TABLES allocated={table_count} released={table_count}");
     let stage = match result.stage {
         0 => "bridge_validate",
         1 => "mac_type",

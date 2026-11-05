@@ -16,7 +16,7 @@ def main():
     parser.add_argument("--xorriso", default="xorriso")
     parser.add_argument("--cmdline", default="")
     args = parser.parse_args()
-    if args.cmdline not in ("", "test=eeprom-timeout"):
+    if args.cmdline not in ("", "test=eeprom-timeout", "test=boot-memory"):
         parser.error("unsupported kernel command line")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="kutox-iso-", dir=args.output.parent) as temp:
