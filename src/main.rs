@@ -9,6 +9,7 @@ mod serial;
 mod time;
 
 use core::{arch::asm, ffi::CStr, panic::PanicInfo};
+use kutox::fw_cfg::BootMode;
 
 macro_rules! println {
     ($($arg:tt)*) => { serial::print(format_args!("{}\n", format_args!($($arg)*))) };
@@ -74,7 +75,16 @@ pub extern "C" fn kmain() -> ! {
 }
 
 fn probe() -> Result<[u8; 6], Failure> {
-    let boot = boot::collect();
+    let boot = boot::collect()?;
+    println!(
+        "BOOT_MODE mode={} source={}",
+        boot.mode.name(),
+        if boot.mode_configured {
+            "fw_cfg"
+        } else {
+            "default"
+        }
+    );
     let mut memory_storage = memory::MemoryStorage::new();
     let mut allocator = memory::initialize(&boot, &mut memory_storage)?;
     let managed_bytes: usize = allocator.iter_memory().map(|region| region.size()).sum();
@@ -84,14 +94,14 @@ fn probe() -> Result<[u8; 6], Failure> {
         managed_bytes,
         allocator.iter_memory().count()
     );
-    if boot.test_memory {
+    if boot.mode == BootMode::BootMemory {
         memory::self_test(&boot, &mut allocator)?;
     }
     let ticks = time::calibrate()?;
     println!("TSC ticks_per_us={ticks}");
     let device = pci::discover()?;
     let bar = device.enable_mmio()?;
-    if boot.test_memory {
+    if boot.mode == BootMode::BootMemory {
         let count = memory::test_mapping_reuse(&boot, bar.base, &mut allocator)?;
         println!(
             "BOOT_MEMORY_TEST_OK alignment=ok reservations=ok exhaustion=ok reuse=ok failed_map_cleanup=ok table_frames={count}"
@@ -111,7 +121,7 @@ fn probe() -> Result<[u8; 6], Failure> {
             device.vendor,
             device.device,
             device.revision,
-            u8::from(boot.deny_eeprom_grant),
+            u8::from(boot.mode == BootMode::EepromTimeout),
             &mut result,
         );
     }

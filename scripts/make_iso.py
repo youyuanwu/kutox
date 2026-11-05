@@ -14,10 +14,7 @@ def main():
     parser.add_argument("--limine", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--xorriso", default="xorriso")
-    parser.add_argument("--cmdline", default="")
     args = parser.parse_args()
-    if args.cmdline not in ("", "test=eeprom-timeout", "test=boot-memory"):
-        parser.error("unsupported kernel command line")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="kutox-iso-", dir=args.output.parent) as temp:
         root = Path(temp)
@@ -34,7 +31,7 @@ def main():
             "/kutox MAC probe\n"
             "    protocol: limine\n"
             "    kernel_path: boot():/boot/kernel\n"
-            f"    cmdline: {args.cmdline}\n",
+            "    cmdline:\n",
             encoding="ascii",
         )
         subprocess.run(

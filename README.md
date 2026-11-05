@@ -38,9 +38,7 @@ ctest --test-dir build --output-on-failure --parallel 1
 The build produces:
 
 - `target/x86_64-unknown-none/release/kutox`: freestanding kernel ELF.
-- `build/mac.iso`: normal Limine BIOS/UEFI image.
-- `build/eeprom-timeout.iso`: the same kernel with EEPROM-grant fault injection.
-- `build/boot-memory.iso`: allocator self-tests followed by the normal MAC probe.
+- `build/kutox.iso`: one reusable Limine BIOS/UEFI image for every guest test.
 - `build/test-logs/`: serial output for each acceptance run.
 
 The acceptance suite boots with the BIOS firmware supplied by QEMU. The ISO
@@ -54,10 +52,36 @@ Run one case without rebuilding:
 python3 scripts/qemu_test.py --case known --build-dir build
 ```
 
-Allocator checks can also be run independently:
+The runner selects a mode at launch through QEMU's `fw_cfg` file
+`opt/kutox/test-mode`, without modifying or rebuilding the ISO:
+
+| Value | Behavior |
+|-------|----------|
+| `probe` | Normal MAC probe; also the default when the optional file is absent. |
+| `eeprom-timeout` | Withhold the EEPROM grant to exercise the upstream retry/error path. |
+| `boot-memory` | Run allocator and mapping self-tests before the normal MAC probe. |
+
+For example, the memory case adds this QEMU argument:
+
+```text
+-fw_cfg name=opt/kutox/test-mode,string=boot-memory
+```
+
+Unknown modes and malformed configuration fail explicitly before memory
+initialization or device access. Guest logs report the selected mode and whether
+it came from `fw_cfg` or the default. The former Limine `test=...` command-line
+selection and per-mode ISOs are no longer used.
+
+Portable parser and allocator tests need no ISO or QEMU:
 
 ```sh
+cargo test --locked -p kutox --lib --target x86_64-unknown-linux-gnu
 cargo test --locked -p moss-boot-memory --target x86_64-unknown-linux-gnu
+```
+
+The guest allocator tests reuse the same image:
+
+```sh
 python3 scripts/qemu_test.py --case memory --build-dir build
 ```
 
@@ -85,6 +109,10 @@ The CTest suite covers:
 - Pinned, clean upstream source and linked hardware-helper provenance.
 - Host-side checks that reject wrong MACs, missing EEPROM evidence, conflicting
   terminal results, and success-shaped output followed by a crash or timeout.
+- Bounded host-side `fw_cfg` parsing tests, including malformed directories,
+  duplicate entries, unsupported modes, and missing optional configuration.
+- Guest checks for default and invalid mode selection, and host assertions that
+  every guest command uses the same ISO and selects the intended runtime mode.
 - Allocator host tests for alignment, reserved holes, coalescing, exhaustion,
   release/reuse, capacity failure atomicity, overflow, and deterministic stress.
 - A guest allocator self-test with real RAM readback, page-table frame reuse,
@@ -92,7 +120,7 @@ The CTest suite covers:
 - A 32 MiB guest and checks that every boot reports the pinned Moss allocator
   and every mapped MAC probe releases its allocated page-table frames.
 
-The fault image selects `test=eeprom-timeout` through the Limine command line.
+The EEPROM fault case selects `eeprom-timeout` through QEMU `fw_cfg`.
 The compatibility MMIO backend then clears the EEPROM grant bit in register
 read results. It does not replace the upstream operation with an immediate
 error. The test verifies retry counts and Linux's own error diagnostics.
@@ -102,6 +130,7 @@ Formatting and Rust lint checks:
 ```sh
 cargo fmt --all -- --check
 cargo clippy --locked --release -- -D warnings
+cargo clippy --locked -p kutox --lib --target x86_64-unknown-linux-gnu -- -D warnings
 cargo clippy --locked -p moss-boot-memory --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
 ```
 
@@ -110,6 +139,9 @@ disabled for deliberately unsupported hardware entry points.
 
 ## Implementation boundaries
 
+- [Boot configuration](src/fw_cfg.rs) reads the optional mode file through
+  the QEMU I/O selector/data interface during interrupt-disabled boot. Directory
+  scanning and payload sizes are bounded; host tests exercise the same parser.
 - [Moss bootstrap memory](third_party/moss-boot-memory/) is a dependency-free,
   `no_std`, fixed-capacity adaptation, not the complete upstream `libkernel`.
   Its borrowed region storage cannot be shallow-cloned or outlive its owner.

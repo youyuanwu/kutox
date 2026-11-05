@@ -24,31 +24,17 @@ add_custom_target(kernel
     USES_TERMINAL
 )
 
-foreach(variant IN ITEMS mac eeprom-timeout boot-memory)
-    if(variant STREQUAL "eeprom-timeout")
-        set(cmdline "test=eeprom-timeout")
-    elseif(variant STREQUAL "boot-memory")
-        set(cmdline "test=boot-memory")
-    else()
-        set(cmdline "")
-    endif()
-    add_custom_command(
-        OUTPUT "${CMAKE_BINARY_DIR}/${variant}.iso"
-        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/make_iso.py"
-            --kernel "${KERNEL}" --limine "${limine_SOURCE_DIR}"
-            --output "${CMAKE_BINARY_DIR}/${variant}.iso"
-            --xorriso "${XORRISO}" --cmdline "${cmdline}"
-        DEPENDS kernel "${KERNEL}" "${CMAKE_SOURCE_DIR}/scripts/make_iso.py"
-        VERBATIM
-    )
-endforeach()
-add_custom_target(images DEPENDS
-    "${CMAKE_BINARY_DIR}/mac.iso"
-    "${CMAKE_BINARY_DIR}/eeprom-timeout.iso"
-    "${CMAKE_BINARY_DIR}/boot-memory.iso"
+add_custom_command(
+    OUTPUT "${CMAKE_BINARY_DIR}/kutox.iso"
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/make_iso.py"
+        --kernel "${KERNEL}" --limine "${limine_SOURCE_DIR}"
+        --output "${CMAKE_BINARY_DIR}/kutox.iso" --xorriso "${XORRISO}"
+    DEPENDS kernel "${KERNEL}" "${CMAKE_SOURCE_DIR}/scripts/make_iso.py"
+    VERBATIM
 )
+add_custom_target(images DEPENDS "${CMAKE_BINARY_DIR}/kutox.iso")
 
-foreach(case IN ITEMS known alternate missing unsupported ambiguous eeprom-timeout memory low-memory repeat provenance)
+foreach(case IN ITEMS known alternate missing unsupported ambiguous eeprom-timeout memory low-memory default-mode invalid-mode repeat provenance)
     add_test(NAME "mac-${case}"
         COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
             --case "${case}" --build-dir "${CMAKE_BINARY_DIR}"
@@ -64,6 +50,14 @@ add_test(NAME boot-memory-unit
     COMMAND ${CARGO} test --locked -p moss-boot-memory --target x86_64-unknown-linux-gnu
 )
 set_tests_properties(boot-memory-unit PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    TIMEOUT 65
+    RUN_SERIAL TRUE
+)
+add_test(NAME boot-config-unit
+    COMMAND ${CARGO} test --locked -p kutox --lib --target x86_64-unknown-linux-gnu
+)
+set_tests_properties(boot-config-unit PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     TIMEOUT 65
     RUN_SERIAL TRUE

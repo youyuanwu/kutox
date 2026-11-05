@@ -1,3 +1,5 @@
+use crate::{Failure, io};
+use kutox::fw_cfg::{self, BootMode};
 use limine::{
     BaseRevision,
     request::{
@@ -36,11 +38,11 @@ pub struct BootInfo {
     pub kernel_physical_start: u64,
     pub kernel_size: u64,
     pub memory_map: &'static [&'static limine::memory_map::Entry],
-    pub deny_eeprom_grant: bool,
-    pub test_memory: bool,
+    pub mode: BootMode,
+    pub mode_configured: bool,
 }
 
-pub fn collect() -> BootInfo {
+pub fn collect() -> Result<BootInfo, Failure> {
     assert!(REVISION.is_supported(), "unsupported Limine base revision");
     let address = ADDRESS.get_response().expect("missing executable address");
     let cmdline = CMDLINE
@@ -49,12 +51,12 @@ pub fn collect() -> BootInfo {
         .cmdline()
         .to_str()
         .expect("non-UTF-8 command line");
-    let (deny_eeprom_grant, test_memory) = match cmdline {
-        "" => (false, false),
-        "test=eeprom-timeout" => (true, false),
-        "test=boot-memory" => (false, true),
-        _ => panic!("unsupported command line: {cmdline}"),
-    };
+    if !cmdline.is_empty() {
+        return Err(Failure::new("boot_command_line", -1));
+    }
+    let configured =
+        fw_cfg::read_mode(|selector| io::write16(0x510, selector), || io::read8(0x511))
+            .map_err(|error| Failure::new("boot_mode", error as i32))?;
     unsafe extern "C" {
         static _kernel_start: u8;
         static _kernel_end: u8;
@@ -65,7 +67,7 @@ pub fn collect() -> BootInfo {
         .virtual_base()
         .checked_sub(address.physical_base())
         .expect("invalid kernel address offset");
-    BootInfo {
+    Ok(BootInfo {
         hhdm_offset: HHDM.get_response().expect("missing HHDM").offset(),
         kernel_physical_start: start
             .checked_sub(kernel_offset)
@@ -75,7 +77,7 @@ pub fn collect() -> BootInfo {
             .get_response()
             .expect("missing memory map")
             .entries(),
-        deny_eeprom_grant,
-        test_memory,
-    }
+        mode: configured.unwrap_or(BootMode::Probe),
+        mode_configured: configured.is_some(),
+    })
 }
