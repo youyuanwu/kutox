@@ -1,0 +1,216 @@
+# First Linux driver reuse milestone: read an e1000 MAC address
+
+## Status and objective
+
+This is a proposed design, not an implemented driver or build interface.
+
+Boot a small x86_64 Rust kernel in QEMU, execute Linux e1000 hardware code,
+and report the emulated NIC's permanent MAC address. The reported address
+must match the value configured by the test harness.
+
+This milestone proves that selected upstream hardware code can run on our
+own platform services. It does **not** establish compatibility with the
+complete Linux e1000 driver, LinuxKPI, or arbitrary Linux drivers.
+
+## Source baseline
+
+Use the existing shallow [Linux submodule](../linux), pinned to:
+
+- Release: `v7.3.1`
+- Commit: `79a907609d53d5cd645b42c11550d295d43abf99`
+- Device: QEMU `e1000`, Intel 82540EM, PCI ID `8086:100e`
+
+Relevant upstream files:
+
+- [e1000_hw.c](../linux/drivers/net/ethernet/intel/e1000/e1000_hw.c):
+  MAC classification, EEPROM initialization, EEPROM access, and MAC reading.
+- [e1000_hw.h](../linux/drivers/net/ethernet/intel/e1000/e1000_hw.h):
+  hardware state, constants, and declarations.
+- [e1000_osdep.h](../linux/drivers/net/ethernet/intel/e1000/e1000_osdep.h):
+  register-access macros.
+- [e1000.h](../linux/drivers/net/ethernet/intel/e1000/e1000.h):
+  shared driver declarations and Linux header dependencies.
+
+Keep the upstream source files unchanged. Put the bridge, compatibility
+headers, platform implementations, and tests outside the submodule. Preserve
+source attribution and applicable license notices when reusing other code.
+A future Linux revision update requires rerunning the milestone tests.
+
+## Scope
+
+### Included
+
+- One CPU executing the probe once during boot.
+- Serial diagnostics and a bounded QEMU test run.
+- PCI discovery and BAR0 MMIO mapping for one supported NIC.
+- A narrow C ABI bridge between Rust and upstream C.
+- The compatibility declarations and implementations needed for this path.
+- Reading the MAC through Linux's `e1000_read_mac_addr()`.
+
+### Excluded
+
+- Linux's complete PCI driver registration and probe framework.
+- Linux module loading, `.ko` binary compatibility, or userspace compatibility.
+- Packet DMA, transmit/receive queues, interrupts from the NIC, and NAPI.
+- TCP/IP, Embassy networking integration, DHCP, and packet offloads.
+- Link negotiation, full device reset, and EEPROM programming.
+- SMP driver execution, hotplug, suspend/resume, and physical hardware.
+- Importing FreeBSD LinuxKPI or implementing a general Linux driver API.
+
+EEPROM reading still writes EEPROM control registers to clock commands and
+data. Excluding EEPROM programming does not mean making MMIO read-only.
+
+## Architecture
+
+```text
+Rust boot-time probe and serial result reporting
+                    |
+        Small C ABI bridge owned by kutox
+                    |
+       Upstream e1000_hw.c and driver headers
+                    |
+     Narrow Linux compatibility headers/backend
+                    |
+        PCI, MMIO, delay, lock, and log services
+```
+
+Use embclox as the reference for boot, serial, PCI, MMIO, and timing services.
+Bring over only the pieces needed for this experiment, with their necessary
+dependencies and attribution. Do not copy its networking stack, driver
+registry, or native e1000 implementation into the success path.
+
+Use rko as a reference for C/Rust interoperation and wrapping kernel macros.
+Its Linux-backed allocator and workqueues are not implementations that can
+run independently of Linux. Neither sibling repository should become an
+implicit build dependency through an absolute local path.
+
+### Rust/C boundary
+
+Keep `struct e1000_hw` and other Linux-facing state inside C. Expose a small
+bridge taking the mapped BAR address, mapped length, and PCI identity, and
+returning a status plus six MAC bytes. Do not expose Linux struct layouts to
+Rust or generate bindings for the entire Linux kernel.
+
+Rust owns PCI discovery and the MMIO mapping lifetime. The mapping must remain
+valid until the synchronous C call completes; C must retain no pointer after
+return. Return the MAC only after the upstream operation succeeds.
+
+### Probe sequence
+
+1. Boot the kernel and initialize serial output, PCI access, memory mapping,
+   and a delay source suitable for boot-time polling.
+2. Locate exactly one `8086:100e` device. Reject absence, ambiguity, and
+   unsupported device models explicitly.
+3. Validate BAR0 as an assigned memory BAR and map the required register
+   range with device-appropriate cache attributes. Enable PCI memory
+   decoding; bus mastering is not needed because this milestone uses no DMA.
+4. Initialize C-owned hardware state with the device/revision identity and
+   mapped register base. Initialize any context required by the selected
+   upstream code and diagnostics; do not rely on invalid placeholder pointers.
+5. Call `e1000_set_mac_type()` and check its result.
+6. Call `e1000_init_eeprom_params()` and check its result.
+7. Call `e1000_read_mac_addr()` and check its result.
+8. Copy the six returned bytes to Rust, validate the address, report the
+   result, and complete the test.
+
+The selected 82540EM path uses Microwire EEPROM access. Its implementation
+requests EEPROM ownership, polls the grant with bounded retries, and uses
+microsecond delays while clocking data. The test must execute that upstream
+path rather than substitute a MAC read from PCI configuration, another
+register, the QEMU command line, or embclox's native driver.
+
+## Compatibility contract
+
+| Surface | Required behavior |
+|---------|-------------------|
+| Types and macros | Consistent integer widths, annotations, bit operations, and declarations across all C translation units. |
+| MMIO | Correct volatile accesses, ordering, and posted-write flush behavior required by upstream register macros. |
+| Delays | Calibrated microsecond waits that work without a running task scheduler or timer interrupts. |
+| EEPROM lock | Actual serialization and explicit rejection of unsupported reentrancy/contention under the single-CPU boot contract. |
+| Logging | Valid diagnostic context and serial reporting for failures, including EEPROM access errors. |
+| Errors | Preserve upstream failure results and add the failing bridge/probe stage; never fabricate success. |
+
+This lock backend is not a general implementation of Linux mutex semantics.
+Revisit it before permitting multiple callers, task scheduling, or SMP.
+No-op delays and unconditionally successful lock/API stubs are unacceptable.
+
+Compile the upstream hardware translation unit with its driver headers.
+Provide a controlled compatibility include tree for the Linux/platform
+headers they require, keeping upstream e1000 structures authoritative.
+Inventory both compile-time dependencies and reachable runtime dependencies.
+Function/data sections and linker garbage collection may discard unused
+functions, but do not remove the need to parse and type-check the whole
+translation unit.
+
+Do not link `e1000_main.c` or implement its network-device, workqueue, and NAPI
+dependencies for this milestone. Missing required functions must fail the
+build, or explicitly fail execution if an intentionally retained unsupported
+entry point is reached. Discarding unused code must not hide a required
+operation behind a success-shaped stub.
+
+Build C for the freestanding kernel environment, with flags consistent with
+the kernel ABI, including no x86_64 red zone. Do not accidentally link host
+libc or require a full Linux kernel build. Keep compiler/configuration
+assumptions explicit and compile only the selected source set.
+
+## Verification
+
+The implementation must supply a repeatable, time-bounded QEMU test harness.
+The following is a device configuration fragment, not a complete boot command:
+
+```text
+-nic none
+-netdev user,id=macprobe,restrict=on
+-device e1000,netdev=macprobe,mac=52:54:00:12:34:56
+```
+
+Use an isolated QEMU instance with no host device passthrough. No external
+network access or packet exchange is required.
+
+The kernel's successful terminal result should have this shape:
+
+```text
+E1000_MAC_OK mac=52:54:00:12:34:56
+```
+
+Failures should report a stage and error code:
+
+```text
+E1000_MAC_FAIL stage=read_eeprom code=<error>
+```
+
+The host harness must check the terminal result, expected MAC, guest exit
+outcome, and timeout. A diagnostic line alone is not sufficient if the guest
+later faults or never completes.
+
+### Acceptance cases
+
+1. **Known address:** report exactly `52:54:00:12:34:56`.
+2. **Different address:** boot with `52:54:00:ab:cd:ef` and report that value,
+   proving the result is not hard-coded.
+3. **Missing NIC:** boot without the NIC and report discovery failure, without
+   attempting MMIO or printing a success result.
+4. **Unsupported model:** provide an unsupported NIC and report it as
+   unsupported rather than interpreting its BAR as e1000 registers.
+5. **EEPROM timeout:** use a controlled test backend to withhold the EEPROM
+   grant; verify bounded failure through the upstream EEPROM-read path, not
+   an unconditional error returned by the bridge.
+6. **Repeatability and provenance:** repeat successful boots; verify the build
+   includes the pinned upstream implementation, no native-driver fallback is
+   linked into the success path, and the Linux submodule remains unchanged.
+
+Do not benchmark throughput at this stage: there is no packet data path.
+
+## Follow-on milestones
+
+After this goal is verified:
+
+1. Transmit one Ethernet frame and verify its contents in a capture.
+2. Receive one known frame.
+3. Add interrupt-driven operation.
+4. Adapt packet ownership and readiness to the native NIC interface and
+   Embassy networking.
+
+Each step needs a new dependency review. Hardware-helper reuse does not imply
+that these later steps can run an unmodified complete Linux driver without
+additional subsystem support.
