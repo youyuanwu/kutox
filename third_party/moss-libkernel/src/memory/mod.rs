@@ -1,16 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2025 Matthew Leach
 //! Fixed-capacity port of Moss's Smalloc bootstrap allocator.
-//!
-//! See THIRDPARTY-NOTICES.md at the repository root for provenance and changes.
+pub mod allocators;
 
-#![no_std]
-
-mod smalloc;
-
-pub use smalloc::Smalloc;
-
-pub const UPSTREAM_REVISION: &str = "1358b5d78b9151e382dc60ccda7fe0de191e56af";
 pub const PAGE_SIZE: usize = 4096;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

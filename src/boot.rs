@@ -4,7 +4,7 @@ use limine::{
     BaseRevision,
     request::{
         ExecutableAddressRequest, ExecutableCmdlineRequest, HhdmRequest, MemoryMapRequest,
-        RequestsEndMarker, RequestsStartMarker, StackSizeRequest,
+        MpRequest, RequestsEndMarker, RequestsStartMarker, StackSizeRequest,
     },
 };
 
@@ -25,6 +25,9 @@ static ADDRESS: ExecutableAddressRequest = ExecutableAddressRequest::new();
 static MEMORY_MAP: MemoryMapRequest = MemoryMapRequest::new();
 #[used]
 #[unsafe(link_section = ".requests")]
+static PROCESSORS: MpRequest = MpRequest::new();
+#[used]
+#[unsafe(link_section = ".requests")]
 static CMDLINE: ExecutableCmdlineRequest = ExecutableCmdlineRequest::new();
 #[used]
 #[unsafe(link_section = ".requests")]
@@ -40,6 +43,16 @@ pub struct BootInfo {
     pub memory_map: &'static [&'static limine::memory_map::Entry],
     pub mode: BootMode,
     pub mode_configured: bool,
+}
+
+pub fn processor_count() -> Result<usize, Failure> {
+    if !REVISION.is_supported() {
+        return Err(Failure::new("limine_base_revision", -1));
+    }
+    let response = PROCESSORS
+        .get_response()
+        .ok_or(Failure::new("missing_processor_topology", -1))?;
+    Ok(response.cpus().len())
 }
 
 pub fn collect() -> Result<BootInfo, Failure> {

@@ -34,7 +34,7 @@ add_custom_command(
 )
 add_custom_target(images DEPENDS "${CMAKE_BINARY_DIR}/kutox.iso")
 
-foreach(case IN ITEMS known alternate missing unsupported ambiguous eeprom-timeout memory low-memory default-mode invalid-mode repeat provenance)
+foreach(case IN ITEMS known alternate missing unsupported ambiguous eeprom-timeout low-memory default-mode invalid-mode page-fault general-protection double-fault unexpected-page-fault smp-unsupported repeat provenance)
     add_test(NAME "mac-${case}"
         COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
             --case "${case}" --build-dir "${CMAKE_BINARY_DIR}"
@@ -42,14 +42,25 @@ foreach(case IN ITEMS known alternate missing unsupported ambiguous eeprom-timeo
     )
     set_tests_properties("mac-${case}" PROPERTIES TIMEOUT 65 RUN_SERIAL TRUE)
 endforeach()
+add_test(NAME kernel-suite
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+        --case kernel-tests --build-dir "${CMAKE_BINARY_DIR}"
+        --qemu "${QEMU}" --timeout 20
+)
+add_test(NAME kernel-suite-rejection
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+        --case kernel-tests-fail --expect-test-failure --build-dir "${CMAKE_BINARY_DIR}"
+        --qemu "${QEMU}" --timeout 20
+)
+set_tests_properties(kernel-suite kernel-suite-rejection PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
 add_test(NAME harness-unit
     COMMAND ${Python3_EXECUTABLE} -m unittest discover -s tests -v
 )
 set_tests_properties(harness-unit PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
-add_test(NAME boot-memory-unit
-    COMMAND ${CARGO} test --locked -p moss-boot-memory --target x86_64-unknown-linux-gnu
+add_test(NAME moss-libkernel-unit
+    COMMAND ${CARGO} test --locked -p moss-libkernel --target x86_64-unknown-linux-gnu
 )
-set_tests_properties(boot-memory-unit PROPERTIES
+set_tests_properties(moss-libkernel-unit PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     TIMEOUT 65
     RUN_SERIAL TRUE

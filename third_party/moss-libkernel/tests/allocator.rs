@@ -1,5 +1,6 @@
-use moss_boot_memory::{
-    Error, PAGE_SIZE, PhysMemoryRegion as Region, PhysicalAddress as PA, Smalloc,
+use moss_libkernel::memory::{
+    Error, PAGE_SIZE, PhysMemoryRegion as Region, PhysicalAddress as PA,
+    allocators::smalloc::Smalloc,
 };
 
 fn region(start: usize, size: usize) -> Region {

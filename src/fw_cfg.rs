@@ -10,7 +10,12 @@ const MODE_FILE: &[u8] = b"opt/kutox/test-mode";
 pub enum BootMode {
     Probe,
     EepromTimeout,
-    BootMemory,
+    PageFault,
+    GeneralProtection,
+    DoubleFault,
+    UnexpectedPageFault,
+    KernelTests,
+    KernelTestsFail,
 }
 
 impl BootMode {
@@ -18,8 +23,23 @@ impl BootMode {
         match self {
             Self::Probe => "probe",
             Self::EepromTimeout => "eeprom-timeout",
-            Self::BootMemory => "boot-memory",
+            Self::PageFault => "page-fault",
+            Self::GeneralProtection => "general-protection",
+            Self::DoubleFault => "double-fault",
+            Self::UnexpectedPageFault => "unexpected-page-fault",
+            Self::KernelTests => "kernel-tests",
+            Self::KernelTestsFail => "kernel-tests-fail",
         }
+    }
+
+    pub const fn is_fault_test(self) -> bool {
+        matches!(
+            self,
+            Self::PageFault
+                | Self::GeneralProtection
+                | Self::DoubleFault
+                | Self::UnexpectedPageFault
+        )
     }
 }
 
@@ -94,7 +114,12 @@ pub fn read_mode(
     match value {
         b"probe" => Ok(Some(BootMode::Probe)),
         b"eeprom-timeout" => Ok(Some(BootMode::EepromTimeout)),
-        b"boot-memory" => Ok(Some(BootMode::BootMemory)),
+        b"page-fault" => Ok(Some(BootMode::PageFault)),
+        b"general-protection" => Ok(Some(BootMode::GeneralProtection)),
+        b"double-fault" => Ok(Some(BootMode::DoubleFault)),
+        b"unexpected-page-fault" => Ok(Some(BootMode::UnexpectedPageFault)),
+        b"kernel-tests" => Ok(Some(BootMode::KernelTests)),
+        b"kernel-tests-fail" => Ok(Some(BootMode::KernelTestsFail)),
         _ => Err(Error::UnknownMode),
     }
 }
@@ -153,7 +178,12 @@ mod tests {
         for mode in [
             BootMode::Probe,
             BootMode::EepromTimeout,
-            BootMode::BootMemory,
+            BootMode::PageFault,
+            BootMode::GeneralProtection,
+            BootMode::DoubleFault,
+            BootMode::UnexpectedPageFault,
+            BootMode::KernelTests,
+            BootMode::KernelTestsFail,
         ] {
             assert_eq!(
                 run(&fixture(&[("opt/kutox/test-mode", mode.name().as_bytes())])),
@@ -165,8 +195,8 @@ mod tests {
     #[test]
     fn allows_one_trailing_nul() {
         assert_eq!(
-            run(&fixture(&[("opt/kutox/test-mode", b"boot-memory\0")])),
-            Ok(Some(BootMode::BootMemory))
+            run(&fixture(&[("opt/kutox/test-mode", b"kernel-tests\0")])),
+            Ok(Some(BootMode::KernelTests))
         );
     }
 
@@ -185,6 +215,16 @@ mod tests {
     #[test]
     fn rejects_unknown_or_embedded_nul_modes() {
         for value in [b"invalid".as_slice(), b"probe\0junk", b"probe\0\0", b"\0"] {
+            assert_eq!(
+                run(&fixture(&[("opt/kutox/test-mode", value)])),
+                Err(Error::UnknownMode)
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_removed_nonfatal_modes() {
+        for value in [b"boot-memory".as_slice(), b"cpu-locks", b"breakpoint"] {
             assert_eq!(
                 run(&fixture(&[("opt/kutox/test-mode", value)])),
                 Err(Error::UnknownMode)
@@ -236,7 +276,7 @@ mod tests {
         assert_eq!(
             run(&fixture(&[
                 ("opt/kutox/test-mode", b"probe"),
-                ("opt/kutox/test-mode", b"boot-memory"),
+                ("opt/kutox/test-mode", b"kernel-tests"),
             ])),
             Err(Error::DuplicateModeFile)
         );

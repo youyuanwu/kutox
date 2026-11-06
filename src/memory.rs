@@ -1,7 +1,9 @@
 use crate::{Failure, boot::BootInfo};
 use core::arch::asm;
 use limine::memory_map::EntryType;
-use moss_boot_memory::{Error, PAGE_SIZE, PhysMemoryRegion, PhysicalAddress, Smalloc};
+use moss_libkernel::memory::{
+    Error, PAGE_SIZE, PhysMemoryRegion, PhysicalAddress, allocators::smalloc::Smalloc,
+};
 use x86_64::{
     PhysAddr, VirtAddr,
     registers::control::Cr3,
@@ -86,7 +88,10 @@ pub fn initialize<'a>(
     Ok(allocator)
 }
 
-pub fn self_test(boot: &BootInfo, allocator: &mut Smalloc<'_>) -> Result<(), Failure> {
+pub fn test_alignment_reservations(
+    boot: &BootInfo,
+    allocator: &mut Smalloc<'_>,
+) -> Result<(), Failure> {
     let first = allocator.alloc_page().map_err(allocator_failure)?;
     let second = allocator
         .alloc(2 * PAGE_SIZE, 2 * PAGE_SIZE)
@@ -132,7 +137,10 @@ pub fn self_test(boot: &BootInfo, allocator: &mut Smalloc<'_>) -> Result<(), Fai
     allocator
         .free(reused, PAGE_SIZE)
         .map_err(allocator_failure)?;
+    Ok(())
+}
 
+pub fn test_exhaustion_reuse() -> Result<(), Failure> {
     let mut memory = [PhysMemoryRegion::empty(); 4];
     let mut reservations = [PhysMemoryRegion::empty(); 4];
     let mut small = Smalloc::new(&mut memory, &mut reservations).map_err(allocator_failure)?;
@@ -142,13 +150,44 @@ pub fn self_test(boot: &BootInfo, allocator: &mut Smalloc<'_>) -> Result<(), Fai
     small
         .add_reservation(region(0x201000, PAGE_SIZE as u64)?)
         .map_err(allocator_failure)?;
-    if small.alloc_page().map_err(allocator_failure)?.value() != 0x200000
+    let first = small.alloc_page().map_err(allocator_failure)?;
+    if first.value() != 0x200000
         || small.alloc_page().map_err(allocator_failure)?.value() != 0x202000
         || small.alloc_page() != Err(Error::NoMemory)
     {
         return Err(Failure::new("memory_exhaustion", -1));
     }
+    small.free(first, PAGE_SIZE).map_err(allocator_failure)?;
+    if small.alloc_page().map_err(allocator_failure)? != first {
+        return Err(Failure::new("exhausted_memory_reuse", -1));
+    }
     Ok(())
+}
+
+#[derive(PartialEq, Eq)]
+pub struct AllocationSnapshot {
+    memory: [PhysMemoryRegion; REGION_CAPACITY],
+    reservations: [PhysMemoryRegion; REGION_CAPACITY],
+}
+
+pub fn allocation_snapshot(allocator: &Smalloc<'_>) -> AllocationSnapshot {
+    let mut snapshot = AllocationSnapshot {
+        memory: [PhysMemoryRegion::empty(); REGION_CAPACITY],
+        reservations: [PhysMemoryRegion::empty(); REGION_CAPACITY],
+    };
+    for (index, region) in allocator.iter_memory().enumerate() {
+        snapshot.memory[index] = region;
+    }
+    for (index, region) in allocator.iter_reservations().enumerate() {
+        snapshot.reservations[index] = region;
+    }
+    snapshot
+}
+
+pub fn mmio_window_unused(boot: &BootInfo) -> bool {
+    let root = Cr3::read().0.start_address().as_u64();
+    let table = unsafe { &*((root + boot.hhdm_offset) as *const PageTable) };
+    table[VirtAddr::new(MMIO_BASE).p4_index()].is_unused()
 }
 
 struct TableFrames<'a, 'storage> {

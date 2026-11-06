@@ -9,6 +9,14 @@ for physical RAM and MMIO page-table frames. See
 [third-party notices](THIRDPARTY-NOTICES.md) for the pinned source, original
 MIT license, and the port's changes.
 
+The kernel also implements Moss's CPU-operations interface and uses a minimal
+port of its IRQ-safe spinlock. Kernel-owned x86_64 exception tables and test
+modes verify interrupt-state restoration and fault diagnostics.
+
+Both ports live in one adapted [Moss libkernel crate](third_party/moss-libkernel/),
+with `CpuOps` at the root and separate `memory` and `sync` modules. They share
+one upstream revision and MIT license.
+
 This is hardware-helper reuse, not a complete Linux driver port or LinuxKPI
 implementation. There is no packet data path yet. See the
 [milestone design](docs/linux-e1000-mac.md) for its scope and acceptance goals.
@@ -59,12 +67,17 @@ The runner selects a mode at launch through QEMU's `fw_cfg` file
 |-------|----------|
 | `probe` | Normal MAC probe; also the default when the optional file is absent. |
 | `eeprom-timeout` | Withhold the EEPROM grant to exercise the upstream retry/error path. |
-| `boot-memory` | Run allocator and mapping self-tests before the normal MAC probe. |
+| `kernel-tests` | Run all registered nonfatal kernel tests in one boot and emit KTAP results. |
+| `kernel-tests-fail` | Run the same suite with an additional intentionally failing case to test host rejection. |
+| `page-fault` | Read a deliberately unmapped address and verify the fatal exception diagnostics. |
+| `general-protection` | Load an invalid data-segment selector and verify the CPU's error code. |
+| `double-fault` | Fault with an unusable stack and verify delivery on the dedicated double-fault IST stack. |
+| `unexpected-page-fault` | Confirm an unanticipated fault reports failure, not a successful test result. |
 
-For example, the memory case adds this QEMU argument:
+For example, the nonfatal suite adds this QEMU argument:
 
 ```text
--fw_cfg name=opt/kutox/test-mode,string=boot-memory
+-fw_cfg name=opt/kutox/test-mode,string=kernel-tests
 ```
 
 Unknown modes and malformed configuration fail explicitly before memory
@@ -76,14 +89,65 @@ Portable parser and allocator tests need no ISO or QEMU:
 
 ```sh
 cargo test --locked -p kutox --lib --target x86_64-unknown-linux-gnu
-cargo test --locked -p moss-boot-memory --target x86_64-unknown-linux-gnu
+cargo test --locked -p moss-libkernel --target x86_64-unknown-linux-gnu
 ```
 
-The guest allocator tests reuse the same image:
+The default nonfatal kernel suite reuses the same image and needs no NIC:
 
 ```sh
-python3 scripts/qemu_test.py --case memory --build-dir build
+python3 scripts/qemu_test.py --case kernel-tests --build-dir build
 ```
+
+The old `memory`, `cpu-locks`, and `breakpoint` CLI cases and the corresponding
+standalone boot modes have been removed. Use `kernel-tests` for all nonfatal
+kernel tests; this is their only dispatch and reporting path. Fatal-fault and
+hardware-configuration cases still use separate boots of the same ISO.
+
+### Registered kernel tests
+
+[The registry](src/kernel_tests.rs) is a static list of named functions returning
+`Result`, not Linux KUnit or Rust's nightly custom test framework. Its output is:
+
+```text
+KTAP version 1
+1..5
+ok 1 cpu.irq_lock_restore
+ok 2 cpu.breakpoint_return
+ok 3 memory.alignment_reservations
+ok 4 memory.exhaustion_reuse
+ok 5 memory.mmio_cleanup
+# Totals: pass:5 fail:0 skip:0 total:5
+```
+
+Tests run sequentially with interrupts disabled at case boundaries. After
+each case the runner checks the exact allocator memory/reservation lists and
+that the private MMIO window is unused. Changed state causes a `Bail out!` and
+guest failure rather than continuing with a corrupted fixture. Ordinary
+`Err` results become `not ok` results and the remaining tests run if the
+shared state is intact. Panics and unexpected exceptions fail the whole
+guest; there is no panic recovery.
+
+The host requires the exact test names, numbering, plan, complete terminal
+summary, and matching exit status. Missing/duplicate cases, skips, malformed
+output, premature shutdown, and timeouts cannot pass. Adding a registered case
+requires updating `KERNEL_TEST_NAMES` in the
+[host runner](scripts/qemu_test.py) as well.
+
+The intentional-failure mode reports a failing `harness.intentional_failure`
+before the five normal cases and exits with guest failure. This command
+**must return nonzero**:
+
+```sh
+python3 scripts/qemu_test.py --case kernel-tests-fail --build-dir build
+```
+
+CTest's `kernel-suite-rejection` entry uses `--expect-test-failure` to verify
+that rejection. It accepts only the complete, consistent report of that
+specific intentional failure; crashes, timeouts, missing results, and unrelated
+test failures still fail the check. It does not use CTest's generic
+`WILL_FAIL` behavior.
+
+### Device and isolated-fault results
 
 A successful guest reports:
 
@@ -97,6 +161,12 @@ nonzero count, the exact configured MAC, and the correct guest exit outcome.
 QEMU's `isa-debug-exit` encodes guest success as host status **1**, and guest
 failure as **3**. The Python harness translates a correctly observed test
 outcome into ordinary host success; a timeout or crash always fails.
+Isolated fault cases do not attach a NIC or run the MAC probe. They require exact
+fault results and exception diagnostics. Expected fatal
+fault tests terminate from their handlers after checking the vector and error.
+The unexpected-fault negative test and intentional-failure suite deliberately
+exit with guest failure; their dedicated rejection checks verify those
+outcomes precisely.
 
 ### Tests
 
@@ -117,8 +187,17 @@ The CTest suite covers:
   release/reuse, capacity failure atomicity, overflow, and deterministic stress.
 - A guest allocator self-test with real RAM readback, page-table frame reuse,
   and a forced mid-mapping allocation failure that must release partial tables.
-- A 32 MiB guest and checks that every boot reports the pinned Moss allocator
+- A 32 MiB guest and checks that normal MAC boots report the pinned Moss allocator
   and every mapped MAC probe releases its allocated page-table frames.
+- CPU/IRQ-lock host tests for saved-state restoration, nesting, release before
+  restore, host-thread contention, unwind cleanup, and a non-Send guard check.
+- Hardware-backed guest tests for enabled/disabled interrupt restoration,
+  returning breakpoints, page/general-protection faults, double-fault IST
+  delivery, and unexpected-fault rejection.
+- A named nonfatal kernel suite, strict KTAP parser tests, and an injected
+  failure proving that successful guest shutdown alone cannot pass a suite.
+- Rejection of a two-socket guest before initialization; Limine processor
+  discovery, not just CPUID's per-package count, enforces the one-CPU limit.
 
 The EEPROM fault case selects `eeprom-timeout` through QEMU `fw_cfg`.
 The compatibility MMIO backend then clears the EEPROM grant bit in register
@@ -131,7 +210,7 @@ Formatting and Rust lint checks:
 cargo fmt --all -- --check
 cargo clippy --locked --release -- -D warnings
 cargo clippy --locked -p kutox --lib --target x86_64-unknown-linux-gnu -- -D warnings
-cargo clippy --locked -p moss-boot-memory --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
+cargo clippy --locked -p moss-libkernel --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
 ```
 
 C compilation enables warnings as errors. Unused parameter warnings are
@@ -139,10 +218,31 @@ disabled for deliberately unsupported hardware entry points.
 
 ## Implementation boundaries
 
+- [CPU support](src/cpu.rs) implements `CpuOps` for the BSP. It requires one
+  Limine-discovered CPU, reports the hardware initial APIC ID, and retains only
+  the interrupt-enable bit when saving/restoring interrupt state. It does not
+  overwrite unrelated RFLAGS. Halting disables interrupts and executes `hlt`.
+- [Exception support](src/exceptions.rs) installs kernel-owned GDT, TSS, and all
+  256 interrupt gates. Separate permanent stacks back NMI, double-fault, and
+  machine-check IST entries. These stacks have no guard pages yet.
+  [Assembly entry stubs](src/exception_entry.S) normalize hardware error codes,
+  preserve general-purpose registers, clear DF for the Rust ABI, align the call
+  stack, and return via `iretq` only for an expected breakpoint.
+- The legacy PIC is remapped and fully masked; the local APIC is disabled before
+  any test enables interrupts. Unexpected interrupts/exceptions report vector,
+  error code, RIP, and CR2 and fail explicitly. This is not a timer or device-IRQ
+  runtime. AP startup, x2APIC, userspace entry, FPU/SIMD state switching, and
+  scheduling are outside this milestone.
+- [Moss IRQ synchronization](third_party/moss-libkernel/src/sync/) preserves the upstream
+  basic lock/guard algorithm and CPU interface without mapped guards or the
+  complete synchronization subsystem. The guard cannot move between threads;
+  recursive acquisition, sleeping/awaiting while held, and use from NMI or
+  machine-check handlers are unsupported. Host concurrency tests do not imply
+  that the kernel supports SMP.
 - [Boot configuration](src/fw_cfg.rs) reads the optional mode file through
   the QEMU I/O selector/data interface during interrupt-disabled boot. Directory
   scanning and payload sizes are bounded; host tests exercise the same parser.
-- [Moss bootstrap memory](third_party/moss-boot-memory/) is a dependency-free,
+- [Moss bootstrap memory](third_party/moss-libkernel/src/memory/) is a dependency-free,
   `no_std`, fixed-capacity adaptation, not the complete upstream `libkernel`.
   Its borrowed region storage cannot be shallow-cloned or outlive its owner.
 - Limine supplies the memory map. Only `USABLE` RAM enters the allocation
@@ -188,6 +288,8 @@ small-helper approach used by [rko](https://github.com/youyuanwu/rko), without
 depending on its Linux-backed runtime wrappers.
 
 Linux source retains its upstream notices and remains in the submodule.
-Moss-derived source retains its [MIT notice](third_party/moss-boot-memory/LICENSE).
+Moss-derived source retains its
+[MIT notice](third_party/moss-libkernel/LICENSE) for both bootstrap memory
+and IRQ synchronization.
 See [third-party notices](THIRDPARTY-NOTICES.md) for provenance and scope.
 Other kutox code remains under [GPLv2](LICENSE). No Ginux source is incorporated.
