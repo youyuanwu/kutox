@@ -2,14 +2,14 @@ use crate::{
     Failure,
     boot::BootInfo,
     cpu::{self, X86Cpu},
-    exceptions, io, memory, serial,
+    exceptions, heap, io, memory, serial,
 };
 use kutox::fw_cfg::BootMode;
 use moss_libkernel::CpuOps;
 
 struct TestCase {
     name: &'static str,
-    run: fn(&BootInfo, &memory::PhysicalFrames<'_>) -> Result<(), Failure>,
+    run: fn(&BootInfo, &memory::PhysicalFrames<'static>) -> Result<(), Failure>,
 }
 
 static TESTS: &[TestCase] = &[
@@ -36,6 +36,22 @@ static TESTS: &[TestCase] = &[
     TestCase {
         name: "memory.buddy_exhaustion",
         run: |_, allocator| memory::test_buddy_exhaustion(allocator),
+    },
+    TestCase {
+        name: "heap.bootstrap_once",
+        run: heap::test_bootstrap_once,
+    },
+    TestCase {
+        name: "heap.box_vec",
+        run: |_, _| heap::test_box_vec(),
+    },
+    TestCase {
+        name: "heap.layouts_zero_realloc",
+        run: |_, _| heap::test_layouts_zero_realloc(),
+    },
+    TestCase {
+        name: "heap.exhaustion_recovery",
+        run: heap::test_exhaustion_recovery,
     },
     TestCase {
         name: "memory.mmio_cleanup",
@@ -73,13 +89,24 @@ pub fn run(boot: &BootInfo) -> ! {
             bail("memory_initialization");
         }
     };
+    let heap = match heap::initialize(boot, allocator) {
+        Ok(heap) => heap,
+        Err(error) => {
+            serial::print(format_args!(
+                "# stage={} code={}\n",
+                error.stage, error.code
+            ));
+            bail("heap_initialization");
+        }
+    };
     let cases = core::iter::once(&INTENTIONAL_FAILURE)
         .filter(|_| inject)
         .chain(TESTS);
     let mut failed = 0;
     for (index, test) in cases.enumerate() {
-        let before = memory::allocation_snapshot(&allocator);
-        let result = (test.run)(boot, &allocator);
+        let before = memory::allocation_snapshot(allocator);
+        let heap_before = heap.stats();
+        let result = (test.run)(boot, allocator);
         let interrupts_changed = cpu::interrupts_enabled();
         if interrupts_changed {
             X86Cpu::disable_interrupts();
@@ -91,8 +118,17 @@ pub fn run(boot: &BootInfo) -> ! {
                 error as i32
             ));
         }
-        let memory_changed = before != memory::allocation_snapshot(&allocator)
+        let heap_integrity = heap.check_invariants();
+        if let Err(error) = heap_integrity {
+            serial::print(format_args!(
+                "# stage=heap_invariants code={}\n",
+                error as i32
+            ));
+        }
+        let memory_changed = before != memory::allocation_snapshot(allocator)
             || integrity.is_err()
+            || heap_integrity.is_err()
+            || heap_before != heap.stats()
             || !memory::mmio_window_unused(boot);
         if interrupts_changed || memory_changed {
             serial::print(format_args!(

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from qemu_test import CASES, FAULT_RESULTS, MOSS_REVISION, REVISION, qemu_command, validate_result
+from qemu_test import CASES, FAULT_RESULTS, HEAP_RESULT, MOSS_REVISION, REVISION, qemu_command, validate_result
 
 FOUNDATION = "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled\n"
 
@@ -16,6 +16,7 @@ def boot_log(result, evidence="E1000_EEPROM reads=100 denied_grants=0", mode="pr
         f"BOOT_MODE mode={mode} source={source}\n"
         f"BOOT_MEMORY_OK source=moss revision={MOSS_REVISION} managed_bytes=1048576 regions=1\n"
         f"FRAME_ALLOCATOR_OK source=moss revision={MOSS_REVISION} total_pages=256 reserved_pages=2 free_pages=254 metadata_bytes=8192\n"
+        f"{HEAP_RESULT}\n"
         f"{evidence}\n{tables}{result}\n"
     )
 
@@ -74,6 +75,12 @@ class ResultTests(unittest.TestCase):
         output = boot_log("E1000_MAC_OK mac=52:54:00:12:34:56")
         with self.assertRaises(AssertionError):
             validate_result("known", 1, output.replace("released=3", "released=0"))
+
+    def test_heap_initialization_result_must_be_exact_and_unique(self):
+        output = boot_log("E1000_MAC_OK mac=52:54:00:12:34:56")
+        for marker in ("", f"{HEAP_RESULT}\n{HEAP_RESULT}", HEAP_RESULT.replace("release", "retain")):
+            with self.subTest(marker=marker), self.assertRaises(AssertionError):
+                validate_result("known", 1, output.replace(HEAP_RESULT, marker))
 
     def test_buddy_initialization_and_consistent_counts_are_required(self):
         output = boot_log("E1000_MAC_OK mac=52:54:00:12:34:56")
@@ -146,6 +153,7 @@ class CommandTests(unittest.TestCase):
             ("eeprom-timeout", "eeprom-timeout"),
             ("invalid-mode", "unsupported"),
             ("kernel-tests", "kernel-tests"),
+            ("heap-oom", "heap-oom"),
             ("page-fault", "page-fault"),
             ("general-protection", "general-protection"),
             ("double-fault", "double-fault"),
@@ -162,7 +170,7 @@ class CommandTests(unittest.TestCase):
         self.assertNotIn("-fw_cfg", qemu_command(self.args, "default-mode"))
 
     def test_fault_cases_have_no_network_device(self):
-        for case in FAULT_RESULTS:
+        for case in (*FAULT_RESULTS, "heap-oom"):
             self.assertNotIn("-netdev", qemu_command(self.args, case))
 
     def test_removed_nonfatal_cases_are_not_cli_choices(self):

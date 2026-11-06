@@ -58,6 +58,12 @@ add_test(NAME kernel-suite-low-memory
         --qemu "${QEMU}" --timeout 20
 )
 set_tests_properties(kernel-suite kernel-suite-rejection kernel-suite-low-memory PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
+add_test(NAME heap-oom-rejection
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+        --case heap-oom --build-dir "${CMAKE_BINARY_DIR}"
+        --qemu "${QEMU}" --timeout 20
+)
+set_tests_properties(heap-oom-rejection PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
 add_test(NAME harness-unit
     COMMAND ${Python3_EXECUTABLE} -m unittest discover -s tests -v
 )

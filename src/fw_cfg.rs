@@ -16,6 +16,7 @@ pub enum BootMode {
     UnexpectedPageFault,
     KernelTests,
     KernelTestsFail,
+    HeapOom,
 }
 
 impl BootMode {
@@ -29,6 +30,7 @@ impl BootMode {
             Self::UnexpectedPageFault => "unexpected-page-fault",
             Self::KernelTests => "kernel-tests",
             Self::KernelTestsFail => "kernel-tests-fail",
+            Self::HeapOom => "heap-oom",
         }
     }
 
@@ -120,6 +122,7 @@ pub fn read_mode(
         b"unexpected-page-fault" => Ok(Some(BootMode::UnexpectedPageFault)),
         b"kernel-tests" => Ok(Some(BootMode::KernelTests)),
         b"kernel-tests-fail" => Ok(Some(BootMode::KernelTestsFail)),
+        b"heap-oom" => Ok(Some(BootMode::HeapOom)),
         _ => Err(Error::UnknownMode),
     }
 }
@@ -184,6 +187,7 @@ mod tests {
             BootMode::UnexpectedPageFault,
             BootMode::KernelTests,
             BootMode::KernelTestsFail,
+            BootMode::HeapOom,
         ] {
             assert_eq!(
                 run(&fixture(&[("opt/kutox/test-mode", mode.name().as_bytes())])),

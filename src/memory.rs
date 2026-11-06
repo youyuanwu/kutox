@@ -1,5 +1,10 @@
 use crate::{Failure, boot::BootInfo, cpu::X86Cpu};
-use core::arch::asm;
+use core::{
+    arch::asm,
+    mem::MaybeUninit,
+    ptr::{addr_of, addr_of_mut},
+    sync::atomic::{AtomicU8, Ordering},
+};
 use limine::memory_map::EntryType;
 use moss_libkernel::memory::{
     Error, PAGE_SIZE, PhysMemoryRegion, PhysicalAddress,
@@ -25,6 +30,8 @@ const REGION_CAPACITY: usize = 128;
 const NEW_TABLES: usize = 3;
 pub const MMIO_LENGTH: usize = 0x20000;
 pub type PhysicalFrames<'a> = BuddyAllocator<'a, X86Cpu>;
+static INITIALIZATION: AtomicU8 = AtomicU8::new(0);
+static mut FRAMES: MaybeUninit<PhysicalFrames<'static>> = MaybeUninit::uninit();
 
 pub struct MemoryStorage {
     memory: [PhysMemoryRegion; REGION_CAPACITY],
@@ -103,7 +110,14 @@ fn initialize_bootstrap<'a>(
 pub fn initialize(
     boot: &BootInfo,
     storage: &mut MemoryStorage,
-) -> Result<PhysicalFrames<'static>, Failure> {
+) -> Result<&'static PhysicalFrames<'static>, Failure> {
+    if crate::cpu::interrupts_enabled()
+        || INITIALIZATION
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+    {
+        return Err(Failure::new("memory_initialization_state", -1));
+    }
     let mut smalloc = initialize_bootstrap(boot, storage)?;
     let count = metadata_frames(&smalloc).map_err(frame_failure)?;
     let bytes = count
@@ -127,7 +141,18 @@ pub fn initialize(
         }
         core::slice::from_raw_parts_mut(pointer, count)
     };
-    BuddyAllocator::new(smalloc, frames).map_err(frame_failure)
+    let allocator = BuddyAllocator::new(smalloc, frames).map_err(frame_failure)?;
+    // Boot publishes one permanent allocator before heap users can run.
+    unsafe { addr_of_mut!(FRAMES).write(MaybeUninit::new(allocator)) };
+    INITIALIZATION.store(2, Ordering::Release);
+    global_frames()
+}
+
+pub fn global_frames() -> Result<&'static PhysicalFrames<'static>, Failure> {
+    if INITIALIZATION.load(Ordering::Acquire) != 2 {
+        return Err(Failure::new("frame_allocator_not_initialized", -1));
+    }
+    Ok(unsafe { &*addr_of!(FRAMES).cast::<PhysicalFrames<'static>>() })
 }
 
 pub fn test_alignment_reservations(
@@ -214,7 +239,7 @@ pub fn test_exhaustion_reuse() -> Result<(), Failure> {
     Ok(())
 }
 
-fn donated_allocator<'a>(
+pub(crate) fn donated_allocator<'a>(
     donated: PhysMemoryRegion,
     frames: &'a mut [Frame],
 ) -> Result<PhysicalFrames<'a>, Failure> {
