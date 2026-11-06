@@ -203,23 +203,8 @@ extern "C" fn kutox_exception_dispatch(frame: &ExceptionFrame) {
     io::finish(false);
 }
 
-pub fn run_test(mode: BootMode) -> Result<(), Failure> {
+pub fn run_fault_test(mode: BootMode) -> Result<core::convert::Infallible, Failure> {
     match mode {
-        BootMode::CpuLocks => {
-            test_locks()?;
-            serial::print(format_args!(
-                "CPU_TEST_OK test=cpu-locks enabled_restore=ok disabled_restore=ok nested=ok released=ok\n"
-            ));
-        }
-        BootMode::Breakpoint => {
-            test_breakpoint()?;
-            serial::print(format_args!(
-                "CPU_BREAKPOINT_OK vector=3 error=0 returning=yes\n"
-            ));
-            serial::print(format_args!(
-                "CPU_TEST_OK test=breakpoint returned=yes registers=ok interrupts=restored\n"
-            ));
-        }
         BootMode::PageFault | BootMode::UnexpectedPageFault => {
             if mode == BootMode::PageFault {
                 EXPECTED_VECTOR.store(14, Ordering::Release);
@@ -227,14 +212,14 @@ pub fn run_test(mode: BootMode) -> Result<(), Failure> {
             unsafe {
                 asm!("mov rax, [{}]", in(reg) FAULT_ADDRESS, out("rax") _, options(nostack));
             }
-            return Err(Failure::new("page_fault_did_not_fire", -1));
+            Err(Failure::new("page_fault_did_not_fire", -1))
         }
         BootMode::GeneralProtection => {
             EXPECTED_VECTOR.store(13, Ordering::Release);
             unsafe {
                 asm!("mov ds, ax", in("ax") GP_SELECTOR as u16, options(nostack));
             }
-            return Err(Failure::new("general_protection_did_not_fire", -1));
+            Err(Failure::new("general_protection_did_not_fire", -1))
         }
         BootMode::DoubleFault => {
             EXPECTED_VECTOR.store(8, Ordering::Release);
@@ -250,9 +235,8 @@ pub fn run_test(mode: BootMode) -> Result<(), Failure> {
                 );
             }
         }
-        _ => return Err(Failure::new("invalid_cpu_test", -1)),
+        _ => Err(Failure::new("invalid_fault_test", -1)),
     }
-    Ok(())
 }
 
 pub fn test_breakpoint() -> Result<(), Failure> {

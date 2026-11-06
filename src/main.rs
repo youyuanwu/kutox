@@ -92,9 +92,8 @@ fn probe() -> Result<[u8; 6], Failure> {
     if matches!(boot.mode, BootMode::KernelTests | BootMode::KernelTestsFail) {
         kernel_tests::run(&boot);
     }
-    if boot.mode.is_cpu_test() {
-        exceptions::run_test(boot.mode)?;
-        io::finish(true);
+    if boot.mode.is_fault_test() {
+        match exceptions::run_fault_test(boot.mode)? {}
     }
     let mut memory_storage = memory::MemoryStorage::new();
     let mut allocator = memory::initialize(&boot, &mut memory_storage)?;
@@ -105,19 +104,10 @@ fn probe() -> Result<[u8; 6], Failure> {
         managed_bytes,
         allocator.iter_memory().count()
     );
-    if boot.mode == BootMode::BootMemory {
-        memory::self_test(&boot, &mut allocator)?;
-    }
     let ticks = time::calibrate()?;
     println!("TSC ticks_per_us={ticks}");
     let device = pci::discover()?;
     let bar = device.enable_mmio()?;
-    if boot.mode == BootMode::BootMemory {
-        let count = memory::test_mapping_reuse(&boot, bar.base, &mut allocator)?;
-        println!(
-            "BOOT_MEMORY_TEST_OK alignment=ok reservations=ok exhaustion=ok reuse=ok failed_map_cleanup=ok table_frames={count}"
-        );
-    }
     let mapping = memory::map_mmio(&boot, bar.base, &mut allocator)?;
     println!(
         "E1000_MMIO phys={:#x} bytes={}",

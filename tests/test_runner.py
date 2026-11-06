@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from qemu_test import CASES, CPU_RESULTS, MOSS_REVISION, REVISION, qemu_command, validate_result
+from qemu_test import CASES, FAULT_RESULTS, MOSS_REVISION, REVISION, qemu_command, validate_result
 
 FOUNDATION = "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled\n"
 
@@ -79,17 +79,13 @@ class ResultTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_result("known", 1, output.replace(MOSS_REVISION, "wrong-revision"))
 
-    def test_memory_case_requires_guest_self_tests(self):
-        with self.assertRaises(AssertionError):
-            validate_result("memory", 1, boot_log("E1000_MAC_OK mac=52:54:00:12:34:56", mode="boot-memory"))
-
     def test_allocator_must_not_report_more_than_guest_ram(self):
         output = boot_log("E1000_MAC_OK mac=52:54:00:12:34:56")
         with self.assertRaises(AssertionError):
             validate_result("low-memory", 1, output.replace("managed_bytes=1000000", "managed_bytes=67108864"))
 
     def test_runtime_mode_must_match_case(self):
-        output = boot_log("E1000_MAC_OK mac=52:54:00:12:34:56", mode="boot-memory")
+        output = boot_log("E1000_MAC_OK mac=52:54:00:12:34:56", mode="kernel-tests")
         with self.assertRaises(AssertionError):
             validate_result("known", 1, output)
 
@@ -113,6 +109,11 @@ class ResultTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_result("invalid-mode", 1, boot_log("E1000_MAC_OK mac=52:54:00:12:34:56"))
 
+    def test_mac_probe_rejects_kernel_suite_output(self):
+        output = boot_log("E1000_MAC_OK mac=52:54:00:12:34:56") + "KTAP version 1\n"
+        with self.assertRaises(AssertionError):
+            validate_result("known", 1, output)
+
 
 class CommandTests(unittest.TestCase):
     def setUp(self):
@@ -128,10 +129,8 @@ class CommandTests(unittest.TestCase):
         for case, mode in [
             ("known", "probe"),
             ("eeprom-timeout", "eeprom-timeout"),
-            ("memory", "boot-memory"),
             ("invalid-mode", "unsupported"),
-            ("cpu-locks", "cpu-locks"),
-            ("breakpoint", "breakpoint"),
+            ("kernel-tests", "kernel-tests"),
             ("page-fault", "page-fault"),
             ("general-protection", "general-protection"),
             ("double-fault", "double-fault"),
@@ -147,18 +146,21 @@ class CommandTests(unittest.TestCase):
     def test_default_mode_omits_fw_cfg(self):
         self.assertNotIn("-fw_cfg", qemu_command(self.args, "default-mode"))
 
-    def test_cpu_cases_have_no_network_device(self):
-        for case in CPU_RESULTS:
+    def test_fault_cases_have_no_network_device(self):
+        for case in FAULT_RESULTS:
             self.assertNotIn("-netdev", qemu_command(self.args, case))
+
+    def test_removed_nonfatal_cases_are_not_cli_choices(self):
+        for case in ("memory", "cpu-locks", "breakpoint"):
+            self.assertNotIn(case, CASES)
 
     def test_smp_case_requests_two_cpus(self):
         command = qemu_command(self.args, "smp-unsupported")
         self.assertEqual(command[command.index("-smp") + 1], "2,sockets=2,cores=1,threads=1")
 
 
-def cpu_log(case):
+def fault_log(case):
     details = {
-        "breakpoint": "CPU_BREAKPOINT_OK vector=3 error=0 returning=yes\n",
         "page-fault": "CPU_EXCEPTION vector=14 error=0x0 rip=0xffffffff80000100 cr2=0x600000000000\n",
         "general-protection": "CPU_EXCEPTION vector=13 error=0xfff8 rip=0xffffffff80000100 cr2=0x0\n",
         "double-fault": "CPU_EXCEPTION vector=8 error=0x0 rip=0xffffffff80000100 cr2=0x600000000000\n",
@@ -167,45 +169,45 @@ def cpu_log(case):
     return (
         f"KUTOX_BOOT linux={REVISION}\n{FOUNDATION}"
         f"BOOT_MODE mode={case} source=fw_cfg\n"
-        f"{details}{CPU_RESULTS[case]}\n"
+        f"{details}{FAULT_RESULTS[case]}\n"
     )
 
 
-class CpuResultTests(unittest.TestCase):
-    def test_accepts_each_cpu_case(self):
-        for case in CPU_RESULTS:
-            validate_result(case, 3 if case == "unexpected-page-fault" else 1, cpu_log(case))
+class FaultResultTests(unittest.TestCase):
+    def test_accepts_each_fault_case(self):
+        for case in FAULT_RESULTS:
+            validate_result(case, 3 if case == "unexpected-page-fault" else 1, fault_log(case))
 
     def test_rejects_crash_or_timeout_after_success(self):
         for status in (0, 3, 124):
             with self.assertRaises(AssertionError):
-                validate_result("breakpoint", status, cpu_log("breakpoint"))
+                validate_result("page-fault", status, fault_log("page-fault"))
 
     def test_rejects_missing_fault_diagnostics(self):
-        output = cpu_log("page-fault")
+        output = fault_log("page-fault")
         output = "\n".join(line for line in output.splitlines() if not line.startswith("CPU_EXCEPTION"))
         with self.assertRaises(AssertionError):
             validate_result("page-fault", 1, output)
 
     def test_rejects_wrong_fault_address(self):
         with self.assertRaises(AssertionError):
-            validate_result("page-fault", 1, cpu_log("page-fault").replace("0x600000000000", "0x700000000000"))
+            validate_result("page-fault", 1, fault_log("page-fault").replace("0x600000000000", "0x700000000000"))
 
     def test_rejects_wrong_gp_error_code(self):
         with self.assertRaises(AssertionError):
-            validate_result("general-protection", 1, cpu_log("general-protection").replace("0xfff8", "0x0"))
+            validate_result("general-protection", 1, fault_log("general-protection").replace("0xfff8", "0x0"))
 
-    def test_rejects_unexpected_cpu_failure(self):
+    def test_rejects_unexpected_fault_failure(self):
         with self.assertRaises(AssertionError):
-            validate_result("cpu-locks", 1, cpu_log("cpu-locks") + "CPU_TEST_FAIL stage=unexpected\n")
+            validate_result("page-fault", 1, fault_log("page-fault") + "CPU_TEST_FAIL stage=unexpected\n")
 
     def test_unexpected_fault_must_exit_with_failure(self):
         with self.assertRaises(AssertionError):
-            validate_result("unexpected-page-fault", 1, cpu_log("unexpected-page-fault"))
+            validate_result("unexpected-page-fault", 1, fault_log("unexpected-page-fault"))
 
     def test_double_fault_must_verify_emergency_stack(self):
         with self.assertRaises(AssertionError):
-            validate_result("double-fault", 1, cpu_log("double-fault").replace("ist=verified", "ist=unknown"))
+            validate_result("double-fault", 1, fault_log("double-fault").replace("ist=verified", "ist=unknown"))
 
 
 if __name__ == "__main__":

@@ -69,18 +69,15 @@ The runner selects a mode at launch through QEMU's `fw_cfg` file
 | `eeprom-timeout` | Withhold the EEPROM grant to exercise the upstream retry/error path. |
 | `kernel-tests` | Run all registered nonfatal kernel tests in one boot and emit KTAP results. |
 | `kernel-tests-fail` | Run the same suite with an additional intentionally failing case to test host rejection. |
-| `boot-memory` | Run allocator and mapping self-tests before the normal MAC probe. |
-| `cpu-locks` | Check real interrupt save/restore, nested distinct locks, and re-acquisition. |
-| `breakpoint` | Execute `int3`, return through the exception entry, and verify registers and interrupt state. |
 | `page-fault` | Read a deliberately unmapped address and verify the fatal exception diagnostics. |
 | `general-protection` | Load an invalid data-segment selector and verify the CPU's error code. |
 | `double-fault` | Fault with an unusable stack and verify delivery on the dedicated double-fault IST stack. |
 | `unexpected-page-fault` | Confirm an unanticipated fault reports failure, not a successful test result. |
 
-For example, the memory case adds this QEMU argument:
+For example, the nonfatal suite adds this QEMU argument:
 
 ```text
--fw_cfg name=opt/kutox/test-mode,string=boot-memory
+-fw_cfg name=opt/kutox/test-mode,string=kernel-tests
 ```
 
 Unknown modes and malformed configuration fail explicitly before memory
@@ -101,10 +98,10 @@ The default nonfatal kernel suite reuses the same image and needs no NIC:
 python3 scripts/qemu_test.py --case kernel-tests --build-dir build
 ```
 
-The older `memory`, `cpu-locks`, and `breakpoint` cases remain available as
-focused runs, but CTest uses the grouped suite rather than booting each
-individually. Fatal-fault and hardware-configuration cases still use separate
-boots of the same ISO.
+The old `memory`, `cpu-locks`, and `breakpoint` CLI cases and the corresponding
+standalone boot modes have been removed. Use `kernel-tests` for all nonfatal
+kernel tests; this is their only dispatch and reporting path. Fatal-fault and
+hardware-configuration cases still use separate boots of the same ISO.
 
 ### Registered kernel tests
 
@@ -164,8 +161,8 @@ nonzero count, the exact configured MAC, and the correct guest exit outcome.
 QEMU's `isa-debug-exit` encodes guest success as host status **1**, and guest
 failure as **3**. The Python harness translates a correctly observed test
 outcome into ordinary host success; a timeout or crash always fails.
-CPU-only cases do not attach a NIC or run the MAC probe. They require exact
-CPU test results and exception diagnostics where applicable. Expected fatal
+Isolated fault cases do not attach a NIC or run the MAC probe. They require exact
+fault results and exception diagnostics. Expected fatal
 fault tests terminate from their handlers after checking the vector and error.
 The unexpected-fault negative test and intentional-failure suite deliberately
 exit with guest failure; their dedicated rejection checks verify those

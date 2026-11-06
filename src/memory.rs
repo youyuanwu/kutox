@@ -88,11 +88,6 @@ pub fn initialize<'a>(
     Ok(allocator)
 }
 
-pub fn self_test(boot: &BootInfo, allocator: &mut Smalloc<'_>) -> Result<(), Failure> {
-    test_alignment_reservations(boot, allocator)?;
-    test_exhaustion_reuse()
-}
-
 pub fn test_alignment_reservations(
     boot: &BootInfo,
     allocator: &mut Smalloc<'_>,

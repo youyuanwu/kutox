@@ -17,9 +17,7 @@ KERNEL_TEST_NAMES = (
     "memory.mmio_cleanup",
 )
 KERNEL_SUITE_CASES = ("kernel-tests", "kernel-tests-fail")
-CPU_RESULTS = {
-    "cpu-locks": "CPU_TEST_OK test=cpu-locks enabled_restore=ok disabled_restore=ok nested=ok released=ok",
-    "breakpoint": "CPU_TEST_OK test=breakpoint returned=yes registers=ok interrupts=restored",
+FAULT_RESULTS = {
     "page-fault": "CPU_TEST_OK test=page-fault vector=14 address=0x600000000000 error=0x0",
     "general-protection": "CPU_TEST_OK test=general-protection vector=13 error=0xfff8",
     "double-fault": "CPU_TEST_OK test=double-fault vector=8 error=0x0 ist=verified",
@@ -32,11 +30,10 @@ CASES = {
     "unsupported": (None, "unsupported_device"),
     "ambiguous": (None, "ambiguous_device"),
     "eeprom-timeout": (None, "read_eeprom"),
-    "memory": ("52:54:00:12:34:56", None),
     "low-memory": ("52:54:00:12:34:56", None),
     "default-mode": ("52:54:00:12:34:56", None),
     "invalid-mode": (None, "boot_mode"),
-    **{case: (None, None) for case in CPU_RESULTS},
+    **{case: (None, None) for case in FAULT_RESULTS},
     "smp-unsupported": (None, "cpu_single_processor_required"),
     **{case: (None, None) for case in KERNEL_SUITE_CASES},
 }
@@ -64,7 +61,7 @@ def validate_boot_preamble(lines, mode):
 def validate_kernel_suite(case, returncode, output):
     lines = output.splitlines()
     validate_boot_preamble(lines, case)
-    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "CPU_BREAKPOINT", "E1000_", "BOOT_MEMORY", "Bail out!")) for line in lines):
+    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "BOOT_MEMORY", "Bail out!")) for line in lines):
         raise AssertionError("suite aborted or reached an unexpected exception/device path")
     headers = [
         index for index, line in enumerate(lines)
@@ -114,42 +111,35 @@ def validate_kernel_suite(case, returncode, output):
         raise KernelSuiteFailure(f"kernel suite failed: {', '.join(sorted(failures))}")
 
 
-def validate_cpu_result(case, returncode, output):
+def validate_fault_result(case, returncode, output):
     lines = output.splitlines()
     expected_exit = 3 if case == "unexpected-page-fault" else 1
     if returncode != expected_exit:
-        raise AssertionError(f"CPU test QEMU exit {returncode}, expected {expected_exit}")
+        raise AssertionError(f"fault test QEMU exit {returncode}, expected {expected_exit}")
     validate_boot_preamble(lines, case)
-    if [line for line in lines if line.startswith("CPU_TEST_")] != [CPU_RESULTS[case]]:
-        raise AssertionError("missing or conflicting CPU test result")
+    if [line for line in lines if line.startswith("CPU_TEST_")] != [FAULT_RESULTS[case]]:
+        raise AssertionError("missing or conflicting fault test result")
     if any(line.startswith(("E1000_", "BOOT_MEMORY")) for line in lines):
-        raise AssertionError("CPU-only test reached the device or memory probe")
+        raise AssertionError("fault test reached the device or memory probe")
     faults = [line for line in lines if line.startswith("CPU_EXCEPTION")]
-    if case in ("page-fault", "general-protection", "double-fault", "unexpected-page-fault"):
-        vector, error = {
-            "page-fault": (14, "0x0"),
-            "unexpected-page-fault": (14, "0x0"),
-            "general-protection": (13, "0xfff8"),
-            "double-fault": (8, "0x0"),
-        }[case]
-        address = "0x600000000000" if case in ("page-fault", "unexpected-page-fault") else "0x[0-9a-f]+"
-        pattern = rf"CPU_EXCEPTION vector={vector} error={error} rip=0x[0-9a-f]+ cr2={address}"
-        if len(faults) != 1 or re.fullmatch(pattern, faults[0]) is None:
-            raise AssertionError("missing expected hardware fault diagnostics")
-    elif faults:
-        raise AssertionError("unexpected exception during CPU test")
-    breakpoints = [line for line in lines if line.startswith("CPU_BREAKPOINT")]
-    expected = ["CPU_BREAKPOINT_OK vector=3 error=0 returning=yes"] if case == "breakpoint" else []
-    if breakpoints != expected:
-        raise AssertionError("unexpected breakpoint result")
+    vector, error = {
+        "page-fault": (14, "0x0"),
+        "unexpected-page-fault": (14, "0x0"),
+        "general-protection": (13, "0xfff8"),
+        "double-fault": (8, "0x0"),
+    }[case]
+    address = "0x600000000000" if case in ("page-fault", "unexpected-page-fault") else "0x[0-9a-f]+"
+    pattern = rf"CPU_EXCEPTION vector={vector} error={error} rip=0x[0-9a-f]+ cr2={address}"
+    if len(faults) != 1 or re.fullmatch(pattern, faults[0]) is None:
+        raise AssertionError("missing expected hardware fault diagnostics")
 
 
 def validate_result(case, returncode, output):
     if case in KERNEL_SUITE_CASES:
         validate_kernel_suite(case, returncode, output)
         return
-    if case in CPU_RESULTS:
-        validate_cpu_result(case, returncode, output)
+    if case in FAULT_RESULTS:
+        validate_fault_result(case, returncode, output)
         return
     mac, stage = CASES[case]
     lines = output.splitlines()
@@ -171,7 +161,7 @@ def validate_result(case, returncode, output):
         "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled"
     ]:
         raise AssertionError("missing CPU foundation result")
-    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "CPU_BREAKPOINT")) for line in lines):
+    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "KTAP", "ok ", "not ok ", "# Totals")) for line in lines):
         raise AssertionError("unexpected exception or CPU test during MAC probe")
     if case == "invalid-mode":
         if results != ["E1000_MAC_FAIL stage=boot_mode code=-23"]:
@@ -179,7 +169,7 @@ def validate_result(case, returncode, output):
         if any(line.startswith(("BOOT_MODE", "BOOT_MEMORY", "E1000_MMIO", "E1000_EEPROM")) for line in lines):
             raise AssertionError("invalid mode reached the probe or silently selected a default")
         return
-    mode = {"memory": "boot-memory", "eeprom-timeout": "eeprom-timeout"}.get(case, "probe")
+    mode = "eeprom-timeout" if case == "eeprom-timeout" else "probe"
     source = "default" if case == "default-mode" else "fw_cfg"
     modes = [line for line in lines if line.startswith("BOOT_MODE")]
     if modes != [f"BOOT_MODE mode={mode} source={source}"]:
@@ -197,14 +187,6 @@ def validate_result(case, returncode, output):
     ram = 32 if case == "low-memory" else 128
     if not 0 < managed_bytes <= ram * 1024 * 1024 or regions <= 0:
         raise AssertionError("bootstrap allocator reported invalid usable memory")
-    memory_tests = [line for line in lines if line.startswith("BOOT_MEMORY_TEST")]
-    if case == "memory":
-        if memory_tests != [
-            "BOOT_MEMORY_TEST_OK alignment=ok reservations=ok exhaustion=ok reuse=ok failed_map_cleanup=ok table_frames=3"
-        ]:
-            raise AssertionError("missing or unexpected guest allocator tests")
-    elif memory_tests:
-        raise AssertionError("allocator self-tests ran outside their selected mode")
     if mac:
         if results[0] != f"E1000_MAC_OK mac={mac}":
             raise AssertionError(f"unexpected MAC result: {results[0]}")
@@ -269,14 +251,13 @@ def qemu_command(args, case):
     ]
     if case != "default-mode":
         mode = {
-            "memory": "boot-memory",
             "eeprom-timeout": "eeprom-timeout",
             "invalid-mode": "unsupported",
-            **{case: case for case in CPU_RESULTS},
+            **{case: case for case in FAULT_RESULTS},
             **{case: case for case in KERNEL_SUITE_CASES},
         }.get(case, "probe")
         command += ["-fw_cfg", f"name=opt/kutox/test-mode,string={mode}"]
-    if case not in ("missing", "smp-unsupported") and case not in CPU_RESULTS and case not in KERNEL_SUITE_CASES:
+    if case not in ("missing", "smp-unsupported") and case not in FAULT_RESULTS and case not in KERNEL_SUITE_CASES:
         model = "e1000e" if case == "unsupported" else "e1000"
         mac = CASES[case][0] or "52:54:00:12:34:56"
         command += [
