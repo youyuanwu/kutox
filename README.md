@@ -25,6 +25,11 @@ guarded stacks, native x86_64 context switching, FIFO yields, and off-stack
 reclamation after a thread returns. This is not timer preemption or a complete
 sleep-capable Linux driver runtime.
 
+An owned local-APIC one-shot timer now provides returning hardware interrupts,
+a monotonic delivery counter, bounded polling, and interrupt-driven idle waits.
+It follows Moss's one-shot timer model using native x86_64 code; legacy PIC
+interrupts remain masked. This does not enable timer preemption or device IRQs.
+
 This is hardware-helper reuse, not a complete Linux driver port or LinuxKPI
 implementation. There is no packet data path yet. See the
 [milestone design](docs/linux-e1000-mac.md) for its scope and acceptance goals.
@@ -108,7 +113,7 @@ The default nonfatal kernel suite reuses the same image and needs no NIC:
 python3 scripts/qemu_test.py --case kernel-tests --build-dir build
 ```
 
-Run the same fourteen registered cases with 32 MiB of guest RAM:
+Run the same eighteen registered cases with 32 MiB of guest RAM:
 
 ```sh
 python3 scripts/qemu_test.py --case kernel-tests-low-memory --build-dir build
@@ -129,7 +134,7 @@ hardware-configuration cases still use separate boots of the same ISO.
 
 ```text
 KTAP version 1
-1..14
+1..18
 ok 1 cpu.irq_lock_restore
 ok 2 cpu.breakpoint_return
 ok 3 memory.alignment_reservations
@@ -144,14 +149,19 @@ ok 11 threads.switching
 ok 12 threads.lock_exclusion
 ok 13 threads.spawn_rollback
 ok 14 memory.mmio_cleanup
-# Totals: pass:14 fail:0 skip:0 total:14
+ok 15 irq.timer_delivery
+ok 16 irq.register_restore
+ok 17 irq.masking_cleanup
+ok 18 irq.mapping_rollback
+# Totals: pass:18 fail:0 skip:0 total:18
 ```
 
 Tests run sequentially with interrupts disabled at case boundaries. After
 each case the runner checks total/reserved/free page counts and the exact
 free-block count at every order, validates frame states and free-list links,
 checks heap accounting/partial-slab invariants, zero held IRQ guards, an idle
-scheduler, and unused MMIO/stack windows. Empty slabs must release their frames before the next
+scheduler, a disabled/unclaimed local APIC, masked PICs, and unused MMIO/APIC/stack
+windows. Empty slabs must release their frames before the next
 case; there is no deferred cache purge. Changed state causes a `Bail out!` and
 guest failure rather than continuing with a corrupted fixture. Ordinary
 `Err` results become `not ok` results and the remaining tests run if the
@@ -165,7 +175,7 @@ requires updating `KERNEL_TEST_NAMES` in the
 [host runner](scripts/qemu_test.py) as well.
 
 The intentional-failure mode reports a failing `harness.intentional_failure`
-before the fourteen normal cases and exits with guest failure. This command
+before the eighteen normal cases and exits with guest failure. This command
 **must return nonzero**:
 
 ```sh
@@ -286,12 +296,36 @@ disabled for deliberately unsupported hardware entry points.
   machine-check IST entries. These stacks have no guard pages yet.
   [Assembly entry stubs](src/exception_entry.S) normalize hardware error codes,
   preserve general-purpose registers, clear DF for the Rust ABI, align the call
-  stack, and return via `iretq` only for an expected breakpoint.
-- The legacy PIC is remapped and fully masked; the local APIC is disabled before
-  any test enables interrupts. Unexpected interrupts/exceptions report vector,
-  error code, RIP, and CR2 and fail explicitly. This is not a timer or device-IRQ
-  runtime. AP startup, x2APIC, userspace entry, FPU/SIMD state switching, and
-  preemptive scheduling are outside this milestone.
+  stack, and return via `iretq` for an expected breakpoint or an owned APIC timer/
+  spurious interrupt. Unexpected interrupts/exceptions fail explicitly.
+- [Timer IRQ support](src/irq.rs) temporarily owns the BSP's xAPIC through a
+  separate supervisor-only writable/NX, uncacheable mapping. All local interrupt
+  sources start masked, and only the timer is intentionally unmasked. The legacy
+  PIC stays fully masked; the local APIC is disabled at boot and between tests.
+  AP startup, x2APIC, I/O APIC/device routing, userspace entry, FPU/SIMD switching,
+  and preemptive scheduling remain unsupported.
+- The timer uses divide-by-16 one-shots calibrated against an approximately
+  10 ms PIT channel 2 interval, sharing the existing bounded PIT/TSC calibration
+  path. A caller explicitly rearms each one-shot; there is no periodic tick
+  policy or general deadline queue. The hard handler validates actual APIC
+  in-service state, masks/stops the timer, increments a checked monotonic
+  delivery counter, and sends EOI. It never allocates, locks, or schedules.
+  A genuine APIC spurious interrupt returns without EOI. The delivery counter
+  is not elapsed time: masking can suppress expirations. Ordered TSC samples
+  provide the separate bootstrap elapsed-time source, not a production clock.
+- Timer operations require the interrupt-disabled boot dispatcher with no IRQ
+  guards held. Bounded polling restores IF clear even on its 100 ms timeout.
+  The idle path checks progress with IF clear and uses adjacent `sti; hlt; cli`
+  to avoid missing an already-pending wakeup. HLT has no independent in-guest
+  watchdog if hardware stops delivering interrupts; QEMU's 20-second host
+  timeout rejects such hangs. Teardown masks/stops the timer, drains an already-
+  pending delivery while its handler/mapping are live, disables the local APIC,
+  restores its original base MSR, then releases all mapping frames.
+- The four timer registry cases cover repeated hardware delivery/EOI, ordinary
+  and already-pending HLT wakeups, all fifteen non-RSP GPRs plus RSP and IF/DF/
+  arithmetic flags, LVT masking and a real bounded timeout, pending delivery
+  under nested IRQ guards, teardown/restart, coexistence with a PCI MMIO
+  mapping, and partial page-table allocation rollback.
 - [Moss IRQ synchronization](third_party/moss-libkernel/src/sync/) preserves the upstream
   basic lock/guard algorithm and CPU interface without mapped guards or the
   complete synchronization subsystem. The guard cannot move between threads;

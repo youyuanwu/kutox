@@ -1,7 +1,7 @@
 use crate::{
     Failure,
     cpu::{self, X86Cpu},
-    io, serial,
+    io, irq, serial,
 };
 use core::{
     arch::{asm, global_asm},
@@ -164,6 +164,21 @@ extern "C" fn kutox_exception_dispatch(frame: &ExceptionFrame) {
         io::finish(false);
     }
     let vector = frame.vector as usize;
+    if matches!(vector, irq::TIMER_VECTOR | irq::SPURIOUS_VECTOR) {
+        match irq::dispatch(vector, frame.flags) {
+            Ok(()) => {
+                DISPATCHING.store(false, Ordering::Release);
+                return;
+            }
+            Err(error) => {
+                serial::print(format_args!(
+                    "CPU_TEST_FAIL stage={} code={} vector={vector}\n",
+                    error.stage, error.code
+                ));
+                io::finish(false);
+            }
+        }
+    }
     let expected = EXPECTED_VECTOR.load(Ordering::Acquire) == vector;
     if vector == 3 && expected && frame.error == 0 {
         BREAKPOINTS.fetch_add(1, Ordering::Relaxed);

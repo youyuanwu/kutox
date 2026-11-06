@@ -19,8 +19,28 @@ MIT license, and adaptation boundaries.
 Moss's CPU interface and basic IRQ spinlock are backed by x86_64 interrupt
 save/restore and kernel-owned GDT/TSS/IDT.
 Shared-image tests cover lock nesting, returning breakpoints, fatal fault
-diagnostics, and double-fault emergency-stack delivery. Hardware IRQs remain
-masked/disabled; this is not yet an interrupt-driven Linux driver runtime.
+diagnostics, and double-fault emergency-stack delivery. An owned xAPIC one-shot
+timer now delivers returning hardware interrupts, while the PIC and other local
+interrupt sources remain masked. External device IRQ routing is not implemented;
+this is not yet an interrupt-driven Linux driver runtime.
+
+The timer follows the reference kernels' one-shot model: pinned Moss uses the
+[ARM architectural timer](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/timer/armv8_arch.rs)
+with a GIC, while standalone Ginux documents an
+[x86 local-APIC one-shot calibrated with PIT channel 2](https://github.com/gmkurtzer/ginux/blob/4d4a53bbcc09b16e56aa5eb671ac815f16f2b82f/specs/kernel/timer-discovery-v0.md).
+kutox's xAPIC implementation is native code, not copied Ginux source. It uses
+an owned uncacheable mapping, masked divide-by-16 calibration through the existing
+bounded PIT/TSC helper, and explicit rearming. Its handler records a checked
+monotonic delivery count and sends EOI without scheduling or allocating. Ordered
+TSC samples are the separate bootstrap elapsed-time source; neither calibration
+nor delivery counts constitute a production timekeeping service.
+
+Bounded polling and interrupt-driven idle waits require the boot dispatcher,
+IF clear, and zero held IRQ guards. Adjacent `sti; hlt; cli` handles a wakeup
+already pending at the condition check; a host timeout remains the watchdog
+for halted guests whose hardware fails to deliver. Teardown drains any pending
+owned timer interrupt before disabling/unmapping the APIC. Tests cover register/
+flags preservation, masking, timeout, rollback, and complete resource recovery.
 
 The buddy port preserves all bootstrap reservations, uses sparse metadata for
 usable pages, and supports naturally aligned power-of-two blocks up to 4 MiB.
@@ -49,15 +69,16 @@ enabled interrupts and nested dispatchers are also rejected. Page-table borrows
 are scoped rather than retained across yields, allowing stack and MMIO mappings
 to coexist. Tests cover register/data preservation, ordering, guard permissions
 and hardware faults, allocation/mapping rollback, and complete memory recovery
-at 128 MiB and 32 MiB. Boot/IST stacks remain unguarded. Timers, interrupt routing,
-wait/wake queues, and preemption remain future work; cooperative threads alone
+at 128 MiB and 32 MiB. Boot/IST stacks remain unguarded. External interrupt routing,
+timer queues, wait/wake queues, and preemption remain future work; cooperative threads alone
 do not make sleeping Linux driver calls valid.
 
 Nonfatal CPU, frame, heap, and thread tests run through a stable-Rust registry in one
 guest boot, with KTAP results and exact host-side plan/name/summary validation.
 Fatal faults and hardware variants retain isolated boots. The runner checks
 frame accounting, per-order free-block counts, metadata/list invariants, and
-heap accounting, idle scheduler/zero held guards, and MMIO/stack cleanup between
+heap accounting, idle scheduler/zero held guards, quiescent APIC/masked PICs,
+and MMIO/APIC/stack cleanup between
 cases. An intentional-failure suite verifies
 that failed test cases cannot be mistaken for successful QEMU shutdown.
 

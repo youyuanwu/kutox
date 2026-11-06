@@ -2,7 +2,7 @@ use crate::{
     Failure,
     boot::BootInfo,
     cpu::{self, X86Cpu},
-    exceptions, heap, io, memory, serial, threads,
+    exceptions, heap, io, irq, memory, serial, threads,
 };
 use kutox::fw_cfg::BootMode;
 use moss_libkernel::CpuOps;
@@ -71,6 +71,22 @@ static TESTS: &[TestCase] = &[
         // dereferenced, so the suite needs no NIC or device ownership.
         run: |boot, allocator| memory::test_mapping_reuse(boot, 0xf000_0000, allocator).map(|_| ()),
     },
+    TestCase {
+        name: "irq.timer_delivery",
+        run: irq::test_delivery,
+    },
+    TestCase {
+        name: "irq.register_restore",
+        run: irq::test_register_restore,
+    },
+    TestCase {
+        name: "irq.masking_cleanup",
+        run: irq::test_masking_cleanup,
+    },
+    TestCase {
+        name: "irq.mapping_rollback",
+        run: irq::test_mapping_rollback,
+    },
 ];
 
 static INTENTIONAL_FAILURE: TestCase = TestCase {
@@ -90,6 +106,8 @@ pub fn run(boot: &BootInfo) -> ! {
     if cpu::interrupts_enabled()
         || X86Cpu::irq_lock_depth() != 0
         || !threads::is_idle()
+        || !irq::is_quiescent()
+        || !memory::apic_window_unused(boot)
         || !memory::stack_window_unused(boot)
         || !memory::mmio_window_unused(boot)
     {
@@ -148,6 +166,8 @@ pub fn run(boot: &BootInfo) -> ! {
             || heap_before != heap.stats()
             || X86Cpu::irq_lock_depth() != 0
             || !threads::is_idle()
+            || !irq::is_quiescent()
+            || !memory::apic_window_unused(boot)
             || !memory::stack_window_unused(boot)
             || !memory::mmio_window_unused(boot);
         if interrupts_changed || memory_changed {

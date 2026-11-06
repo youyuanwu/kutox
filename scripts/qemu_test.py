@@ -25,6 +25,10 @@ KERNEL_TEST_NAMES = (
     "threads.lock_exclusion",
     "threads.spawn_rollback",
     "memory.mmio_cleanup",
+    "irq.timer_delivery",
+    "irq.register_restore",
+    "irq.masking_cleanup",
+    "irq.mapping_rollback",
 )
 KERNEL_SUITE_CASES = {
     "kernel-tests": "kernel-tests",

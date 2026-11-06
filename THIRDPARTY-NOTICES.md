@@ -140,3 +140,12 @@ licensing terms. Build tools are not imported kernel source.
 Ginux is an architectural reference only. No Ginux source is incorporated:
 its archived kernel's Apache-2.0 license must not be assumed compatible with
 the GPL-2.0-only Linux driver in a combined distributed work.
+
+The native x86_64 local-APIC timer follows the one-shot model of Moss's pinned
+[ARM architectural timer](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/timer/armv8_arch.rs).
+Standalone Ginux's pinned
+[timer design](https://github.com/gmkurtzer/ginux/blob/4d4a53bbcc09b16e56aa5eb671ac815f16f2b82f/specs/kernel/timer-discovery-v0.md)
+is an x86 architectural reference for local-APIC one-shots and PIT channel 2
+calibration only. The APIC register access, owned mapping, IRQ dispatch, idle
+wait, teardown, and tests are kutox implementations; neither kernel's timer
+or interrupt-controller source is imported.

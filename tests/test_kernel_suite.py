@@ -31,6 +31,23 @@ def suite_log(case="kernel-tests"):
 
 
 class KernelSuiteTests(unittest.TestCase):
+    def test_requires_the_timer_milestone_cases(self):
+        self.assertEqual(KERNEL_TEST_NAMES[-4:], (
+            "irq.timer_delivery",
+            "irq.register_restore",
+            "irq.masking_cleanup",
+            "irq.mapping_rollback",
+        ))
+
+    def test_rejects_missing_or_failed_timer_cases(self):
+        for index, name in enumerate(KERNEL_TEST_NAMES, 1):
+            if not name.startswith("irq."):
+                continue
+            result = f"ok {index} {name}"
+            for replacement in ("", result.replace("ok ", "not ok ", 1)):
+                with self.subTest(name=name, replacement=replacement), self.assertRaises(AssertionError):
+                    validate_result("kernel-tests", 1, suite_log().replace(result, replacement))
+
     def test_accepts_complete_success(self):
         validate_result("kernel-tests", 1, suite_log())
 

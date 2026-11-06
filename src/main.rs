@@ -8,6 +8,7 @@ mod cpu;
 mod exceptions;
 mod heap;
 mod io;
+mod irq;
 mod kernel_tests;
 mod memory;
 mod pci;

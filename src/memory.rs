@@ -27,6 +27,7 @@ use x86_64::{
 };
 
 const MMIO_BASE: u64 = 0x4000_0000_0000;
+const APIC_BASE: u64 = 0x5000_0000_0000;
 const REGION_CAPACITY: usize = 128;
 const NEW_TABLES: usize = 3;
 pub const MMIO_LENGTH: usize = 0x20000;
@@ -38,6 +39,7 @@ const STACK_STRIDE: u64 = 0x10000;
 const _: () = assert!(MAX_STACKS as u64 * STACK_STRIDE <= 2 * 1024 * 1024);
 static PAGE_TABLE_LOCK: SpinLockIrq<(), X86Cpu> = SpinLockIrq::new(());
 static MMIO_CLAIMED: AtomicBool = AtomicBool::new(false);
+static APIC_CLAIMED: AtomicBool = AtomicBool::new(false);
 static STACK_CLAIMED: AtomicBool = AtomicBool::new(false);
 static INITIALIZATION: AtomicU8 = AtomicU8::new(0);
 static mut FRAMES: MaybeUninit<PhysicalFrames<'static>> = MaybeUninit::uninit();
@@ -335,6 +337,10 @@ pub fn mmio_window_unused(boot: &BootInfo) -> bool {
     !MMIO_CLAIMED.load(Ordering::Acquire) && window_unused(boot.hhdm_offset, MMIO_BASE)
 }
 
+pub fn apic_window_unused(boot: &BootInfo) -> bool {
+    !APIC_CLAIMED.load(Ordering::Acquire) && window_unused(boot.hhdm_offset, APIC_BASE)
+}
+
 pub fn stack_window_unused(boot: &BootInfo) -> bool {
     !STACK_CLAIMED.load(Ordering::Acquire) && window_unused(boot.hhdm_offset, STACK_BASE)
 }
@@ -395,13 +401,15 @@ unsafe impl FrameAllocator<Size4KiB> for TableFrames<'_, '_> {
 
 pub struct MmioMapping<'a, 'storage> {
     frames: TableFrames<'a, 'storage>,
+    base: u64,
+    claimed: &'static AtomicBool,
     pages: usize,
     attached: bool,
 }
 
 impl MmioMapping<'_, '_> {
     pub fn address(&self) -> usize {
-        MMIO_BASE as usize
+        self.base as usize
     }
 
     pub fn table_frame_count(&self) -> usize {
@@ -415,16 +423,16 @@ impl Drop for MmioMapping<'_, '_> {
             with_mapper(self.frames.hhdm_offset, |mapper| {
                 for index in 0..self.pages {
                     let page = Page::<Size4KiB>::containing_address(VirtAddr::new(
-                        MMIO_BASE + (index * PAGE_SIZE) as u64,
+                        self.base + (index * PAGE_SIZE) as u64,
                     ));
                     mapper.unmap(page).expect("MMIO unmap failed").1.flush();
                 }
-                mapper.level_4_table_mut()[VirtAddr::new(MMIO_BASE).p4_index()].set_unused();
+                mapper.level_4_table_mut()[VirtAddr::new(self.base).p4_index()].set_unused();
                 x86_64::instructions::tlb::flush_all();
             });
         }
         self.frames.release();
-        MMIO_CLAIMED.store(false, Ordering::Release);
+        self.claimed.store(false, Ordering::Release);
     }
 }
 
@@ -432,6 +440,39 @@ pub fn map_mmio<'a, 'storage>(
     boot: &BootInfo,
     physical: u64,
     allocator: &'a PhysicalFrames<'storage>,
+) -> Result<MmioMapping<'a, 'storage>, Failure> {
+    map_device_window(
+        boot,
+        physical,
+        allocator,
+        MMIO_BASE,
+        MMIO_LENGTH,
+        &MMIO_CLAIMED,
+    )
+}
+
+pub fn map_local_apic<'a, 'storage>(
+    boot: &BootInfo,
+    physical: u64,
+    allocator: &'a PhysicalFrames<'storage>,
+) -> Result<MmioMapping<'a, 'storage>, Failure> {
+    map_device_window(
+        boot,
+        physical,
+        allocator,
+        APIC_BASE,
+        PAGE_SIZE,
+        &APIC_CLAIMED,
+    )
+}
+
+fn map_device_window<'a, 'storage>(
+    boot: &BootInfo,
+    physical: u64,
+    allocator: &'a PhysicalFrames<'storage>,
+    base: u64,
+    length: usize,
+    claimed: &'static AtomicBool,
 ) -> Result<MmioMapping<'a, 'storage>, Failure> {
     let pat_low: u32;
     let pat_high: u32;
@@ -442,7 +483,15 @@ pub fn map_mmio<'a, 'storage>(
     if (pat >> 24) & 0xff != 0 {
         return Err(Failure::new("mmio_pat", -1));
     }
-    if MMIO_CLAIMED
+    if !physical.is_multiple_of(PAGE_SIZE as u64)
+        || physical
+            .checked_add(length as u64 - 1)
+            .and_then(|last| PhysAddr::try_new(last).ok())
+            .is_none()
+    {
+        return Err(Failure::new("mmio_physical_address", -1));
+    }
+    if claimed
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
@@ -450,6 +499,8 @@ pub fn map_mmio<'a, 'storage>(
     }
     let mut mapping = MmioMapping {
         frames: TableFrames::new(allocator, boot.hhdm_offset),
+        base,
+        claimed,
         pages: 0,
         attached: false,
     };
@@ -459,13 +510,12 @@ pub fn map_mmio<'a, 'storage>(
         | PageTableFlags::WRITE_THROUGH
         | PageTableFlags::NO_EXECUTE;
     let result = with_mapper(boot.hhdm_offset, |mapper| {
-        if !mapper.level_4_table()[VirtAddr::new(MMIO_BASE).p4_index()].is_unused() {
+        if !mapper.level_4_table()[VirtAddr::new(base).p4_index()].is_unused() {
             return Err(Failure::new("mmio_window_in_use", -1));
         }
         mapping.attached = true;
-        for offset in (0..MMIO_LENGTH).step_by(PAGE_SIZE) {
-            let page =
-                Page::<Size4KiB>::containing_address(VirtAddr::new(MMIO_BASE + offset as u64));
+        for offset in (0..length).step_by(PAGE_SIZE) {
+            let page = Page::<Size4KiB>::containing_address(VirtAddr::new(base + offset as u64));
             let frame = PhysFrame::containing_address(PhysAddr::new(physical + offset as u64));
             match unsafe { mapper.map_to(page, frame, flags, &mut mapping.frames) } {
                 Ok(flush) => flush.flush(),
