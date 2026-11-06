@@ -67,6 +67,8 @@ The runner selects a mode at launch through QEMU's `fw_cfg` file
 |-------|----------|
 | `probe` | Normal MAC probe; also the default when the optional file is absent. |
 | `eeprom-timeout` | Withhold the EEPROM grant to exercise the upstream retry/error path. |
+| `kernel-tests` | Run all registered nonfatal kernel tests in one boot and emit KTAP results. |
+| `kernel-tests-fail` | Run the same suite with an additional intentionally failing case to test host rejection. |
 | `boot-memory` | Run allocator and mapping self-tests before the normal MAC probe. |
 | `cpu-locks` | Check real interrupt save/restore, nested distinct locks, and re-acquisition. |
 | `breakpoint` | Execute `int3`, return through the exception entry, and verify registers and interrupt state. |
@@ -93,13 +95,62 @@ cargo test --locked -p kutox --lib --target x86_64-unknown-linux-gnu
 cargo test --locked -p moss-libkernel --target x86_64-unknown-linux-gnu
 ```
 
-The guest allocator tests reuse the same image:
+The default nonfatal kernel suite reuses the same image and needs no NIC:
 
 ```sh
-python3 scripts/qemu_test.py --case memory --build-dir build
-python3 scripts/qemu_test.py --case cpu-locks --build-dir build
-python3 scripts/qemu_test.py --case breakpoint --build-dir build
+python3 scripts/qemu_test.py --case kernel-tests --build-dir build
 ```
+
+The older `memory`, `cpu-locks`, and `breakpoint` cases remain available as
+focused runs, but CTest uses the grouped suite rather than booting each
+individually. Fatal-fault and hardware-configuration cases still use separate
+boots of the same ISO.
+
+### Registered kernel tests
+
+[The registry](src/kernel_tests.rs) is a static list of named functions returning
+`Result`, not Linux KUnit or Rust's nightly custom test framework. Its output is:
+
+```text
+KTAP version 1
+1..5
+ok 1 cpu.irq_lock_restore
+ok 2 cpu.breakpoint_return
+ok 3 memory.alignment_reservations
+ok 4 memory.exhaustion_reuse
+ok 5 memory.mmio_cleanup
+# Totals: pass:5 fail:0 skip:0 total:5
+```
+
+Tests run sequentially with interrupts disabled at case boundaries. After
+each case the runner checks the exact allocator memory/reservation lists and
+that the private MMIO window is unused. Changed state causes a `Bail out!` and
+guest failure rather than continuing with a corrupted fixture. Ordinary
+`Err` results become `not ok` results and the remaining tests run if the
+shared state is intact. Panics and unexpected exceptions fail the whole
+guest; there is no panic recovery.
+
+The host requires the exact test names, numbering, plan, complete terminal
+summary, and matching exit status. Missing/duplicate cases, skips, malformed
+output, premature shutdown, and timeouts cannot pass. Adding a registered case
+requires updating `KERNEL_TEST_NAMES` in the
+[host runner](scripts/qemu_test.py) as well.
+
+The intentional-failure mode reports a failing `harness.intentional_failure`
+before the five normal cases and exits with guest failure. This command
+**must return nonzero**:
+
+```sh
+python3 scripts/qemu_test.py --case kernel-tests-fail --build-dir build
+```
+
+CTest's `kernel-suite-rejection` entry uses `--expect-test-failure` to verify
+that rejection. It accepts only the complete, consistent report of that
+specific intentional failure; crashes, timeouts, missing results, and unrelated
+test failures still fail the check. It does not use CTest's generic
+`WILL_FAIL` behavior.
+
+### Device and isolated-fault results
 
 A successful guest reports:
 
@@ -116,8 +167,9 @@ outcome into ordinary host success; a timeout or crash always fails.
 CPU-only cases do not attach a NIC or run the MAC probe. They require exact
 CPU test results and exception diagnostics where applicable. Expected fatal
 fault tests terminate from their handlers after checking the vector and error.
-Only the unexpected-fault negative test intentionally exits with guest failure;
-the harness verifies that failure precisely.
+The unexpected-fault negative test and intentional-failure suite deliberately
+exit with guest failure; their dedicated rejection checks verify those
+outcomes precisely.
 
 ### Tests
 
@@ -138,13 +190,15 @@ The CTest suite covers:
   release/reuse, capacity failure atomicity, overflow, and deterministic stress.
 - A guest allocator self-test with real RAM readback, page-table frame reuse,
   and a forced mid-mapping allocation failure that must release partial tables.
-- A 32 MiB guest and checks that every boot reports the pinned Moss allocator
+- A 32 MiB guest and checks that normal MAC boots report the pinned Moss allocator
   and every mapped MAC probe releases its allocated page-table frames.
 - CPU/IRQ-lock host tests for saved-state restoration, nesting, release before
   restore, host-thread contention, unwind cleanup, and a non-Send guard check.
 - Hardware-backed guest tests for enabled/disabled interrupt restoration,
   returning breakpoints, page/general-protection faults, double-fault IST
   delivery, and unexpected-fault rejection.
+- A named nonfatal kernel suite, strict KTAP parser tests, and an injected
+  failure proving that successful guest shutdown alone cannot pass a suite.
 - Rejection of a two-socket guest before initialization; Limine processor
   discovery, not just CPUID's per-package count, enforces the one-CPU limit.
 

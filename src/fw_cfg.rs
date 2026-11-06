@@ -17,6 +17,8 @@ pub enum BootMode {
     GeneralProtection,
     DoubleFault,
     UnexpectedPageFault,
+    KernelTests,
+    KernelTestsFail,
 }
 
 impl BootMode {
@@ -31,6 +33,8 @@ impl BootMode {
             Self::GeneralProtection => "general-protection",
             Self::DoubleFault => "double-fault",
             Self::UnexpectedPageFault => "unexpected-page-fault",
+            Self::KernelTests => "kernel-tests",
+            Self::KernelTestsFail => "kernel-tests-fail",
         }
     }
 
@@ -125,6 +129,8 @@ pub fn read_mode(
         b"general-protection" => Ok(Some(BootMode::GeneralProtection)),
         b"double-fault" => Ok(Some(BootMode::DoubleFault)),
         b"unexpected-page-fault" => Ok(Some(BootMode::UnexpectedPageFault)),
+        b"kernel-tests" => Ok(Some(BootMode::KernelTests)),
+        b"kernel-tests-fail" => Ok(Some(BootMode::KernelTestsFail)),
         _ => Err(Error::UnknownMode),
     }
 }
@@ -190,6 +196,8 @@ mod tests {
             BootMode::GeneralProtection,
             BootMode::DoubleFault,
             BootMode::UnexpectedPageFault,
+            BootMode::KernelTests,
+            BootMode::KernelTestsFail,
         ] {
             assert_eq!(
                 run(&fixture(&[("opt/kutox/test-mode", mode.name().as_bytes())])),

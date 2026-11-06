@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded QEMU acceptance tests for the Linux e1000 MAC probe."""
+"""Bounded QEMU kernel-suite and hardware-scenario tests."""
 
 import argparse
 from pathlib import Path
@@ -9,6 +9,14 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 REVISION = "79a907609d53d5cd645b42c11550d295d43abf99"
 MOSS_REVISION = "1358b5d78b9151e382dc60ccda7fe0de191e56af"
+KERNEL_TEST_NAMES = (
+    "cpu.irq_lock_restore",
+    "cpu.breakpoint_return",
+    "memory.alignment_reservations",
+    "memory.exhaustion_reuse",
+    "memory.mmio_cleanup",
+)
+KERNEL_SUITE_CASES = ("kernel-tests", "kernel-tests-fail")
 CPU_RESULTS = {
     "cpu-locks": "CPU_TEST_OK test=cpu-locks enabled_restore=ok disabled_restore=ok nested=ok released=ok",
     "breakpoint": "CPU_TEST_OK test=breakpoint returned=yes registers=ok interrupts=restored",
@@ -30,23 +38,88 @@ CASES = {
     "invalid-mode": (None, "boot_mode"),
     **{case: (None, None) for case in CPU_RESULTS},
     "smp-unsupported": (None, "cpu_single_processor_required"),
+    **{case: (None, None) for case in KERNEL_SUITE_CASES},
 }
+
+
+class KernelSuiteFailure(AssertionError):
+    """A complete, consistent guest suite reported failed test cases."""
+
+
+def validate_boot_preamble(lines, mode):
+    if [line for line in lines if line.startswith("KUTOX_BOOT")] != [
+        f"KUTOX_BOOT linux={REVISION}"
+    ]:
+        raise AssertionError("missing or duplicate pinned-source boot marker")
+    if [line for line in lines if line.startswith("BOOT_MODE")] != [
+        f"BOOT_MODE mode={mode} source=fw_cfg"
+    ]:
+        raise AssertionError("wrong guest test mode")
+    if [line for line in lines if line.startswith("CPU_FOUNDATION")] != [
+        "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled"
+    ]:
+        raise AssertionError("missing CPU foundation result")
+
+
+def validate_kernel_suite(case, returncode, output):
+    lines = output.splitlines()
+    validate_boot_preamble(lines, case)
+    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "CPU_BREAKPOINT", "E1000_", "BOOT_MEMORY", "Bail out!")) for line in lines):
+        raise AssertionError("suite aborted or reached an unexpected exception/device path")
+    headers = [
+        index for index, line in enumerate(lines)
+        if line.startswith(("KTAP", "TAP version"))
+    ]
+    if len(headers) != 1 or lines[headers[0]] != "KTAP version 1":
+        raise AssertionError("missing, unsupported, or duplicate KTAP version")
+    start = headers[0]
+    if any(line.startswith(("ok ", "not ok ", "1..", "# Totals")) for line in lines[:start]):
+        raise AssertionError("test results precede KTAP version")
+    expected_names = KERNEL_TEST_NAMES
+    if case == "kernel-tests-fail":
+        expected_names = ("harness.intentional_failure", *expected_names)
+    protocol = lines[start + 1:]
+    if len(protocol) < 2 or protocol[0] != f"1..{len(expected_names)}":
+        raise AssertionError("missing or incorrect KTAP plan")
+    summary = re.fullmatch(
+        r"# Totals: pass:([0-9]+) fail:([0-9]+) skip:0 total:([0-9]+)",
+        protocol[-1],
+    )
+    if summary is None:
+        raise AssertionError("missing or nonterminal KTAP summary")
+    results = []
+    for line in protocol[1:-1]:
+        if line.startswith("# ") and not line.startswith("# Totals"):
+            continue
+        result = re.fullmatch(r"(ok|not ok) ([1-9][0-9]*) ([a-z0-9_.]+)", line)
+        if result is None:
+            raise AssertionError(f"malformed or unexpected KTAP output: {line}")
+        status, number, name = result.groups()
+        index = len(results)
+        if index >= len(expected_names) or int(number) != index + 1 or name != expected_names[index]:
+            raise AssertionError("unexpected, duplicate, reordered, or misnumbered kernel test")
+        results.append((name, status == "ok"))
+    if len(results) != len(expected_names):
+        raise AssertionError("kernel suite did not execute every expected test")
+    failures = {name for name, passed in results if not passed}
+    passed, failed, total = map(int, summary.groups())
+    if (passed, failed, total) != (len(results) - len(failures), len(failures), len(results)):
+        raise AssertionError("KTAP summary disagrees with test results")
+    expected_exit = 3 if failures else 1
+    if returncode != expected_exit:
+        raise AssertionError(f"suite QEMU exit {returncode}, expected {expected_exit}")
+    if case == "kernel-tests-fail" and failures != {"harness.intentional_failure"}:
+        raise AssertionError("intentional failure did not fire or another test failed")
+    if failures:
+        raise KernelSuiteFailure(f"kernel suite failed: {', '.join(sorted(failures))}")
+
 
 def validate_cpu_result(case, returncode, output):
     lines = output.splitlines()
     expected_exit = 3 if case == "unexpected-page-fault" else 1
     if returncode != expected_exit:
         raise AssertionError(f"CPU test QEMU exit {returncode}, expected {expected_exit}")
-    if f"KUTOX_BOOT linux={REVISION}" not in lines:
-        raise AssertionError("missing pinned-source boot marker")
-    if [line for line in lines if line.startswith("BOOT_MODE")] != [
-        f"BOOT_MODE mode={case} source=fw_cfg"
-    ]:
-        raise AssertionError("wrong CPU test mode")
-    if [line for line in lines if line.startswith("CPU_FOUNDATION")] != [
-        "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled"
-    ]:
-        raise AssertionError("missing CPU foundation result")
+    validate_boot_preamble(lines, case)
     if [line for line in lines if line.startswith("CPU_TEST_")] != [CPU_RESULTS[case]]:
         raise AssertionError("missing or conflicting CPU test result")
     if any(line.startswith(("E1000_", "BOOT_MEMORY")) for line in lines):
@@ -72,6 +145,9 @@ def validate_cpu_result(case, returncode, output):
 
 
 def validate_result(case, returncode, output):
+    if case in KERNEL_SUITE_CASES:
+        validate_kernel_suite(case, returncode, output)
+        return
     if case in CPU_RESULTS:
         validate_cpu_result(case, returncode, output)
         return
@@ -197,9 +273,10 @@ def qemu_command(args, case):
             "eeprom-timeout": "eeprom-timeout",
             "invalid-mode": "unsupported",
             **{case: case for case in CPU_RESULTS},
+            **{case: case for case in KERNEL_SUITE_CASES},
         }.get(case, "probe")
         command += ["-fw_cfg", f"name=opt/kutox/test-mode,string={mode}"]
-    if case not in ("missing", "smp-unsupported") and case not in CPU_RESULTS:
+    if case not in ("missing", "smp-unsupported") and case not in CPU_RESULTS and case not in KERNEL_SUITE_CASES:
         model = "e1000e" if case == "unsupported" else "e1000"
         mac = CASES[case][0] or "52:54:00:12:34:56"
         command += [
@@ -231,6 +308,8 @@ def run_case(args, case, index=0):
     log.write_text(output, encoding="utf-8")
     try:
         validate_result(case, completed.returncode, output)
+    except KernelSuiteFailure as error:
+        raise KernelSuiteFailure(f"{error}\nlog: {log}\n{output}") from error
     except AssertionError as error:
         raise AssertionError(f"{error}\nlog: {log}\n{output}") from error
     print(f"PASS {case}: {log}")
@@ -243,15 +322,28 @@ def main():
     parser.add_argument("--qemu", default="qemu-system-x86_64")
     parser.add_argument("--nm", default="nm")
     parser.add_argument("--timeout", type=float, default=20)
+    parser.add_argument(
+        "--expect-test-failure", action="store_true",
+        help="Verify rejection of a complete intentional-failure suite (kernel-tests-fail only)",
+    )
     args = parser.parse_args()
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
+    if args.expect_test_failure and args.case != "kernel-tests-fail":
+        parser.error("--expect-test-failure requires --case kernel-tests-fail")
     if args.case == "provenance":
         check_provenance(args.nm)
         print("PASS provenance: pinned, unchanged Linux source and upstream symbols")
     elif args.case == "repeat":
         for index in range(3):
             run_case(args, "known", index)
+    elif args.expect_test_failure:
+        try:
+            run_case(args, args.case)
+        except KernelSuiteFailure:
+            print("PASS: host validator rejected the complete intentional-failure suite")
+        else:
+            raise AssertionError("host validator accepted an intentionally failing suite")
     else:
         run_case(args, args.case)
 

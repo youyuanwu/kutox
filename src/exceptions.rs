@@ -162,12 +162,8 @@ extern "C" fn kutox_exception_dispatch(frame: &ExceptionFrame) {
     }
     let vector = frame.vector as usize;
     let expected = EXPECTED_VECTOR.load(Ordering::Acquire) == vector;
-    if vector == 3 && expected {
+    if vector == 3 && expected && frame.error == 0 {
         BREAKPOINTS.fetch_add(1, Ordering::Relaxed);
-        serial::print(format_args!(
-            "CPU_BREAKPOINT_OK vector=3 error={} returning=yes\n",
-            frame.error
-        ));
         DISPATCHING.store(false, Ordering::Release);
         return;
     }
@@ -216,25 +212,10 @@ pub fn run_test(mode: BootMode) -> Result<(), Failure> {
             ));
         }
         BootMode::Breakpoint => {
-            let before = BREAKPOINTS.load(Ordering::Relaxed);
-            EXPECTED_VECTOR.store(3, Ordering::Release);
-            X86Cpu::enable_interrupts();
-            let rax: u64;
-            let r10: u64;
-            unsafe {
-                asm!("int3", inout("rax") 0x1122_3344u64 => rax,
-                    inout("r10") 0x5566_7788u64 => r10);
-            }
-            let enabled = cpu::interrupts_enabled();
-            X86Cpu::disable_interrupts();
-            EXPECTED_VECTOR.store(usize::MAX, Ordering::Release);
-            if BREAKPOINTS.load(Ordering::Relaxed) != before + 1
-                || !enabled
-                || rax != 0x1122_3344
-                || r10 != 0x5566_7788
-            {
-                return Err(Failure::new("breakpoint_return", -1));
-            }
+            test_breakpoint()?;
+            serial::print(format_args!(
+                "CPU_BREAKPOINT_OK vector=3 error=0 returning=yes\n"
+            ));
             serial::print(format_args!(
                 "CPU_TEST_OK test=breakpoint returned=yes registers=ok interrupts=restored\n"
             ));
@@ -274,7 +255,30 @@ pub fn run_test(mode: BootMode) -> Result<(), Failure> {
     Ok(())
 }
 
-fn test_locks() -> Result<(), Failure> {
+pub fn test_breakpoint() -> Result<(), Failure> {
+    let before = BREAKPOINTS.load(Ordering::Relaxed);
+    EXPECTED_VECTOR.store(3, Ordering::Release);
+    X86Cpu::enable_interrupts();
+    let rax: u64;
+    let r10: u64;
+    unsafe {
+        asm!("int3", inout("rax") 0x1122_3344u64 => rax,
+            inout("r10") 0x5566_7788u64 => r10);
+    }
+    let enabled = cpu::interrupts_enabled();
+    X86Cpu::disable_interrupts();
+    EXPECTED_VECTOR.store(usize::MAX, Ordering::Release);
+    if BREAKPOINTS.load(Ordering::Relaxed) != before + 1
+        || !enabled
+        || rax != 0x1122_3344
+        || r10 != 0x5566_7788
+    {
+        return Err(Failure::new("breakpoint_return", -1));
+    }
+    Ok(())
+}
+
+pub fn test_locks() -> Result<(), Failure> {
     let first = SpinLockIrq::<_, X86Cpu>::new(0);
     let second = SpinLockIrq::<_, X86Cpu>::new(0);
     X86Cpu::disable_interrupts();

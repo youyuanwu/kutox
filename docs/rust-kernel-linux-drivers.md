@@ -20,6 +20,12 @@ Shared-image tests cover lock nesting, returning breakpoints, fatal fault
 diagnostics, and double-fault emergency-stack delivery. Hardware IRQs remain
 masked/disabled; this is not yet a scheduler or Linux driver execution runtime.
 
+Nonfatal CPU and memory tests now run through a stable-Rust registry in one
+guest boot, with KTAP results and exact host-side plan/name/summary validation.
+Fatal faults and hardware variants retain isolated boots. The runner checks
+shared-state cleanup between cases, and an intentional-failure suite verifies
+that failed test cases cannot be mistaken for successful QEMU shutdown.
+
 The long-term objective is to own the OS architecture while reusing Linux's
 hardware support. This means implementing our own kernel services and adapting
 selected Linux driver source, not running the Linux kernel underneath kutox.

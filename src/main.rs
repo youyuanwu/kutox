@@ -5,6 +5,7 @@ mod boot;
 mod cpu;
 mod exceptions;
 mod io;
+mod kernel_tests;
 mod memory;
 mod pci;
 mod serial;
@@ -88,6 +89,9 @@ fn probe() -> Result<[u8; 6], Failure> {
             "default"
         }
     );
+    if matches!(boot.mode, BootMode::KernelTests | BootMode::KernelTestsFail) {
+        kernel_tests::run(&boot);
+    }
     if boot.mode.is_cpu_test() {
         exceptions::run_test(boot.mode)?;
         io::finish(true);
