@@ -10,7 +10,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use kutox::fw_cfg::BootMode;
-use moss_sync::{CpuOps, SpinLockIrq};
+use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
 use x86_64::{
     VirtAddr,
     instructions::tables::{lidt, load_tss},

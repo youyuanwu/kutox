@@ -13,6 +13,10 @@ The kernel also implements Moss's CPU-operations interface and uses a minimal
 port of its IRQ-safe spinlock. Kernel-owned x86_64 exception tables and test
 modes verify interrupt-state restoration and fault diagnostics.
 
+Both ports live in one adapted [Moss libkernel crate](third_party/moss-libkernel/),
+with `CpuOps` at the root and separate `memory` and `sync` modules. They share
+one upstream revision and MIT license.
+
 This is hardware-helper reuse, not a complete Linux driver port or LinuxKPI
 implementation. There is no packet data path yet. See the
 [milestone design](docs/linux-e1000-mac.md) for its scope and acceptance goals.
@@ -86,8 +90,7 @@ Portable parser and allocator tests need no ISO or QEMU:
 
 ```sh
 cargo test --locked -p kutox --lib --target x86_64-unknown-linux-gnu
-cargo test --locked -p moss-boot-memory --target x86_64-unknown-linux-gnu
-cargo test --locked -p moss-sync --target x86_64-unknown-linux-gnu
+cargo test --locked -p moss-libkernel --target x86_64-unknown-linux-gnu
 ```
 
 The guest allocator tests reuse the same image:
@@ -156,8 +159,7 @@ Formatting and Rust lint checks:
 cargo fmt --all -- --check
 cargo clippy --locked --release -- -D warnings
 cargo clippy --locked -p kutox --lib --target x86_64-unknown-linux-gnu -- -D warnings
-cargo clippy --locked -p moss-boot-memory --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
-cargo clippy --locked -p moss-sync --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
+cargo clippy --locked -p moss-libkernel --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
 ```
 
 C compilation enables warnings as errors. Unused parameter warnings are
@@ -180,7 +182,7 @@ disabled for deliberately unsupported hardware entry points.
   error code, RIP, and CR2 and fail explicitly. This is not a timer or device-IRQ
   runtime. AP startup, x2APIC, userspace entry, FPU/SIMD state switching, and
   scheduling are outside this milestone.
-- [Moss IRQ synchronization](third_party/moss-sync/) preserves the upstream
+- [Moss IRQ synchronization](third_party/moss-libkernel/src/sync/) preserves the upstream
   basic lock/guard algorithm and CPU interface without mapped guards or the
   complete synchronization subsystem. The guard cannot move between threads;
   recursive acquisition, sleeping/awaiting while held, and use from NMI or
@@ -189,7 +191,7 @@ disabled for deliberately unsupported hardware entry points.
 - [Boot configuration](src/fw_cfg.rs) reads the optional mode file through
   the QEMU I/O selector/data interface during interrupt-disabled boot. Directory
   scanning and payload sizes are bounded; host tests exercise the same parser.
-- [Moss bootstrap memory](third_party/moss-boot-memory/) is a dependency-free,
+- [Moss bootstrap memory](third_party/moss-libkernel/src/memory/) is a dependency-free,
   `no_std`, fixed-capacity adaptation, not the complete upstream `libkernel`.
   Its borrowed region storage cannot be shallow-cloned or outlive its owner.
 - Limine supplies the memory map. Only `USABLE` RAM enters the allocation
@@ -235,8 +237,8 @@ small-helper approach used by [rko](https://github.com/youyuanwu/rko), without
 depending on its Linux-backed runtime wrappers.
 
 Linux source retains its upstream notices and remains in the submodule.
-Moss-derived source retains its MIT notices for
-[bootstrap memory](third_party/moss-boot-memory/LICENSE) and
-[IRQ synchronization](third_party/moss-sync/LICENSE).
+Moss-derived source retains its
+[MIT notice](third_party/moss-libkernel/LICENSE) for both bootstrap memory
+and IRQ synchronization.
 See [third-party notices](THIRDPARTY-NOTICES.md) for provenance and scope.
 Other kutox code remains under [GPLv2](LICENSE). No Ginux source is incorporated.

@@ -6,14 +6,13 @@ license = "GPL-2.0-only"
 build = "build.rs"
 
 [workspace]
-members = ["third_party/moss-boot-memory", "third_party/moss-sync"]
+members = ["third_party/moss-libkernel"]
 default-members = ["."]
 resolver = "2"
 
 [dependencies]
 limine = "0.5"
-moss-boot-memory = { path = "third_party/moss-boot-memory" }
-moss-sync = { path = "third_party/moss-sync" }
+moss-libkernel = { path = "third_party/moss-libkernel" }
 x86_64 = { version = "0.15", default-features = false, features = ["instructions"] }
 
 [build-dependencies]

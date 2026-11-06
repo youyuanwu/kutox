@@ -1,7 +1,9 @@
 use crate::{Failure, boot::BootInfo};
 use core::arch::asm;
 use limine::memory_map::EntryType;
-use moss_boot_memory::{Error, PAGE_SIZE, PhysMemoryRegion, PhysicalAddress, Smalloc};
+use moss_libkernel::memory::{
+    Error, PAGE_SIZE, PhysMemoryRegion, PhysicalAddress, allocators::smalloc::Smalloc,
+};
 use x86_64::{
     PhysAddr, VirtAddr,
     registers::control::Cr3,

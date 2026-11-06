@@ -1,5 +1,5 @@
 [package]
-name = "moss-boot-memory"
+name = "moss-libkernel"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
@@ -9,7 +9,9 @@ publish = false
 repository = "https://github.com/hexagonal-sun/moss-kernel"
 revision = "1358b5d78b9151e382dc60ccda7fe0de191e56af"
 sources = [
+    "libkernel/src/lib.rs",
     "libkernel/src/memory/allocators/smalloc.rs",
     "libkernel/src/memory/address.rs",
     "libkernel/src/memory/region.rs",
+    "libkernel/src/sync/spinlock.rs",
 ]

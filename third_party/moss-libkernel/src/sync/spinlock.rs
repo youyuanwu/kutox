@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2025 Matthew Leach
-//! Moss's CPU interface and basic interrupt-saving spinlock.
-//! See the repository's THIRDPARTY-NOTICES.md for the pinned upstream source.
+//! Moss's basic interrupt-saving spinlock.
 
-#![no_std]
-
+use crate::CpuOps;
 use core::{
     cell::UnsafeCell,
     hint::spin_loop,
@@ -12,18 +10,6 @@ use core::{
     ops::{Deref, DerefMut},
     sync::atomic::{AtomicBool, Ordering},
 };
-
-/// Architecture operations used by Moss's synchronization primitives.
-///
-/// Implementations must preserve local interrupt state across nested guards.
-pub trait CpuOps: 'static {
-    type InterruptFlags: Clone + Copy;
-    fn id() -> usize;
-    fn halt() -> !;
-    fn disable_interrupts() -> Self::InterruptFlags;
-    fn restore_interrupt_state(flags: Self::InterruptFlags);
-    fn enable_interrupts();
-}
 
 /// An atomic spinlock which disables local interrupts while held.
 ///
@@ -78,7 +64,7 @@ impl<T: ?Sized, CPU: CpuOps> SpinLockIrq<T, CPU> {
 /// The marker deliberately makes this guard neither Send nor Sync.
 ///
 /// ```compile_fail
-/// use moss_sync::{CpuOps, SpinLockIrqGuard};
+/// use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrqGuard};
 /// fn cannot_send<CPU: CpuOps>() {
 ///     fn requires_send<T: Send>() {}
 ///     requires_send::<SpinLockIrqGuard<'static, usize, CPU>>();

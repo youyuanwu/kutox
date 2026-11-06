@@ -3,7 +3,7 @@ use core::{
     arch::{asm, x86_64::__cpuid},
     sync::atomic::{AtomicBool, Ordering},
 };
-use moss_sync::CpuOps;
+use moss_libkernel::CpuOps;
 use x86_64::registers::model_specific::Msr;
 
 static READY: AtomicBool = AtomicBool::new(false);

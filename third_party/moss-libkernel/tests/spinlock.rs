@@ -1,4 +1,4 @@
-use moss_sync::{CpuOps, SpinLockIrq};
+use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
 use std::{cell::Cell, sync::Arc, thread};
 
 thread_local! {

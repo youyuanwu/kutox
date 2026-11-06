@@ -46,10 +46,10 @@ add_test(NAME harness-unit
     COMMAND ${Python3_EXECUTABLE} -m unittest discover -s tests -v
 )
 set_tests_properties(harness-unit PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
-add_test(NAME boot-memory-unit
-    COMMAND ${CARGO} test --locked -p moss-boot-memory --target x86_64-unknown-linux-gnu
+add_test(NAME moss-libkernel-unit
+    COMMAND ${CARGO} test --locked -p moss-libkernel --target x86_64-unknown-linux-gnu
 )
-set_tests_properties(boot-memory-unit PROPERTIES
+set_tests_properties(moss-libkernel-unit PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     TIMEOUT 65
     RUN_SERIAL TRUE
@@ -58,14 +58,6 @@ add_test(NAME boot-config-unit
     COMMAND ${CARGO} test --locked -p kutox --lib --target x86_64-unknown-linux-gnu
 )
 set_tests_properties(boot-config-unit PROPERTIES
-    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    TIMEOUT 65
-    RUN_SERIAL TRUE
-)
-add_test(NAME cpu-sync-unit
-    COMMAND ${CARGO} test --locked -p moss-sync --target x86_64-unknown-linux-gnu
-)
-set_tests_properties(cpu-sync-unit PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     TIMEOUT 65
     RUN_SERIAL TRUE

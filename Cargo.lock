@@ -42,8 +42,7 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "limine",
- "moss-boot-memory",
- "moss-sync",
+ "moss-libkernel",
  "x86_64",
 ]
 
@@ -57,11 +56,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "moss-boot-memory"
-version = "0.1.0"
-
-[[package]]
-name = "moss-sync"
+name = "moss-libkernel"
 version = "0.1.0"
 
 [[package]]

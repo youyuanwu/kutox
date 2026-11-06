@@ -97,7 +97,7 @@ fn probe() -> Result<[u8; 6], Failure> {
     let managed_bytes: usize = allocator.iter_memory().map(|region| region.size()).sum();
     println!(
         "BOOT_MEMORY_OK source=moss revision={} managed_bytes={} regions={}",
-        moss_boot_memory::UPSTREAM_REVISION,
+        moss_libkernel::UPSTREAM_REVISION,
         managed_bytes,
         allocator.iter_memory().count()
     );

@@ -1,17 +1,26 @@
 # Third-party source notices
 
-## Moss bootstrap memory allocator
+## Moss kernel primitives
 
 - Project: [Moss / libkernel](https://github.com/hexagonal-sun/moss-kernel).
 - Source revision: `1358b5d78b9151e382dc60ccda7fe0de191e56af`.
 - Copyright: Copyright 2025 Matthew Leach.
 - License: MIT; the complete upstream notice is retained in
-  [third_party/moss-boot-memory/LICENSE](third_party/moss-boot-memory/LICENSE).
+  [third_party/moss-libkernel/LICENSE](third_party/moss-libkernel/LICENSE).
 - Ported files:
   [Smalloc](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/allocators/smalloc.rs),
   [addresses](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/address.rs),
-  and [regions](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/region.rs).
-- Location: [third_party/moss-boot-memory](third_party/moss-boot-memory/).
+  [regions](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/region.rs),
+  [CpuOps in lib.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/lib.rs),
+  and [spinlock.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/spinlock.rs).
+- Location: [third_party/moss-libkernel](third_party/moss-libkernel/).
+
+This single, dependency-free `no_std` crate groups the selected ports under
+`memory` and `sync` modules, with `CpuOps` at the crate root as in upstream
+libkernel. It is not the complete upstream library. One license and one pinned
+provenance record cover both components; host tests exercise them together.
+
+### Bootstrap memory allocator
 
 This is a fixed-capacity adaptation, not an unchanged copy of libkernel.
 It retains the sorted/coalesced region lists, first-fit reservation-skipping
@@ -32,17 +41,7 @@ The MIT notice and permission terms must accompany redistributed copies or
 substantial portions of this port. Other kutox code remains under its stated
 GPLv2 license; the MIT-licensed port retains its own notices.
 
-## Moss CPU interface and IRQ-safe spinlock
-
-- Project: [Moss / libkernel](https://github.com/hexagonal-sun/moss-kernel).
-- Source revision: `1358b5d78b9151e382dc60ccda7fe0de191e56af`.
-- Copyright: Copyright 2025 Matthew Leach.
-- License: MIT; the complete upstream notice is retained in
-  [third_party/moss-sync/LICENSE](third_party/moss-sync/LICENSE).
-- Source files:
-  [CpuOps in lib.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/lib.rs)
-  and [spinlock.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/spinlock.rs).
-- Location: [third_party/moss-sync](third_party/moss-sync/).
+### CPU interface and IRQ-safe spinlock
 
 This minimal port retains the `CpuOps` method interface, atomic lock algorithm,
 guard access, non-Send/non-Sync marker, and release-before-interrupt-restore

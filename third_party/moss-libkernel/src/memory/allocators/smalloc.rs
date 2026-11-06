@@ -2,7 +2,7 @@
 // Copyright 2025 Matthew Leach
 // Fixed-capacity adaptation of libkernel/src/memory/allocators/smalloc.rs.
 
-use crate::{Error, PAGE_SIZE, PhysMemoryRegion, PhysicalAddress, Result};
+use crate::memory::{Error, PAGE_SIZE, PhysMemoryRegion, PhysicalAddress, Result};
 
 struct RegionList<'a> {
     regions: &'a mut [PhysMemoryRegion],
