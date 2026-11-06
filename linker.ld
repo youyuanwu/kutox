@@ -9,6 +9,7 @@ PHDRS {
 
 SECTIONS {
     . = 0xffffffff80000000;
+    _kernel_start = .;
     .text : { *(.text .text.*) } :text
     . = ALIGN(4096);
     .rodata : { *(.rodata .rodata.*) } :rodata
@@ -21,5 +22,7 @@ SECTIONS {
     } :data
     . = ALIGN(4096);
     .bss : { *(.bss .bss.*) *(COMMON) } :data
+    . = ALIGN(4096);
+    _kernel_end = .;
     /DISCARD/ : { *(.eh_frame*) *(.note*) }
 }

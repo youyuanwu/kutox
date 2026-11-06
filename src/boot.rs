@@ -1,8 +1,10 @@
+use crate::{Failure, io};
+use kutox::fw_cfg::{self, BootMode};
 use limine::{
     BaseRevision,
     request::{
-        ExecutableAddressRequest, ExecutableCmdlineRequest, HhdmRequest, RequestsEndMarker,
-        RequestsStartMarker, StackSizeRequest,
+        ExecutableAddressRequest, ExecutableCmdlineRequest, HhdmRequest, MemoryMapRequest,
+        RequestsEndMarker, RequestsStartMarker, StackSizeRequest,
     },
 };
 
@@ -20,6 +22,9 @@ static HHDM: HhdmRequest = HhdmRequest::new();
 static ADDRESS: ExecutableAddressRequest = ExecutableAddressRequest::new();
 #[used]
 #[unsafe(link_section = ".requests")]
+static MEMORY_MAP: MemoryMapRequest = MemoryMapRequest::new();
+#[used]
+#[unsafe(link_section = ".requests")]
 static CMDLINE: ExecutableCmdlineRequest = ExecutableCmdlineRequest::new();
 #[used]
 #[unsafe(link_section = ".requests")]
@@ -30,11 +35,14 @@ static END: RequestsEndMarker = RequestsEndMarker::new();
 
 pub struct BootInfo {
     pub hhdm_offset: u64,
-    pub kernel_offset: u64,
-    pub deny_eeprom_grant: bool,
+    pub kernel_physical_start: u64,
+    pub kernel_size: u64,
+    pub memory_map: &'static [&'static limine::memory_map::Entry],
+    pub mode: BootMode,
+    pub mode_configured: bool,
 }
 
-pub fn collect() -> BootInfo {
+pub fn collect() -> Result<BootInfo, Failure> {
     assert!(REVISION.is_supported(), "unsupported Limine base revision");
     let address = ADDRESS.get_response().expect("missing executable address");
     let cmdline = CMDLINE
@@ -43,17 +51,33 @@ pub fn collect() -> BootInfo {
         .cmdline()
         .to_str()
         .expect("non-UTF-8 command line");
-    let deny_eeprom_grant = match cmdline {
-        "" => false,
-        "test=eeprom-timeout" => true,
-        _ => panic!("unsupported command line: {cmdline}"),
-    };
-    BootInfo {
-        hhdm_offset: HHDM.get_response().expect("missing HHDM").offset(),
-        kernel_offset: address
-            .virtual_base()
-            .checked_sub(address.physical_base())
-            .expect("invalid kernel address offset"),
-        deny_eeprom_grant,
+    if !cmdline.is_empty() {
+        return Err(Failure::new("boot_command_line", -1));
     }
+    let configured =
+        fw_cfg::read_mode(|selector| io::write16(0x510, selector), || io::read8(0x511))
+            .map_err(|error| Failure::new("boot_mode", error as i32))?;
+    unsafe extern "C" {
+        static _kernel_start: u8;
+        static _kernel_end: u8;
+    }
+    let start = core::ptr::addr_of!(_kernel_start) as u64;
+    let end = core::ptr::addr_of!(_kernel_end) as u64;
+    let kernel_offset = address
+        .virtual_base()
+        .checked_sub(address.physical_base())
+        .expect("invalid kernel address offset");
+    Ok(BootInfo {
+        hhdm_offset: HHDM.get_response().expect("missing HHDM").offset(),
+        kernel_physical_start: start
+            .checked_sub(kernel_offset)
+            .expect("invalid kernel start"),
+        kernel_size: end.checked_sub(start).expect("invalid kernel bounds"),
+        memory_map: MEMORY_MAP
+            .get_response()
+            .expect("missing memory map")
+            .entries(),
+        mode: configured.unwrap_or(BootMode::Probe),
+        mode_configured: configured.is_some(),
+    })
 }

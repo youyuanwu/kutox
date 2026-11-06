@@ -8,8 +8,11 @@ It is not a claim that either compatibility layer already exists.
 
 The current implementation is the boot-time e1000 MAC-reading proof described
 in the [README](../README.md) and its [original design](linux-e1000-mac.md).
-It executes upstream hardware helpers, but has no packet data path, general
-driver scheduler, or Linux application environment.
+It executes upstream hardware helpers and now includes a fixed-capacity port
+of Moss's `Smalloc` for usable RAM and MMIO page-table frames. It still has no
+packet data path, general driver scheduler, or Linux application environment.
+The [third-party notice](../THIRDPARTY-NOTICES.md) records the source revision,
+MIT license, and adaptation boundaries.
 
 The long-term objective is to own the OS architecture while reusing Linux's
 hardware support. This means implementing our own kernel services and adapting
@@ -102,7 +105,16 @@ Other references serve different purposes:
   needs, with narrow native interfaces.
 
 These are references, not new build dependencies or a decision to fork any
-of these projects.
+of these projects as a whole. The explicit exception is the small, vendored
+Moss bootstrap-memory port described above.
+
+The selected integration direction is to use Moss as the primary kernel-core
+source and Ginux as an architectural reference, not copied implementation
+code. Moss's MIT license permits reuse with its notices retained. The archived
+Ginux kernel declares Apache-2.0; this must not be assumed compatible with
+GPL-2.0-only Linux code in a combined distributed work. See the
+[Apache Software Foundation's compatibility explanation](https://www.apache.org/licenses/GPL-compatibility.html).
+Changing kutox's own license would not relicense its Linux driver source.
 
 ## Proposed architecture
 

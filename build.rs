@@ -43,9 +43,14 @@ const HEADERS: &[&str] = &[
 ];
 
 fn main() {
+    let target = env::var("TARGET").unwrap();
+    // Portable library tests do not compile or link the kernel's C sources.
+    if target == env::var("HOST").unwrap() {
+        println!("cargo:rerun-if-changed=build.rs");
+        return;
+    }
     assert_eq!(
-        env::var("TARGET").unwrap(),
-        "x86_64-unknown-none",
+        target, "x86_64-unknown-none",
         "kutox is a freestanding x86_64 kernel"
     );
     let driver = PathBuf::from("linux/drivers/net/ethernet/intel/e1000");

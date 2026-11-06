@@ -8,6 +8,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 REVISION = "79a907609d53d5cd645b42c11550d295d43abf99"
+MOSS_REVISION = "1358b5d78b9151e382dc60ccda7fe0de191e56af"
 CASES = {
     "known": ("52:54:00:12:34:56", None),
     "alternate": ("52:54:00:ab:cd:ef", None),
@@ -15,6 +16,10 @@ CASES = {
     "unsupported": (None, "unsupported_device"),
     "ambiguous": (None, "ambiguous_device"),
     "eeprom-timeout": (None, "read_eeprom"),
+    "memory": ("52:54:00:12:34:56", None),
+    "low-memory": ("52:54:00:12:34:56", None),
+    "default-mode": ("52:54:00:12:34:56", None),
+    "invalid-mode": (None, "boot_mode"),
 }
 
 
@@ -29,6 +34,38 @@ def validate_result(case, returncode, output):
         raise AssertionError(f"expected exactly one terminal result, got {results}")
     if f"KUTOX_BOOT linux={REVISION}" not in lines:
         raise AssertionError("missing pinned-source boot marker")
+    if case == "invalid-mode":
+        if results != ["E1000_MAC_FAIL stage=boot_mode code=-23"]:
+            raise AssertionError("unknown runtime mode was not rejected explicitly")
+        if any(line.startswith(("BOOT_MODE", "BOOT_MEMORY", "E1000_MMIO", "E1000_EEPROM")) for line in lines):
+            raise AssertionError("invalid mode reached the probe or silently selected a default")
+        return
+    mode = {"memory": "boot-memory", "eeprom-timeout": "eeprom-timeout"}.get(case, "probe")
+    source = "default" if case == "default-mode" else "fw_cfg"
+    modes = [line for line in lines if line.startswith("BOOT_MODE")]
+    if modes != [f"BOOT_MODE mode={mode} source={source}"]:
+        raise AssertionError("unexpected runtime boot-mode selection")
+    memory = [line for line in lines if line.startswith("BOOT_MEMORY_OK")]
+    if len(memory) != 1:
+        raise AssertionError("missing or duplicate bootstrap allocator result")
+    match = re.fullmatch(
+        rf"BOOT_MEMORY_OK source=moss revision={MOSS_REVISION} managed_bytes=([0-9]+) regions=([0-9]+)",
+        memory[0],
+    )
+    if match is None:
+        raise AssertionError("unexpected bootstrap allocator provenance or result")
+    managed_bytes, regions = map(int, match.groups())
+    ram = 32 if case == "low-memory" else 128
+    if not 0 < managed_bytes <= ram * 1024 * 1024 or regions <= 0:
+        raise AssertionError("bootstrap allocator reported invalid usable memory")
+    memory_tests = [line for line in lines if line.startswith("BOOT_MEMORY_TEST")]
+    if case == "memory":
+        if memory_tests != [
+            "BOOT_MEMORY_TEST_OK alignment=ok reservations=ok exhaustion=ok reuse=ok failed_map_cleanup=ok table_frames=3"
+        ]:
+            raise AssertionError("missing or unexpected guest allocator tests")
+    elif memory_tests:
+        raise AssertionError("allocator self-tests ran outside their selected mode")
     if mac:
         if results[0] != f"E1000_MAC_OK mac={mac}":
             raise AssertionError(f"unexpected MAC result: {results[0]}")
@@ -39,6 +76,9 @@ def validate_result(case, returncode, output):
         for line in lines if line.startswith("E1000_EEPROM")
     ]
     if mac or case == "eeprom-timeout":
+        tables = [line for line in lines if line.startswith("BOOT_MEMORY_TABLES")]
+        if tables != ["BOOT_MEMORY_TABLES allocated=3 released=3"]:
+            raise AssertionError("page-table frames were not allocated and released")
         if len(evidence) != 1 or evidence[0] is None:
             raise AssertionError("missing or malformed EEPROM evidence")
         reads, denied = map(int, evidence[0].groups())
@@ -50,7 +90,9 @@ def validate_result(case, returncode, output):
             for message in ("Could not acquire EEPROM grant", "EEPROM Read Error"):
                 if message not in output:
                     raise AssertionError(f"missing upstream diagnostic: {message}")
-    elif evidence or any(line.startswith("E1000_MMIO") for line in lines):
+    elif evidence or any(
+        line.startswith(("E1000_MMIO", "BOOT_MEMORY_TABLES")) for line in lines
+    ):
         raise AssertionError("discovery failure reached MMIO/EEPROM access")
 
 
@@ -76,16 +118,22 @@ def check_provenance(nm):
             raise AssertionError(f"out-of-scope full-driver symbol: {symbol}")
 
 
-def run_case(args, case, index=0):
-    image = "eeprom-timeout.iso" if case == "eeprom-timeout" else "mac.iso"
+def qemu_command(args, case):
     command = [
         args.qemu, "-machine", "pc", "-accel", "tcg", "-cpu", "qemu64",
-        "-smp", "1", "-m", "128M",
+        "-smp", "1", "-m", "32M" if case == "low-memory" else "128M",
         "-display", "none", "-monitor", "none", "-serial", "stdio",
         "-no-reboot", "-boot", "d",
-        "-cdrom", str(args.build_dir / image), "-nic", "none",
+        "-cdrom", str(args.build_dir / "kutox.iso"), "-nic", "none",
         "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
     ]
+    if case != "default-mode":
+        mode = {
+            "memory": "boot-memory",
+            "eeprom-timeout": "eeprom-timeout",
+            "invalid-mode": "unsupported",
+        }.get(case, "probe")
+        command += ["-fw_cfg", f"name=opt/kutox/test-mode,string={mode}"]
     if case != "missing":
         model = "e1000e" if case == "unsupported" else "e1000"
         mac = CASES[case][0] or "52:54:00:12:34:56"
@@ -98,6 +146,11 @@ def run_case(args, case, index=0):
             "-netdev", "user,id=second,restrict=on",
             "-device", "e1000,netdev=second,mac=52:54:00:00:00:02",
         ]
+    return command
+
+
+def run_case(args, case, index=0):
+    command = qemu_command(args, case)
     log = args.build_dir / "test-logs" / f"{args.case}-{index}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     try:
