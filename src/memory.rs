@@ -1,8 +1,20 @@
-use crate::{Failure, boot::BootInfo};
-use core::arch::asm;
+use crate::{Failure, boot::BootInfo, cpu::X86Cpu};
+use core::{
+    arch::asm,
+    mem::MaybeUninit,
+    ptr::{addr_of, addr_of_mut},
+    sync::atomic::{AtomicU8, Ordering},
+};
 use limine::memory_map::EntryType;
 use moss_libkernel::memory::{
-    Error, PAGE_SIZE, PhysMemoryRegion, PhysicalAddress, allocators::smalloc::Smalloc,
+    Error, PAGE_SIZE, PhysMemoryRegion, PhysicalAddress,
+    allocators::{
+        frame::Frame,
+        phys::{
+            FrameAllocator as BuddyAllocator, FrameAllocatorStats, PageAllocation, metadata_frames,
+        },
+        smalloc::Smalloc,
+    },
 };
 use x86_64::{
     PhysAddr, VirtAddr,
@@ -17,6 +29,9 @@ const MMIO_BASE: u64 = 0x4000_0000_0000;
 const REGION_CAPACITY: usize = 128;
 const NEW_TABLES: usize = 3;
 pub const MMIO_LENGTH: usize = 0x20000;
+pub type PhysicalFrames<'a> = BuddyAllocator<'a, X86Cpu>;
+static INITIALIZATION: AtomicU8 = AtomicU8::new(0);
+static mut FRAMES: MaybeUninit<PhysicalFrames<'static>> = MaybeUninit::uninit();
 
 pub struct MemoryStorage {
     memory: [PhysMemoryRegion; REGION_CAPACITY],
@@ -36,13 +51,17 @@ fn allocator_failure(error: Error) -> Failure {
     Failure::new("boot_memory", error as i32)
 }
 
+fn frame_failure(error: Error) -> Failure {
+    Failure::new("frame_allocator", error as i32)
+}
+
 fn region(base: u64, size: u64) -> Result<PhysMemoryRegion, Failure> {
     let base = usize::try_from(base).map_err(|_| allocator_failure(Error::AddressOverflow))?;
     let size = usize::try_from(size).map_err(|_| allocator_failure(Error::AddressOverflow))?;
     PhysMemoryRegion::new(PhysicalAddress::from_value(base), size).map_err(allocator_failure)
 }
 
-pub fn initialize<'a>(
+fn initialize_bootstrap<'a>(
     boot: &BootInfo,
     storage: &'a mut MemoryStorage,
 ) -> Result<Smalloc<'a>, Failure> {
@@ -88,18 +107,64 @@ pub fn initialize<'a>(
     Ok(allocator)
 }
 
+pub fn initialize(
+    boot: &BootInfo,
+    storage: &mut MemoryStorage,
+) -> Result<&'static PhysicalFrames<'static>, Failure> {
+    if crate::cpu::interrupts_enabled()
+        || INITIALIZATION
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+    {
+        return Err(Failure::new("memory_initialization_state", -1));
+    }
+    let mut smalloc = initialize_bootstrap(boot, storage)?;
+    let count = metadata_frames(&smalloc).map_err(frame_failure)?;
+    let bytes = count
+        .checked_mul(core::mem::size_of::<Frame>())
+        .filter(|&bytes| bytes <= isize::MAX as usize)
+        .ok_or(frame_failure(Error::AddressOverflow))?;
+    let bytes = bytes
+        .checked_add(PAGE_SIZE - 1)
+        .map(|bytes| bytes & !(PAGE_SIZE - 1))
+        .ok_or(frame_failure(Error::AddressOverflow))?;
+    let physical = smalloc.alloc(bytes, PAGE_SIZE).map_err(allocator_failure)?;
+    let address = boot
+        .hhdm_offset
+        .checked_add(physical.value() as u64)
+        .ok_or(frame_failure(Error::AddressOverflow))?;
+    let pointer = address as *mut Frame;
+    // Smalloc exclusively reserved these HHDM-mapped pages for permanent metadata.
+    let frames = unsafe {
+        for index in 0..count {
+            pointer.add(index).write(Frame::EMPTY);
+        }
+        core::slice::from_raw_parts_mut(pointer, count)
+    };
+    let allocator = BuddyAllocator::new(smalloc, frames).map_err(frame_failure)?;
+    // Boot publishes one permanent allocator before heap users can run.
+    unsafe { addr_of_mut!(FRAMES).write(MaybeUninit::new(allocator)) };
+    INITIALIZATION.store(2, Ordering::Release);
+    global_frames()
+}
+
+pub fn global_frames() -> Result<&'static PhysicalFrames<'static>, Failure> {
+    if INITIALIZATION.load(Ordering::Acquire) != 2 {
+        return Err(Failure::new("frame_allocator_not_initialized", -1));
+    }
+    Ok(unsafe { &*addr_of!(FRAMES).cast::<PhysicalFrames<'static>>() })
+}
+
 pub fn test_alignment_reservations(
     boot: &BootInfo,
-    allocator: &mut Smalloc<'_>,
+    allocator: &PhysicalFrames<'_>,
 ) -> Result<(), Failure> {
-    let first = allocator.alloc_page().map_err(allocator_failure)?;
-    let second = allocator
-        .alloc(2 * PAGE_SIZE, 2 * PAGE_SIZE)
-        .map_err(allocator_failure)?;
-    let first_region = PhysMemoryRegion::new(first, PAGE_SIZE).map_err(allocator_failure)?;
-    let second_region = PhysMemoryRegion::new(second, 2 * PAGE_SIZE).map_err(allocator_failure)?;
-    if first.value() % PAGE_SIZE != 0
-        || second.value() % (2 * PAGE_SIZE) != 0
+    let first = allocator.alloc_frames(0).map_err(frame_failure)?;
+    let second = allocator.alloc_frames(1).map_err(frame_failure)?;
+    let first_region = first.region();
+    let second_region = second.region();
+    if first_region.start_address().value() % PAGE_SIZE != 0
+        || second_region.start_address().value() % (2 * PAGE_SIZE) != 0
         || first_region.overlaps(second_region)
     {
         return Err(Failure::new("memory_alignment", -1));
@@ -110,33 +175,43 @@ pub fn test_alignment_reservations(
                 && entry.base <= allocation.start_address().value() as u64
                 && entry.base + entry.length >= allocation.end_address().value() as u64
         });
-        if !available {
+        let overlaps_reserved = boot.memory_map.iter().any(|entry| {
+            entry.entry_type != EntryType::USABLE
+                && entry.base < allocation.end_address().value() as u64
+                && (allocation.start_address().value() as u64) < entry.base + entry.length
+        });
+        if !available
+            || overlaps_reserved
+            || allocation.start_address().value() < 0x100000
+            || allocation.overlaps(region(boot.kernel_physical_start, boot.kernel_size)?)
+            || allocation.overlaps(region(
+                Cr3::read().0.start_address().as_u64(),
+                PAGE_SIZE as u64,
+            )?)
+        {
             return Err(Failure::new("memory_reserved_allocation", -1));
         }
         let pointer = (boot.hhdm_offset + allocation.start_address().value() as u64) as *mut u8;
         unsafe {
-            pointer.write_volatile(0xa5);
-            pointer.add(allocation.size() - 1).write_volatile(0x5a);
-            if pointer.read_volatile() != 0xa5
-                || pointer.add(allocation.size() - 1).read_volatile() != 0x5a
-            {
-                return Err(Failure::new("memory_readback", -1));
+            for offset in (0..allocation.size()).step_by(PAGE_SIZE) {
+                pointer.add(offset).write_volatile(0xa5);
+                pointer.add(offset + PAGE_SIZE - 1).write_volatile(0x5a);
+            }
+            for offset in (0..allocation.size()).step_by(PAGE_SIZE) {
+                if pointer.add(offset).read_volatile() != 0xa5
+                    || pointer.add(offset + PAGE_SIZE - 1).read_volatile() != 0x5a
+                {
+                    return Err(Failure::new("memory_readback", -1));
+                }
             }
         }
     }
-    allocator
-        .free(second, 2 * PAGE_SIZE)
-        .map_err(allocator_failure)?;
-    allocator
-        .free(first, PAGE_SIZE)
-        .map_err(allocator_failure)?;
-    let reused = allocator.alloc_page().map_err(allocator_failure)?;
-    if reused != first {
+    drop(second);
+    drop(first);
+    let reused = allocator.alloc_frames(0).map_err(frame_failure)?;
+    if reused.region() != first_region {
         return Err(Failure::new("memory_reuse", -1));
     }
-    allocator
-        .free(reused, PAGE_SIZE)
-        .map_err(allocator_failure)?;
     Ok(())
 }
 
@@ -164,24 +239,73 @@ pub fn test_exhaustion_reuse() -> Result<(), Failure> {
     Ok(())
 }
 
-#[derive(PartialEq, Eq)]
-pub struct AllocationSnapshot {
-    memory: [PhysMemoryRegion; REGION_CAPACITY],
-    reservations: [PhysMemoryRegion; REGION_CAPACITY],
+pub(crate) fn donated_allocator<'a>(
+    donated: PhysMemoryRegion,
+    frames: &'a mut [Frame],
+) -> Result<PhysicalFrames<'a>, Failure> {
+    let mut memory = [PhysMemoryRegion::empty(); 1];
+    let mut reservations = [PhysMemoryRegion::empty(); 1];
+    let mut smalloc = Smalloc::new(&mut memory, &mut reservations).map_err(allocator_failure)?;
+    smalloc.add_memory(donated).map_err(allocator_failure)?;
+    BuddyAllocator::new(smalloc, frames).map_err(frame_failure)
 }
 
-pub fn allocation_snapshot(allocator: &Smalloc<'_>) -> AllocationSnapshot {
-    let mut snapshot = AllocationSnapshot {
-        memory: [PhysMemoryRegion::empty(); REGION_CAPACITY],
-        reservations: [PhysMemoryRegion::empty(); REGION_CAPACITY],
-    };
-    for (index, region) in allocator.iter_memory().enumerate() {
-        snapshot.memory[index] = region;
+pub fn test_buddy_split_coalesce(allocator: &PhysicalFrames<'_>) -> Result<(), Failure> {
+    let donated = allocator.alloc_frames(3).map_err(frame_failure)?;
+    let mut frames = [const { Frame::EMPTY }; 8];
+    let small = donated_allocator(donated.region(), &mut frames)?;
+    let before = small.stats();
+    let first = small.alloc_frames(2).map_err(frame_failure)?;
+    let second = small.alloc_frames(2).map_err(frame_failure)?;
+    if first.region().overlaps(second.region())
+        || !matches!(small.alloc_frames(0), Err(Error::NoMemory))
+    {
+        return Err(Failure::new("buddy_split", -1));
     }
-    for (index, region) in allocator.iter_reservations().enumerate() {
-        snapshot.reservations[index] = region;
+    drop(first);
+    drop(second);
+    let whole = small.alloc_frames(3).map_err(frame_failure)?;
+    if whole.region() != donated.region() {
+        return Err(Failure::new("buddy_coalesce", -1));
     }
-    snapshot
+    drop(whole);
+    small.check_invariants().map_err(frame_failure)?;
+    if small.stats() != before {
+        return Err(Failure::new("buddy_coalesce_cleanup", -1));
+    }
+    Ok(())
+}
+
+pub fn test_buddy_exhaustion(allocator: &PhysicalFrames<'_>) -> Result<(), Failure> {
+    let donated = allocator.alloc_frames(3).map_err(frame_failure)?;
+    let mut frames = [const { Frame::EMPTY }; 8];
+    let small = donated_allocator(donated.region(), &mut frames)?;
+    let before = small.stats();
+    let mut pages: [Option<PageAllocation<'_, '_, X86Cpu>>; 8] = core::array::from_fn(|_| None);
+    for page in &mut pages {
+        *page = Some(small.alloc_frames(0).map_err(frame_failure)?);
+    }
+    if !matches!(small.alloc_frames(0), Err(Error::NoMemory)) {
+        return Err(Failure::new("buddy_exhaustion", -1));
+    }
+    let released = pages[3].take().expect("missing test frame");
+    let expected = released.region();
+    drop(released);
+    let reused = small.alloc_frames(0).map_err(frame_failure)?;
+    if reused.region() != expected {
+        return Err(Failure::new("buddy_exhausted_reuse", -1));
+    }
+    drop(reused);
+    drop(pages);
+    small.check_invariants().map_err(frame_failure)?;
+    if small.stats() != before {
+        return Err(Failure::new("buddy_exhaustion_cleanup", -1));
+    }
+    Ok(())
+}
+
+pub fn allocation_snapshot(allocator: &PhysicalFrames<'_>) -> FrameAllocatorStats {
+    allocator.stats()
 }
 
 pub fn mmio_window_unused(boot: &BootInfo) -> bool {
@@ -191,33 +315,34 @@ pub fn mmio_window_unused(boot: &BootInfo) -> bool {
 }
 
 struct TableFrames<'a, 'storage> {
-    allocator: &'a mut Smalloc<'storage>,
+    allocator: &'a PhysicalFrames<'storage>,
     hhdm_offset: u64,
-    allocated: [Option<PhysFrame>; NEW_TABLES],
+    allocated: [Option<PageAllocation<'a, 'storage, X86Cpu>>; NEW_TABLES],
     count: usize,
     error: Option<Error>,
 }
 
-// Each frame is exclusively reserved by Smalloc before its HHDM mapping is zeroed.
+// Each guard exclusively owns a frame before its HHDM mapping is zeroed.
 unsafe impl FrameAllocator<Size4KiB> for TableFrames<'_, '_> {
     fn allocate_frame(&mut self) -> Option<PhysFrame> {
         if self.count == NEW_TABLES {
             self.error = Some(Error::RegionCapacity);
             return None;
         }
-        let physical = match self.allocator.alloc_page() {
-            Ok(address) => address.value() as u64,
+        let allocation = match self.allocator.alloc_frames(0) {
+            Ok(allocation) => allocation,
             Err(error) => {
                 self.error = Some(error);
                 return None;
             }
         };
+        let physical = allocation.region().start_address().value() as u64;
         let frame = PhysFrame::from_start_address(PhysAddr::new(physical))
             .expect("allocator returned an unaligned frame");
         unsafe {
             ((physical + self.hhdm_offset) as *mut PageTable).write(PageTable::new());
         }
-        self.allocated[self.count] = Some(frame);
+        self.allocated[self.count] = Some(allocation);
         self.count += 1;
         Some(frame)
     }
@@ -255,15 +380,8 @@ impl Drop for MmioMapping<'_, '_> {
         // releasing intermediate tables, including tables from a failed map_to.
         self.mapper.level_4_table_mut()[VirtAddr::new(MMIO_BASE).p4_index()].set_unused();
         x86_64::instructions::tlb::flush_all();
-        for frame in self.frames.allocated[..self.frames.count].iter().rev() {
-            let address = frame
-                .expect("missing allocated table frame")
-                .start_address()
-                .as_u64();
-            self.frames
-                .allocator
-                .free(PhysicalAddress::from_value(address as usize), PAGE_SIZE)
-                .expect("page-table frame release failed");
+        for allocation in self.frames.allocated[..self.frames.count].iter_mut().rev() {
+            drop(allocation.take());
         }
     }
 }
@@ -271,7 +389,7 @@ impl Drop for MmioMapping<'_, '_> {
 pub fn map_mmio<'a, 'storage>(
     boot: &BootInfo,
     physical: u64,
-    allocator: &'a mut Smalloc<'storage>,
+    allocator: &'a PhysicalFrames<'storage>,
 ) -> Result<MmioMapping<'a, 'storage>, Failure> {
     let pat_low: u32;
     let pat_high: u32;
@@ -293,7 +411,7 @@ pub fn map_mmio<'a, 'storage>(
         frames: TableFrames {
             allocator,
             hhdm_offset: boot.hhdm_offset,
-            allocated: [None; NEW_TABLES],
+            allocated: core::array::from_fn(|_| None),
             count: 0,
             error: None,
         },
@@ -318,7 +436,7 @@ pub fn map_mmio<'a, 'storage>(
                 return Err(mapping
                     .frames
                     .error
-                    .map_or(Failure::new("mmio_mapping", -1), allocator_failure));
+                    .map_or(Failure::new("mmio_mapping", -1), frame_failure));
             }
         }
         mapping.pages += 1;
@@ -329,36 +447,41 @@ pub fn map_mmio<'a, 'storage>(
 pub fn test_mapping_reuse(
     boot: &BootInfo,
     physical: u64,
-    allocator: &mut Smalloc<'_>,
+    allocator: &PhysicalFrames<'_>,
 ) -> Result<usize, Failure> {
-    let donated = allocator
-        .alloc(2 * PAGE_SIZE, PAGE_SIZE)
-        .map_err(allocator_failure)?;
-    let mut memory = [PhysMemoryRegion::empty(); 1];
-    let mut reservations = [PhysMemoryRegion::empty(); 4];
-    let mut limited = Smalloc::new(&mut memory, &mut reservations).map_err(allocator_failure)?;
-    limited
-        .add_memory(PhysMemoryRegion::new(donated, 2 * PAGE_SIZE).map_err(allocator_failure)?)
-        .map_err(allocator_failure)?;
-    let failure = match map_mmio(boot, physical, &mut limited) {
-        Ok(_) => return Err(Failure::new("expected_mapping_failure", -1)),
-        Err(failure) => failure,
-    };
-    if failure.stage != "boot_memory"
-        || failure.code != Error::NoMemory as i32
-        || limited.iter_reservations().next().is_some()
+    let donated = allocator.alloc_frames(1).map_err(frame_failure)?;
     {
-        return Err(Failure::new("failed_mapping_cleanup", -1));
+        let mut frames = [const { Frame::EMPTY }; 2];
+        let limited = donated_allocator(donated.region(), &mut frames)?;
+        let before = limited.stats();
+        let failure = match map_mmio(boot, physical, &limited) {
+            Ok(_) => return Err(Failure::new("expected_mapping_failure", -1)),
+            Err(failure) => failure,
+        };
+        if failure.stage != "frame_allocator"
+            || failure.code != Error::NoMemory as i32
+            || limited.stats() != before
+        {
+            return Err(Failure::new("failed_mapping_cleanup", -1));
+        }
+        limited.check_invariants().map_err(frame_failure)?;
     }
-    allocator
-        .free(donated, 2 * PAGE_SIZE)
-        .map_err(allocator_failure)?;
+    drop(donated);
     let first = map_mmio(boot, physical, allocator)?;
-    let frames = first.frames.allocated;
+    let frames = first
+        .frames
+        .allocated
+        .each_ref()
+        .map(|allocation| allocation.as_ref().map(PageAllocation::region));
     let count = first.table_frame_count();
     drop(first);
     let second = map_mmio(boot, physical, allocator)?;
-    if count != NEW_TABLES || second.frames.allocated != frames {
+    let reused = second
+        .frames
+        .allocated
+        .each_ref()
+        .map(|allocation| allocation.as_ref().map(PageAllocation::region));
+    if count != NEW_TABLES || reused != frames {
         return Err(Failure::new("table_frame_reuse", -1));
     }
     Ok(count)

@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import qemu_test
-from qemu_test import KERNEL_TEST_NAMES, KernelSuiteFailure, REVISION, validate_result
+from qemu_test import KERNEL_SUITE_CASES, KERNEL_TEST_NAMES, KernelSuiteFailure, REVISION, validate_result
 
 FOUNDATION = "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled"
 
@@ -18,7 +18,7 @@ def suite_log(case="kernel-tests"):
     lines = [
         f"KUTOX_BOOT linux={REVISION}",
         FOUNDATION,
-        f"BOOT_MODE mode={case} source=fw_cfg",
+        f"BOOT_MODE mode={KERNEL_SUITE_CASES[case]} source=fw_cfg",
         "KTAP version 1",
         f"1..{len(names)}",
     ]
@@ -33,6 +33,9 @@ def suite_log(case="kernel-tests"):
 class KernelSuiteTests(unittest.TestCase):
     def test_accepts_complete_success(self):
         validate_result("kernel-tests", 1, suite_log())
+
+    def test_accepts_low_memory_suite_with_the_same_guest_mode(self):
+        validate_result("kernel-tests-low-memory", 1, suite_log("kernel-tests-low-memory"))
 
     def test_allows_diagnostic_comments(self):
         validate_result("kernel-tests", 1, suite_log().replace("ok 1 ", "# diagnostic\nok 1 "))
@@ -52,9 +55,9 @@ class KernelSuiteTests(unittest.TestCase):
                 validate_result("kernel-tests", 1, suite_log().replace("KTAP version 1", f"{extra}\nKTAP version 1"))
 
     def test_rejects_wrong_plan(self):
-        for plan in ("1..0", "1..4", "1..6", ""):
+        for plan in ("1..0", f"1..{len(KERNEL_TEST_NAMES) - 1}", f"1..{len(KERNEL_TEST_NAMES) + 1}", ""):
             with self.subTest(plan=plan), self.assertRaises(AssertionError):
-                validate_result("kernel-tests", 1, suite_log().replace("1..5", plan))
+                validate_result("kernel-tests", 1, suite_log().replace(f"1..{len(KERNEL_TEST_NAMES)}", plan))
 
     def test_rejects_missing_test_even_with_success_exit(self):
         output = suite_log().replace("ok 3 memory.alignment_reservations\n", "")
@@ -87,14 +90,15 @@ class KernelSuiteTests(unittest.TestCase):
                 validate_result("kernel-tests", 1, suite_log().replace("ok 2 ", f"{message}\nok 2 "))
 
     def test_rejects_missing_duplicate_or_inconsistent_summary(self):
-        summary = "# Totals: pass:5 fail:0 skip:0 total:5"
-        for replacement in ("", f"{summary}\n{summary}", "# Totals: pass:4 fail:1 skip:0 total:5"):
+        total = len(KERNEL_TEST_NAMES)
+        summary = f"# Totals: pass:{total} fail:0 skip:0 total:{total}"
+        for replacement in ("", f"{summary}\n{summary}", f"# Totals: pass:{total - 1} fail:1 skip:0 total:{total}"):
             with self.subTest(replacement=replacement), self.assertRaises(AssertionError):
                 validate_result("kernel-tests", 1, suite_log().replace(summary, replacement))
 
     def test_rejects_output_after_summary(self):
         with self.assertRaises(AssertionError):
-            validate_result("kernel-tests", 1, suite_log() + "ok 6 extra\n")
+            validate_result("kernel-tests", 1, suite_log() + f"ok {len(KERNEL_TEST_NAMES) + 1} extra\n")
 
     def test_rejects_failure_disguised_as_success(self):
         output = suite_log().replace("ok 1 ", "not ok 1 ")
@@ -115,24 +119,37 @@ class KernelSuiteTests(unittest.TestCase):
 
     def test_normal_suite_failures_are_reported_to_host(self):
         output = suite_log().replace("ok 1 ", "not ok 1 ").replace(
-            "# Totals: pass:5 fail:0", "# Totals: pass:4 fail:1"
+            f"# Totals: pass:{len(KERNEL_TEST_NAMES)} fail:0",
+            f"# Totals: pass:{len(KERNEL_TEST_NAMES) - 1} fail:1",
         )
         with self.assertRaises(KernelSuiteFailure):
             validate_result("kernel-tests", 3, output)
 
     def test_negative_mode_checks_only_the_intentional_failure(self):
         output = suite_log("kernel-tests-fail").replace("ok 2 cpu.irq_lock_restore", "not ok 2 cpu.irq_lock_restore")
-        output = output.replace("pass:5 fail:1", "pass:4 fail:2")
+        output = output.replace(
+            f"pass:{len(KERNEL_TEST_NAMES)} fail:1",
+            f"pass:{len(KERNEL_TEST_NAMES) - 1} fail:2",
+        )
         with self.assertRaises(AssertionError) as caught:
             validate_result("kernel-tests-fail", 3, output)
         self.assertNotIsInstance(caught.exception, KernelSuiteFailure)
 
     def test_suites_use_one_iso_without_a_network_device(self):
         args = SimpleNamespace(qemu="qemu-system-x86_64", build_dir=Path("build"))
-        for case in ("kernel-tests", "kernel-tests-fail"):
+        for case in KERNEL_SUITE_CASES:
             command = qemu_test.qemu_command(args, case)
             self.assertEqual(command[command.index("-cdrom") + 1], str(Path("build/kutox.iso")))
             self.assertNotIn("-netdev", command)
+
+    def test_low_memory_suite_uses_32_mib_without_a_new_mode_or_image(self):
+        args = SimpleNamespace(qemu="qemu-system-x86_64", build_dir=Path("build"))
+        command = qemu_test.qemu_command(args, "kernel-tests-low-memory")
+        self.assertEqual(command[command.index("-m") + 1], "32M")
+        self.assertEqual(
+            command[command.index("-fw_cfg") + 1],
+            "name=opt/kutox/test-mode,string=kernel-tests",
+        )
 
     def test_expect_failure_only_catches_complete_suite_failure(self):
         arguments = ["qemu_test.py", "--case", "kernel-tests-fail", "--expect-test-failure", "--build-dir", "build"]

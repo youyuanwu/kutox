@@ -1,9 +1,12 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
 mod boot;
 mod cpu;
 mod exceptions;
+mod heap;
 mod io;
 mod kernel_tests;
 mod memory;
@@ -96,19 +99,43 @@ fn probe() -> Result<[u8; 6], Failure> {
         match exceptions::run_fault_test(boot.mode)? {}
     }
     let mut memory_storage = memory::MemoryStorage::new();
-    let mut allocator = memory::initialize(&boot, &mut memory_storage)?;
-    let managed_bytes: usize = allocator.iter_memory().map(|region| region.size()).sum();
+    let allocator = memory::initialize(&boot, &mut memory_storage)?;
+    let heap = heap::initialize(&boot, allocator)?;
+    if boot.mode == BootMode::HeapOom {
+        heap::fatal_oom();
+    }
+    let stats = allocator.stats();
+    let managed_bytes = stats.total_pages * moss_libkernel::memory::PAGE_SIZE;
     println!(
         "BOOT_MEMORY_OK source=moss revision={} managed_bytes={} regions={}",
         moss_libkernel::UPSTREAM_REVISION,
         managed_bytes,
-        allocator.iter_memory().count()
+        boot.memory_map
+            .iter()
+            .filter(|entry| entry.entry_type == limine::memory_map::EntryType::USABLE)
+            .count()
+    );
+    println!(
+        "FRAME_ALLOCATOR_OK source=moss revision={} total_pages={} reserved_pages={} free_pages={} metadata_bytes={}",
+        moss_libkernel::UPSTREAM_REVISION,
+        stats.total_pages,
+        stats.reserved_pages,
+        stats.free_pages,
+        (stats.total_pages
+            * core::mem::size_of::<moss_libkernel::memory::allocators::frame::Frame>())
+        .next_multiple_of(moss_libkernel::memory::PAGE_SIZE)
+    );
+    println!(
+        "HEAP_OK source=moss revision={} slab_bytes={} max_order={} empty_slabs=release",
+        moss_libkernel::UPSTREAM_REVISION,
+        moss_libkernel::memory::allocators::slab::SLAB_SIZE_BYTES,
+        moss_libkernel::memory::allocators::phys::MAX_ORDER
     );
     let ticks = time::calibrate()?;
     println!("TSC ticks_per_us={ticks}");
     let device = pci::discover()?;
     let bar = device.enable_mmio()?;
-    let mapping = memory::map_mmio(&boot, bar.base, &mut allocator)?;
+    let mapping = memory::map_mmio(&boot, bar.base, allocator)?;
     println!(
         "E1000_MMIO phys={:#x} bytes={}",
         bar.base,
@@ -132,6 +159,17 @@ fn probe() -> Result<[u8; 6], Failure> {
     );
     let table_count = mapping.table_frame_count();
     drop(mapping);
+    if allocator.stats() != stats {
+        return Err(Failure::new("frame_allocator_cleanup", -1));
+    }
+    allocator
+        .check_invariants()
+        .map_err(|error| Failure::new("frame_allocator_cleanup", error as i32))?;
+    heap.check_invariants()
+        .map_err(|error| Failure::new("heap_cleanup", error as i32))?;
+    if heap.stats() != Default::default() {
+        return Err(Failure::new("heap_cleanup", -1));
+    }
     println!("BOOT_MEMORY_TABLES allocated={table_count} released={table_count}");
     let stage = match result.stage {
         0 => "bridge_validate",
