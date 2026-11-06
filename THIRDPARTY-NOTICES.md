@@ -129,6 +129,18 @@ wait queues, elapsed-TSC deadline policy, cancellation/handle ownership, and
 thread tests are native kutox code, built on the existing Moss memory, CPU, and
 IRQ-lock adaptations. No AArch64 context assembly or Ginux source is imported.
 
+### Native counting completions
+
+The completion policy and stackful wait integration are native kutox code built
+on the existing Moss IRQ-lock adaptation and native wait queues. Pinned Moss's
+[async condition variable](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/condvar.rs)
+and
+[waker registration](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/waker_set.rs)
+were reviewed as prior art. Their `Arc`, future, and `Waker` implementations
+are not imported. Remembered credits, the broadcast latch, in-flight reset
+exclusion, synchronous cancellation/deadlines, and completion tests are not
+claimed as an unchanged Moss primitive or Linux completion implementation.
+
 ## Linux
 
 The [Linux submodule](linux/) retains its upstream copyright notices,

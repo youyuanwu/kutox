@@ -2,7 +2,7 @@ use crate::{
     Failure,
     boot::BootInfo,
     cpu::{self, X86Cpu},
-    io, irq, memory, serial, time,
+    exceptions, io, irq, memory, serial, time,
 };
 use core::{
     arch::{asm, global_asm},
@@ -40,9 +40,13 @@ pub enum SwitchError {
     NotificationOverflow = -54,
     ClockUnavailable = -55,
     DeadlineOverflow = -56,
+    InterruptContext = -57,
 }
 
 fn switch_allowed() -> Result<(), SwitchError> {
+    if exceptions::is_dispatching() {
+        return Err(SwitchError::InterruptContext);
+    }
     if X86Cpu::irq_lock_depth() != 0 {
         return Err(SwitchError::LocksHeld);
     }
@@ -134,13 +138,12 @@ impl WaitQueue {
 
 impl WaitToken {
     pub fn wait(self, timeout_us: Option<u64>) -> Result<WakeReason, SwitchError> {
-        switch_allowed()?;
-        active()?;
-        let deadline = match timeout_us {
-            Some(0) => Some(time::now_ticks()),
-            Some(usec) => Some(deadline_after(usec)?),
-            None => None,
-        };
+        check_thread_context()?;
+        self.wait_until(wait_deadline(timeout_us)?)
+    }
+
+    pub fn wait_until(self, deadline: Option<u64>) -> Result<WakeReason, SwitchError> {
+        check_thread_context()?;
         if self.queue.generation.load(Ordering::Acquire) != self.generation {
             return Ok(WakeReason::Notified);
         }
@@ -149,6 +152,19 @@ impl WaitToken {
             Some(WaitKey(self.queue as *const WaitQueue as usize)),
             deadline,
         )
+    }
+}
+
+pub(crate) fn check_thread_context() -> Result<(), SwitchError> {
+    switch_allowed()?;
+    active().map(|_| ())
+}
+
+pub(crate) fn wait_deadline(timeout_us: Option<u64>) -> Result<Option<u64>, SwitchError> {
+    match timeout_us {
+        Some(0) => Ok(Some(time::now_ticks())),
+        Some(usec) => deadline_after(usec).map(Some),
+        None => Ok(None),
     }
 }
 
@@ -365,6 +381,10 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
 
     pub fn run_with_timer(&mut self, timer: &irq::Timer<'_, '_>) -> Result<RunStats, Failure> {
         self.run_inner(Some(timer))
+    }
+
+    pub(crate) fn next_deadline(&self) -> Option<u64> {
+        self.queue.next_deadline()
     }
 
     pub fn cancel_wait(&mut self, handle: TaskHandle) -> Result<(), Failure> {

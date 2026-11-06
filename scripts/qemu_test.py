@@ -32,6 +32,9 @@ KERNEL_TEST_NAMES = (
     "threads.wait_queues",
     "threads.timed_sleep",
     "threads.wait_cancel",
+    "sync.completion_counting",
+    "sync.completion_broadcast",
+    "sync.completion_timeout_cancel",
 )
 KERNEL_SUITE_CASES = {
     "kernel-tests": "kernel-tests",

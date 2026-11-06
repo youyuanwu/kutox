@@ -32,6 +32,7 @@ const FAULT_ADDRESS: u64 = 0x0000_6000_0000_0000;
 const GP_SELECTOR: u64 = 0xfff8;
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 static DISPATCHING: AtomicBool = AtomicBool::new(false);
+static mut CONTEXT_PROBE: Option<fn()> = None;
 static EXPECTED_VECTOR: AtomicUsize = AtomicUsize::new(usize::MAX);
 static BREAKPOINTS: AtomicUsize = AtomicUsize::new(0);
 static THREAD_GUARD: AtomicUsize = AtomicUsize::new(0);
@@ -181,6 +182,9 @@ extern "C" fn kutox_exception_dispatch(frame: &ExceptionFrame) {
     }
     let expected = EXPECTED_VECTOR.load(Ordering::Acquire) == vector;
     if vector == 3 && expected && frame.error == 0 {
+        if let Some(probe) = unsafe { addr_of!(CONTEXT_PROBE).read() } {
+            probe();
+        }
         BREAKPOINTS.fetch_add(1, Ordering::Relaxed);
         DISPATCHING.store(false, Ordering::Release);
         return;
@@ -232,6 +236,23 @@ extern "C" fn kutox_exception_dispatch(frame: &ExceptionFrame) {
         "CPU_TEST_FAIL stage=unexpected_exception vector={vector}\n"
     ));
     io::finish(false);
+}
+
+pub fn is_dispatching() -> bool {
+    DISPATCHING.load(Ordering::Acquire)
+}
+
+pub fn test_thread_context(probe: fn()) -> Result<(), Failure> {
+    if cpu::interrupts_enabled()
+        || is_dispatching()
+        || unsafe { addr_of!(CONTEXT_PROBE).read() }.is_some()
+    {
+        return Err(Failure::new("exception_context_probe_state", -1));
+    }
+    unsafe { addr_of_mut!(CONTEXT_PROBE).write(Some(probe)) };
+    let result = test_breakpoint();
+    unsafe { addr_of_mut!(CONTEXT_PROBE).write(None) };
+    result
 }
 
 pub fn expect_thread_guard(guard: u64, bottom: u64, top: u64) {

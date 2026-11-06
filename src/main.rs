@@ -4,6 +4,7 @@
 extern crate alloc;
 
 mod boot;
+mod completion;
 mod cpu;
 mod exceptions;
 mod heap;

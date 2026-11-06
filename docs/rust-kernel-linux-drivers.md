@@ -92,16 +92,36 @@ Kernel tests cover early notifications without retained wake credits, FIFO and
 duplicate wakes, deadline ordering and no early resume, mixed timed/untimed
 all-blocked idle, typed cancellation, slot reuse, and complete resource recovery.
 
+Native counting completions now add remembered credits above these notification
+hints. A single completion supplies one consumable credit; a broadcast latches
+success for existing and future waits until reset. Reset requires no in-flight
+wait, including a waiter already made runnable but not yet resumed. Timeout and
+cancellation unregister without consuming a late credit, and predicate retries
+reuse a fixed absolute deadline instead of extending a relative timeout.
+
+The implementation reuses the Moss-derived IRQ spinlock and native stackful
+wait queue. Pinned Moss's
+[condition variable](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/condvar.rs)
+and waker registration were reviewed as prior art, not imported as a future-based
+interface. The counting policy and synchronous integration are kutox code.
+Signalling, consumption, waiting, and reset require thread context with IF clear
+and no held IRQ guard. Interrupt/exception entry is explicitly excluded, even
+when a thread was active before entry; a returning breakpoint test verifies
+that completion credits are unchanged. The portable tests exercise exact finite
+counter limits and a reference model; guest tests cover stored signals, multiple
+waiters, broadcast/reset, hardware-timed expiry, fixed budgets under notification
+retries, cancellation races, and full resource recovery.
+
 These are native foundations, not functioning Linux wait/completion/mutex APIs.
-External interrupt routing, general timer callbacks, Linux execution adapters,
-and preemption remain future work.
+IRQ-safe deferred signalling, sleeping mutexes, external interrupt routing,
+general timer callbacks, Linux execution adapters, and preemption remain future work.
 
 Nonfatal CPU, frame, heap, and thread tests run through a stable-Rust registry in one
 guest boot, with KTAP results and exact host-side plan/name/summary validation.
 Fatal faults and hardware variants retain isolated boots. The runner checks
 frame accounting, per-order free-block counts, metadata/list invariants, and
 heap accounting, idle scheduler/zero held guards, quiescent APIC/masked PICs,
-and MMIO/APIC/stack cleanup between
+empty completion fixtures, and MMIO/APIC/stack cleanup between
 cases. An intentional-failure suite verifies
 that failed test cases cannot be mistaken for successful QEMU shutdown.
 

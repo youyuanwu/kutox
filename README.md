@@ -26,6 +26,10 @@ reclamation after a thread returns. Native wait queues, cancellation, and timed
 sleep can now suspend these stacks. This is not timer preemption or a complete
 sleep-capable Linux driver runtime.
 
+Native counting completions remember signals before a wait, support a persistent
+`complete_all` latch, and preserve credits across timeout/cancellation. Their
+signalling and waiting APIs are thread-context-only, not IRQ-safe Linux APIs.
+
 An owned local-APIC one-shot timer now provides returning hardware interrupts,
 a monotonic delivery counter, bounded polling, and interrupt-driven idle waits.
 It follows Moss's one-shot timer model using native x86_64 code; legacy PIC
@@ -101,7 +105,7 @@ initialization or device access. Guest logs report the selected mode and whether
 it came from `fw_cfg` or the default. The former Limine `test=...` command-line
 selection and per-mode ISOs are no longer used.
 
-Portable parser, run-queue policy, and allocator tests need no ISO or QEMU:
+Portable parser, run-queue/completion policies, and allocator tests need no ISO or QEMU:
 
 ```sh
 cargo test --locked -p kutox --lib --target x86_64-unknown-linux-gnu
@@ -114,7 +118,7 @@ The default nonfatal kernel suite reuses the same image and needs no NIC:
 python3 scripts/qemu_test.py --case kernel-tests --build-dir build
 ```
 
-Run the same twenty-one registered cases with 32 MiB of guest RAM:
+Run the same twenty-four registered cases with 32 MiB of guest RAM:
 
 ```sh
 python3 scripts/qemu_test.py --case kernel-tests-low-memory --build-dir build
@@ -135,7 +139,7 @@ hardware-configuration cases still use separate boots of the same ISO.
 
 ```text
 KTAP version 1
-1..21
+1..24
 ok 1 cpu.irq_lock_restore
 ok 2 cpu.breakpoint_return
 ok 3 memory.alignment_reservations
@@ -157,7 +161,10 @@ ok 18 irq.mapping_rollback
 ok 19 threads.wait_queues
 ok 20 threads.timed_sleep
 ok 21 threads.wait_cancel
-# Totals: pass:21 fail:0 skip:0 total:21
+ok 22 sync.completion_counting
+ok 23 sync.completion_broadcast
+ok 24 sync.completion_timeout_cancel
+# Totals: pass:24 fail:0 skip:0 total:24
 ```
 
 Tests run sequentially with interrupts disabled at case boundaries. After
@@ -165,7 +172,8 @@ each case the runner checks total/reserved/free page counts and the exact
 free-block count at every order, validates frame states and free-list links,
 checks heap accounting/partial-slab invariants, zero held IRQ guards, an idle
 scheduler with no suspended owner, a disabled/unclaimed local APIC, masked PICs, and unused MMIO/APIC/stack
-windows. Empty slabs must release their frames before the next
+windows. Completion fixtures must have no stored credits, latched broadcasts,
+or in-flight waits. Empty slabs must release their frames before the next
 case; there is no deferred cache purge. Changed state causes a `Bail out!` and
 guest failure rather than continuing with a corrupted fixture. Ordinary
 `Err` results become `not ok` results and the remaining tests run if the
@@ -179,7 +187,7 @@ requires updating `KERNEL_TEST_NAMES` in the
 [host runner](scripts/qemu_test.py) as well.
 
 The intentional-failure mode reports a failing `harness.intentional_failure`
-before the twenty-one normal cases and exits with guest failure. This command
+before the twenty-four normal cases and exits with guest failure. This command
 **must return nonzero**:
 
 ```sh
@@ -385,10 +393,37 @@ disabled for deliberately unsupported hardware entry points.
   the task return normally so its Rust locals are dropped. It is not forced
   thread termination or stack unwinding. Dropping never-run tasks remains
   supported; discarding any started, suspended Rust stack is explicitly rejected.
+- [Native completions](src/completion.rs) combine the existing Moss IRQ lock
+  and native wait queue with a [portable counting policy](src/completion_state.rs).
+  `complete()` adds one remembered credit and notifies one blocked FIFO waiter.
+  `try_wait()` consumes one available credit without sleeping; `wait(timeout_us)`
+  returns `Completed`, `TimedOut`, or `Cancelled`. Woken tasks recheck the credit
+  predicate; notifications alone never constitute completion. Credits are not
+  reserved for a particular waiter, so there is no ownership-handoff/fairness
+  guarantee against another task's `try_wait`.
+- `complete_all()` latches success for current and future waits until `reset()`.
+  Repeated signalling while latched is idempotent. `reset()` rejects any wait
+  still in flight, including a notified or cancelled waiter not yet resumed.
+  With no in-flight waits it clears the latch and any stored credits. Finite
+  credit counts may reach `u64::MAX`; that value is not a broadcast sentinel.
+  Credit/waiter overflow and invalid reset are explicit, non-mutating errors.
+- Completion waits keep one absolute deadline across predicate retries; a
+  notification cannot replenish the timeout budget. Timeout and cancellation
+  unregister without consuming a credit posted before the thread resumes.
+  Positive relative timeouts require calibration; invalid context or timeout
+  overflow leaves credits untouched. `None` waits indefinitely and `Some(0)`
+  checks immediately. Locks are released before any cooperative wake or wait.
+- Completion signalling, consumption, waiting, and reset require an active
+  thread, IF clear, and zero IRQ guards. Interrupt/exception dispatch is also
+  explicitly rejected, even when it interrupted a running thread. Read-only
+  `snapshot()` is available for diagnostics outside threads. A returning
+  breakpoint probe verifies interrupt-entry rejection without modifying stored
+  credits. IRQ-safe deferred signalling, sleeping mutexes, and Linux completion
+  adapters remain future work.
 - [Context switching](src/context_switch.S) saves the six SysV callee-saved
   registers and RSP; the saved return address resumes execution. The initial
   trampoline verifies SysV stack alignment. All switching requires interrupts
-  disabled, no held IRQ guards, and no nested dispatcher. There is no timer
+  disabled, no held IRQ guards, no interrupt/exception dispatch, and no nested dispatcher. There is no timer
   preemption, migration, userspace, or FPU/SIMD state switch.
   A thread that never yields can monopolize the CPU. Panics abort the guest.
 - [Stack mappings](src/memory.rs) provide each thread a 16 KiB writable/NX

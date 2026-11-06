@@ -1,6 +1,7 @@
 use crate::{
     Failure,
     boot::BootInfo,
+    completion,
     cpu::{self, X86Cpu},
     exceptions, heap, io, irq, memory, serial, threads,
 };
@@ -99,6 +100,18 @@ static TESTS: &[TestCase] = &[
         name: "threads.wait_cancel",
         run: threads::wait_tests::cancellation,
     },
+    TestCase {
+        name: "sync.completion_counting",
+        run: completion::tests::counting,
+    },
+    TestCase {
+        name: "sync.completion_broadcast",
+        run: completion::tests::broadcast,
+    },
+    TestCase {
+        name: "sync.completion_timeout_cancel",
+        run: completion::tests::timeout_cancel,
+    },
 ];
 
 static INTENTIONAL_FAILURE: TestCase = TestCase {
@@ -119,6 +132,7 @@ pub fn run(boot: &BootInfo) -> ! {
         || X86Cpu::irq_lock_depth() != 0
         || !threads::is_quiescent()
         || !irq::is_quiescent()
+        || !completion::tests::quiescent()
         || !memory::apic_window_unused(boot)
         || !memory::stack_window_unused(boot)
         || !memory::mmio_window_unused(boot)
@@ -179,6 +193,7 @@ pub fn run(boot: &BootInfo) -> ! {
             || X86Cpu::irq_lock_depth() != 0
             || !threads::is_quiescent()
             || !irq::is_quiescent()
+            || !completion::tests::quiescent()
             || !memory::apic_window_unused(boot)
             || !memory::stack_window_unused(boot)
             || !memory::mmio_window_unused(boot);
