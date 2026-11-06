@@ -16,9 +16,11 @@ The kernel also implements Moss's CPU-operations interface and uses a minimal
 port of its IRQ-safe spinlock. Kernel-owned x86_64 exception tables and test
 modes verify interrupt-state restoration and fault diagnostics.
 
-These ports live in one adapted [Moss libkernel crate](third_party/moss-libkernel/),
+The portable ports live in one adapted [Moss libkernel crate](third_party/moss-libkernel/),
 with `CpuOps` at the root and separate `memory`, `sync`, and `task` modules. They share
-one upstream revision and MIT license.
+one upstream revision and MIT license. The task-bound sleeping-mutex adaptation
+lives beside the kernel runtime in [src/mutex.rs](src/mutex.rs), retaining the
+same pinned source attribution and MIT notice.
 
 The kernel also has bounded, single-CPU cooperative kernel threads: owned
 guarded stacks, native x86_64 context switching, FIFO yields, and off-stack
@@ -29,6 +31,10 @@ sleep-capable Linux driver runtime.
 Native counting completions remember signals before a wait, support a persistent
 `complete_all` latch, and preserve credits across timeout/cancellation. Their
 signalling and waiting APIs are thread-context-only, not IRQ-safe Linux APIs.
+
+Sleeping mutexes now protect Rust data with owner-checked, non-transferable RAII
+guards. Threads can yield or sleep while holding them; contending threads block
+without holding an IRQ lock. Timed-out and cancelled waits never acquire ownership.
 
 An owned local-APIC one-shot timer now provides returning hardware interrupts,
 a monotonic delivery counter, bounded polling, and interrupt-driven idle waits.
@@ -105,7 +111,7 @@ initialization or device access. Guest logs report the selected mode and whether
 it came from `fw_cfg` or the default. The former Limine `test=...` command-line
 selection and per-mode ISOs are no longer used.
 
-Portable parser, run-queue/completion policies, and allocator tests need no ISO or QEMU:
+Portable parser, run-queue/completion/mutex policies, and allocator tests need no ISO or QEMU:
 
 ```sh
 cargo test --locked -p kutox --lib --target x86_64-unknown-linux-gnu
@@ -118,7 +124,7 @@ The default nonfatal kernel suite reuses the same image and needs no NIC:
 python3 scripts/qemu_test.py --case kernel-tests --build-dir build
 ```
 
-Run the same twenty-four registered cases with 32 MiB of guest RAM:
+Run the same twenty-seven registered cases with 32 MiB of guest RAM:
 
 ```sh
 python3 scripts/qemu_test.py --case kernel-tests-low-memory --build-dir build
@@ -139,7 +145,7 @@ hardware-configuration cases still use separate boots of the same ISO.
 
 ```text
 KTAP version 1
-1..24
+1..27
 ok 1 cpu.irq_lock_restore
 ok 2 cpu.breakpoint_return
 ok 3 memory.alignment_reservations
@@ -164,7 +170,10 @@ ok 21 threads.wait_cancel
 ok 22 sync.completion_counting
 ok 23 sync.completion_broadcast
 ok 24 sync.completion_timeout_cancel
-# Totals: pass:24 fail:0 skip:0 total:24
+ok 25 sync.mutex_exclusion
+ok 26 sync.mutex_timeout_cancel
+ok 27 sync.mutex_deadline_retry
+# Totals: pass:27 fail:0 skip:0 total:27
 ```
 
 Tests run sequentially with interrupts disabled at case boundaries. After
@@ -173,7 +182,8 @@ free-block count at every order, validates frame states and free-list links,
 checks heap accounting/partial-slab invariants, zero held IRQ guards, an idle
 scheduler with no suspended owner, a disabled/unclaimed local APIC, masked PICs, and unused MMIO/APIC/stack
 windows. Completion fixtures must have no stored credits, latched broadcasts,
-or in-flight waits. Empty slabs must release their frames before the next
+or in-flight waits; mutex fixtures must have no owner or pending lock calls.
+Empty slabs must release their frames before the next
 case; there is no deferred cache purge. Changed state causes a `Bail out!` and
 guest failure rather than continuing with a corrupted fixture. Ordinary
 `Err` results become `not ok` results and the remaining tests run if the
@@ -187,7 +197,7 @@ requires updating `KERNEL_TEST_NAMES` in the
 [host runner](scripts/qemu_test.py) as well.
 
 The intentional-failure mode reports a failing `harness.intentional_failure`
-before the twenty-four normal cases and exits with guest failure. This command
+before the twenty-seven normal cases and exits with guest failure. This command
 **must return nonzero**:
 
 ```sh
@@ -418,8 +428,34 @@ disabled for deliberately unsupported hardware entry points.
   explicitly rejected, even when it interrupted a running thread. Read-only
   `snapshot()` is available for diagnostics outside threads. A returning
   breakpoint probe verifies interrupt-entry rejection without modifying stored
-  credits. IRQ-safe deferred signalling, sleeping mutexes, and Linux completion
+  credits. IRQ-safe deferred signalling and Linux completion
   adapters remain future work.
+- [Sleeping mutexes](src/mutex.rs) adapt Moss's protected-data/RAII-guard layout
+  to the native thread runtime. Static `Mutex<T>` values expose `lock()`,
+  `try_lock()`, and `lock_timeout(usec)`, returning guards with `Deref`/`DerefMut`
+  access. Unique Rust ownership also permits `get_mut()` and `into_inner()`
+  without scheduling. The internal IRQ lock protects metadata only; it is
+  released before returning a guard, blocking, or waking another task.
+- A guard records the current task's unique handle, not just its reusable slot.
+  Recursive acquisition is an explicit error. Guards are neither `Send` nor
+  `Sync`; normal guard drop verifies task ownership and releases the mutex.
+  Holding a guard across cooperative yields, sleeps, or other waits is supported.
+  Acquisition and guard drop require a running thread, IF clear, zero IRQ guards,
+  and no interrupt/exception dispatch. Invalid acquisition is a typed error;
+  invalid guard-drop context/ownership or a failed unlock wake is fatal rather
+  than silently losing a lock or wakeup. Read-only `snapshot()` remains available
+  for diagnostics outside threads.
+- Contention uses the existing bounded FIFO wait queue, with one absolute
+  deadline across notification retries. Timeout/cancellation unregister the
+  lock attempt and return an error without acquiring or releasing ownership,
+  even if the previous owner unlocked before the waiter resumed. Zero-timeout
+  locking succeeds immediately if free, otherwise times out; positive relative
+  timeouts require calibration, and overflow does not acquire the mutex.
+  Unlock wakes one queued waiter when lock calls remain in flight and may
+  cooperatively yield. Woken tasks recheck availability: there is no reserved
+  ownership handoff, strict fairness, priority inheritance, poisoning,
+  abandoned-owner recovery, or SMP support. These are native Rust mutexes;
+  the boot-only Linux C lock shim is unchanged.
 - [Context switching](src/context_switch.S) saves the six SysV callee-saved
   registers and RSP; the saved return address resumes execution. The initial
   trampoline verifies SysV stack alignment. All switching requires interrupts

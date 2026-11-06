@@ -19,13 +19,18 @@
   [regions](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/region.rs),
   [CpuOps in lib.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/lib.rs),
   [task lifecycle states](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/sched/sched_task/state.rs),
-  and [spinlock.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/spinlock.rs).
-- Location: [third_party/moss-libkernel](third_party/moss-libkernel/).
+  [spinlock.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/spinlock.rs),
+  and [mutex.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/mutex.rs).
+- Locations: portable primitives in
+  [third_party/moss-libkernel](third_party/moss-libkernel/); the task-bound
+  mutex adaptation in [src/mutex.rs](src/mutex.rs).
 
 This single, dependency-free `no_std` crate groups the selected ports under
 `memory`, `sync`, and `task` modules, with `CpuOps` at the crate root as in upstream
 libkernel. It is not the complete upstream library. One license and one pinned
 provenance record cover these components; host tests exercise them together.
+The mutex's kernel-specific ownership/wait integration is described separately
+below; it does not add a task-runtime dependency to the portable crate.
 
 ### Bootstrap memory allocator
 
@@ -140,6 +145,30 @@ were reviewed as prior art. Their `Arc`, future, and `Waker` implementations
 are not imported. Remembered credits, the broadcast latch, in-flight reset
 exclusion, synchronous cancellation/deadlines, and completion tests are not
 claimed as an unchanged Moss primitive or Linux completion implementation.
+
+### Sleeping mutex adaptation
+
+[src/mutex.rs](src/mutex.rs) adapts the pinned Moss mutex's IRQ-locked metadata,
+`UnsafeCell` payload, exclusive RAII guard, dereference operations, and
+`Send`/`Sync` payload bounds. It carries the original copyright and an MIT SPDX
+identifier; the complete permission and warranty notice is included in
+[third_party/moss-libkernel/LICENSE](third_party/moss-libkernel/LICENSE).
+The port is not an unchanged async mutex:
+
+- Native stackful wait queues replace futures, `VecDeque<Waker>`, and polling.
+- A native portable policy records unique task handles, rejects recursive or
+  foreign ownership, and checks waiter accounting rather than keeping only a
+  Boolean locked flag.
+- Guards cannot move or be shared between tasks. Acquisition/drop validate the
+  kernel execution context, and guard drop checks the current owner.
+- IRQ locks are dropped before waiting or notifying. Unlock with pending lock
+  calls can cooperatively yield; timeout/cancellation do not gain ownership.
+- Native host/guest tests cover owner transitions, guarded data, fixed deadline
+  budgets, cancellation, context exclusion, and complete resource recovery.
+
+The adapted mutex file retains MIT licensing. The separate kutox ownership
+policy, general thread/wait runtime, and tests retain their own repository
+licensing. This is not a Linux C mutex implementation.
 
 ## Linux
 

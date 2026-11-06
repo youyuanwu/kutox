@@ -35,6 +35,9 @@ KERNEL_TEST_NAMES = (
     "sync.completion_counting",
     "sync.completion_broadcast",
     "sync.completion_timeout_cancel",
+    "sync.mutex_exclusion",
+    "sync.mutex_timeout_cancel",
+    "sync.mutex_deadline_retry",
 )
 KERNEL_SUITE_CASES = {
     "kernel-tests": "kernel-tests",

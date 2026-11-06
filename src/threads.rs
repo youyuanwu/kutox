@@ -65,6 +65,7 @@ struct Active {
     bottom: usize,
     top: usize,
     reply: *mut Reply,
+    handle: TaskHandle,
 }
 
 #[derive(Clone, Copy)]
@@ -158,6 +159,11 @@ impl WaitToken {
 pub(crate) fn check_thread_context() -> Result<(), SwitchError> {
     switch_allowed()?;
     active().map(|_| ())
+}
+
+pub fn current_task_handle() -> Result<TaskHandle, SwitchError> {
+    check_thread_context()?;
+    Ok(active()?.handle)
 }
 
 pub(crate) fn wait_deadline(timeout_us: Option<u64>) -> Result<Option<u64>, SwitchError> {
@@ -448,6 +454,7 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
                 continue;
             };
             let reason = self.queue.take_wake_reason(id).expect("invalid wake reply");
+            let handle = self.queue.handle(id).expect("running task handle missing");
             {
                 let task = self.tasks[id.0].as_mut().expect("queued thread missing");
                 if let Some(reason) = reason {
@@ -462,6 +469,7 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
                     bottom: task.stack.bottom() as usize,
                     top: task.stack.top() as usize,
                     reply: addr_of_mut!(task.reply),
+                    handle,
                 };
                 EVENT.store(0, Ordering::Release);
                 unsafe { addr_of_mut!(ACTIVE).write(Some(active)) };

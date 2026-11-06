@@ -3,7 +3,7 @@ use crate::{
     boot::BootInfo,
     completion,
     cpu::{self, X86Cpu},
-    exceptions, heap, io, irq, memory, serial, threads,
+    exceptions, heap, io, irq, memory, mutex, serial, threads,
 };
 use kutox::fw_cfg::BootMode;
 use moss_libkernel::CpuOps;
@@ -112,6 +112,18 @@ static TESTS: &[TestCase] = &[
         name: "sync.completion_timeout_cancel",
         run: completion::tests::timeout_cancel,
     },
+    TestCase {
+        name: "sync.mutex_exclusion",
+        run: mutex::tests::exclusion,
+    },
+    TestCase {
+        name: "sync.mutex_timeout_cancel",
+        run: mutex::tests::timeout_cancel,
+    },
+    TestCase {
+        name: "sync.mutex_deadline_retry",
+        run: mutex::tests::deadline_retry,
+    },
 ];
 
 static INTENTIONAL_FAILURE: TestCase = TestCase {
@@ -133,6 +145,7 @@ pub fn run(boot: &BootInfo) -> ! {
         || !threads::is_quiescent()
         || !irq::is_quiescent()
         || !completion::tests::quiescent()
+        || !mutex::tests::quiescent()
         || !memory::apic_window_unused(boot)
         || !memory::stack_window_unused(boot)
         || !memory::mmio_window_unused(boot)
@@ -194,6 +207,7 @@ pub fn run(boot: &BootInfo) -> ! {
             || !threads::is_quiescent()
             || !irq::is_quiescent()
             || !completion::tests::quiescent()
+            || !mutex::tests::quiescent()
             || !memory::apic_window_unused(boot)
             || !memory::stack_window_unused(boot)
             || !memory::mmio_window_unused(boot);

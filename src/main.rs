@@ -12,6 +12,7 @@ mod io;
 mod irq;
 mod kernel_tests;
 mod memory;
+mod mutex;
 mod pci;
 mod serial;
 mod threads;

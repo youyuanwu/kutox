@@ -112,8 +112,32 @@ counter limits and a reference model; guest tests cover stored signals, multiple
 waiters, broadcast/reset, hardware-timed expiry, fixed budgets under notification
 retries, cancellation races, and full resource recovery.
 
+Sleeping mutexes now adapt the pinned Moss
+[mutex data/guard layout](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/mutex.rs)
+to synchronous kernel threads. Their protected data and RAII guards retain the
+Moss MIT attribution; native owner-handle policy and wait integration replace
+the async future/`Waker` queue. This adaptation lives beside the kernel runtime
+so the portable Moss crate does not depend on kutox task handles.
+
+Guards are neither `Send` nor `Sync`, may survive a yield or sleep, and validate
+the owning task's unique handle at release. Recursive locking, invalid context,
+counter overflow, and foreign ownership are explicit failures. Timed-out and
+cancelled lock attempts do not acquire a mutex that became free before they
+resumed, and retries do not extend their absolute deadline. Internal IRQ locks
+are released before sleeping or notifying; an unlock with waiters can yield.
+Acquisition and drop require thread context with IF clear and zero IRQ guards.
+Invalid guard drop is fatal because it cannot return a recoverable error.
+There is no strict handoff/fairness guarantee, priority inheritance, poisoning,
+abandoned-owner recovery, or SMP support.
+
+Host tests cover exact owner transitions, stale/foreign handles, waiter bounds,
+and a reference model. Guest tests cover guarded data across contention/yields,
+recursive and exception-context rejection, hardware-timed sleep while owning a
+mutex, timeout/cancellation after unlock, unchanged retry deadlines, normal Rust
+destruction, and complete allocator/fixture recovery at 128 MiB and 32 MiB.
+
 These are native foundations, not functioning Linux wait/completion/mutex APIs.
-IRQ-safe deferred signalling, sleeping mutexes, external interrupt routing,
+IRQ-safe deferred signalling, external interrupt routing,
 general timer callbacks, Linux execution adapters, and preemption remain future work.
 
 Nonfatal CPU, frame, heap, and thread tests run through a stable-Rust registry in one
@@ -121,7 +145,8 @@ guest boot, with KTAP results and exact host-side plan/name/summary validation.
 Fatal faults and hardware variants retain isolated boots. The runner checks
 frame accounting, per-order free-block counts, metadata/list invariants, and
 heap accounting, idle scheduler/zero held guards, quiescent APIC/masked PICs,
-empty completion fixtures, and MMIO/APIC/stack cleanup between
+empty completion fixtures, unowned mutex fixtures with no pending lock calls,
+and MMIO/APIC/stack cleanup between
 cases. An intentional-failure suite verifies
 that failed test cases cannot be mistaken for successful QEMU shutdown.
 

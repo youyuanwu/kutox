@@ -47,15 +47,22 @@ class KernelSuiteTests(unittest.TestCase):
         ))
 
     def test_requires_the_completion_cases(self):
-        self.assertEqual(KERNEL_TEST_NAMES[21:], (
+        self.assertEqual(KERNEL_TEST_NAMES[21:24], (
             "sync.completion_counting",
             "sync.completion_broadcast",
             "sync.completion_timeout_cancel",
         ))
 
+    def test_requires_the_sleeping_mutex_cases(self):
+        self.assertEqual(KERNEL_TEST_NAMES[24:], (
+            "sync.mutex_exclusion",
+            "sync.mutex_timeout_cancel",
+            "sync.mutex_deadline_retry",
+        ))
+
     def test_rejects_missing_or_failed_timer_cases(self):
         for index, name in enumerate(KERNEL_TEST_NAMES, 1):
-            if not name.startswith(("irq.", "threads.wait_", "threads.timed_sleep", "sync.completion_")):
+            if not name.startswith(("irq.", "threads.wait_", "threads.timed_sleep", "sync.completion_", "sync.mutex_")):
                 continue
             result = f"ok {index} {name}"
             for replacement in ("", result.replace("ok ", "not ok ", 1)):
