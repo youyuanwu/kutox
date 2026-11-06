@@ -12,6 +12,7 @@ mod kernel_tests;
 mod memory;
 mod pci;
 mod serial;
+mod threads;
 mod time;
 
 use core::{arch::asm, ffi::CStr, panic::PanicInfo};
@@ -103,6 +104,9 @@ fn probe() -> Result<[u8; 6], Failure> {
     let heap = heap::initialize(&boot, allocator)?;
     if boot.mode == BootMode::HeapOom {
         heap::fatal_oom();
+    }
+    if boot.mode == BootMode::ThreadStackGuard {
+        match threads::run_guard_test(&boot, allocator)? {}
     }
     let stats = allocator.stats();
     let managed_bytes = stats.total_pages * moss_libkernel::memory::PAGE_SIZE;
@@ -207,6 +211,10 @@ extern "C" fn kutox_check_boot_context() {
     let flags: u64;
     unsafe { asm!("pushfq; pop {}", out(reg) flags, options(preserves_flags)) };
     assert!(flags & (1 << 9) == 0, "probe requires interrupts disabled");
+    assert!(
+        threads::is_idle(),
+        "Linux probe requires the boot dispatcher"
+    );
 }
 
 #[unsafe(no_mangle)]

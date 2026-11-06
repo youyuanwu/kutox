@@ -154,6 +154,7 @@ class CommandTests(unittest.TestCase):
             ("invalid-mode", "unsupported"),
             ("kernel-tests", "kernel-tests"),
             ("heap-oom", "heap-oom"),
+            ("thread-stack-guard", "thread-stack-guard"),
             ("page-fault", "page-fault"),
             ("general-protection", "general-protection"),
             ("double-fault", "double-fault"),
@@ -170,7 +171,7 @@ class CommandTests(unittest.TestCase):
         self.assertNotIn("-fw_cfg", qemu_command(self.args, "default-mode"))
 
     def test_fault_cases_have_no_network_device(self):
-        for case in (*FAULT_RESULTS, "heap-oom"):
+        for case in (*FAULT_RESULTS, "heap-oom", "thread-stack-guard"):
             self.assertNotIn("-netdev", qemu_command(self.args, case))
 
     def test_removed_nonfatal_cases_are_not_cli_choices(self):

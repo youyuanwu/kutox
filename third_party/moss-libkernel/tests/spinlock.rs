@@ -4,6 +4,7 @@ use std::{cell::Cell, sync::Arc, thread};
 thread_local! {
     static INTERRUPTS: Cell<bool> = const { Cell::new(true) };
     static EXPECT_UNLOCKED: Cell<bool> = const { Cell::new(false) };
+    static IRQ_LOCKS: Cell<usize> = const { Cell::new(0) };
 }
 
 struct TestCpu;
@@ -25,6 +26,7 @@ impl CpuOps for TestCpu {
 
     fn restore_interrupt_state(flags: bool) {
         if EXPECT_UNLOCKED.get() {
+            assert_eq!(Self::irq_lock_depth(), 0);
             EXPECT_UNLOCKED.set(false);
             // Re-entry during restore would deadlock if Drop still held the lock.
             drop(RESTORE_LOCK.lock_save_irq());
@@ -34,6 +36,16 @@ impl CpuOps for TestCpu {
 
     fn enable_interrupts() {
         INTERRUPTS.set(true);
+    }
+
+    fn irq_lock_acquired() {
+        IRQ_LOCKS.set(IRQ_LOCKS.get() + 1);
+    }
+    fn irq_lock_released() {
+        IRQ_LOCKS.set(IRQ_LOCKS.get().checked_sub(1).unwrap());
+    }
+    fn irq_lock_depth() -> usize {
+        IRQ_LOCKS.get()
     }
 }
 
@@ -66,13 +78,16 @@ fn nested_distinct_locks_restore_each_saved_state() {
     let first = SpinLockIrq::<_, TestCpu>::new(0);
     let second = SpinLockIrq::<_, TestCpu>::new(0);
     let outer = first.lock_save_irq();
+    assert_eq!(TestCpu::irq_lock_depth(), 1);
     assert!(!INTERRUPTS.get());
     {
         let _inner = second.lock_save_irq();
+        assert_eq!(TestCpu::irq_lock_depth(), 2);
         assert!(!INTERRUPTS.get());
     }
     assert!(!INTERRUPTS.get());
     drop(outer);
+    assert_eq!(TestCpu::irq_lock_depth(), 0);
     assert!(INTERRUPTS.get());
 }
 
@@ -95,6 +110,7 @@ fn unwind_releases_guard_and_restores_state() {
         panic!("test unwind");
     }));
     assert!(result.is_err());
+    assert_eq!(TestCpu::irq_lock_depth(), 0);
     assert!(INTERRUPTS.get());
     drop(lock.lock_save_irq());
 }

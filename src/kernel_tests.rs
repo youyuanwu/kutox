@@ -2,7 +2,7 @@ use crate::{
     Failure,
     boot::BootInfo,
     cpu::{self, X86Cpu},
-    exceptions, heap, io, memory, serial,
+    exceptions, heap, io, memory, serial, threads,
 };
 use kutox::fw_cfg::BootMode;
 use moss_libkernel::CpuOps;
@@ -54,6 +54,18 @@ static TESTS: &[TestCase] = &[
         run: heap::test_exhaustion_recovery,
     },
     TestCase {
+        name: "threads.switching",
+        run: threads::test_switching,
+    },
+    TestCase {
+        name: "threads.lock_exclusion",
+        run: threads::test_exclusion,
+    },
+    TestCase {
+        name: "threads.spawn_rollback",
+        run: threads::test_allocation_failure,
+    },
+    TestCase {
         name: "memory.mmio_cleanup",
         // Test only the mapping machinery: this PCI-hole address is never
         // dereferenced, so the suite needs no NIC or device ownership.
@@ -75,7 +87,12 @@ pub fn run(boot: &BootInfo) -> ! {
     let inject = boot.mode == BootMode::KernelTestsFail;
     let total = TESTS.len() + usize::from(inject);
     serial::print(format_args!("KTAP version 1\n1..{total}\n"));
-    if cpu::interrupts_enabled() || !memory::mmio_window_unused(boot) {
+    if cpu::interrupts_enabled()
+        || X86Cpu::irq_lock_depth() != 0
+        || !threads::is_idle()
+        || !memory::stack_window_unused(boot)
+        || !memory::mmio_window_unused(boot)
+    {
         bail("invalid_suite_entry_state");
     }
     let mut storage = memory::MemoryStorage::new();
@@ -129,6 +146,9 @@ pub fn run(boot: &BootInfo) -> ! {
             || integrity.is_err()
             || heap_integrity.is_err()
             || heap_before != heap.stats()
+            || X86Cpu::irq_lock_depth() != 0
+            || !threads::is_idle()
+            || !memory::stack_window_unused(boot)
             || !memory::mmio_window_unused(boot);
         if interrupts_changed || memory_changed {
             serial::print(format_args!(

@@ -17,8 +17,13 @@ port of its IRQ-safe spinlock. Kernel-owned x86_64 exception tables and test
 modes verify interrupt-state restoration and fault diagnostics.
 
 These ports live in one adapted [Moss libkernel crate](third_party/moss-libkernel/),
-with `CpuOps` at the root and separate `memory` and `sync` modules. They share
+with `CpuOps` at the root and separate `memory`, `sync`, and `task` modules. They share
 one upstream revision and MIT license.
+
+The kernel also has bounded, single-CPU cooperative kernel threads: owned
+guarded stacks, native x86_64 context switching, FIFO yields, and off-stack
+reclamation after a thread returns. This is not timer preemption or a complete
+sleep-capable Linux driver runtime.
 
 This is hardware-helper reuse, not a complete Linux driver port or LinuxKPI
 implementation. There is no packet data path yet. See the
@@ -73,6 +78,7 @@ The runner selects a mode at launch through QEMU's `fw_cfg` file
 | `kernel-tests` | Run all registered nonfatal kernel tests in one boot and emit KTAP results. |
 | `kernel-tests-fail` | Run the same suite with an additional intentionally failing case to test host rejection. |
 | `heap-oom` | Attempt an oversized `Vec` allocation and verify Rust's fatal allocation-failure panic. |
+| `thread-stack-guard` | Read a thread's unmapped lower guard and verify the hardware page fault came from its mapped stack. |
 | `page-fault` | Read a deliberately unmapped address and verify the fatal exception diagnostics. |
 | `general-protection` | Load an invalid data-segment selector and verify the CPU's error code. |
 | `double-fault` | Fault with an unusable stack and verify delivery on the dedicated double-fault IST stack. |
@@ -89,7 +95,7 @@ initialization or device access. Guest logs report the selected mode and whether
 it came from `fw_cfg` or the default. The former Limine `test=...` command-line
 selection and per-mode ISOs are no longer used.
 
-Portable parser and allocator tests need no ISO or QEMU:
+Portable parser, run-queue policy, and allocator tests need no ISO or QEMU:
 
 ```sh
 cargo test --locked -p kutox --lib --target x86_64-unknown-linux-gnu
@@ -102,7 +108,7 @@ The default nonfatal kernel suite reuses the same image and needs no NIC:
 python3 scripts/qemu_test.py --case kernel-tests --build-dir build
 ```
 
-Run the same eleven registered cases with 32 MiB of guest RAM:
+Run the same fourteen registered cases with 32 MiB of guest RAM:
 
 ```sh
 python3 scripts/qemu_test.py --case kernel-tests-low-memory --build-dir build
@@ -123,7 +129,7 @@ hardware-configuration cases still use separate boots of the same ISO.
 
 ```text
 KTAP version 1
-1..11
+1..14
 ok 1 cpu.irq_lock_restore
 ok 2 cpu.breakpoint_return
 ok 3 memory.alignment_reservations
@@ -134,15 +140,18 @@ ok 7 heap.bootstrap_once
 ok 8 heap.box_vec
 ok 9 heap.layouts_zero_realloc
 ok 10 heap.exhaustion_recovery
-ok 11 memory.mmio_cleanup
-# Totals: pass:11 fail:0 skip:0 total:11
+ok 11 threads.switching
+ok 12 threads.lock_exclusion
+ok 13 threads.spawn_rollback
+ok 14 memory.mmio_cleanup
+# Totals: pass:14 fail:0 skip:0 total:14
 ```
 
 Tests run sequentially with interrupts disabled at case boundaries. After
 each case the runner checks total/reserved/free page counts and the exact
 free-block count at every order, validates frame states and free-list links,
-checks heap accounting/partial-slab invariants, and requires the private MMIO
-window to be unused. Empty slabs must release their frames before the next
+checks heap accounting/partial-slab invariants, zero held IRQ guards, an idle
+scheduler, and unused MMIO/stack windows. Empty slabs must release their frames before the next
 case; there is no deferred cache purge. Changed state causes a `Bail out!` and
 guest failure rather than continuing with a corrupted fixture. Ordinary
 `Err` results become `not ok` results and the remaining tests run if the
@@ -156,7 +165,7 @@ requires updating `KERNEL_TEST_NAMES` in the
 [host runner](scripts/qemu_test.py) as well.
 
 The intentional-failure mode reports a failing `harness.intentional_failure`
-before the eleven normal cases and exits with guest failure. This command
+before the fourteen normal cases and exits with guest failure. This command
 **must return nonzero**:
 
 ```sh
@@ -228,7 +237,19 @@ The CTest suite covers:
   probe. Normal MAC boots report pinned bootstrap/buddy provenance and consistent
   metadata/page counts; every mapped probe returns all its page-table frames.
 - CPU/IRQ-lock host tests for saved-state restoration, nesting, release before
-  restore, host-thread contention, unwind cleanup, and a non-Send guard check.
+  restore, held-guard accounting, host-thread contention, unwind cleanup, and a
+  non-Send guard check.
+- Portable FIFO tests for lifecycle errors, slot reuse, capacity/zero-capacity
+  behavior, and 3000 policy transitions checked against a reference queue.
+- Three real threads rotating through 24 yields with an assembly probe for all
+  six SysV callee-saved registers and RSP, stack-local/heap data preservation,
+  normal Rust destructor execution, and complete off-stack frame recovery.
+- Thread checks for nested IRQ-lock exclusion, enabled-interrupt and reentrant
+  dispatch rejection, fixed-capacity and frame-allocation failures, partial
+  stack-mapping rollback, cancellation of unrun tasks, and MMIO coexistence.
+- Per-page stack mapping checks for physical ownership, supervisor writable/NX
+  permissions, and unmapped guards at both ends; a separate guest requires an
+  exact hardware lower-guard page fault with the faulting thread's RSP verified.
 - Hardware-backed guest tests for enabled/disabled interrupt restoration,
   returning breakpoints, page/general-protection faults, double-fault IST
   delivery, and unexpected-fault rejection.
@@ -270,13 +291,36 @@ disabled for deliberately unsupported hardware entry points.
   any test enables interrupts. Unexpected interrupts/exceptions report vector,
   error code, RIP, and CR2 and fail explicitly. This is not a timer or device-IRQ
   runtime. AP startup, x2APIC, userspace entry, FPU/SIMD state switching, and
-  scheduling are outside this milestone.
+  preemptive scheduling are outside this milestone.
 - [Moss IRQ synchronization](third_party/moss-libkernel/src/sync/) preserves the upstream
   basic lock/guard algorithm and CPU interface without mapped guards or the
   complete synchronization subsystem. The guard cannot move between threads;
   recursive acquisition, sleeping/awaiting while held, and use from NMI or
   machine-check handlers are unsupported. Host concurrency tests do not imply
-  that the kernel supports SMP.
+  that the kernel supports SMP. The adapted `CpuOps` adds mandatory per-CPU
+  IRQ-guard acquisition/release/depth hooks; the single-CPU backend counts all
+  guards and rejects a cooperative switch until every guard is released.
+- [Cooperative threads](src/threads.rs) use a bounded, allocation-free
+  [FIFO policy](src/run_queue.rs), with eight task slots and one kernel address
+  space. `spawn` takes a function pointer and integer argument; `yield_now`
+  resumes the same call stack on a later turn. `run` returns when all tasks have
+  exited. Threads exit by returning normally, so Rust locals are dropped before
+  the dispatcher unmaps and releases their stacks. Dropping unrun tasks also
+  releases their stack resources; slot IDs can be reused after reclamation.
+- [Context switching](src/context_switch.S) saves the six SysV callee-saved
+  registers and RSP; the saved return address resumes execution. The initial
+  trampoline verifies SysV stack alignment. All switching requires interrupts
+  disabled, no held IRQ guards, and no nested dispatcher. There is no timer
+  preemption, sleeping/wakeup API, migration, userspace, or FPU/SIMD state switch.
+  A thread that never yields can monopolize the CPU. Panics abort the guest.
+- [Stack mappings](src/memory.rs) provide each thread a 16 KiB writable/NX
+  supervisor stack between unmapped lower and upper guards in a private virtual
+  window. The physical backing remains owned by a buddy guard. Page-table access
+  is scoped under an IRQ lock rather than retained across yields; stack and MMIO
+  mappings can coexist. Stack leaves are unmapped and TLBs flushed before frame
+  release, with shared intermediate tables released when the final stack leaves.
+  The isolated guard test is a deliberate guard read, not stack-overflow recovery.
+  Boot and exception IST stacks retain their existing unguarded storage.
 - [Boot configuration](src/fw_cfg.rs) reads the optional mode file through
   the QEMU I/O selector/data interface during interrupt-disabled boot. Directory
   scanning and payload sizes are bounded; host tests exercise the same parser.
@@ -330,8 +374,10 @@ disabled for deliberately unsupported hardware entry points.
   allowlist and compiles the original `e1000_hw.c` with its original driver
   headers. Unused sections are discarded by the kernel linker.
 - EEPROM locking uses a real atomic acquisition with explicit contention and
-  reentrancy failure. `cond_resched()` checks the interrupt-disabled boot
-  context and returns no reschedule because there are no runnable tasks.
+  reentrancy failure. The bridge and `cond_resched()` require the
+  interrupt-disabled boot dispatcher, outside any active thread run.
+  `cond_resched()` never schedules; cooperative threads do not make this
+  boot-only Linux compatibility layer usable as a driver-thread runtime.
   Scheduling operations such as `msleep()` fail explicitly if reached.
 - MMIO accesses preserve ordering and upstream posted-write flushes. Other
   hardware paths that would require unsupported platform operations trap

@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: MIT
+// Copyright 2025 Matthew Leach
+//! Synchronous subset of Moss's sched_task/state.rs lifecycle.
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TaskState {
+    Runnable,
+    Running,
+    Finished,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InvalidTransition;
+
+impl TaskState {
+    pub fn activate(&mut self) -> Result<(), InvalidTransition> {
+        self.transition(Self::Runnable, Self::Running)
+    }
+
+    pub fn mark_runnable(&mut self) -> Result<(), InvalidTransition> {
+        self.transition(Self::Running, Self::Runnable)
+    }
+
+    pub fn finish(&mut self) -> Result<(), InvalidTransition> {
+        self.transition(Self::Running, Self::Finished)
+    }
+
+    fn transition(&mut self, from: Self, to: Self) -> Result<(), InvalidTransition> {
+        if *self != from {
+            return Err(InvalidTransition);
+        }
+        *self = to;
+        Ok(())
+    }
+}

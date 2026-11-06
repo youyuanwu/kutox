@@ -1,12 +1,13 @@
 use crate::{Failure, io};
 use core::{
     arch::{asm, x86_64::__cpuid},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use moss_libkernel::CpuOps;
 use x86_64::registers::model_specific::Msr;
 
 static READY: AtomicBool = AtomicBool::new(false);
+static IRQ_LOCKS: AtomicUsize = AtomicUsize::new(0);
 
 pub struct X86Cpu;
 
@@ -126,5 +127,25 @@ impl CpuOps for X86Cpu {
             "interrupts before IDT/IRQ setup"
         );
         x86_64::instructions::interrupts::enable();
+    }
+
+    fn irq_lock_acquired() {
+        IRQ_LOCKS
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |depth| {
+                depth.checked_add(1)
+            })
+            .expect("IRQ lock depth overflow");
+    }
+
+    fn irq_lock_released() {
+        IRQ_LOCKS
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |depth| {
+                depth.checked_sub(1)
+            })
+            .expect("IRQ lock depth underflow");
+    }
+
+    fn irq_lock_depth() -> usize {
+        IRQ_LOCKS.load(Ordering::Relaxed)
     }
 }
