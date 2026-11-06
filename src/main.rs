@@ -213,7 +213,7 @@ extern "C" fn kutox_check_boot_context() {
     unsafe { asm!("pushfq; pop {}", out(reg) flags, options(preserves_flags)) };
     assert!(flags & (1 << 9) == 0, "probe requires interrupts disabled");
     assert!(
-        threads::is_idle(),
+        threads::is_quiescent(),
         "Linux probe requires the boot dispatcher"
     );
 }

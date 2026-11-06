@@ -5,6 +5,8 @@ use core::{
 };
 
 static TICKS_PER_US: AtomicU64 = AtomicU64::new(0);
+const PIT_COUNT: u16 = 11932;
+pub const PIT_INTERVAL_US: u64 = PIT_COUNT as u64 * 1_000_000 / 1_193_182;
 
 pub fn now_ticks() -> u64 {
     let low: u32;
@@ -20,12 +22,11 @@ pub fn calibrate() -> Result<u64, Failure> {
 }
 
 pub fn measure_pit_interval<T>(mut sample: impl FnMut() -> T) -> Result<(u64, T, T), Failure> {
-    const COUNT: u16 = 11932;
     let original = io::read8(0x61);
     io::write8(0x61, original & !3);
     io::write8(0x43, 0xb0);
-    io::write8(0x42, COUNT as u8);
-    io::write8(0x42, (COUNT >> 8) as u8);
+    io::write8(0x42, PIT_COUNT as u8);
+    io::write8(0x42, (PIT_COUNT >> 8) as u8);
     let first = sample();
     let start = now_ticks();
     io::write8(0x61, (original & !2) | 1);
@@ -34,8 +35,7 @@ pub fn measure_pit_interval<T>(mut sample: impl FnMut() -> T) -> Result<(u64, T,
             let elapsed = now_ticks().wrapping_sub(start);
             let last = sample();
             io::write8(0x61, original);
-            let expected_us = u64::from(COUNT) * 1_000_000 / 1_193_182;
-            let ticks = elapsed.div_ceil(expected_us);
+            let ticks = elapsed.div_ceil(PIT_INTERVAL_US);
             if ticks == 0 {
                 return Err(Failure::new("tsc_calibration", -1));
             }

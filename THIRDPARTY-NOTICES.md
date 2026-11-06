@@ -113,14 +113,19 @@ this depth to reject cooperative switching while any IRQ-safe guard is held.
 ### Task lifecycle subset
 
 [task.rs](third_party/moss-libkernel/src/task.rs) adapts Moss's `Runnable`,
-`Running`, and `Finished` states and named activate/runnable/finish transitions.
+`Running`, `Sleeping`, and `Finished` states and named
+activate/runnable/sleep/wake/finish transitions.
 The subset uses exclusive mutable access and typed invalid-transition errors,
-not the upstream atomic-enum dependency. Sleeping, stopping, wake races, and
-async-future lifecycle states are not ported.
+not the upstream atomic-enum dependency. The upstream `Woken`, pending-sleep,
+stopping, and async-future lifecycle machinery is not copied. kutox's single-CPU
+cooperative dispatcher registers waits with interrupts disabled and uses native
+notification-generation tokens for early wakes; this is not Moss's concurrent
+CAS-based wake/deactivation protocol or a claim of SMP-safe sleeping.
 
 Moss's reviewed run queue is deadline/virtual-clock based and its kernel work
 is future-based; it is not copied as a stackful scheduler. kutox's bounded FIFO
 policy, owned guarded stacks, dispatcher, x86_64 switch/trampoline assembly, and
+wait queues, elapsed-TSC deadline policy, cancellation/handle ownership, and
 thread tests are native kutox code, built on the existing Moss memory, CPU, and
 IRQ-lock adaptations. No AArch64 context assembly or Ginux source is imported.
 

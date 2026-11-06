@@ -87,6 +87,18 @@ static TESTS: &[TestCase] = &[
         name: "irq.mapping_rollback",
         run: irq::test_mapping_rollback,
     },
+    TestCase {
+        name: "threads.wait_queues",
+        run: threads::wait_tests::queues,
+    },
+    TestCase {
+        name: "threads.timed_sleep",
+        run: threads::wait_tests::timed_sleep,
+    },
+    TestCase {
+        name: "threads.wait_cancel",
+        run: threads::wait_tests::cancellation,
+    },
 ];
 
 static INTENTIONAL_FAILURE: TestCase = TestCase {
@@ -105,7 +117,7 @@ pub fn run(boot: &BootInfo) -> ! {
     serial::print(format_args!("KTAP version 1\n1..{total}\n"));
     if cpu::interrupts_enabled()
         || X86Cpu::irq_lock_depth() != 0
-        || !threads::is_idle()
+        || !threads::is_quiescent()
         || !irq::is_quiescent()
         || !memory::apic_window_unused(boot)
         || !memory::stack_window_unused(boot)
@@ -165,7 +177,7 @@ pub fn run(boot: &BootInfo) -> ! {
             || heap_integrity.is_err()
             || heap_before != heap.stats()
             || X86Cpu::irq_lock_depth() != 0
-            || !threads::is_idle()
+            || !threads::is_quiescent()
             || !irq::is_quiescent()
             || !memory::apic_window_unused(boot)
             || !memory::stack_window_unused(boot)

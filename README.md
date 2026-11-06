@@ -22,7 +22,8 @@ one upstream revision and MIT license.
 
 The kernel also has bounded, single-CPU cooperative kernel threads: owned
 guarded stacks, native x86_64 context switching, FIFO yields, and off-stack
-reclamation after a thread returns. This is not timer preemption or a complete
+reclamation after a thread returns. Native wait queues, cancellation, and timed
+sleep can now suspend these stacks. This is not timer preemption or a complete
 sleep-capable Linux driver runtime.
 
 An owned local-APIC one-shot timer now provides returning hardware interrupts,
@@ -113,7 +114,7 @@ The default nonfatal kernel suite reuses the same image and needs no NIC:
 python3 scripts/qemu_test.py --case kernel-tests --build-dir build
 ```
 
-Run the same eighteen registered cases with 32 MiB of guest RAM:
+Run the same twenty-one registered cases with 32 MiB of guest RAM:
 
 ```sh
 python3 scripts/qemu_test.py --case kernel-tests-low-memory --build-dir build
@@ -134,7 +135,7 @@ hardware-configuration cases still use separate boots of the same ISO.
 
 ```text
 KTAP version 1
-1..18
+1..21
 ok 1 cpu.irq_lock_restore
 ok 2 cpu.breakpoint_return
 ok 3 memory.alignment_reservations
@@ -153,14 +154,17 @@ ok 15 irq.timer_delivery
 ok 16 irq.register_restore
 ok 17 irq.masking_cleanup
 ok 18 irq.mapping_rollback
-# Totals: pass:18 fail:0 skip:0 total:18
+ok 19 threads.wait_queues
+ok 20 threads.timed_sleep
+ok 21 threads.wait_cancel
+# Totals: pass:21 fail:0 skip:0 total:21
 ```
 
 Tests run sequentially with interrupts disabled at case boundaries. After
 each case the runner checks total/reserved/free page counts and the exact
 free-block count at every order, validates frame states and free-list links,
 checks heap accounting/partial-slab invariants, zero held IRQ guards, an idle
-scheduler, a disabled/unclaimed local APIC, masked PICs, and unused MMIO/APIC/stack
+scheduler with no suspended owner, a disabled/unclaimed local APIC, masked PICs, and unused MMIO/APIC/stack
 windows. Empty slabs must release their frames before the next
 case; there is no deferred cache purge. Changed state causes a `Bail out!` and
 guest failure rather than continuing with a corrupted fixture. Ordinary
@@ -175,7 +179,7 @@ requires updating `KERNEL_TEST_NAMES` in the
 [host runner](scripts/qemu_test.py) as well.
 
 The intentional-failure mode reports a failing `harness.intentional_failure`
-before the eighteen normal cases and exits with guest failure. This command
+before the twenty-one normal cases and exits with guest failure. This command
 **must return nonzero**:
 
 ```sh
@@ -306,15 +310,16 @@ disabled for deliberately unsupported hardware entry points.
   and preemptive scheduling remain unsupported.
 - The timer uses divide-by-16 one-shots calibrated against an approximately
   10 ms PIT channel 2 interval, sharing the existing bounded PIT/TSC calibration
-  path. A caller explicitly rearms each one-shot; there is no periodic tick
-  policy or general deadline queue. The hard handler validates actual APIC
+  path. A caller explicitly rearms each one-shot; the cooperative dispatcher
+  now arms the earliest sleeping-thread deadline. There is no periodic tick
+  policy or general callback timer queue. The hard handler validates actual APIC
   in-service state, masks/stops the timer, increments a checked monotonic
   delivery counter, and sends EOI. It never allocates, locks, or schedules.
   A genuine APIC spurious interrupt returns without EOI. The delivery counter
   is not elapsed time: masking can suppress expirations. Ordered TSC samples
   provide the separate bootstrap elapsed-time source, not a production clock.
-- Timer operations require the interrupt-disabled boot dispatcher with no IRQ
-  guards held. Bounded polling restores IF clear even on its 100 ms timeout.
+- Timer operations require an interrupt-disabled boot or scheduler dispatcher
+  with no active thread and no IRQ guards held. Bounded polling restores IF clear even on its 100 ms timeout.
   The idle path checks progress with IF clear and uses adjacent `sti; hlt; cli`
   to avoid missing an already-pending wakeup. HLT has no independent in-guest
   watchdog if hardware stops delivering interrupts; QEMU's 20-second host
@@ -340,12 +345,51 @@ disabled for deliberately unsupported hardware entry points.
   resumes the same call stack on a later turn. `run` returns when all tasks have
   exited. Threads exit by returning normally, so Rust locals are dropped before
   the dispatcher unmaps and releases their stacks. Dropping unrun tasks also
-  releases their stack resources; slot IDs can be reused after reclamation.
+  releases their stack resources; slots can be reused after reclamation.
+  `spawn` returns a handle with a process-wide unique ticket, not a bare slot
+  ID; stale and foreign handles cannot cancel a later task's wait.
+- Static native `WaitQueue`s expose `prepare`, `wake_one`, and `wake_all`.
+  Capture a token before checking the condition, drop any guards, then call
+  `token.wait(timeout_us)` only while the condition still requires waiting.
+  A notification between preparation and registration makes the old token
+  return `Notified` without sleeping. Fresh tokens do not inherit wake credits.
+  Notifications are condition hints, not counting semaphores: callers must
+  recheck their condition. Wake operations are cooperative dispatcher requests,
+  return the number of registered waiters made runnable, and select FIFO waiters.
+  No IRQ callback can invoke them yet.
+- `sleep_us` and `sleep_until` use checked elapsed-TSC deadlines rather than IRQ
+  delivery counts. `sleep_until` takes an absolute ordered-TSC value; relative
+  microseconds require calibration. Zero-duration/past-deadline waits complete
+  immediately. Waits return `Notified`, `TimedOut`, or `Cancelled`; invalid
+  context, overflow, and an unavailable relative clock are explicit errors.
+  The bounded policy stores at most one queue/deadline registration per task.
+  It removes both before notification, expiry, or cancellation makes a task
+  runnable; equal deadlines preserve registration order. At a dispatcher
+  boundary, due deadlines are processed before a thread's wake request, so a
+  notification after expiry cannot turn that timeout into `Notified`.
+- `run_with_timer` checks deadlines in dispatcher context. With no runnable
+  task, it arms the earliest deadline and idles on the dispatcher stack.
+  Early timer IRQs only trigger a deadline recheck; tasks never resume before
+  their elapsed-time deadline. Very distant deadlines use bounded APIC-count
+  chunks. The hard IRQ still does not access the scheduler or its Rust borrows.
+  IRQs are enabled only during dispatcher waits, so a non-yielding thread can
+  still delay sleepers indefinitely.
+- No runnable tasks is distinct from all tasks finished. An untimed all-blocked
+  queue reports `thread_wait_deadlock`; an idle deadline without a supplied timer
+  reports `thread_timer_required`. These errors preserve suspended stacks and
+  registrations for retry or cancellation. The owning scheduler remains
+  exclusive until every started thread returns; another scheduler cannot
+  consume notifications for its blocked waiters.
+- `cancel_wait(handle)` is a boot-dispatcher operation that resumes a blocked
+  task with `Cancelled`. The caller must rerun the owning scheduler and let
+  the task return normally so its Rust locals are dropped. It is not forced
+  thread termination or stack unwinding. Dropping never-run tasks remains
+  supported; discarding any started, suspended Rust stack is explicitly rejected.
 - [Context switching](src/context_switch.S) saves the six SysV callee-saved
   registers and RSP; the saved return address resumes execution. The initial
   trampoline verifies SysV stack alignment. All switching requires interrupts
   disabled, no held IRQ guards, and no nested dispatcher. There is no timer
-  preemption, sleeping/wakeup API, migration, userspace, or FPU/SIMD state switch.
+  preemption, migration, userspace, or FPU/SIMD state switch.
   A thread that never yields can monopolize the CPU. Panics abort the guest.
 - [Stack mappings](src/memory.rs) provide each thread a 16 KiB writable/NX
   supervisor stack between unmapped lower and upper guards in a private virtual

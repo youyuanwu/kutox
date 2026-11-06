@@ -2,17 +2,21 @@ use crate::{
     Failure,
     boot::BootInfo,
     cpu::{self, X86Cpu},
-    io, memory, serial,
+    io, irq, memory, serial, time,
 };
 use core::{
     arch::{asm, global_asm},
     ptr::{addr_of, addr_of_mut},
-    sync::atomic::{AtomicBool, AtomicU8, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
 };
-use kutox::run_queue::{RunQueue, TaskId};
+pub use kutox::run_queue::WakeReason;
+use kutox::run_queue::{RunQueue, TaskHandle, WaitKey};
 use moss_libkernel::CpuOps;
 
 global_asm!(include_str!("context_switch.S"));
+
+#[path = "thread_wait_tests.rs"]
+pub mod wait_tests;
 
 #[repr(C)]
 #[derive(Default)]
@@ -33,6 +37,9 @@ pub enum SwitchError {
     InterruptsEnabled = -51,
     NotRunning = -52,
     Reentrant = -53,
+    NotificationOverflow = -54,
+    ClockUnavailable = -55,
+    DeadlineOverflow = -56,
 }
 
 fn switch_allowed() -> Result<(), SwitchError> {
@@ -53,19 +60,161 @@ struct Active {
     arg: usize,
     bottom: usize,
     top: usize,
+    reply: *mut Reply,
+}
+
+#[derive(Clone, Copy)]
+enum Reply {
+    None,
+    Wait(WakeReason),
+    Woken(usize),
+}
+
+#[derive(Clone, Copy)]
+enum Request {
+    Block {
+        key: Option<WaitKey>,
+        deadline: Option<u64>,
+    },
+    Notify {
+        key: WaitKey,
+        all: bool,
+    },
+}
+
+pub struct WaitQueue {
+    generation: AtomicU64,
+}
+
+#[derive(Clone, Copy)]
+pub struct WaitToken {
+    queue: &'static WaitQueue,
+    generation: u64,
+}
+
+impl WaitQueue {
+    pub const fn new() -> Self {
+        Self {
+            generation: AtomicU64::new(0),
+        }
+    }
+
+    pub fn prepare(&'static self) -> WaitToken {
+        WaitToken {
+            queue: self,
+            generation: self.generation.load(Ordering::Acquire),
+        }
+    }
+
+    pub fn wake_one(&'static self) -> Result<usize, SwitchError> {
+        self.notify(false)
+    }
+
+    pub fn wake_all(&'static self) -> Result<usize, SwitchError> {
+        self.notify(true)
+    }
+
+    fn notify(&'static self, all: bool) -> Result<usize, SwitchError> {
+        switch_allowed()?;
+        active()?;
+        self.generation
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| SwitchError::NotificationOverflow)?;
+        match request(Request::Notify {
+            key: WaitKey(self as *const Self as usize),
+            all,
+        })? {
+            Reply::Woken(count) => Ok(count),
+            _ => fatal("invalid_notify_reply", -1),
+        }
+    }
+}
+
+impl WaitToken {
+    pub fn wait(self, timeout_us: Option<u64>) -> Result<WakeReason, SwitchError> {
+        switch_allowed()?;
+        active()?;
+        let deadline = match timeout_us {
+            Some(0) => Some(time::now_ticks()),
+            Some(usec) => Some(deadline_after(usec)?),
+            None => None,
+        };
+        if self.queue.generation.load(Ordering::Acquire) != self.generation {
+            return Ok(WakeReason::Notified);
+        }
+        // IF stays clear until the dispatcher has registered this request.
+        block(
+            Some(WaitKey(self.queue as *const WaitQueue as usize)),
+            deadline,
+        )
+    }
+}
+
+fn deadline_after(usec: u64) -> Result<u64, SwitchError> {
+    let duration = time::ticks_for_us(usec).map_err(|error| {
+        if error.stage == "tsc_not_calibrated" {
+            SwitchError::ClockUnavailable
+        } else {
+            SwitchError::DeadlineOverflow
+        }
+    })?;
+    time::now_ticks()
+        .checked_add(duration)
+        .ok_or(SwitchError::DeadlineOverflow)
+}
+
+pub fn sleep_us(usec: u64) -> Result<WakeReason, SwitchError> {
+    switch_allowed()?;
+    active()?;
+    if usec == 0 {
+        return Ok(WakeReason::TimedOut);
+    }
+    sleep_until(deadline_after(usec)?)
+}
+
+pub fn sleep_until(deadline: u64) -> Result<WakeReason, SwitchError> {
+    switch_allowed()?;
+    active()?;
+    block(None, Some(deadline))
+}
+
+fn block(key: Option<WaitKey>, deadline: Option<u64>) -> Result<WakeReason, SwitchError> {
+    if deadline.is_some_and(|when| when <= time::now_ticks()) {
+        return Ok(WakeReason::TimedOut);
+    }
+    match request(Request::Block { key, deadline })? {
+        Reply::Wait(reason) => Ok(reason),
+        _ => fatal("invalid_wait_reply", -1),
+    }
+}
+
+fn request(request: Request) -> Result<Reply, SwitchError> {
+    switch_allowed()?;
+    let active = active()?;
+    unsafe { addr_of_mut!(REQUEST).write(Some(request)) };
+    EVENT.store(REQUESTED, Ordering::Release);
+    unsafe { kutox_context_switch(active.thread, active.dispatcher) };
+    Ok(unsafe { active.reply.read() })
 }
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
+static OWNER: AtomicU64 = AtomicU64::new(0);
+static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
 static EVENT: AtomicU8 = AtomicU8::new(0);
 static mut ACTIVE: Option<Active> = None;
+static mut REQUEST: Option<Request> = None;
 const YIELDED: u8 = 1;
 const EXITED: u8 = 2;
+const REQUESTED: u8 = 3;
 
 struct Running;
 
 impl Drop for Running {
     fn drop(&mut self) {
         unsafe { addr_of_mut!(ACTIVE).write(None) };
+        unsafe { addr_of_mut!(REQUEST).write(None) };
         EVENT.store(0, Ordering::Release);
         RUNNING.store(false, Ordering::Release);
     }
@@ -84,6 +233,18 @@ pub fn is_idle() -> bool {
     !RUNNING.load(Ordering::Acquire)
         && unsafe { addr_of!(ACTIVE).read() }.is_none()
         && EVENT.load(Ordering::Acquire) == 0
+        && unsafe { addr_of!(REQUEST).read() }.is_none()
+}
+
+pub fn is_dispatcher_context() -> bool {
+    RUNNING.load(Ordering::Acquire)
+        && unsafe { addr_of!(ACTIVE).read() }.is_none()
+        && EVENT.load(Ordering::Acquire) == 0
+        && unsafe { addr_of!(REQUEST).read() }.is_none()
+}
+
+pub fn is_quiescent() -> bool {
+    is_idle() && OWNER.load(Ordering::Acquire) == 0
 }
 
 fn fatal(stage: &str, code: i32) -> ! {
@@ -130,6 +291,8 @@ struct Task<'space, 'a, 'storage> {
     stack: memory::KernelStack<'space, 'a, 'storage>,
     entry: fn(usize),
     arg: usize,
+    reply: Reply,
+    started: bool,
 }
 
 #[derive(Debug, Default, Eq, PartialEq)]
@@ -137,12 +300,17 @@ pub struct RunStats {
     pub dispatches: usize,
     pub yields: usize,
     pub finished: usize,
+    pub blocks: usize,
+    pub wakes: usize,
+    pub timeouts: usize,
+    pub idle_sleeps: usize,
 }
 
 pub struct Scheduler<'space, 'a, 'storage> {
     tasks: [Option<Task<'space, 'a, 'storage>>; memory::MAX_STACKS],
     queue: RunQueue<{ memory::MAX_STACKS }>,
     space: &'space memory::StackSpace<'a, 'storage>,
+    owner: u64,
 }
 
 impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
@@ -151,10 +319,11 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
             tasks: core::array::from_fn(|_| None),
             queue: RunQueue::new(),
             space,
+            owner: 0,
         }
     }
 
-    pub fn spawn(&mut self, entry: fn(usize), arg: usize) -> Result<TaskId, Failure> {
+    pub fn spawn(&mut self, entry: fn(usize), arg: usize) -> Result<TaskHandle, Failure> {
         switch_allowed().map_err(|error| Failure::new("thread_spawn_context", error as i32))?;
         let id = self
             .queue
@@ -174,19 +343,45 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
             0,
         ];
         unsafe { (rsp as *mut [usize; 8]).write(saved) };
+        self.queue
+            .add(id)
+            .map_err(|error| Failure::new("thread_admit", error as i32))?;
         self.tasks[id.0] = Some(Task {
             context: Context { rsp },
             stack,
             entry,
             arg,
+            reply: Reply::None,
+            started: false,
         });
         self.queue
-            .add(id)
-            .expect("vacant thread slot became occupied");
-        Ok(id)
+            .handle(id)
+            .map_err(|error| Failure::new("thread_handle", error as i32))
     }
 
     pub fn run(&mut self) -> Result<RunStats, Failure> {
+        self.run_inner(None)
+    }
+
+    pub fn run_with_timer(&mut self, timer: &irq::Timer<'_, '_>) -> Result<RunStats, Failure> {
+        self.run_inner(Some(timer))
+    }
+
+    pub fn cancel_wait(&mut self, handle: TaskHandle) -> Result<(), Failure> {
+        switch_allowed().map_err(|error| Failure::new("thread_cancel_context", error as i32))?;
+        if RUNNING.load(Ordering::Acquire) {
+            return Err(Failure::new(
+                "thread_cancel_context",
+                SwitchError::Reentrant as i32,
+            ));
+        }
+        self.queue
+            .cancel_wait(handle)
+            .map(|_| ())
+            .map_err(|error| Failure::new("thread_cancel_wait", error as i32))
+    }
+
+    fn run_inner(&mut self, timer: Option<&irq::Timer<'_, '_>>) -> Result<RunStats, Failure> {
         switch_allowed().map_err(|error| Failure::new("thread_run_context", error as i32))?;
         if RUNNING
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -198,11 +393,47 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
             ));
         }
         let _running = Running;
+        if self.owner == 0 {
+            self.owner = NEXT_OWNER
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                    value.checked_add(1)
+                })
+                .map_err(|_| Failure::new("thread_scheduler_id_overflow", -1))?;
+        }
+        match OWNER.compare_exchange(0, self.owner, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => {}
+            Err(owner) if owner == self.owner => {}
+            Err(_) => return Err(Failure::new("thread_scheduler_busy", -1)),
+        }
         let mut dispatcher = Context::default();
         let mut stats = RunStats::default();
-        while let Some(id) = self.queue.dispatch().expect("invalid run queue dispatch") {
+        loop {
+            stats.timeouts += self.queue.expire(time::now_ticks());
+            let Some(id) = self.queue.dispatch().expect("invalid run queue dispatch") else {
+                if self.queue.is_empty() {
+                    OWNER
+                        .compare_exchange(self.owner, 0, Ordering::AcqRel, Ordering::Acquire)
+                        .expect("scheduler ownership changed");
+                    return Ok(stats);
+                }
+                let deadline = self
+                    .queue
+                    .next_deadline()
+                    .ok_or(Failure::new("thread_wait_deadlock", -1))?;
+                let timer = timer.ok_or(Failure::new("thread_timer_required", -1))?;
+                if timer.arm_until(deadline)? {
+                    timer.idle_until_tick()?;
+                    stats.idle_sleeps += 1;
+                }
+                continue;
+            };
+            let reason = self.queue.take_wake_reason(id).expect("invalid wake reply");
             {
                 let task = self.tasks[id.0].as_mut().expect("queued thread missing");
+                if let Some(reason) = reason {
+                    task.reply = Reply::Wait(reason);
+                }
+                task.started = true;
                 let active = Active {
                     thread: addr_of_mut!(task.context),
                     dispatcher: addr_of_mut!(dispatcher),
@@ -210,6 +441,7 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
                     arg: task.arg,
                     bottom: task.stack.bottom() as usize,
                     top: task.stack.top() as usize,
+                    reply: addr_of_mut!(task.reply),
                 };
                 EVENT.store(0, Ordering::Release);
                 unsafe { addr_of_mut!(ACTIVE).write(Some(active)) };
@@ -219,7 +451,10 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
                 unsafe { addr_of_mut!(ACTIVE).write(None) };
             }
             stats.dispatches += 1;
-            match EVENT.load(Ordering::Acquire) {
+            let event = EVENT.swap(0, Ordering::AcqRel);
+            let request = unsafe { addr_of_mut!(REQUEST).replace(None) };
+            stats.timeouts += self.queue.expire(time::now_ticks());
+            match event {
                 YIELDED => {
                     self.queue
                         .yield_running()
@@ -237,12 +472,40 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
                         .expect("finished thread cannot be reaped");
                     stats.finished += 1;
                 }
+                REQUESTED => match request.expect("missing thread request") {
+                    Request::Block { key, deadline } => {
+                        self.queue
+                            .block_running(key, deadline)
+                            .expect("invalid thread block");
+                        stats.blocks += 1;
+                    }
+                    Request::Notify { key, all } => {
+                        let count = if all {
+                            self.queue.wake_all(key)
+                        } else {
+                            usize::from(self.queue.wake_one(key).is_some())
+                        };
+                        self.tasks[id.0]
+                            .as_mut()
+                            .expect("notifying task missing")
+                            .reply = Reply::Woken(count);
+                        stats.wakes += count;
+                        self.queue.yield_running().expect("invalid notifying task");
+                    }
+                },
                 _ => fatal("switch_without_event", -1),
             }
             self.queue.check_invariants().expect("run queue invariant");
         }
-        assert!(self.queue.is_empty());
-        Ok(stats)
+    }
+}
+
+impl Drop for Scheduler<'_, '_, '_> {
+    fn drop(&mut self) {
+        assert!(
+            self.tasks.iter().flatten().all(|task| !task.started),
+            "cannot discard suspended Rust stacks; cancel waits and run threads to normal return"
+        );
     }
 }
 
@@ -301,6 +564,7 @@ mod tests {
     static STEP: AtomicUsize = AtomicUsize::new(0);
     static DROPPED: AtomicUsize = AtomicUsize::new(0);
     static BAD: AtomicBool = AtomicBool::new(false);
+    static EXCLUSION: WaitQueue = WaitQueue::new();
 
     struct DropProbe(Box<[u8; 64]>);
     impl Drop for DropProbe {
@@ -377,6 +641,7 @@ mod tests {
                     dispatches: 27,
                     yields: 24,
                     finished: 3,
+                    ..RunStats::default()
                 })
                 || STEP.load(Ordering::Relaxed) != 24
                 || DROPPED.load(Ordering::Relaxed) != 3
@@ -393,6 +658,7 @@ mod tests {
                     dispatches: 1,
                     yields: 0,
                     finished: 1,
+                    ..RunStats::default()
                 })
             {
                 return Err(Failure::new("thread_slot_reuse", -1));
@@ -408,7 +674,12 @@ mod tests {
         let inner = SpinLockIrq::<_, X86Cpu>::new(0);
         let first = outer.lock_save_irq();
         let second = inner.lock_save_irq();
-        if X86Cpu::irq_lock_depth() != 2 || yield_now() != Err(SwitchError::LocksHeld) {
+        if X86Cpu::irq_lock_depth() != 2
+            || yield_now() != Err(SwitchError::LocksHeld)
+            || sleep_us(1) != Err(SwitchError::LocksHeld)
+            || EXCLUSION.prepare().wait(None) != Err(SwitchError::LocksHeld)
+            || EXCLUSION.wake_all() != Err(SwitchError::LocksHeld)
+        {
             BAD.store(true, Ordering::Relaxed);
         }
         drop(second);
@@ -417,7 +688,11 @@ mod tests {
         }
         drop(first);
         X86Cpu::enable_interrupts();
-        if yield_now() != Err(SwitchError::InterruptsEnabled) {
+        if yield_now() != Err(SwitchError::InterruptsEnabled)
+            || sleep_us(1) != Err(SwitchError::InterruptsEnabled)
+            || EXCLUSION.prepare().wait(None) != Err(SwitchError::InterruptsEnabled)
+            || EXCLUSION.wake_one() != Err(SwitchError::InterruptsEnabled)
+        {
             BAD.store(true, Ordering::Relaxed);
         }
         X86Cpu::disable_interrupts();
@@ -456,6 +731,7 @@ mod tests {
                     dispatches: 2,
                     yields: 1,
                     finished: 1,
+                    ..RunStats::default()
                 })
         {
             return Err(Failure::new("thread_lock_exclusion", -1));

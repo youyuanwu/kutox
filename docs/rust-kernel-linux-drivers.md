@@ -35,8 +35,8 @@ monotonic delivery count and sends EOI without scheduling or allocating. Ordered
 TSC samples are the separate bootstrap elapsed-time source; neither calibration
 nor delivery counts constitute a production timekeeping service.
 
-Bounded polling and interrupt-driven idle waits require the boot dispatcher,
-IF clear, and zero held IRQ guards. Adjacent `sti; hlt; cli` handles a wakeup
+Bounded polling and interrupt-driven idle waits require a boot or scheduler
+dispatcher with no active thread, IF clear, and zero held IRQ guards. Adjacent `sti; hlt; cli` handles a wakeup
 already pending at the condition check; a host timeout remains the watchdog
 for halted guests whose hardware fails to deliver. Teardown drains any pending
 owned timer interrupt before disabling/unmapping the APIC. Tests cover register/
@@ -62,16 +62,39 @@ Cooperative kernel threads now provide a first stackful execution foundation:
 a bounded eight-slot FIFO, owned 16 KiB guarded stacks, and native x86_64
 callee-saved context switching. Threads yield explicitly and exit by returning,
 so Rust locals drop before the dispatcher reclaims the inactive stack.
-Moss's runnable/running/finished states are adapted, but its future-based,
+Moss's runnable/running/sleeping/finished states are adapted, but its future-based,
 timer-coupled run queue is not copied. The portable policy and architecture
 switching are kutox code. IRQ-guard depth hooks reject switching while locked;
 enabled interrupts and nested dispatchers are also rejected. Page-table borrows
 are scoped rather than retained across yields, allowing stack and MMIO mappings
 to coexist. Tests cover register/data preservation, ordering, guard permissions
 and hardware faults, allocation/mapping rollback, and complete memory recovery
-at 128 MiB and 32 MiB. Boot/IST stacks remain unguarded. External interrupt routing,
-timer queues, wait/wake queues, and preemption remain future work; cooperative threads alone
-do not make sleeping Linux driver calls valid.
+at 128 MiB and 32 MiB. Boot/IST stacks remain unguarded.
+
+Native static wait queues now use preparation-generation tokens to prevent a
+notification before registration from being lost. FIFO wake-one/wake-all
+requests run on the cooperative dispatcher, not in an IRQ handler. Each task
+can register one wait queue, one elapsed-TSC deadline, or both. The dispatcher
+checks deadlines and, when all remaining tasks are blocked, arms the earliest
+one-shot and idles on its own stack. Actual deadlines are rechecked after each
+IRQ, so early calibration wakeups cannot resume a sleeper early. No periodic
+tick policy or preemptive scheduling is introduced; non-yielding threads can
+delay delivery of cooperative wakeups.
+
+Cancellation removes the wait/deadline and resumes the task with a cancellation
+result, allowing ordinary Rust destruction before off-stack reclamation. Unique
+task-handle tickets reject stale or foreign cancellation after slot reuse.
+An untimed all-blocked scheduler reports deadlock; timed blocking without a
+timer reports a missing-timer error. Suspended tasks remain owned for retry or
+cancellation, and that scheduler remains exclusive until they return. Discarding
+started suspended stacks is rejected rather than leaking their Rust locals.
+Kernel tests cover early notifications without retained wake credits, FIFO and
+duplicate wakes, deadline ordering and no early resume, mixed timed/untimed
+all-blocked idle, typed cancellation, slot reuse, and complete resource recovery.
+
+These are native foundations, not functioning Linux wait/completion/mutex APIs.
+External interrupt routing, general timer callbacks, Linux execution adapters,
+and preemption remain future work.
 
 Nonfatal CPU, frame, heap, and thread tests run through a stable-Rust registry in one
 guest boot, with KTAP results and exact host-side plan/name/summary validation.

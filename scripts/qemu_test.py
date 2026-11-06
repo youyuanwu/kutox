@@ -29,6 +29,9 @@ KERNEL_TEST_NAMES = (
     "irq.register_restore",
     "irq.masking_cleanup",
     "irq.mapping_rollback",
+    "threads.wait_queues",
+    "threads.timed_sleep",
+    "threads.wait_cancel",
 )
 KERNEL_SUITE_CASES = {
     "kernel-tests": "kernel-tests",

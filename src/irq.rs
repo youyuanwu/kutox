@@ -60,7 +60,7 @@ fn context() -> Result<(), Failure> {
     if cpu::interrupts_enabled() {
         return Err(Failure::new("timer_interrupts_enabled", -1));
     }
-    if !threads::is_idle() {
+    if !threads::is_idle() && !threads::is_dispatcher_context() {
         return Err(Failure::new("timer_thread_context", -1));
     }
     Ok(())
@@ -90,6 +90,7 @@ pub struct Timer<'a, 'storage> {
     mapping: memory::MmioMapping<'a, 'storage>,
     original_msr: u64,
     interval_counts: u32,
+    interval_ticks: u64,
     enabled: bool,
     _claim: Claim,
     _local: PhantomData<*mut ()>,
@@ -121,6 +122,7 @@ impl<'a, 'storage> Timer<'a, 'storage> {
             mapping,
             original_msr,
             interval_counts: 0,
+            interval_ticks: 0,
             enabled: false,
             _claim: claim,
             _local: PhantomData,
@@ -152,7 +154,10 @@ impl<'a, 'storage> Timer<'a, 'storage> {
         write(address, INITIAL_COUNT, u32::MAX);
         let measurement = time::measure_pit_interval(|| read(address, CURRENT_COUNT));
         write(address, INITIAL_COUNT, 0);
-        let (_, first, last) = measurement?;
+        let (ticks, first, last) = measurement?;
+        timer.interval_ticks = ticks
+            .checked_mul(time::PIT_INTERVAL_US)
+            .ok_or(Failure::new("timer_calibration_overflow", -1))?;
         timer.interval_counts = first
             .checked_sub(last)
             .filter(|&counts| counts != 0 && last != 0)
@@ -167,6 +172,23 @@ impl<'a, 'storage> Timer<'a, 'storage> {
     }
 
     pub fn arm(&self) -> Result<(), Failure> {
+        self.arm_count(self.interval_counts)
+    }
+
+    pub fn arm_until(&self, deadline: u64) -> Result<bool, Failure> {
+        context()?;
+        let remaining = deadline.saturating_sub(time::now_ticks());
+        if remaining == 0 {
+            return Ok(false);
+        }
+        let counts = (u128::from(remaining) * u128::from(self.interval_counts))
+            .div_ceil(u128::from(self.interval_ticks))
+            .clamp(1, u128::from(u32::MAX)) as u32;
+        self.arm_count(counts)?;
+        Ok(true)
+    }
+
+    fn arm_count(&self, counts: u32) -> Result<(), Failure> {
         context()?;
         let address = self.mapping.address();
         if read(address, LVT_TIMER) & MASKED == 0
@@ -176,7 +198,7 @@ impl<'a, 'storage> Timer<'a, 'storage> {
             return Err(Failure::new("timer_already_armed", -1));
         }
         write(address, LVT_TIMER, TIMER_VECTOR as u32);
-        write(address, INITIAL_COUNT, self.interval_counts);
+        write(address, INITIAL_COUNT, counts);
         Ok(())
     }
 
@@ -294,6 +316,18 @@ pub fn test_delivery(
     let mapping = memory::map_mmio(boot, 0xf000_0000, frames)?;
     let before = ticks();
     let timer = Timer::start(boot, frames)?;
+    if timer.arm_until(0)?
+        || !timer.arm_until(u64::MAX)?
+        || read(timer.mapping.address(), INITIAL_COUNT) != u32::MAX
+    {
+        return Err(Failure::new("timer_deadline_bounds", -1));
+    }
+    write(
+        timer.mapping.address(),
+        LVT_TIMER,
+        MASKED | TIMER_VECTOR as u32,
+    );
+    write(timer.mapping.address(), INITIAL_COUNT, 0);
     if !matches!(Timer::start(boot, frames), Err(error) if error.stage == "timer_in_use")
         || !matches!(timer.wait_for_tick(), Err(error) if error.stage == "timer_not_armed")
     {
