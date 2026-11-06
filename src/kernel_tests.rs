@@ -5,11 +5,11 @@ use crate::{
     exceptions, io, memory, serial,
 };
 use kutox::fw_cfg::BootMode;
-use moss_libkernel::{CpuOps, memory::allocators::smalloc::Smalloc};
+use moss_libkernel::CpuOps;
 
 struct TestCase {
     name: &'static str,
-    run: fn(&BootInfo, &mut Smalloc<'_>) -> Result<(), Failure>,
+    run: fn(&BootInfo, &memory::PhysicalFrames<'_>) -> Result<(), Failure>,
 }
 
 static TESTS: &[TestCase] = &[
@@ -28,6 +28,14 @@ static TESTS: &[TestCase] = &[
     TestCase {
         name: "memory.exhaustion_reuse",
         run: |_, _| memory::test_exhaustion_reuse(),
+    },
+    TestCase {
+        name: "memory.buddy_split_coalesce",
+        run: |_, allocator| memory::test_buddy_split_coalesce(allocator),
+    },
+    TestCase {
+        name: "memory.buddy_exhaustion",
+        run: |_, allocator| memory::test_buddy_exhaustion(allocator),
     },
     TestCase {
         name: "memory.mmio_cleanup",
@@ -55,7 +63,7 @@ pub fn run(boot: &BootInfo) -> ! {
         bail("invalid_suite_entry_state");
     }
     let mut storage = memory::MemoryStorage::new();
-    let mut allocator = match memory::initialize(boot, &mut storage) {
+    let allocator = match memory::initialize(boot, &mut storage) {
         Ok(allocator) => allocator,
         Err(error) => {
             serial::print(format_args!(
@@ -71,13 +79,21 @@ pub fn run(boot: &BootInfo) -> ! {
     let mut failed = 0;
     for (index, test) in cases.enumerate() {
         let before = memory::allocation_snapshot(&allocator);
-        let result = (test.run)(boot, &mut allocator);
+        let result = (test.run)(boot, &allocator);
         let interrupts_changed = cpu::interrupts_enabled();
         if interrupts_changed {
             X86Cpu::disable_interrupts();
         }
-        let memory_changed =
-            before != memory::allocation_snapshot(&allocator) || !memory::mmio_window_unused(boot);
+        let integrity = allocator.check_invariants();
+        if let Err(error) = integrity {
+            serial::print(format_args!(
+                "# stage=frame_allocator_invariants code={}\n",
+                error as i32
+            ));
+        }
+        let memory_changed = before != memory::allocation_snapshot(&allocator)
+            || integrity.is_err()
+            || !memory::mmio_window_unused(boot);
         if interrupts_changed || memory_changed {
             serial::print(format_args!(
                 "not ok {} {}\n# interrupts_changed={interrupts_changed} memory_changed={memory_changed}\n",

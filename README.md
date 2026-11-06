@@ -4,8 +4,9 @@ A small x86_64 Rust kernel exploring reuse of Linux device-driver source.
 The first milestone reads a QEMU Intel 82540EM NIC's permanent MAC address
 using **unchanged upstream Linux e1000 hardware code**.
 
-It also uses a fixed-capacity port of Moss's `Smalloc` bootstrap allocator
-for physical RAM and MMIO page-table frames. See
+It uses a fixed-capacity port of Moss's `Smalloc` bootstrap allocator to
+reserve frame metadata, then hands physical RAM to an IRQ-locked adaptation
+of Moss's buddy allocator. The buddy allocator owns MMIO page-table frames. See
 [third-party notices](THIRDPARTY-NOTICES.md) for the pinned source, original
 MIT license, and the port's changes.
 
@@ -13,7 +14,7 @@ The kernel also implements Moss's CPU-operations interface and uses a minimal
 port of its IRQ-safe spinlock. Kernel-owned x86_64 exception tables and test
 modes verify interrupt-state restoration and fault diagnostics.
 
-Both ports live in one adapted [Moss libkernel crate](third_party/moss-libkernel/),
+These ports live in one adapted [Moss libkernel crate](third_party/moss-libkernel/),
 with `CpuOps` at the root and separate `memory` and `sync` modules. They share
 one upstream revision and MIT license.
 
@@ -98,6 +99,15 @@ The default nonfatal kernel suite reuses the same image and needs no NIC:
 python3 scripts/qemu_test.py --case kernel-tests --build-dir build
 ```
 
+Run the same seven registered cases with 32 MiB of guest RAM:
+
+```sh
+python3 scripts/qemu_test.py --case kernel-tests-low-memory --build-dir build
+```
+
+This selects the existing `kernel-tests` mode and the same ISO; there is no
+additional guest boot selector or per-memory-size image.
+
 The old `memory`, `cpu-locks`, and `breakpoint` CLI cases and the corresponding
 standalone boot modes have been removed. Use `kernel-tests` for all nonfatal
 kernel tests; this is their only dispatch and reporting path. Fatal-fault and
@@ -110,18 +120,21 @@ hardware-configuration cases still use separate boots of the same ISO.
 
 ```text
 KTAP version 1
-1..5
+1..7
 ok 1 cpu.irq_lock_restore
 ok 2 cpu.breakpoint_return
 ok 3 memory.alignment_reservations
 ok 4 memory.exhaustion_reuse
-ok 5 memory.mmio_cleanup
-# Totals: pass:5 fail:0 skip:0 total:5
+ok 5 memory.buddy_split_coalesce
+ok 6 memory.buddy_exhaustion
+ok 7 memory.mmio_cleanup
+# Totals: pass:7 fail:0 skip:0 total:7
 ```
 
 Tests run sequentially with interrupts disabled at case boundaries. After
-each case the runner checks the exact allocator memory/reservation lists and
-that the private MMIO window is unused. Changed state causes a `Bail out!` and
+each case the runner checks total/reserved/free page counts and the exact
+free-block count at every order, validates frame states and free-list links,
+and requires the private MMIO window to be unused. Changed state causes a `Bail out!` and
 guest failure rather than continuing with a corrupted fixture. Ordinary
 `Err` results become `not ok` results and the remaining tests run if the
 shared state is intact. Panics and unexpected exceptions fail the whole
@@ -134,7 +147,7 @@ requires updating `KERNEL_TEST_NAMES` in the
 [host runner](scripts/qemu_test.py) as well.
 
 The intentional-failure mode reports a failing `harness.intentional_failure`
-before the five normal cases and exits with guest failure. This command
+before the seven normal cases and exits with guest failure. This command
 **must return nonzero**:
 
 ```sh
@@ -185,10 +198,14 @@ The CTest suite covers:
   every guest command uses the same ISO and selects the intended runtime mode.
 - Allocator host tests for alignment, reserved holes, coalescing, exhaustion,
   release/reuse, capacity failure atomicity, overflow, and deterministic stress.
+- Buddy host tests for every order, small/unaligned regions, sparse metadata,
+  partial-page reservations, metadata exclusion, IRQ restoration, mixed-order
+  churn, and exclusive allocations across concurrent host threads.
 - A guest allocator self-test with real RAM readback, page-table frame reuse,
   and a forced mid-mapping allocation failure that must release partial tables.
-- A 32 MiB guest and checks that normal MAC boots report the pinned Moss allocator
-  and every mapped MAC probe releases its allocated page-table frames.
+- The complete nonfatal suite at both 128 MiB and 32 MiB, plus a 32 MiB MAC
+  probe. Normal MAC boots report pinned bootstrap/buddy provenance and consistent
+  metadata/page counts; every mapped probe returns all its page-table frames.
 - CPU/IRQ-lock host tests for saved-state restoration, nesting, release before
   restore, host-thread contention, unwind cleanup, and a non-Send guard check.
 - Hardware-backed guest tests for enabled/disabled interrupt restoration,
@@ -245,6 +262,18 @@ disabled for deliberately unsupported hardware entry points.
 - [Moss bootstrap memory](third_party/moss-libkernel/src/memory/) is a dependency-free,
   `no_std`, fixed-capacity adaptation, not the complete upstream `libkernel`.
   Its borrowed region storage cannot be shallow-cloned or outlive its owner.
+- [Moss physical frames](third_party/moss-libkernel/src/memory/allocators/phys.rs)
+  split and coalesce naturally aligned power-of-two blocks of 4 KiB pages,
+  orders 0 through 10 (up to 4 MiB). Exclusive, non-cloneable guards return
+  frames on drop; there is no public raw-free API. All free lists and metadata
+  updates use the existing IRQ-safe lock. This does not add kernel SMP support.
+- `Smalloc` reserves page-rounded permanent metadata, then is consumed by the
+  buddy allocator so the two allocators cannot independently allocate the same
+  RAM. Metadata covers complete usable pages only, not physical-address holes.
+  Every page touched by a reservation remains unavailable. Unlike upstream's
+  maximum-order-only initialization, small regions and edge fragments are used.
+  Slabs, heap allocation, allocation reference counting, and DMA APIs are not
+  implemented in this milestone.
 - Limine supplies the memory map. Only `USABLE` RAM enters the allocation
   pool; all other types, including unknown and bootloader-reclaimable entries,
   remain reserved. Low memory, the kernel image, and the active root page table

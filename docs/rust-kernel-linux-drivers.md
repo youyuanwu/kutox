@@ -9,7 +9,8 @@ It is not a claim that either compatibility layer already exists.
 The current implementation is the boot-time e1000 MAC-reading proof described
 in the [README](../README.md) and its [original design](linux-e1000-mac.md).
 It executes upstream hardware helpers and now includes a fixed-capacity port
-of Moss's `Smalloc` for usable RAM and MMIO page-table frames. It still has no
+of Moss's `Smalloc` to bootstrap metadata for its adapted buddy/frame allocator.
+The buddy allocator now owns usable RAM and MMIO page-table frames. It still has no
 packet data path, general driver scheduler, or Linux application environment.
 The [third-party notice](../THIRDPARTY-NOTICES.md) records the source revision,
 MIT license, and adaptation boundaries.
@@ -20,10 +21,18 @@ Shared-image tests cover lock nesting, returning breakpoints, fatal fault
 diagnostics, and double-fault emergency-stack delivery. Hardware IRQs remain
 masked/disabled; this is not yet a scheduler or Linux driver execution runtime.
 
+The buddy port preserves all bootstrap reservations, uses sparse metadata for
+usable pages, and supports naturally aligned power-of-two blocks up to 4 MiB.
+Owned guards release frames under the IRQ-safe lock. Small regions, splitting,
+coalescing, exhaustion/reuse, actual RAM access, and partial MMIO-mapping rollback
+are tested; the nonfatal suite also runs at 32 MiB. A kernel heap is the next
+memory foundation, not part of this frame-allocation milestone.
+
 Nonfatal CPU and memory tests now run through a stable-Rust registry in one
 guest boot, with KTAP results and exact host-side plan/name/summary validation.
 Fatal faults and hardware variants retain isolated boots. The runner checks
-shared-state cleanup between cases, and an intentional-failure suite verifies
+frame accounting, per-order free-block counts, metadata/list invariants, and
+MMIO cleanup between cases. An intentional-failure suite verifies
 that failed test cases cannot be mistaken for successful QEMU shutdown.
 
 The long-term objective is to own the OS architecture while reusing Linux's
@@ -118,7 +127,7 @@ Other references serve different purposes:
 
 These are references, not new build dependencies or a decision to fork any
 of these projects as a whole. The explicit exceptions are the small, vendored
-Moss bootstrap-memory and CPU/IRQ-lock ports described above.
+Moss bootstrap-memory, buddy/frame, and CPU/IRQ-lock ports described above.
 
 The selected integration direction is to use Moss as the primary kernel-core
 source and Ginux as an architectural reference, not copied implementation

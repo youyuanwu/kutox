@@ -14,7 +14,8 @@ def boot_log(result, evidence="E1000_EEPROM reads=100 denied_grants=0", mode="pr
     return (
         f"KUTOX_BOOT linux={REVISION}\n{FOUNDATION}"
         f"BOOT_MODE mode={mode} source={source}\n"
-        f"BOOT_MEMORY_OK source=moss revision={MOSS_REVISION} managed_bytes=1000000 regions=1\n"
+        f"BOOT_MEMORY_OK source=moss revision={MOSS_REVISION} managed_bytes=1048576 regions=1\n"
+        f"FRAME_ALLOCATOR_OK source=moss revision={MOSS_REVISION} total_pages=256 reserved_pages=2 free_pages=254 metadata_bytes=8192\n"
         f"{evidence}\n{tables}{result}\n"
     )
 
@@ -74,6 +75,20 @@ class ResultTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_result("known", 1, output.replace("released=3", "released=0"))
 
+    def test_buddy_initialization_and_consistent_counts_are_required(self):
+        output = boot_log("E1000_MAC_OK mac=52:54:00:12:34:56")
+        marker = next(line for line in output.splitlines() if line.startswith("FRAME_ALLOCATOR"))
+        for replacement in (
+            "", f"{marker}\n{marker}",
+            marker.replace("total_pages=256", "total_pages=257"),
+            marker.replace("free_pages=254", "free_pages=253"),
+            marker.replace("metadata_bytes=8192", "metadata_bytes=8193"),
+            marker.replace("reserved_pages=2 free_pages=254", "reserved_pages=1 free_pages=255"),
+            marker.replace("metadata_bytes=8192", "metadata_bytes=0"),
+        ):
+            with self.subTest(replacement=replacement), self.assertRaises(AssertionError):
+                validate_result("known", 1, output.replace(marker, replacement))
+
     def test_wrong_allocator_revision(self):
         output = boot_log("E1000_MAC_OK mac=52:54:00:12:34:56")
         with self.assertRaises(AssertionError):
@@ -82,7 +97,7 @@ class ResultTests(unittest.TestCase):
     def test_allocator_must_not_report_more_than_guest_ram(self):
         output = boot_log("E1000_MAC_OK mac=52:54:00:12:34:56")
         with self.assertRaises(AssertionError):
-            validate_result("low-memory", 1, output.replace("managed_bytes=1000000", "managed_bytes=67108864"))
+            validate_result("low-memory", 1, output.replace("managed_bytes=1048576", "managed_bytes=67108864"))
 
     def test_runtime_mode_must_match_case(self):
         output = boot_log("E1000_MAC_OK mac=52:54:00:12:34:56", mode="kernel-tests")

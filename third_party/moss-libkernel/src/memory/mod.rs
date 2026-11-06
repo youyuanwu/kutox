@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2025 Matthew Leach
-//! Fixed-capacity port of Moss's Smalloc bootstrap allocator.
+//! Bootstrap and physical frame allocation adapted from Moss.
 pub mod allocators;
 
 pub const PAGE_SIZE: usize = 4096;
@@ -14,6 +14,8 @@ pub enum Error {
     RegionCapacity = -13,
     NoMemory = -14,
     NoMemRegion = -15,
+    InvalidOrder = -16,
+    InvalidFrame = -17,
 }
 
 pub type Result<T> = core::result::Result<T, Error>;

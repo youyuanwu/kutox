@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: MIT
-//! Bootstrap memory allocation.
+//! Bootstrap and physical frame allocation.
 
+pub mod frame;
+pub mod phys;
 pub mod smalloc;

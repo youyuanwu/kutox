@@ -14,9 +14,15 @@ KERNEL_TEST_NAMES = (
     "cpu.breakpoint_return",
     "memory.alignment_reservations",
     "memory.exhaustion_reuse",
+    "memory.buddy_split_coalesce",
+    "memory.buddy_exhaustion",
     "memory.mmio_cleanup",
 )
-KERNEL_SUITE_CASES = ("kernel-tests", "kernel-tests-fail")
+KERNEL_SUITE_CASES = {
+    "kernel-tests": "kernel-tests",
+    "kernel-tests-low-memory": "kernel-tests",
+    "kernel-tests-fail": "kernel-tests-fail",
+}
 FAULT_RESULTS = {
     "page-fault": "CPU_TEST_OK test=page-fault vector=14 address=0x600000000000 error=0x0",
     "general-protection": "CPU_TEST_OK test=general-protection vector=13 error=0xfff8",
@@ -60,8 +66,8 @@ def validate_boot_preamble(lines, mode):
 
 def validate_kernel_suite(case, returncode, output):
     lines = output.splitlines()
-    validate_boot_preamble(lines, case)
-    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "BOOT_MEMORY", "Bail out!")) for line in lines):
+    validate_boot_preamble(lines, KERNEL_SUITE_CASES[case])
+    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "BOOT_MEMORY", "FRAME_ALLOCATOR", "Bail out!")) for line in lines):
         raise AssertionError("suite aborted or reached an unexpected exception/device path")
     headers = [
         index for index, line in enumerate(lines)
@@ -119,7 +125,7 @@ def validate_fault_result(case, returncode, output):
     validate_boot_preamble(lines, case)
     if [line for line in lines if line.startswith("CPU_TEST_")] != [FAULT_RESULTS[case]]:
         raise AssertionError("missing or conflicting fault test result")
-    if any(line.startswith(("E1000_", "BOOT_MEMORY")) for line in lines):
+    if any(line.startswith(("E1000_", "BOOT_MEMORY", "FRAME_ALLOCATOR")) for line in lines):
         raise AssertionError("fault test reached the device or memory probe")
     faults = [line for line in lines if line.startswith("CPU_EXCEPTION")]
     vector, error = {
@@ -154,7 +160,7 @@ def validate_result(case, returncode, output):
     if case == "smp-unsupported":
         if results != ["E1000_MAC_FAIL stage=cpu_single_processor_required code=-1"]:
             raise AssertionError("unsupported SMP configuration was not rejected")
-        if any(line.startswith(("CPU_FOUNDATION", "BOOT_MODE", "BOOT_MEMORY", "E1000_MMIO")) for line in lines):
+        if any(line.startswith(("CPU_FOUNDATION", "BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "E1000_MMIO")) for line in lines):
             raise AssertionError("unsupported SMP configuration reached initialization")
         return
     if [line for line in lines if line.startswith("CPU_FOUNDATION")] != [
@@ -166,7 +172,7 @@ def validate_result(case, returncode, output):
     if case == "invalid-mode":
         if results != ["E1000_MAC_FAIL stage=boot_mode code=-23"]:
             raise AssertionError("unknown runtime mode was not rejected explicitly")
-        if any(line.startswith(("BOOT_MODE", "BOOT_MEMORY", "E1000_MMIO", "E1000_EEPROM")) for line in lines):
+        if any(line.startswith(("BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "E1000_MMIO", "E1000_EEPROM")) for line in lines):
             raise AssertionError("invalid mode reached the probe or silently selected a default")
         return
     mode = "eeprom-timeout" if case == "eeprom-timeout" else "probe"
@@ -187,6 +193,19 @@ def validate_result(case, returncode, output):
     ram = 32 if case == "low-memory" else 128
     if not 0 < managed_bytes <= ram * 1024 * 1024 or regions <= 0:
         raise AssertionError("bootstrap allocator reported invalid usable memory")
+    frames = [line for line in lines if line.startswith("FRAME_ALLOCATOR")]
+    match = re.fullmatch(
+        rf"FRAME_ALLOCATOR_OK source=moss revision={MOSS_REVISION} total_pages=([0-9]+) reserved_pages=([0-9]+) free_pages=([0-9]+) metadata_bytes=([0-9]+)",
+        frames[0] if len(frames) == 1 else "",
+    )
+    if match is None:
+        raise AssertionError("missing, duplicate, or malformed buddy allocator result")
+    total, reserved, free, metadata = map(int, match.groups())
+    if (
+        total * 4096 != managed_bytes or reserved + free != total or free <= 0
+        or metadata % 4096 != 0 or not total <= metadata <= reserved * 4096
+    ):
+        raise AssertionError("buddy allocator reported inconsistent page or metadata counts")
     if mac:
         if results[0] != f"E1000_MAC_OK mac={mac}":
             raise AssertionError(f"unexpected MAC result: {results[0]}")
@@ -243,7 +262,7 @@ def qemu_command(args, case):
     command = [
         args.qemu, "-machine", "pc", "-accel", "tcg", "-cpu", "qemu64",
         "-smp", "2,sockets=2,cores=1,threads=1" if case == "smp-unsupported" else "1",
-        "-m", "32M" if case == "low-memory" else "128M",
+        "-m", "32M" if case in ("low-memory", "kernel-tests-low-memory") else "128M",
         "-display", "none", "-monitor", "none", "-serial", "stdio",
         "-no-reboot", "-boot", "d",
         "-cdrom", str(args.build_dir / "kutox.iso"), "-nic", "none",
@@ -254,7 +273,7 @@ def qemu_command(args, case):
             "eeprom-timeout": "eeprom-timeout",
             "invalid-mode": "unsupported",
             **{case: case for case in FAULT_RESULTS},
-            **{case: case for case in KERNEL_SUITE_CASES},
+            **KERNEL_SUITE_CASES,
         }.get(case, "probe")
         command += ["-fw_cfg", f"name=opt/kutox/test-mode,string={mode}"]
     if case not in ("missing", "smp-unsupported") and case not in FAULT_RESULTS and case not in KERNEL_SUITE_CASES:
