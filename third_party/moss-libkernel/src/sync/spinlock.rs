@@ -51,6 +51,7 @@ impl<T: ?Sized, CPU: CpuOps> SpinLockIrq<T, CPU> {
                 spin_loop();
             }
         }
+        CPU::irq_lock_acquired();
         SpinLockIrqGuard {
             lock: self,
             irq_flags,
@@ -96,6 +97,7 @@ impl<T: ?Sized, CPU: CpuOps> DerefMut for SpinLockIrqGuard<'_, T, CPU> {
 impl<T: ?Sized, CPU: CpuOps> Drop for SpinLockIrqGuard<'_, T, CPU> {
     fn drop(&mut self) {
         self.lock.lock.store(false, Ordering::Release);
+        CPU::irq_lock_released();
         CPU::restore_interrupt_state(self.irq_flags);
     }
 }

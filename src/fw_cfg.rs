@@ -17,6 +17,7 @@ pub enum BootMode {
     KernelTests,
     KernelTestsFail,
     HeapOom,
+    ThreadStackGuard,
 }
 
 impl BootMode {
@@ -31,6 +32,7 @@ impl BootMode {
             Self::KernelTests => "kernel-tests",
             Self::KernelTestsFail => "kernel-tests-fail",
             Self::HeapOom => "heap-oom",
+            Self::ThreadStackGuard => "thread-stack-guard",
         }
     }
 
@@ -123,6 +125,7 @@ pub fn read_mode(
         b"kernel-tests" => Ok(Some(BootMode::KernelTests)),
         b"kernel-tests-fail" => Ok(Some(BootMode::KernelTestsFail)),
         b"heap-oom" => Ok(Some(BootMode::HeapOom)),
+        b"thread-stack-guard" => Ok(Some(BootMode::ThreadStackGuard)),
         _ => Err(Error::UnknownMode),
     }
 }
@@ -188,6 +191,7 @@ mod tests {
             BootMode::KernelTests,
             BootMode::KernelTestsFail,
             BootMode::HeapOom,
+            BootMode::ThreadStackGuard,
         ] {
             assert_eq!(
                 run(&fixture(&[("opt/kutox/test-mode", mode.name().as_bytes())])),

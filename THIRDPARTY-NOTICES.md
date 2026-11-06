@@ -18,11 +18,12 @@
   [addresses](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/address.rs),
   [regions](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/region.rs),
   [CpuOps in lib.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/lib.rs),
+  [task lifecycle states](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/sched/sched_task/state.rs),
   and [spinlock.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/spinlock.rs).
 - Location: [third_party/moss-libkernel](third_party/moss-libkernel/).
 
 This single, dependency-free `no_std` crate groups the selected ports under
-`memory` and `sync` modules, with `CpuOps` at the crate root as in upstream
+`memory`, `sync`, and `task` modules, with `CpuOps` at the crate root as in upstream
 libkernel. It is not the complete upstream library. One license and one pinned
 provenance record cover these components; host tests exercise them together.
 
@@ -95,13 +96,33 @@ fallback for large or more-aligned allocations. The port:
 
 ### CPU interface and IRQ-safe spinlock
 
-This minimal port retains the `CpuOps` method interface, atomic lock algorithm,
+This minimal port retains the original `CpuOps` operations, atomic lock algorithm,
 guard access, non-Send/non-Sync marker, and release-before-interrupt-restore
 ordering. It omits mapped guards and unrelated synchronization primitives,
 uses stable Rust only, and adds local host tests. The x86_64 CPU backend,
 descriptor tables, and exception-entry code are kutox implementations, not
 Moss AArch64 code or Ginux source. Host mock CPU operations are test-only;
 the kernel uses real hardware interrupt instructions.
+
+The adaptation adds required `irq_lock_acquired`, `irq_lock_released`, and
+`irq_lock_depth` hooks to `CpuOps`. Backends count held guards on the current CPU;
+release accounting happens after unlock and before interrupt restoration.
+Hooks cannot allocate, lock, or schedule. The single-CPU x86_64 backend uses
+this depth to reject cooperative switching while any IRQ-safe guard is held.
+
+### Task lifecycle subset
+
+[task.rs](third_party/moss-libkernel/src/task.rs) adapts Moss's `Runnable`,
+`Running`, and `Finished` states and named activate/runnable/finish transitions.
+The subset uses exclusive mutable access and typed invalid-transition errors,
+not the upstream atomic-enum dependency. Sleeping, stopping, wake races, and
+async-future lifecycle states are not ported.
+
+Moss's reviewed run queue is deadline/virtual-clock based and its kernel work
+is future-based; it is not copied as a stackful scheduler. kutox's bounded FIFO
+policy, owned guarded stacks, dispatcher, x86_64 switch/trampoline assembly, and
+thread tests are native kutox code, built on the existing Moss memory, CPU, and
+IRQ-lock adaptations. No AArch64 context assembly or Ginux source is imported.
 
 ## Linux
 

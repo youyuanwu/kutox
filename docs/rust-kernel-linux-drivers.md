@@ -16,11 +16,11 @@ packet data path, general driver scheduler, or Linux application environment.
 The [third-party notice](../THIRDPARTY-NOTICES.md) records the source revision,
 MIT license, and adaptation boundaries.
 
-Moss's CPU interface and basic IRQ
-spinlock, backed by x86_64 interrupt save/restore and kernel-owned GDT/TSS/IDT.
+Moss's CPU interface and basic IRQ spinlock are backed by x86_64 interrupt
+save/restore and kernel-owned GDT/TSS/IDT.
 Shared-image tests cover lock nesting, returning breakpoints, fatal fault
 diagnostics, and double-fault emergency-stack delivery. Hardware IRQs remain
-masked/disabled; this is not yet a scheduler or Linux driver execution runtime.
+masked/disabled; this is not yet an interrupt-driven Linux driver runtime.
 
 The buddy port preserves all bootstrap reservations, uses sparse metadata for
 usable pages, and supports naturally aligned power-of-two blocks up to 4 MiB.
@@ -36,14 +36,29 @@ alignment, zeroing, reallocation, exhaustion/recovery, and frame accounting.
 Fallible OOM returns null; infallible allocation failure reaches Rust's normal
 allocation-failure panic, tested in a separate guest. Locks are acquired heap
 then frame allocator, never in the opposite order. This is not Linux `kmalloc`,
-DMA allocation, or a scheduler. Kernel tasks/context switching are the next
-execution foundation.
+DMA allocation, or a complete driver execution environment.
 
-Nonfatal CPU, frame, and heap tests now run through a stable-Rust registry in one
+Cooperative kernel threads now provide a first stackful execution foundation:
+a bounded eight-slot FIFO, owned 16 KiB guarded stacks, and native x86_64
+callee-saved context switching. Threads yield explicitly and exit by returning,
+so Rust locals drop before the dispatcher reclaims the inactive stack.
+Moss's runnable/running/finished states are adapted, but its future-based,
+timer-coupled run queue is not copied. The portable policy and architecture
+switching are kutox code. IRQ-guard depth hooks reject switching while locked;
+enabled interrupts and nested dispatchers are also rejected. Page-table borrows
+are scoped rather than retained across yields, allowing stack and MMIO mappings
+to coexist. Tests cover register/data preservation, ordering, guard permissions
+and hardware faults, allocation/mapping rollback, and complete memory recovery
+at 128 MiB and 32 MiB. Boot/IST stacks remain unguarded. Timers, interrupt routing,
+wait/wake queues, and preemption remain future work; cooperative threads alone
+do not make sleeping Linux driver calls valid.
+
+Nonfatal CPU, frame, heap, and thread tests run through a stable-Rust registry in one
 guest boot, with KTAP results and exact host-side plan/name/summary validation.
 Fatal faults and hardware variants retain isolated boots. The runner checks
 frame accounting, per-order free-block counts, metadata/list invariants, and
-heap accounting, and MMIO cleanup between cases. An intentional-failure suite verifies
+heap accounting, idle scheduler/zero held guards, and MMIO/stack cleanup between
+cases. An intentional-failure suite verifies
 that failed test cases cannot be mistaken for successful QEMU shutdown.
 
 The long-term objective is to own the OS architecture while reusing Linux's

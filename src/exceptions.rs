@@ -34,6 +34,9 @@ static INITIALIZED: AtomicBool = AtomicBool::new(false);
 static DISPATCHING: AtomicBool = AtomicBool::new(false);
 static EXPECTED_VECTOR: AtomicUsize = AtomicUsize::new(usize::MAX);
 static BREAKPOINTS: AtomicUsize = AtomicUsize::new(0);
+static THREAD_GUARD: AtomicUsize = AtomicUsize::new(0);
+static THREAD_BOTTOM: AtomicUsize = AtomicUsize::new(0);
+static THREAD_TOP: AtomicUsize = AtomicUsize::new(0);
 
 #[repr(C, align(16))]
 struct Stack([u8; STACK_SIZE]);
@@ -178,6 +181,19 @@ extern "C" fn kutox_exception_dispatch(frame: &ExceptionFrame) {
         ));
         io::finish(true);
     }
+    if expected
+        && vector == 14
+        && address != 0
+        && address as usize == THREAD_GUARD.load(Ordering::Relaxed)
+        && frame.error == 0
+        && frame.stack_pointer as usize >= THREAD_BOTTOM.load(Ordering::Relaxed)
+        && (frame.stack_pointer as usize) < THREAD_TOP.load(Ordering::Relaxed)
+    {
+        serial::print(format_args!(
+            "THREAD_GUARD_OK vector=14 address={address:#x} error=0x0 stack=verified\n"
+        ));
+        io::finish(true);
+    }
     if expected && vector == 13 && frame.error == GP_SELECTOR {
         serial::print(format_args!(
             "CPU_TEST_OK test=general-protection vector=13 error={:#x}\n",
@@ -201,6 +217,13 @@ extern "C" fn kutox_exception_dispatch(frame: &ExceptionFrame) {
         "CPU_TEST_FAIL stage=unexpected_exception vector={vector}\n"
     ));
     io::finish(false);
+}
+
+pub fn expect_thread_guard(guard: u64, bottom: u64, top: u64) {
+    THREAD_GUARD.store(guard as usize, Ordering::Relaxed);
+    THREAD_BOTTOM.store(bottom as usize, Ordering::Relaxed);
+    THREAD_TOP.store(top as usize, Ordering::Relaxed);
+    EXPECTED_VECTOR.store(14, Ordering::Release);
 }
 
 pub fn run_fault_test(mode: BootMode) -> Result<core::convert::Infallible, Failure> {

@@ -21,6 +21,9 @@ KERNEL_TEST_NAMES = (
     "heap.box_vec",
     "heap.layouts_zero_realloc",
     "heap.exhaustion_recovery",
+    "threads.switching",
+    "threads.lock_exclusion",
+    "threads.spawn_rollback",
     "memory.mmio_cleanup",
 )
 KERNEL_SUITE_CASES = {
@@ -47,6 +50,7 @@ CASES = {
     **{case: (None, None) for case in FAULT_RESULTS},
     "smp-unsupported": (None, "cpu_single_processor_required"),
     "heap-oom": (None, None),
+    "thread-stack-guard": (None, None),
     **{case: (None, None) for case in KERNEL_SUITE_CASES},
 }
 
@@ -73,7 +77,7 @@ def validate_boot_preamble(lines, mode):
 def validate_kernel_suite(case, returncode, output):
     lines = output.splitlines()
     validate_boot_preamble(lines, KERNEL_SUITE_CASES[case])
-    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "Bail out!")) for line in lines):
+    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "THREAD_", "Bail out!")) for line in lines):
         raise AssertionError("suite aborted or reached an unexpected exception/device path")
     headers = [
         index for index, line in enumerate(lines)
@@ -131,7 +135,7 @@ def validate_fault_result(case, returncode, output):
     validate_boot_preamble(lines, case)
     if [line for line in lines if line.startswith("CPU_TEST_")] != [FAULT_RESULTS[case]]:
         raise AssertionError("missing or conflicting fault test result")
-    if any(line.startswith(("E1000_", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_")) for line in lines):
+    if any(line.startswith(("E1000_", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "THREAD_")) for line in lines):
         raise AssertionError("fault test reached the device or memory probe")
     faults = [line for line in lines if line.startswith("CPU_EXCEPTION")]
     vector, error = {
@@ -162,8 +166,25 @@ def validate_heap_oom(returncode, output):
         "\n".join(lines[panics[0]:]),
     ) is None:
         raise AssertionError("missing exact terminal Rust allocation-failure panic")
-    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "BOOT_MEMORY", "FRAME_ALLOCATOR", "KTAP", "Bail out!")) for line in lines):
+    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "BOOT_MEMORY", "FRAME_ALLOCATOR", "THREAD_", "KTAP", "Bail out!")) for line in lines):
         raise AssertionError("OOM guest reached an unrelated failure or test path")
+
+
+def validate_thread_guard(returncode, output):
+    lines = output.splitlines()
+    validate_boot_preamble(lines, "thread-stack-guard")
+    if returncode != 1:
+        raise AssertionError("thread guard guest did not exit with success")
+    expected = "THREAD_GUARD_OK vector=14 address=0x480000000000 error=0x0 stack=verified"
+    if [line for line in lines if line.startswith("THREAD_")] != [expected] or lines[-1] != expected:
+        raise AssertionError("missing, conflicting, or nonterminal thread guard result")
+    faults = [line for line in lines if line.startswith("CPU_EXCEPTION")]
+    if len(faults) != 1 or re.fullmatch(
+        r"CPU_EXCEPTION vector=14 error=0x0 rip=0x[0-9a-f]+ cr2=0x480000000000", faults[0]
+    ) is None:
+        raise AssertionError("missing exact hardware thread guard fault")
+    if any(line.startswith(("CPU_TEST_", "E1000_", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "Bail out!")) for line in lines):
+        raise AssertionError("thread guard guest reached an unrelated failure or test path")
 
 
 def validate_result(case, returncode, output):
@@ -175,6 +196,9 @@ def validate_result(case, returncode, output):
         return
     if case == "heap-oom":
         validate_heap_oom(returncode, output)
+        return
+    if case == "thread-stack-guard":
+        validate_thread_guard(returncode, output)
         return
     mac, stage = CASES[case]
     lines = output.splitlines()
@@ -189,14 +213,14 @@ def validate_result(case, returncode, output):
     if case == "smp-unsupported":
         if results != ["E1000_MAC_FAIL stage=cpu_single_processor_required code=-1"]:
             raise AssertionError("unsupported SMP configuration was not rejected")
-        if any(line.startswith(("CPU_FOUNDATION", "BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "E1000_MMIO")) for line in lines):
+        if any(line.startswith(("CPU_FOUNDATION", "BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "THREAD_", "E1000_MMIO")) for line in lines):
             raise AssertionError("unsupported SMP configuration reached initialization")
         return
     if [line for line in lines if line.startswith("CPU_FOUNDATION")] != [
         "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled"
     ]:
         raise AssertionError("missing CPU foundation result")
-    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "KTAP", "HEAP_FAIL", "HEAP_OOM", "ok ", "not ok ", "# Totals")) for line in lines):
+    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "THREAD_", "KTAP", "HEAP_FAIL", "HEAP_OOM", "ok ", "not ok ", "# Totals")) for line in lines):
         raise AssertionError("unexpected exception or CPU test during MAC probe")
     if case == "invalid-mode":
         if results != ["E1000_MAC_FAIL stage=boot_mode code=-23"]:
@@ -304,11 +328,12 @@ def qemu_command(args, case):
             "eeprom-timeout": "eeprom-timeout",
             "invalid-mode": "unsupported",
             "heap-oom": "heap-oom",
+            "thread-stack-guard": "thread-stack-guard",
             **{case: case for case in FAULT_RESULTS},
             **KERNEL_SUITE_CASES,
         }.get(case, "probe")
         command += ["-fw_cfg", f"name=opt/kutox/test-mode,string={mode}"]
-    if case not in ("missing", "smp-unsupported", "heap-oom") and case not in FAULT_RESULTS and case not in KERNEL_SUITE_CASES:
+    if case not in ("missing", "smp-unsupported", "heap-oom", "thread-stack-guard") and case not in FAULT_RESULTS and case not in KERNEL_SUITE_CASES:
         model = "e1000e" if case == "unsupported" else "e1000"
         mac = CASES[case][0] or "52:54:00:12:34:56"
         command += [

@@ -3,7 +3,7 @@ use core::{
     arch::asm,
     mem::MaybeUninit,
     ptr::{addr_of, addr_of_mut},
-    sync::atomic::{AtomicU8, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
 };
 use limine::memory_map::EntryType;
 use moss_libkernel::memory::{
@@ -16,12 +16,13 @@ use moss_libkernel::memory::{
         smalloc::Smalloc,
     },
 };
+use moss_libkernel::sync::spinlock::SpinLockIrq;
 use x86_64::{
     PhysAddr, VirtAddr,
     registers::control::Cr3,
     structures::paging::{
         FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
-        Size4KiB,
+        Size4KiB, Translate, mapper::TranslateResult,
     },
 };
 
@@ -30,6 +31,14 @@ const REGION_CAPACITY: usize = 128;
 const NEW_TABLES: usize = 3;
 pub const MMIO_LENGTH: usize = 0x20000;
 pub type PhysicalFrames<'a> = BuddyAllocator<'a, X86Cpu>;
+pub const STACK_BASE: u64 = 0x4800_0000_0000;
+pub const STACK_SIZE: usize = 4 * PAGE_SIZE;
+pub const MAX_STACKS: usize = 8;
+const STACK_STRIDE: u64 = 0x10000;
+const _: () = assert!(MAX_STACKS as u64 * STACK_STRIDE <= 2 * 1024 * 1024);
+static PAGE_TABLE_LOCK: SpinLockIrq<(), X86Cpu> = SpinLockIrq::new(());
+static MMIO_CLAIMED: AtomicBool = AtomicBool::new(false);
+static STACK_CLAIMED: AtomicBool = AtomicBool::new(false);
 static INITIALIZATION: AtomicU8 = AtomicU8::new(0);
 static mut FRAMES: MaybeUninit<PhysicalFrames<'static>> = MaybeUninit::uninit();
 
@@ -308,10 +317,26 @@ pub fn allocation_snapshot(allocator: &PhysicalFrames<'_>) -> FrameAllocatorStat
     allocator.stats()
 }
 
-pub fn mmio_window_unused(boot: &BootInfo) -> bool {
+fn with_mapper<R>(hhdm_offset: u64, run: impl FnOnce(&mut OffsetPageTable<'_>) -> R) -> R {
+    let _guard = PAGE_TABLE_LOCK.lock_save_irq();
     let root = Cr3::read().0.start_address().as_u64();
-    let table = unsafe { &*((root + boot.hhdm_offset) as *const PageTable) };
-    table[VirtAddr::new(MMIO_BASE).p4_index()].is_unused()
+    let table = unsafe { &mut *((root + hhdm_offset) as *mut PageTable) };
+    let mut mapper = unsafe { OffsetPageTable::new(table, VirtAddr::new(hhdm_offset)) };
+    run(&mut mapper)
+}
+
+fn window_unused(hhdm_offset: u64, base: u64) -> bool {
+    with_mapper(hhdm_offset, |mapper| {
+        mapper.level_4_table()[VirtAddr::new(base).p4_index()].is_unused()
+    })
+}
+
+pub fn mmio_window_unused(boot: &BootInfo) -> bool {
+    !MMIO_CLAIMED.load(Ordering::Acquire) && window_unused(boot.hhdm_offset, MMIO_BASE)
+}
+
+pub fn stack_window_unused(boot: &BootInfo) -> bool {
+    !STACK_CLAIMED.load(Ordering::Acquire) && window_unused(boot.hhdm_offset, STACK_BASE)
 }
 
 struct TableFrames<'a, 'storage> {
@@ -320,6 +345,26 @@ struct TableFrames<'a, 'storage> {
     allocated: [Option<PageAllocation<'a, 'storage, X86Cpu>>; NEW_TABLES],
     count: usize,
     error: Option<Error>,
+}
+
+impl<'a, 'storage> TableFrames<'a, 'storage> {
+    fn new(allocator: &'a PhysicalFrames<'storage>, hhdm_offset: u64) -> Self {
+        Self {
+            allocator,
+            hhdm_offset,
+            allocated: core::array::from_fn(|_| None),
+            count: 0,
+            error: None,
+        }
+    }
+
+    fn release(&mut self) {
+        for allocation in self.allocated[..self.count].iter_mut().rev() {
+            drop(allocation.take());
+        }
+        self.count = 0;
+        self.error = None;
+    }
 }
 
 // Each guard exclusively owns a frame before its HHDM mapping is zeroed.
@@ -349,9 +394,9 @@ unsafe impl FrameAllocator<Size4KiB> for TableFrames<'_, '_> {
 }
 
 pub struct MmioMapping<'a, 'storage> {
-    mapper: OffsetPageTable<'static>,
     frames: TableFrames<'a, 'storage>,
     pages: usize,
+    attached: bool,
 }
 
 impl MmioMapping<'_, '_> {
@@ -366,23 +411,20 @@ impl MmioMapping<'_, '_> {
 
 impl Drop for MmioMapping<'_, '_> {
     fn drop(&mut self) {
-        for index in 0..self.pages {
-            let page = Page::<Size4KiB>::containing_address(VirtAddr::new(
-                MMIO_BASE + (index * PAGE_SIZE) as u64,
-            ));
-            self.mapper
-                .unmap(page)
-                .expect("MMIO unmap failed")
-                .1
-                .flush();
+        if self.attached {
+            with_mapper(self.frames.hhdm_offset, |mapper| {
+                for index in 0..self.pages {
+                    let page = Page::<Size4KiB>::containing_address(VirtAddr::new(
+                        MMIO_BASE + (index * PAGE_SIZE) as u64,
+                    ));
+                    mapper.unmap(page).expect("MMIO unmap failed").1.flush();
+                }
+                mapper.level_4_table_mut()[VirtAddr::new(MMIO_BASE).p4_index()].set_unused();
+                x86_64::instructions::tlb::flush_all();
+            });
         }
-        // The entire PML4 slot was unused before this mapping. Detach it before
-        // releasing intermediate tables, including tables from a failed map_to.
-        self.mapper.level_4_table_mut()[VirtAddr::new(MMIO_BASE).p4_index()].set_unused();
-        x86_64::instructions::tlb::flush_all();
-        for allocation in self.frames.allocated[..self.frames.count].iter_mut().rev() {
-            drop(allocation.take());
-        }
+        self.frames.release();
+        MMIO_CLAIMED.store(false, Ordering::Release);
     }
 }
 
@@ -400,48 +442,199 @@ pub fn map_mmio<'a, 'storage>(
     if (pat >> 24) & 0xff != 0 {
         return Err(Failure::new("mmio_pat", -1));
     }
-    let root = Cr3::read().0.start_address().as_u64();
-    let table = unsafe { &mut *((root + boot.hhdm_offset) as *mut PageTable) };
-    if !table[VirtAddr::new(MMIO_BASE).p4_index()].is_unused() {
+    if MMIO_CLAIMED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
         return Err(Failure::new("mmio_window_in_use", -1));
     }
-    let mapper = unsafe { OffsetPageTable::new(table, VirtAddr::new(boot.hhdm_offset)) };
     let mut mapping = MmioMapping {
-        mapper,
-        frames: TableFrames {
-            allocator,
-            hhdm_offset: boot.hhdm_offset,
-            allocated: core::array::from_fn(|_| None),
-            count: 0,
-            error: None,
-        },
+        frames: TableFrames::new(allocator, boot.hhdm_offset),
         pages: 0,
+        attached: false,
     };
     let flags = PageTableFlags::PRESENT
         | PageTableFlags::WRITABLE
         | PageTableFlags::NO_CACHE
         | PageTableFlags::WRITE_THROUGH
         | PageTableFlags::NO_EXECUTE;
-    for offset in (0..MMIO_LENGTH).step_by(PAGE_SIZE) {
-        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(MMIO_BASE + offset as u64));
-        let frame = PhysFrame::containing_address(PhysAddr::new(physical + offset as u64));
-        let result = unsafe {
-            mapping
-                .mapper
-                .map_to(page, frame, flags, &mut mapping.frames)
-        };
-        match result {
-            Ok(flush) => flush.flush(),
-            Err(_) => {
-                return Err(mapping
-                    .frames
-                    .error
-                    .map_or(Failure::new("mmio_mapping", -1), frame_failure));
-            }
+    let result = with_mapper(boot.hhdm_offset, |mapper| {
+        if !mapper.level_4_table()[VirtAddr::new(MMIO_BASE).p4_index()].is_unused() {
+            return Err(Failure::new("mmio_window_in_use", -1));
         }
-        mapping.pages += 1;
-    }
+        mapping.attached = true;
+        for offset in (0..MMIO_LENGTH).step_by(PAGE_SIZE) {
+            let page =
+                Page::<Size4KiB>::containing_address(VirtAddr::new(MMIO_BASE + offset as u64));
+            let frame = PhysFrame::containing_address(PhysAddr::new(physical + offset as u64));
+            match unsafe { mapper.map_to(page, frame, flags, &mut mapping.frames) } {
+                Ok(flush) => flush.flush(),
+                Err(_) => {
+                    return Err(mapping
+                        .frames
+                        .error
+                        .map_or(Failure::new("mmio_mapping", -1), frame_failure));
+                }
+            }
+            mapping.pages += 1;
+        }
+        Ok(())
+    });
+    result?;
     Ok(mapping)
+}
+
+struct StackTables<'a, 'storage> {
+    frames: TableFrames<'a, 'storage>,
+    used: usize,
+}
+
+pub struct StackSpace<'a, 'storage> {
+    tables: SpinLockIrq<StackTables<'a, 'storage>, X86Cpu>,
+}
+
+impl<'a, 'storage> StackSpace<'a, 'storage> {
+    pub fn new(boot: &BootInfo, allocator: &'a PhysicalFrames<'storage>) -> Result<Self, Failure> {
+        if STACK_CLAIMED
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(Failure::new("stack_window_in_use", -1));
+        }
+        if !window_unused(boot.hhdm_offset, STACK_BASE) {
+            STACK_CLAIMED.store(false, Ordering::Release);
+            return Err(Failure::new("stack_window_in_use", -1));
+        }
+        Ok(Self {
+            tables: SpinLockIrq::new(StackTables {
+                frames: TableFrames::new(allocator, boot.hhdm_offset),
+                used: 0,
+            }),
+        })
+    }
+
+    pub fn allocate(&self, slot: usize) -> Result<KernelStack<'_, 'a, 'storage>, Failure> {
+        if slot >= MAX_STACKS {
+            return Err(Failure::new("stack_slot", -1));
+        }
+        let mut tables = self.tables.lock_save_irq();
+        if tables.used & (1 << slot) != 0 {
+            return Err(Failure::new("stack_slot_in_use", -1));
+        }
+        let allocation = tables
+            .frames
+            .allocator
+            .alloc_frames(2)
+            .map_err(frame_failure)?;
+        let mut stack = KernelStack {
+            space: self,
+            allocation,
+            slot,
+            mapped: 0,
+        };
+        tables.used |= 1 << slot;
+        let hhdm = tables.frames.hhdm_offset;
+        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
+        let result = with_mapper(hhdm, |mapper| {
+            for offset in (0..STACK_SIZE).step_by(PAGE_SIZE) {
+                let page = Page::<Size4KiB>::containing_address(VirtAddr::new(
+                    stack.bottom() + offset as u64,
+                ));
+                let frame = PhysFrame::containing_address(PhysAddr::new(
+                    stack.allocation.region().start_address().value() as u64 + offset as u64,
+                ));
+                match unsafe { mapper.map_to(page, frame, flags, &mut tables.frames) } {
+                    Ok(flush) => flush.flush(),
+                    Err(_) => {
+                        return Err(tables
+                            .frames
+                            .error
+                            .map_or(Failure::new("stack_mapping", -1), frame_failure));
+                    }
+                }
+                stack.mapped += 1;
+            }
+            Ok(())
+        });
+        drop(tables);
+        result?;
+        Ok(stack)
+    }
+}
+
+impl Drop for StackSpace<'_, '_> {
+    fn drop(&mut self) {
+        let tables = self.tables.lock_save_irq();
+        assert_eq!(tables.used, 0, "dropping a stack space with live stacks");
+        assert_eq!(tables.frames.count, 0, "stack page-table leak");
+        STACK_CLAIMED.store(false, Ordering::Release);
+    }
+}
+
+pub struct KernelStack<'space, 'a, 'storage> {
+    space: &'space StackSpace<'a, 'storage>,
+    allocation: PageAllocation<'a, 'storage, X86Cpu>,
+    slot: usize,
+    mapped: usize,
+}
+
+impl KernelStack<'_, '_, '_> {
+    pub fn guard(&self) -> u64 {
+        STACK_BASE + self.slot as u64 * STACK_STRIDE
+    }
+    pub fn bottom(&self) -> u64 {
+        self.guard() + PAGE_SIZE as u64
+    }
+    pub fn top(&self) -> u64 {
+        self.bottom() + STACK_SIZE as u64
+    }
+
+    pub fn mapping_valid(&self) -> bool {
+        let tables = self.space.tables.lock_save_irq();
+        with_mapper(tables.frames.hhdm_offset, |mapper| {
+            mapper.translate_addr(VirtAddr::new(self.guard())).is_none()
+                && mapper.translate_addr(VirtAddr::new(self.top())).is_none()
+                && (0..STACK_SIZE).step_by(PAGE_SIZE).all(|offset| {
+                    let virtual_address = VirtAddr::new(self.bottom() + offset as u64);
+                    let physical = self.allocation.region().start_address().value() as u64
+                        + offset as u64;
+                    mapper.translate_addr(virtual_address) == Some(PhysAddr::new(physical))
+                        && matches!(mapper.translate(virtual_address),
+                            TranslateResult::Mapped { flags, .. }
+                                if flags.contains(PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE)
+                                    && !flags.contains(PageTableFlags::USER_ACCESSIBLE))
+                })
+        })
+    }
+}
+
+impl Drop for KernelStack<'_, '_, '_> {
+    fn drop(&mut self) {
+        let rsp: u64;
+        unsafe { asm!("mov {}, rsp", out(reg) rsp, options(nomem, nostack, preserves_flags)) };
+        assert!(
+            rsp < self.bottom() || rsp >= self.top(),
+            "freeing the current stack"
+        );
+        let mut tables = self.space.tables.lock_save_irq();
+        let hhdm = tables.frames.hhdm_offset;
+        with_mapper(hhdm, |mapper| {
+            for offset in 0..self.mapped {
+                let page = Page::<Size4KiB>::containing_address(VirtAddr::new(
+                    self.bottom() + (offset * PAGE_SIZE) as u64,
+                ));
+                mapper.unmap(page).expect("stack unmap failed").1.flush();
+            }
+            tables.used &= !(1 << self.slot);
+            if tables.used == 0 {
+                mapper.level_4_table_mut()[VirtAddr::new(STACK_BASE).p4_index()].set_unused();
+                x86_64::instructions::tlb::flush_all();
+            }
+        });
+        if tables.used == 0 {
+            tables.frames.release();
+        }
+    }
 }
 
 pub fn test_mapping_reuse(

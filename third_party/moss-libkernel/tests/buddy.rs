@@ -13,6 +13,7 @@ use std::{cell::Cell, collections::BTreeSet, sync::Mutex, thread};
 
 thread_local! {
     static INTERRUPTS: Cell<bool> = const { Cell::new(true) };
+    static IRQ_LOCKS: Cell<usize> = const { Cell::new(0) };
 }
 
 struct TestCpu;
@@ -38,6 +39,16 @@ impl CpuOps for TestCpu {
 
     fn enable_interrupts() {
         INTERRUPTS.set(true);
+    }
+
+    fn irq_lock_acquired() {
+        IRQ_LOCKS.set(IRQ_LOCKS.get() + 1);
+    }
+    fn irq_lock_released() {
+        IRQ_LOCKS.set(IRQ_LOCKS.get().checked_sub(1).unwrap());
+    }
+    fn irq_lock_depth() -> usize {
+        IRQ_LOCKS.get()
     }
 }
 
