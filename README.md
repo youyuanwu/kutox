@@ -9,6 +9,10 @@ for physical RAM and MMIO page-table frames. See
 [third-party notices](THIRDPARTY-NOTICES.md) for the pinned source, original
 MIT license, and the port's changes.
 
+The kernel also implements Moss's CPU-operations interface and uses a minimal
+port of its IRQ-safe spinlock. Kernel-owned x86_64 exception tables and test
+modes verify interrupt-state restoration and fault diagnostics.
+
 This is hardware-helper reuse, not a complete Linux driver port or LinuxKPI
 implementation. There is no packet data path yet. See the
 [milestone design](docs/linux-e1000-mac.md) for its scope and acceptance goals.
@@ -60,6 +64,12 @@ The runner selects a mode at launch through QEMU's `fw_cfg` file
 | `probe` | Normal MAC probe; also the default when the optional file is absent. |
 | `eeprom-timeout` | Withhold the EEPROM grant to exercise the upstream retry/error path. |
 | `boot-memory` | Run allocator and mapping self-tests before the normal MAC probe. |
+| `cpu-locks` | Check real interrupt save/restore, nested distinct locks, and re-acquisition. |
+| `breakpoint` | Execute `int3`, return through the exception entry, and verify registers and interrupt state. |
+| `page-fault` | Read a deliberately unmapped address and verify the fatal exception diagnostics. |
+| `general-protection` | Load an invalid data-segment selector and verify the CPU's error code. |
+| `double-fault` | Fault with an unusable stack and verify delivery on the dedicated double-fault IST stack. |
+| `unexpected-page-fault` | Confirm an unanticipated fault reports failure, not a successful test result. |
 
 For example, the memory case adds this QEMU argument:
 
@@ -77,12 +87,15 @@ Portable parser and allocator tests need no ISO or QEMU:
 ```sh
 cargo test --locked -p kutox --lib --target x86_64-unknown-linux-gnu
 cargo test --locked -p moss-boot-memory --target x86_64-unknown-linux-gnu
+cargo test --locked -p moss-sync --target x86_64-unknown-linux-gnu
 ```
 
 The guest allocator tests reuse the same image:
 
 ```sh
 python3 scripts/qemu_test.py --case memory --build-dir build
+python3 scripts/qemu_test.py --case cpu-locks --build-dir build
+python3 scripts/qemu_test.py --case breakpoint --build-dir build
 ```
 
 A successful guest reports:
@@ -97,6 +110,11 @@ nonzero count, the exact configured MAC, and the correct guest exit outcome.
 QEMU's `isa-debug-exit` encodes guest success as host status **1**, and guest
 failure as **3**. The Python harness translates a correctly observed test
 outcome into ordinary host success; a timeout or crash always fails.
+CPU-only cases do not attach a NIC or run the MAC probe. They require exact
+CPU test results and exception diagnostics where applicable. Expected fatal
+fault tests terminate from their handlers after checking the vector and error.
+Only the unexpected-fault negative test intentionally exits with guest failure;
+the harness verifies that failure precisely.
 
 ### Tests
 
@@ -119,6 +137,13 @@ The CTest suite covers:
   and a forced mid-mapping allocation failure that must release partial tables.
 - A 32 MiB guest and checks that every boot reports the pinned Moss allocator
   and every mapped MAC probe releases its allocated page-table frames.
+- CPU/IRQ-lock host tests for saved-state restoration, nesting, release before
+  restore, host-thread contention, unwind cleanup, and a non-Send guard check.
+- Hardware-backed guest tests for enabled/disabled interrupt restoration,
+  returning breakpoints, page/general-protection faults, double-fault IST
+  delivery, and unexpected-fault rejection.
+- Rejection of a two-socket guest before initialization; Limine processor
+  discovery, not just CPUID's per-package count, enforces the one-CPU limit.
 
 The EEPROM fault case selects `eeprom-timeout` through QEMU `fw_cfg`.
 The compatibility MMIO backend then clears the EEPROM grant bit in register
@@ -132,6 +157,7 @@ cargo fmt --all -- --check
 cargo clippy --locked --release -- -D warnings
 cargo clippy --locked -p kutox --lib --target x86_64-unknown-linux-gnu -- -D warnings
 cargo clippy --locked -p moss-boot-memory --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
+cargo clippy --locked -p moss-sync --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
 ```
 
 C compilation enables warnings as errors. Unused parameter warnings are
@@ -139,6 +165,27 @@ disabled for deliberately unsupported hardware entry points.
 
 ## Implementation boundaries
 
+- [CPU support](src/cpu.rs) implements `CpuOps` for the BSP. It requires one
+  Limine-discovered CPU, reports the hardware initial APIC ID, and retains only
+  the interrupt-enable bit when saving/restoring interrupt state. It does not
+  overwrite unrelated RFLAGS. Halting disables interrupts and executes `hlt`.
+- [Exception support](src/exceptions.rs) installs kernel-owned GDT, TSS, and all
+  256 interrupt gates. Separate permanent stacks back NMI, double-fault, and
+  machine-check IST entries. These stacks have no guard pages yet.
+  [Assembly entry stubs](src/exception_entry.S) normalize hardware error codes,
+  preserve general-purpose registers, clear DF for the Rust ABI, align the call
+  stack, and return via `iretq` only for an expected breakpoint.
+- The legacy PIC is remapped and fully masked; the local APIC is disabled before
+  any test enables interrupts. Unexpected interrupts/exceptions report vector,
+  error code, RIP, and CR2 and fail explicitly. This is not a timer or device-IRQ
+  runtime. AP startup, x2APIC, userspace entry, FPU/SIMD state switching, and
+  scheduling are outside this milestone.
+- [Moss IRQ synchronization](third_party/moss-sync/) preserves the upstream
+  basic lock/guard algorithm and CPU interface without mapped guards or the
+  complete synchronization subsystem. The guard cannot move between threads;
+  recursive acquisition, sleeping/awaiting while held, and use from NMI or
+  machine-check handlers are unsupported. Host concurrency tests do not imply
+  that the kernel supports SMP.
 - [Boot configuration](src/fw_cfg.rs) reads the optional mode file through
   the QEMU I/O selector/data interface during interrupt-disabled boot. Directory
   scanning and payload sizes are bounded; host tests exercise the same parser.
@@ -188,6 +235,8 @@ small-helper approach used by [rko](https://github.com/youyuanwu/rko), without
 depending on its Linux-backed runtime wrappers.
 
 Linux source retains its upstream notices and remains in the submodule.
-Moss-derived source retains its [MIT notice](third_party/moss-boot-memory/LICENSE).
+Moss-derived source retains its MIT notices for
+[bootstrap memory](third_party/moss-boot-memory/LICENSE) and
+[IRQ synchronization](third_party/moss-sync/LICENSE).
 See [third-party notices](THIRDPARTY-NOTICES.md) for provenance and scope.
 Other kutox code remains under [GPLv2](LICENSE). No Ginux source is incorporated.

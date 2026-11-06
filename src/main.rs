@@ -2,6 +2,8 @@
 #![no_main]
 
 mod boot;
+mod cpu;
+mod exceptions;
 mod io;
 mod memory;
 mod pci;
@@ -75,6 +77,7 @@ pub extern "C" fn kmain() -> ! {
 }
 
 fn probe() -> Result<[u8; 6], Failure> {
+    exceptions::initialize()?;
     let boot = boot::collect()?;
     println!(
         "BOOT_MODE mode={} source={}",
@@ -85,6 +88,10 @@ fn probe() -> Result<[u8; 6], Failure> {
             "default"
         }
     );
+    if boot.mode.is_cpu_test() {
+        exceptions::run_test(boot.mode)?;
+        io::finish(true);
+    }
     let mut memory_storage = memory::MemoryStorage::new();
     let mut allocator = memory::initialize(&boot, &mut memory_storage)?;
     let managed_bytes: usize = allocator.iter_memory().map(|region| region.size()).sum();

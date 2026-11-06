@@ -34,7 +34,7 @@ add_custom_command(
 )
 add_custom_target(images DEPENDS "${CMAKE_BINARY_DIR}/kutox.iso")
 
-foreach(case IN ITEMS known alternate missing unsupported ambiguous eeprom-timeout memory low-memory default-mode invalid-mode repeat provenance)
+foreach(case IN ITEMS known alternate missing unsupported ambiguous eeprom-timeout memory low-memory default-mode invalid-mode cpu-locks breakpoint page-fault general-protection double-fault unexpected-page-fault smp-unsupported repeat provenance)
     add_test(NAME "mac-${case}"
         COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
             --case "${case}" --build-dir "${CMAKE_BINARY_DIR}"
@@ -58,6 +58,14 @@ add_test(NAME boot-config-unit
     COMMAND ${CARGO} test --locked -p kutox --lib --target x86_64-unknown-linux-gnu
 )
 set_tests_properties(boot-config-unit PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    TIMEOUT 65
+    RUN_SERIAL TRUE
+)
+add_test(NAME cpu-sync-unit
+    COMMAND ${CARGO} test --locked -p moss-sync --target x86_64-unknown-linux-gnu
+)
+set_tests_properties(cpu-sync-unit PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     TIMEOUT 65
     RUN_SERIAL TRUE

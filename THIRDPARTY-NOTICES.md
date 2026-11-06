@@ -32,6 +32,26 @@ The MIT notice and permission terms must accompany redistributed copies or
 substantial portions of this port. Other kutox code remains under its stated
 GPLv2 license; the MIT-licensed port retains its own notices.
 
+## Moss CPU interface and IRQ-safe spinlock
+
+- Project: [Moss / libkernel](https://github.com/hexagonal-sun/moss-kernel).
+- Source revision: `1358b5d78b9151e382dc60ccda7fe0de191e56af`.
+- Copyright: Copyright 2025 Matthew Leach.
+- License: MIT; the complete upstream notice is retained in
+  [third_party/moss-sync/LICENSE](third_party/moss-sync/LICENSE).
+- Source files:
+  [CpuOps in lib.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/lib.rs)
+  and [spinlock.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/spinlock.rs).
+- Location: [third_party/moss-sync](third_party/moss-sync/).
+
+This minimal port retains the `CpuOps` method interface, atomic lock algorithm,
+guard access, non-Send/non-Sync marker, and release-before-interrupt-restore
+ordering. It omits mapped guards and unrelated synchronization primitives,
+uses stable Rust only, and adds local host tests. The x86_64 CPU backend,
+descriptor tables, and exception-entry code are kutox implementations, not
+Moss AArch64 code or Ginux source. Host mock CPU operations are test-only;
+the kernel uses real hardware interrupt instructions.
+
 ## Linux
 
 The [Linux submodule](linux/) retains its upstream copyright notices,

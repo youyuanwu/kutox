@@ -11,6 +11,12 @@ pub enum BootMode {
     Probe,
     EepromTimeout,
     BootMemory,
+    CpuLocks,
+    Breakpoint,
+    PageFault,
+    GeneralProtection,
+    DoubleFault,
+    UnexpectedPageFault,
 }
 
 impl BootMode {
@@ -19,7 +25,25 @@ impl BootMode {
             Self::Probe => "probe",
             Self::EepromTimeout => "eeprom-timeout",
             Self::BootMemory => "boot-memory",
+            Self::CpuLocks => "cpu-locks",
+            Self::Breakpoint => "breakpoint",
+            Self::PageFault => "page-fault",
+            Self::GeneralProtection => "general-protection",
+            Self::DoubleFault => "double-fault",
+            Self::UnexpectedPageFault => "unexpected-page-fault",
         }
+    }
+
+    pub const fn is_cpu_test(self) -> bool {
+        matches!(
+            self,
+            Self::CpuLocks
+                | Self::Breakpoint
+                | Self::PageFault
+                | Self::GeneralProtection
+                | Self::DoubleFault
+                | Self::UnexpectedPageFault
+        )
     }
 }
 
@@ -95,6 +119,12 @@ pub fn read_mode(
         b"probe" => Ok(Some(BootMode::Probe)),
         b"eeprom-timeout" => Ok(Some(BootMode::EepromTimeout)),
         b"boot-memory" => Ok(Some(BootMode::BootMemory)),
+        b"cpu-locks" => Ok(Some(BootMode::CpuLocks)),
+        b"breakpoint" => Ok(Some(BootMode::Breakpoint)),
+        b"page-fault" => Ok(Some(BootMode::PageFault)),
+        b"general-protection" => Ok(Some(BootMode::GeneralProtection)),
+        b"double-fault" => Ok(Some(BootMode::DoubleFault)),
+        b"unexpected-page-fault" => Ok(Some(BootMode::UnexpectedPageFault)),
         _ => Err(Error::UnknownMode),
     }
 }
@@ -154,6 +184,12 @@ mod tests {
             BootMode::Probe,
             BootMode::EepromTimeout,
             BootMode::BootMemory,
+            BootMode::CpuLocks,
+            BootMode::Breakpoint,
+            BootMode::PageFault,
+            BootMode::GeneralProtection,
+            BootMode::DoubleFault,
+            BootMode::UnexpectedPageFault,
         ] {
             assert_eq!(
                 run(&fixture(&[("opt/kutox/test-mode", mode.name().as_bytes())])),

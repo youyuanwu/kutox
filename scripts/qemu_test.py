@@ -9,6 +9,14 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 REVISION = "79a907609d53d5cd645b42c11550d295d43abf99"
 MOSS_REVISION = "1358b5d78b9151e382dc60ccda7fe0de191e56af"
+CPU_RESULTS = {
+    "cpu-locks": "CPU_TEST_OK test=cpu-locks enabled_restore=ok disabled_restore=ok nested=ok released=ok",
+    "breakpoint": "CPU_TEST_OK test=breakpoint returned=yes registers=ok interrupts=restored",
+    "page-fault": "CPU_TEST_OK test=page-fault vector=14 address=0x600000000000 error=0x0",
+    "general-protection": "CPU_TEST_OK test=general-protection vector=13 error=0xfff8",
+    "double-fault": "CPU_TEST_OK test=double-fault vector=8 error=0x0 ist=verified",
+    "unexpected-page-fault": "CPU_TEST_FAIL stage=unexpected_exception vector=14",
+}
 CASES = {
     "known": ("52:54:00:12:34:56", None),
     "alternate": ("52:54:00:ab:cd:ef", None),
@@ -20,10 +28,53 @@ CASES = {
     "low-memory": ("52:54:00:12:34:56", None),
     "default-mode": ("52:54:00:12:34:56", None),
     "invalid-mode": (None, "boot_mode"),
+    **{case: (None, None) for case in CPU_RESULTS},
+    "smp-unsupported": (None, "cpu_single_processor_required"),
 }
+
+def validate_cpu_result(case, returncode, output):
+    lines = output.splitlines()
+    expected_exit = 3 if case == "unexpected-page-fault" else 1
+    if returncode != expected_exit:
+        raise AssertionError(f"CPU test QEMU exit {returncode}, expected {expected_exit}")
+    if f"KUTOX_BOOT linux={REVISION}" not in lines:
+        raise AssertionError("missing pinned-source boot marker")
+    if [line for line in lines if line.startswith("BOOT_MODE")] != [
+        f"BOOT_MODE mode={case} source=fw_cfg"
+    ]:
+        raise AssertionError("wrong CPU test mode")
+    if [line for line in lines if line.startswith("CPU_FOUNDATION")] != [
+        "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled"
+    ]:
+        raise AssertionError("missing CPU foundation result")
+    if [line for line in lines if line.startswith("CPU_TEST_")] != [CPU_RESULTS[case]]:
+        raise AssertionError("missing or conflicting CPU test result")
+    if any(line.startswith(("E1000_", "BOOT_MEMORY")) for line in lines):
+        raise AssertionError("CPU-only test reached the device or memory probe")
+    faults = [line for line in lines if line.startswith("CPU_EXCEPTION")]
+    if case in ("page-fault", "general-protection", "double-fault", "unexpected-page-fault"):
+        vector, error = {
+            "page-fault": (14, "0x0"),
+            "unexpected-page-fault": (14, "0x0"),
+            "general-protection": (13, "0xfff8"),
+            "double-fault": (8, "0x0"),
+        }[case]
+        address = "0x600000000000" if case in ("page-fault", "unexpected-page-fault") else "0x[0-9a-f]+"
+        pattern = rf"CPU_EXCEPTION vector={vector} error={error} rip=0x[0-9a-f]+ cr2={address}"
+        if len(faults) != 1 or re.fullmatch(pattern, faults[0]) is None:
+            raise AssertionError("missing expected hardware fault diagnostics")
+    elif faults:
+        raise AssertionError("unexpected exception during CPU test")
+    breakpoints = [line for line in lines if line.startswith("CPU_BREAKPOINT")]
+    expected = ["CPU_BREAKPOINT_OK vector=3 error=0 returning=yes"] if case == "breakpoint" else []
+    if breakpoints != expected:
+        raise AssertionError("unexpected breakpoint result")
 
 
 def validate_result(case, returncode, output):
+    if case in CPU_RESULTS:
+        validate_cpu_result(case, returncode, output)
+        return
     mac, stage = CASES[case]
     lines = output.splitlines()
     results = [line for line in lines if line.startswith("E1000_MAC_")]
@@ -34,6 +85,18 @@ def validate_result(case, returncode, output):
         raise AssertionError(f"expected exactly one terminal result, got {results}")
     if f"KUTOX_BOOT linux={REVISION}" not in lines:
         raise AssertionError("missing pinned-source boot marker")
+    if case == "smp-unsupported":
+        if results != ["E1000_MAC_FAIL stage=cpu_single_processor_required code=-1"]:
+            raise AssertionError("unsupported SMP configuration was not rejected")
+        if any(line.startswith(("CPU_FOUNDATION", "BOOT_MODE", "BOOT_MEMORY", "E1000_MMIO")) for line in lines):
+            raise AssertionError("unsupported SMP configuration reached initialization")
+        return
+    if [line for line in lines if line.startswith("CPU_FOUNDATION")] != [
+        "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled"
+    ]:
+        raise AssertionError("missing CPU foundation result")
+    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "CPU_BREAKPOINT")) for line in lines):
+        raise AssertionError("unexpected exception or CPU test during MAC probe")
     if case == "invalid-mode":
         if results != ["E1000_MAC_FAIL stage=boot_mode code=-23"]:
             raise AssertionError("unknown runtime mode was not rejected explicitly")
@@ -121,7 +184,8 @@ def check_provenance(nm):
 def qemu_command(args, case):
     command = [
         args.qemu, "-machine", "pc", "-accel", "tcg", "-cpu", "qemu64",
-        "-smp", "1", "-m", "32M" if case == "low-memory" else "128M",
+        "-smp", "2,sockets=2,cores=1,threads=1" if case == "smp-unsupported" else "1",
+        "-m", "32M" if case == "low-memory" else "128M",
         "-display", "none", "-monitor", "none", "-serial", "stdio",
         "-no-reboot", "-boot", "d",
         "-cdrom", str(args.build_dir / "kutox.iso"), "-nic", "none",
@@ -132,9 +196,10 @@ def qemu_command(args, case):
             "memory": "boot-memory",
             "eeprom-timeout": "eeprom-timeout",
             "invalid-mode": "unsupported",
+            **{case: case for case in CPU_RESULTS},
         }.get(case, "probe")
         command += ["-fw_cfg", f"name=opt/kutox/test-mode,string={mode}"]
-    if case != "missing":
+    if case not in ("missing", "smp-unsupported") and case not in CPU_RESULTS:
         model = "e1000e" if case == "unsupported" else "e1000"
         mac = CASES[case][0] or "52:54:00:12:34:56"
         command += [

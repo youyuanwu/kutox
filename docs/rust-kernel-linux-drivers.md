@@ -14,6 +14,12 @@ packet data path, general driver scheduler, or Linux application environment.
 The [third-party notice](../THIRDPARTY-NOTICES.md) records the source revision,
 MIT license, and adaptation boundaries.
 
+The next foundation is now implemented: Moss's CPU interface and basic IRQ
+spinlock, backed by x86_64 interrupt save/restore and kernel-owned GDT/TSS/IDT.
+Shared-image tests cover lock nesting, returning breakpoints, fatal fault
+diagnostics, and double-fault emergency-stack delivery. Hardware IRQs remain
+masked/disabled; this is not yet a scheduler or Linux driver execution runtime.
+
 The long-term objective is to own the OS architecture while reusing Linux's
 hardware support. This means implementing our own kernel services and adapting
 selected Linux driver source, not running the Linux kernel underneath kutox.
@@ -105,8 +111,8 @@ Other references serve different purposes:
   needs, with narrow native interfaces.
 
 These are references, not new build dependencies or a decision to fork any
-of these projects as a whole. The explicit exception is the small, vendored
-Moss bootstrap-memory port described above.
+of these projects as a whole. The explicit exceptions are the small, vendored
+Moss bootstrap-memory and CPU/IRQ-lock ports described above.
 
 The selected integration direction is to use Moss as the primary kernel-core
 source and Ginux as an architectural reference, not copied implementation
