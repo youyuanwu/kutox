@@ -1,6 +1,7 @@
 # kutox
 
-A small x86_64 Rust kernel exploring reuse of Linux device-driver source.
+A small x86_64 Rust kernel for reusing selected Linux device-driver implementations,
+not building another native Rust NIC driver.
 The first milestone reads a QEMU Intel 82540EM NIC's permanent MAC address
 using **unchanged upstream Linux e1000 hardware code**.
 
@@ -65,12 +66,19 @@ bus mastering disabled; a separate native TX proof now performs real device DMA.
 The bounded e1000 TX proof sends one 60-byte Ethernet frame per owned descriptor
 ring, verifies descriptor `DD` and a real `TXDW` IRQ wakeup, and captures the exact
 bytes in QEMU. Timeout and pending-IRQ teardown stop/drain the device before
-reclaiming buffers. This is QEMU-only TX, not RX or a networking stack.
+reclaiming buffers. This is QEMU-only TX test scaffolding, not the target Linux packet driver,
+RX, or a networking stack.
 
 This is hardware-helper reuse, not a complete Linux driver port or LinuxKPI
 implementation. TX descriptor construction uses the original Linux driver header;
 the full Linux network driver is not linked. See the
 [milestone design](docs/linux-e1000-mac.md) for its scope and acceptance goals.
+
+The next work is the [Linux e1000 driver-reuse roadmap](docs/rust-kernel-linux-drivers.md#linux-e1000-driver-reuse-roadmap):
+compile and execute unchanged `e1000_main.c` with its hardware, parameter and
+ethtool units, implementing the required PCI, skb, streaming-DMA, workqueue and
+NAPI environment. Linux must own probe/open, packet submission and cleanup;
+Rust supplies OS services. A native RX implementation is not the next milestone.
 
 ## Requirements
 

@@ -2,7 +2,10 @@
 
 ## Status and objective
 
-This is a proposed design, not an implemented driver or build interface.
+This is the historical design for the now-implemented boot-time MAC helper
+milestone. Its exclusions apply to that proof, not to the project's full
+Linux-driver reuse objective. The active direction is the
+[Linux e1000 driver-reuse roadmap](rust-kernel-linux-drivers.md#linux-e1000-driver-reuse-roadmap).
 
 Boot a small x86_64 Rust kernel in QEMU, execute Linux e1000 hardware code,
 and report the emulated NIC's permanent MAC address. The reported address
@@ -203,14 +206,17 @@ Do not benchmark throughput at this stage: there is no packet data path.
 
 ## Follow-on milestones
 
-After this goal is verified:
+The boot MAC helper is complete. Kernel scheduling, IRQ/DMA foundations and a
+native TX capture proof now validate the platform, but that native TX path is
+scaffolding rather than execution of Linux's packet driver.
 
-1. Transmit one Ethernet frame and verify its contents in a capture.
-2. Receive one known frame.
-3. Add interrupt-driven operation.
-4. Adapt packet ownership and readiness to the native NIC interface and
-   Embassy networking.
+Next, audit and compile the original e1000 driver units, implement their real
+source-facing dependency closure, and execute original module/probe/open/close
+callbacks. Packet acceptance must then exercise Linux's xmit, IRQ/NAPI and RX
+cleanup paths. Upstream open requires RX setup and link work even for TX-first
+testing; declarations or constant-success substitutes do not satisfy it.
 
-Each step needs a new dependency review. Hardware-helper reuse does not imply
-that these later steps can run an unmodified complete Linux driver without
-additional subsystem support.
+Do not follow the earlier transmit/receive sequence by writing another native
+Rust NIC driver. The [current roadmap](rust-kernel-linux-drivers.md#linux-e1000-driver-reuse-roadmap)
+defines the phased source/configuration, environment, lifecycle, packet and
+cleanup gates. A native network stack/Embassy adapter is subsequent work.

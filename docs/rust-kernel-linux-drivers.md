@@ -2,9 +2,12 @@
 
 ## Status and objective
 
-This document records the architectural direction for a Rust kernel with
-Moss-like Linux application compatibility and selected Linux device drivers.
-It is not a claim that either compatibility layer already exists.
+The primary objective is to execute selected unchanged Linux device-driver
+implementations on an independent Rust kernel. Linux owns the driver logic;
+Rust supplies kernel/platform services and a native device-facing boundary.
+Rebuilding embclox's native Rust NIC driver is not this project's objective.
+Linux application compatibility is a separate possible OS track, not a
+prerequisite or substitute for driver reuse.
 
 The current implementation is the boot-time e1000 MAC-reading proof described
 in the [README](../README.md) and its [original design](linux-e1000-mac.md).
@@ -14,6 +17,9 @@ The buddy allocator now owns usable RAM and MMIO page-table frames and backs
 an adapted Moss slab heap for Rust allocations. The kernel still has no
 RX path, general driver scheduler, or Linux application environment. A bounded
 native e1000 TX acceptance proof now exercises real packet DMA and IRQ completion.
+That TX proof validates platform services, not Linux's packet implementation.
+Only the upstream hardware helpers currently execute; `e1000_main.c` does not.
+The next milestone is its source/runtime dependency closure, not native RX.
 The [third-party notice](../THIRDPARTY-NOTICES.md) records the source revision,
 MIT license, and adaptation boundaries.
 
@@ -149,7 +155,7 @@ exhaustion/reuse, ownership and stale witnesses, C output/free/lifecycle/context
 contracts, and exact resource recovery. Bus mastering stays disabled throughout
 these allocation-only tests. Real device DMA is tested separately below.
 
-### One-packet e1000 TX proof
+### One-packet e1000 TX platform scaffold
 
 The native [TX fixture](../src/e1000_tx.rs) reuses a shared
 [NIC owner](../src/e1000.rs), rather than duplicating PCI/MMIO/source/route
@@ -199,8 +205,11 @@ backend-RX `filter-dump`; the host requires exactly four ordered 60-byte Etherne
 frames with the fixed MAC, experimental EtherType `0x88b5`, marker and sequence
 payload byte-for-byte. A missing/stale/malformed/extra packet cannot pass.
 This remains native hardware-helper reuse, not a port of the complete Linux
-network driver. RX, a networking stack, streaming mappings, and physical-hardware
-DMA acceptance remain later milestones.
+network driver. Retain it as an independent platform regression fixture; do not
+extend it into a replacement native RX/TX driver. Streaming mappings, RX setup,
+work/NAPI and packet ownership are now prerequisites to the original Linux
+driver path described below. A network stack and physical-hardware acceptance
+remain outside the initial driver-reuse target.
 
 ### Other native foundations
 
@@ -505,6 +514,18 @@ The native device interface is the boundary between the OS and the imported
 driver environment. OS services must not depend on Linux's internal
 `net_device`, `sk_buff`, or other driver-private layouts.
 
+The division of responsibility is an acceptance invariant:
+
+| Component | Owner |
+| --- | --- |
+| NIC initialization, PHY/link logic, ring/descriptor programming, TX/RX algorithms, IRQ cause handling and driver cleanup | Unchanged selected Linux driver source. |
+| PCI resources, MMIO/DMA primitives, allocation, scheduling, synchronization, work/NAPI execution and IRQ routing/EOI | kutox's source-facing environment backed by Rust kernel services. |
+| Packet submission/delivery, readiness, link state and ownership at the OS boundary | A narrow kutox adapter invoking original registered driver callbacks. |
+
+Platform implementations of Linux APIs are expected; substituting a Rust
+descriptor/packet loop for the original driver is not. Native device proofs
+remain separately labelled scaffolding and are never fallback success paths.
+
 For networking, the adapter exposes packets, readiness, link state, and
 explicit ownership rules. For storage, a future adapter would expose block
 requests and completions. Neither requires exposing Linux system calls at
@@ -513,6 +534,79 @@ the driver boundary.
 Initially, statically link selected upstream C translation units. Loading
 prebuilt Linux `.ko` files, reproducing Linux's module ABI, and implementing
 a general module loader are outside this direction's initial scope.
+
+### Selected e1000 source and configuration
+
+The first packet-driver target is the existing `v7.3.1` source baseline,
+`79a907609d53d5cd645b42c11550d295d43abf99`, with QEMU 82540EM `8086:100e`.
+The upstream [Makefile](../linux/drivers/net/ethernet/intel/e1000/Makefile)
+includes four units: `e1000_main.c`, `e1000_hw.c`, `e1000_ethtool.c`, and
+`e1000_param.c`. Compile those unchanged with their original driver headers;
+put the named source-facing environment and configuration outside the submodule.
+Do not replace parameter validation or ethtool ops installation with stubs.
+
+Start with the existing BIOS `pc`/PIIX/BSP/INTx profile, one RX/TX queue, MTU 1500,
+and upstream default 256-descriptor rings. Support linear, untagged packets with
+offloads/fragments/jumbo disabled through legitimate configuration/feature
+contracts. Keep PM, netpoll, SMP, other NICs and general shared-source routing
+outside the selected profile. Record effective definitions and build provenance;
+source compilation alone is not a runtime support claim.
+
+Capture the original `module_init` initializer and `pci_driver` registration,
+then invoke original probe and registered `net_device_ops`. The selected
+[ops table](../linux/drivers/net/ethernet/intel/e1000/e1000_main.c) points to
+`e1000_open`, `e1000_close`, and `e1000_xmit_frame`. The platform IRQ adapter
+invokes original `e1000_intr`, which schedules original `e1000_clean`.
+Do not copy static functions into a bridge, pre-read ICR before the C handler,
+or replace Linux cleanup with native descriptor observation.
+
+### Source-facing dependency and lifetime requirements
+
+The next dependency audit must distinguish compile/link closure from the
+supported runtime path. Ops tables retain optional callbacks too; linker
+garbage collection does not automatically make their dependencies disappear.
+Each retained API needs an explicit provider or an enforced unsupported contract.
+
+| Required surface | Gap in the current implementation |
+| --- | --- |
+| Module/PCI/net-device registration and object lifetimes | No original probe binding; current net-device type has only a name, and DMA device is opaque. |
+| MMIO in driver threads and hardware IRQs | The C bridge authorizes only the boot helper's global active window. |
+| Driver allocation and packet buffers | No kmalloc/vmalloc/skb or RX page-fragment ownership, padding, build-skb, queue/feature or ingress environment. |
+| Coherent descriptor sharing and streaming map/sync/unmap | Current APIs are allocation-only with native publish/reclaim extensions; upstream code does not call those extensions. |
+| Delayed work, jiffies, lifecycle locking and cancellation | Current handler/deadline helpers are not Linux workqueues or global elapsed-time jiffies. |
+| IRQ registration and NAPI scheduling/budget/disable | Native IRQ claims and completion wakeups exist, but not the C handler/dev-id or poll lifecycle. |
+| Probe/open/error/close/remove cleanup | The native TX stop proof is not the RX-capable original driver lifecycle. |
+
+Three ordering constraints shape the environment:
+
+- Upstream probe calls `pci_set_master` before MMIO mapping and DMA-mask
+  selection. Bind the native device/domain while initially quiescent, then
+  honor that sequence; do not invoke boot BAR/domain constructors that reject
+  already-active bus mastering at the wrong stage.
+- Upstream `e1000_open` allocates/configures both TX and RX, enables IRQ/NAPI,
+  and raises LSC to start the watchdog. A TX-first target still needs real RX
+  setup, packet allocation, link work and asynchronous cleanup. Its default
+  rings cannot fit a guessed eight-entry streaming registry.
+- Standard driver map/sync/unmap and coherent-free contracts are per-region
+  unsafe C ownership protocols. Active descriptor memory cannot have live
+  exclusive Rust slices. Packet unmap after Linux checks completion does not
+  require stopping unrelated RX; ring free/remove does require the relevant
+  hardware and callback quiescence. Neither the scaffold's whole-domain epoch
+  nor a cleared bus-master bit alone supplies those semantics.
+
+All C-visible objects must retain stable backing and checked lifecycle identity.
+No mutable registry borrow survives a switch or callback, and stale work/IRQ/
+mapping keys must not target a replacement object. Resolve the existing bridge's
+`e1000_get_hw_dev` provider collision when linking `e1000_main.c`, which defines
+the real helper; maintain one coherent C type environment and the boot MAC proof.
+
+For NAPI, a bounded native executor may invoke the original poll callback in a
+non-sleeping deferred context. It must honor schedule-prep/deduplication, budget,
+completion/rescheduling and disable/join, rather than running it inline in IRQ
+or marking it completed without polling. Work callbacks are a separate,
+sleep-capable context with delayed scheduling and synchronous cancellation.
+The original driver's state transitions and source expectations remain
+authoritative even on one cooperative CPU.
 
 ## Async Rust and synchronous Linux drivers
 
@@ -554,8 +648,9 @@ Synchronization and ownership requirements:
 
 Embassy's executor alone does not provide these Linux execution semantics.
 The C adapter distinguishes boot and thread semantics, but that is still only
-a tested static-object subset. Its thread-only completions and spinlock context
-restrictions cannot be assumed valid for Linux hard-IRQ/deferred-work paths.
+a tested static-object subset. Selected completion signalling already supports
+hardware IRQs; that does not provide the full driver work/NAPI execution model
+or authorize arbitrary C MMIO access and allocation in those contexts.
 
 ## Driver compatibility scope
 
@@ -580,8 +675,8 @@ explicit. Unsupported optional features should be disabled through coherent
 configuration or return an appropriate explicit error; required operations
 must never be implemented as unconditional success.
 
-Keep the pinned Linux source authoritative and prefer unchanged driver
-files. Compatibility code and build configuration belong outside the
+Keep the pinned Linux source authoritative and use unchanged selected driver
+files for the target path. Compatibility code and build configuration belong outside the
 submodule. Any future need for source patches requires an explicit,
 versioned decision rather than hidden edits to the vendor tree.
 
@@ -591,24 +686,52 @@ kernel releases. Upgrading that baseline is a porting and verification task.
 
 ## Incremental development
 
-### Driver-reuse track
+### Linux e1000 driver-reuse roadmap
 
-1. **Hardware-helper proof: current baseline.** Read the configured e1000 MAC
-   using Linux's EEPROM implementation in an isolated QEMU guest.
-2. **Execution and resource foundations.** Implement and test the scheduling,
-   IRQ, DMA, synchronization, and lifetime contracts needed by the selected
-   NIC path. This replaces boot-only assumptions where necessary.
-3. **Packet transmit and receive.** Establish one NIC data path, initially
-   with one queue, fixed MTU, optional offloads disabled, and simple packet
-   ownership at the native boundary.
-4. **Native network integration.** Connect the adapter to the Rust networking
-   environment, such as Embassy, and verify end-to-end traffic.
-5. **Generalize from a second driver.** Extract genuinely shared compatibility
-   services and document which driver classes and configurations are supported.
+The MAC helper and Rust kernel/resource/native-TX foundations are completed
+baseline work, not completion of the Linux packet-driver goal. The following
+phases replace a native-RX-first roadmap:
 
-Each packet step must state which upstream files execute. A native RX/TX
-implementation using only Linux hardware helpers is still helper reuse,
-not proof that the complete Linux network driver runs.
+1. **Source/profile and compile closure.** Audit all four original units and
+   retained callbacks, establish an additive compile-only target and record
+   APIs, contexts, providers, memory budget and QEMU RX-capable stop assumptions.
+   Preserve the existing image; label this stage compile progress only.
+2. **Execution/object/deferred services.** Provide stable registrations,
+   thread/IRQ/deferred-atomic contexts, elapsed jiffies, work cancellation,
+   NAPI budgets and C IRQ registration. Prove their semantics with synthetic C
+   cases before relying on them in the original driver.
+3. **PCI/allocation/packet/DMA environment.** Implement original probe ordering,
+   net-device/skb lifecycle, queue/feature state, GFP/error behavior, streaming
+   leases and coherent descriptor sharing. Capacity must cover the configured
+   RX/TX rings and unwind. No required API may remain a placeholder.
+4. **Original lifecycle.** Link the complete selected closure and execute
+   original module/probe/open/close/remove, option/EEPROM/reset/PHY code,
+   watchdog link work and IRQ/NAPI setup. Verify error unwind and resource
+   cleanup at 128/32 MiB; do not fake carrier-ready or skip RX setup.
+5. **Original Linux TX.** Submit a linear skb through `ndo_start_xmit`, receive
+   the original IRQ, and complete through original NAPI DD/unmap/free/queue
+   accounting. Verify exact captured bytes and zero native-TX fallback calls.
+6. **Original Linux RX.** Inject known packets through an isolated fixture and
+   deliver through original RX cleanup and native ingress. Test both copybreak
+   and non-copybreak ownership, header/FCS handling and replenishment; no new
+   Rust RX descriptor loop is involved.
+7. **Hardening.** Wrap both configured rings, exercise BUSY/queue backpressure,
+   allocation/map failures and close/remove with pending IRQ, work, poll and
+   packet state. Retire callbacks and prove the relevant hardware drain before
+   memory release; fail explicitly if quiescence cannot be established.
+8. **As-built documentation.** Record executed original units/callbacks,
+   source/configuration/provider inventory, verification and limitations.
+   Only then describe the selected Linux packet driver as operational.
+
+Every hardware acceptance case must combine source/build provenance, observed
+original callback execution, packet bytes and Linux completion/cleanup. Linked
+symbols or native DD/IRQ success alone are not sufficient. Keep native scaffold
+cases separate and retain exact KTAP/pcap validation, one ISO, fw_cfg selectors,
+and sequential low-memory regression runs.
+
+The next implementation item is **phase 1**. Integration with a native network
+stack and extraction for a second Linux driver follow this roadmap; they do not
+replace its driver-execution gates.
 
 ### Rust OS and userspace track
 
