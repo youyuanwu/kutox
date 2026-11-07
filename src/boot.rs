@@ -4,7 +4,7 @@ use limine::{
     BaseRevision,
     request::{
         ExecutableAddressRequest, ExecutableCmdlineRequest, HhdmRequest, MemoryMapRequest,
-        MpRequest, RequestsEndMarker, RequestsStartMarker, StackSizeRequest,
+        MpRequest, RequestsEndMarker, RequestsStartMarker, RsdpRequest, StackSizeRequest,
     },
 };
 
@@ -28,6 +28,9 @@ static MEMORY_MAP: MemoryMapRequest = MemoryMapRequest::new();
 static PROCESSORS: MpRequest = MpRequest::new();
 #[used]
 #[unsafe(link_section = ".requests")]
+static RSDP: RsdpRequest = RsdpRequest::new();
+#[used]
+#[unsafe(link_section = ".requests")]
 static CMDLINE: ExecutableCmdlineRequest = ExecutableCmdlineRequest::new();
 #[used]
 #[unsafe(link_section = ".requests")]
@@ -43,6 +46,7 @@ pub struct BootInfo {
     pub memory_map: &'static [&'static limine::memory_map::Entry],
     pub mode: BootMode,
     pub mode_configured: bool,
+    pub rsdp_physical: Option<u64>,
 }
 
 pub fn processor_count() -> Result<usize, Failure> {
@@ -92,5 +96,8 @@ pub fn collect() -> Result<BootInfo, Failure> {
             .entries(),
         mode: configured.unwrap_or(BootMode::Probe),
         mode_configured: configured.is_some(),
+        rsdp_physical: RSDP
+            .get_response()
+            .map(|response| response.address() as u64),
     })
 }

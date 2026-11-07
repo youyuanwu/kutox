@@ -42,6 +42,9 @@ KERNEL_TEST_NAMES = (
     "sync.irq_completion",
     "threads.irq_wait_races",
     "linux.irq_completion",
+    "irq.platform_discovery",
+    "irq.device_delivery",
+    "irq.device_masking_cleanup",
 )
 KERNEL_SUITE_CASES = {
     "kernel-tests": "kernel-tests",
@@ -361,6 +364,12 @@ def qemu_command(args, case):
         command += [
             "-netdev", "user,id=second,restrict=on",
             "-device", "e1000,netdev=second,mac=52:54:00:00:00:02",
+        ]
+    if case in KERNEL_SUITE_CASES:
+        slot = "5" if case == "kernel-tests-low-memory" else "3"
+        command += [
+            "-netdev", "user,id=irqtest,restrict=on",
+            "-device", f"e1000,netdev=irqtest,addr={slot},mac=52:54:00:12:34:56",
         ]
     return command
 

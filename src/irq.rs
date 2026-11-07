@@ -4,6 +4,7 @@ use crate::{
     cpu::{self, X86Cpu},
     exceptions, memory, threads, time,
 };
+use alloc::rc::Rc;
 use core::{
     arch::{asm, global_asm},
     marker::PhantomData,
@@ -14,7 +15,11 @@ use x86_64::registers::model_specific::Msr;
 
 global_asm!(include_str!("irq_probe.S"));
 
+#[path = "external_irq.rs"]
+pub mod external;
+
 pub const TIMER_VECTOR: usize = 0x40;
+pub const DEVICE_VECTOR: usize = 0x41;
 pub const SPURIOUS_VECTOR: usize = 0xff;
 const APIC_MSR: u32 = 0x1b;
 const GLOBAL_ENABLE: u64 = 1 << 11;
@@ -34,6 +39,7 @@ const MASKED: u32 = 1 << 16;
 const POLL_TIMEOUT_US: u64 = 100_000;
 
 static CLAIMED: AtomicBool = AtomicBool::new(false);
+static TIMER_CLAIMED: AtomicBool = AtomicBool::new(false);
 static ADDRESS: AtomicUsize = AtomicUsize::new(0);
 static TICKS: AtomicU64 = AtomicU64::new(0);
 
@@ -90,6 +96,8 @@ pub fn is_quiescent() -> bool {
         && crate::io::read8(0x21) == 0xff
         && crate::io::read8(0xa1) == 0xff
         && HANDLER.lock_save_irq().is_none()
+        && !TIMER_CLAIMED.load(Ordering::Acquire)
+        && external::is_quiescent()
 }
 
 struct Claim;
@@ -100,17 +108,19 @@ impl Drop for Claim {
     }
 }
 
-pub struct Timer<'a, 'storage> {
+struct ApicState<'a, 'storage> {
     mapping: memory::MmioMapping<'a, 'storage>,
     original_msr: u64,
-    interval_counts: u32,
-    interval_ticks: u64,
     enabled: bool,
     _claim: Claim,
     _local: PhantomData<*mut ()>,
 }
 
-impl<'a, 'storage> Timer<'a, 'storage> {
+pub struct LocalApic<'a, 'storage> {
+    inner: Rc<ApicState<'a, 'storage>>,
+}
+
+impl<'a, 'storage> LocalApic<'a, 'storage> {
     pub fn start(
         boot: &BootInfo,
         frames: &'a memory::PhysicalFrames<'storage>,
@@ -132,18 +142,16 @@ impl<'a, 'storage> Timer<'a, 'storage> {
             return Err(Failure::new("timer_apic_address", -1));
         }
         let mapping = memory::map_local_apic(boot, physical, frames)?;
-        let mut timer = Self {
+        let mut state = ApicState {
             mapping,
             original_msr,
-            interval_counts: 0,
-            interval_ticks: 0,
             enabled: false,
             _claim: claim,
             _local: PhantomData,
         };
         unsafe { Msr::new(APIC_MSR).write(original_msr | GLOBAL_ENABLE) };
-        timer.enabled = true;
-        let address = timer.mapping.address();
+        state.enabled = true;
+        let address = state.mapping.address();
         let version = read(address, VERSION);
         let max_lvt = (version >> 16) & 0xff;
         if read(address, ID) >> 24 != X86Cpu::id() as u32
@@ -163,6 +171,77 @@ impl<'a, 'storage> Timer<'a, 'storage> {
         write(address, TPR, 0);
         ADDRESS.store(address, Ordering::Release);
         write(address, SVR, (1 << 8) | SPURIOUS_VECTOR as u32);
+        Ok(Self {
+            inner: Rc::new(state),
+        })
+    }
+
+    pub fn physical(&self) -> u64 {
+        self.inner.original_msr & 0x000f_ffff_ffff_f000
+    }
+}
+
+impl Drop for ApicState<'_, '_> {
+    fn drop(&mut self) {
+        let flags = X86Cpu::disable_interrupts();
+        if self.enabled {
+            assert_eq!(X86Cpu::irq_lock_depth(), 0, "APIC teardown while locked");
+            let address = self.mapping.address();
+            assert!(!in_service(address), "APIC teardown left an IRQ in service");
+            assert!(
+                (0..8).all(|index| read(address, IRR + index * 16) == 0),
+                "APIC teardown left a pending IRQ"
+            );
+            write(address, SVR, SPURIOUS_VECTOR as u32);
+            unsafe { Msr::new(APIC_MSR).write(self.original_msr) };
+            ADDRESS.store(0, Ordering::Release);
+        }
+        X86Cpu::restore_interrupt_state(flags);
+    }
+}
+
+struct TimerClaim;
+
+impl Drop for TimerClaim {
+    fn drop(&mut self) {
+        TIMER_CLAIMED.store(false, Ordering::Release);
+    }
+}
+
+pub struct Timer<'a, 'storage> {
+    apic: Rc<ApicState<'a, 'storage>>,
+    interval_counts: u32,
+    interval_ticks: u64,
+    _claim: TimerClaim,
+}
+
+impl<'a, 'storage> Timer<'a, 'storage> {
+    pub fn start(
+        boot: &BootInfo,
+        frames: &'a memory::PhysicalFrames<'storage>,
+    ) -> Result<Self, Failure> {
+        context()?;
+        if !is_quiescent() {
+            return Err(Failure::new("timer_in_use", -1));
+        }
+        Self::attach(&LocalApic::start(boot, frames)?)
+    }
+
+    pub fn attach(apic: &LocalApic<'a, 'storage>) -> Result<Self, Failure> {
+        context()?;
+        if TIMER_CLAIMED
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(Failure::new("timer_in_use", -1));
+        }
+        let mut timer = Self {
+            apic: Rc::clone(&apic.inner),
+            interval_counts: 0,
+            interval_ticks: 0,
+            _claim: TimerClaim,
+        };
+        let address = timer.apic.mapping.address();
         write(address, DIVIDE, 0x3); // Divide by 16, one-shot mode.
         write(address, LVT_TIMER, MASKED | TIMER_VECTOR as u32);
         write(address, INITIAL_COUNT, u32::MAX);
@@ -191,7 +270,7 @@ impl<'a, 'storage> Timer<'a, 'storage> {
 
     pub fn schedule_handler(&self, deadline: u64, callback: Handler) -> Result<(), Failure> {
         context()?;
-        let address = self.mapping.address();
+        let address = self.apic.mapping.address();
         if read(address, LVT_TIMER) & MASKED == 0
             || vector_set(address, IRR, TIMER_VECTOR)
             || in_service(address)
@@ -208,7 +287,7 @@ impl<'a, 'storage> Timer<'a, 'storage> {
 
     pub fn cancel_handler(&self) -> Result<bool, Failure> {
         context()?;
-        let address = self.mapping.address();
+        let address = self.apic.mapping.address();
         if read(address, LVT_TIMER) & MASKED == 0
             || vector_set(address, IRR, TIMER_VECTOR)
             || in_service(address)
@@ -252,10 +331,10 @@ impl<'a, 'storage> Timer<'a, 'storage> {
 
     fn arm_count(&self, counts: u32) -> Result<(), Failure> {
         context()?;
-        let address = self.mapping.address();
+        let address = self.apic.mapping.address();
         if read(address, LVT_TIMER) & MASKED == 0
             || vector_set(address, IRR, TIMER_VECTOR)
-            || in_service(address)
+            || vector_set(address, ISR, TIMER_VECTOR)
         {
             return Err(Failure::new("timer_already_armed", -1));
         }
@@ -285,7 +364,7 @@ impl<'a, 'storage> Timer<'a, 'storage> {
 
     pub fn wait_for_tick(&self) -> Result<u64, Failure> {
         context()?;
-        if read(self.mapping.address(), LVT_TIMER) & MASKED != 0 {
+        if read(self.apic.mapping.address(), LVT_TIMER) & MASKED != 0 {
             return Err(Failure::new("timer_not_armed", -1));
         }
         self.poll_delivery(ticks())
@@ -293,47 +372,43 @@ impl<'a, 'storage> Timer<'a, 'storage> {
 
     pub fn idle_until_tick(&self) -> Result<u64, Failure> {
         context()?;
-        if read(self.mapping.address(), LVT_TIMER) & MASKED != 0 {
+        if read(self.apic.mapping.address(), LVT_TIMER) & MASKED != 0 {
             return Err(Failure::new("timer_not_armed", -1));
         }
         let before = ticks();
-        while ticks() == before {
+        while ticks() == before && !threads::has_ready() {
             // IF is clear for the condition check. STI's interrupt shadow keeps
             // HLT adjacent, so an already-pending IRQ cannot be lost before sleep.
             unsafe { asm!("sti", "hlt", "cli", options(nostack)) };
         }
+        self.stop()?;
         Ok(ticks())
+    }
+
+    pub fn stop(&self) -> Result<(), Failure> {
+        context()?;
+        let address = self.apic.mapping.address();
+        write(address, LVT_TIMER, MASKED | TIMER_VECTOR as u32);
+        write(address, INITIAL_COUNT, 0);
+        if read(address, LVT_TIMER) & MASKED == 0 || read(address, CURRENT_COUNT) != 0 {
+            return Err(Failure::new("timer_stop_readback", -1));
+        }
+        if vector_set(address, IRR, TIMER_VECTOR) {
+            self.poll_delivery(ticks())?;
+        }
+        if vector_set(address, ISR, TIMER_VECTOR) || vector_set(address, IRR, TIMER_VECTOR) {
+            return Err(Failure::new("timer_stop_pending", -1));
+        }
+        Ok(())
     }
 }
 
 impl Drop for Timer<'_, '_> {
     fn drop(&mut self) {
         let flags = X86Cpu::disable_interrupts();
-        if self.enabled {
-            assert_eq!(X86Cpu::irq_lock_depth(), 0, "timer teardown while locked");
-            let address = self.mapping.address();
-            write(address, LVT_TIMER, MASKED | TIMER_VECTOR as u32);
-            write(address, INITIAL_COUNT, 0);
-            // Flush posted writes before checking for an IRQ already in flight.
-            assert_ne!(read(address, LVT_TIMER) & MASKED, 0, "timer mask failed");
-            assert_eq!(read(address, CURRENT_COUNT), 0, "timer stop failed");
-            if vector_set(address, IRR, TIMER_VECTOR) {
-                self.poll_delivery(ticks()).unwrap_or_else(|error| {
-                    panic!("timer teardown stage={} code={}", error.stage, error.code)
-                });
-            }
-            assert!(
-                !in_service(address),
-                "timer teardown left an IRQ in service"
-            );
-            assert!(
-                !vector_set(address, IRR, TIMER_VECTOR),
-                "timer teardown left a pending IRQ"
-            );
-            write(address, SVR, SPURIOUS_VECTOR as u32);
-            unsafe { Msr::new(APIC_MSR).write(self.original_msr) };
-            ADDRESS.store(0, Ordering::Release);
-        }
+        self.stop().unwrap_or_else(|error| {
+            panic!("timer teardown stage={} code={}", error.stage, error.code)
+        });
         HANDLER.lock_save_irq().take();
         X86Cpu::restore_interrupt_state(flags);
     }
@@ -354,6 +429,9 @@ pub fn dispatch(vector: usize, saved_flags: u64) -> Result<(), Failure> {
     if vector == SPURIOUS_VECTOR && !vector_set(address, ISR, vector) {
         // A real local-APIC spurious interrupt has no in-service bit or EOI.
         return Ok(());
+    }
+    if vector == DEVICE_VECTOR {
+        return external::dispatch(address);
     }
     if vector != TIMER_VECTOR || !vector_set(address, ISR, vector) {
         return Err(Failure::new("timer_irq_not_in_service", -1));
@@ -396,16 +474,16 @@ pub fn test_delivery(
     let timer = Timer::start(boot, frames)?;
     if timer.arm_until(0)?
         || !timer.arm_until(u64::MAX)?
-        || read(timer.mapping.address(), INITIAL_COUNT) != u32::MAX
+        || read(timer.apic.mapping.address(), INITIAL_COUNT) != u32::MAX
     {
         return Err(Failure::new("timer_deadline_bounds", -1));
     }
     write(
-        timer.mapping.address(),
+        timer.apic.mapping.address(),
         LVT_TIMER,
         MASKED | TIMER_VECTOR as u32,
     );
-    write(timer.mapping.address(), INITIAL_COUNT, 0);
+    write(timer.apic.mapping.address(), INITIAL_COUNT, 0);
     if !matches!(Timer::start(boot, frames), Err(error) if error.stage == "timer_in_use")
         || !matches!(timer.wait_for_tick(), Err(error) if error.stage == "timer_not_armed")
     {
@@ -418,7 +496,7 @@ pub fn test_delivery(
             return Err(Failure::new("timer_rearm_rejection", -1));
         }
         timer.wait_for_tick()?;
-        if in_service(timer.mapping.address()) || cpu::interrupts_enabled() {
+        if in_service(timer.apic.mapping.address()) || cpu::interrupts_enabled() {
             return Err(Failure::new("timer_eoi_restore", -1));
         }
     }
@@ -427,7 +505,7 @@ pub fn test_delivery(
     // Let a masked-by-IF one-shot expire before the condition/HLT sequence.
     timer.arm()?;
     time::delay_us(30_000);
-    if !vector_set(timer.mapping.address(), IRR, TIMER_VECTOR) {
+    if !vector_set(timer.apic.mapping.address(), IRR, TIMER_VECTOR) {
         return Err(Failure::new("timer_pending_idle", -1));
     }
     timer.idle_until_tick()?;
@@ -464,7 +542,7 @@ pub fn test_masking_cleanup(
 ) -> Result<(), Failure> {
     use moss_libkernel::sync::spinlock::SpinLockIrq;
     let timer = Timer::start(boot, frames)?;
-    let address = timer.mapping.address();
+    let address = timer.apic.mapping.address();
     let before = ticks();
     // Start the counter without ever unmasking its LVT entry.
     write(address, INITIAL_COUNT, timer.interval_counts);

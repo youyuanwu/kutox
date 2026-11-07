@@ -46,9 +46,15 @@ without holding an IRQ lock. Timed-out and cancelled waits never acquire ownersh
 An owned local-APIC one-shot timer now provides returning hardware interrupts,
 a monotonic delivery counter, bounded polling, and interrupt-driven idle waits.
 It follows Moss's one-shot timer model using native x86_64 code; legacy PIC
-interrupts remain masked. This does not enable timer preemption or device IRQs.
+interrupts remain masked. This does not enable timer preemption.
 One owned deadline-bound handler can signal waiters from the real timer IRQ;
 the dispatcher selects the earliest thread or handler deadline.
+
+Owned device IRQ claims now route the QEMU `pc` e1000's PCI INTx through its
+validated PIIX route and ACPI-discovered I/O APIC. A NIC-generated interrupt
+directly wakes a completion waiter without DMA. Local-APIC ownership is separate
+from the timer, so device delivery continues after the timer is dropped.
+The current route is single-CPU, single-source, and not a Linux `request_irq` API.
 
 This is hardware-helper reuse, not a complete Linux driver port or LinuxKPI
 implementation. There is no packet data path yet. See the
@@ -120,20 +126,21 @@ initialization or device access. Guest logs report the selected mode and whether
 it came from `fw_cfg` or the default. The former Limine `test=...` command-line
 selection and per-mode ISOs are no longer used.
 
-Portable parser, run-queue/completion/mutex policies, and allocator tests need no ISO or QEMU:
+Portable boot/ACPI parsers, IRQ-route/run-queue/completion/mutex policies, and allocator tests need no ISO or QEMU:
 
 ```sh
 cargo test --locked -p kutox --lib --target x86_64-unknown-linux-gnu
 cargo test --locked -p moss-libkernel --target x86_64-unknown-linux-gnu
 ```
 
-The default nonfatal kernel suite reuses the same image and needs no NIC:
+The default nonfatal kernel suite reuses the same image and includes one e1000
+fixture for its device-IRQ cases:
 
 ```sh
 python3 scripts/qemu_test.py --case kernel-tests --build-dir build
 ```
 
-Run the same thirty-one registered cases with 32 MiB of guest RAM:
+Run the same thirty-four registered cases with 32 MiB of guest RAM:
 
 ```sh
 python3 scripts/qemu_test.py --case kernel-tests-low-memory --build-dir build
@@ -141,6 +148,8 @@ python3 scripts/qemu_test.py --case kernel-tests-low-memory --build-dir build
 
 This selects the existing `kernel-tests` mode and the same ISO; there is no
 additional guest boot selector or per-memory-size image.
+The normal suite places the NIC at PCI slot 3; the low-memory suite uses slot 5
+to exercise routing discovery rather than a fixed IRQ number.
 
 The old `memory`, `cpu-locks`, and `breakpoint` CLI cases and the corresponding
 standalone boot modes have been removed. Use `kernel-tests` for all nonfatal
@@ -154,7 +163,7 @@ hardware-configuration cases still use separate boots of the same ISO.
 
 ```text
 KTAP version 1
-1..31
+1..34
 ok 1 cpu.irq_lock_restore
 ok 2 cpu.breakpoint_return
 ok 3 memory.alignment_reservations
@@ -186,7 +195,10 @@ ok 28 linux.thread_execution
 ok 29 sync.irq_completion
 ok 30 threads.irq_wait_races
 ok 31 linux.irq_completion
-# Totals: pass:31 fail:0 skip:0 total:31
+ok 32 irq.platform_discovery
+ok 33 irq.device_delivery
+ok 34 irq.device_masking_cleanup
+# Totals: pass:34 fail:0 skip:0 total:34
 ```
 
 Tests run sequentially with interrupts disabled at case boundaries. After
@@ -211,7 +223,7 @@ requires updating `KERNEL_TEST_NAMES` in the
 [host runner](scripts/qemu_test.py) as well.
 
 The intentional-failure mode reports a failing `harness.intentional_failure`
-before the thirty-one normal cases and exits with guest failure. This command
+before the thirty-four normal cases and exits with guest failure. This command
 **must return nonzero**:
 
 ```sh
@@ -333,12 +345,14 @@ disabled for deliberately unsupported hardware entry points.
   [Assembly entry stubs](src/exception_entry.S) normalize hardware error codes,
   preserve general-purpose registers, clear DF for the Rust ABI, align the call
   stack, and return via `iretq` for an expected breakpoint or an owned APIC timer/
-  spurious interrupt. Unexpected interrupts/exceptions fail explicitly.
-- [Timer IRQ support](src/irq.rs) temporarily owns the BSP's xAPIC through a
+  device/spurious interrupt. Unexpected interrupts/exceptions fail explicitly.
+- [IRQ support](src/irq.rs) reference-counts ownership of the BSP's xAPIC through a
   separate supervisor-only writable/NX, uncacheable mapping. All local interrupt
   sources start masked, and only the timer is intentionally unmasked. The legacy
   PIC stays fully masked; the local APIC is disabled at boot and between tests.
-  AP startup, x2APIC, I/O APIC/device routing, userspace entry, FPU/SIMD switching,
+  [Owned I/O APIC claims](src/external_irq.rs) separately enable the selected
+  device vector; timer teardown does not disable a controller still in use.
+  AP startup, x2APIC, broader device routing, userspace entry, FPU/SIMD switching,
   and preemptive scheduling remain unsupported.
 - The timer uses divide-by-16 one-shots calibrated against an approximately
   10 ms PIT channel 2 interval, sharing the existing bounded PIT/TSC calibration
@@ -346,7 +360,8 @@ disabled for deliberately unsupported hardware entry points.
   now arms the earliest sleeping-thread deadline. There is no periodic tick
   policy or general callback timer queue. The hard handler validates actual APIC
   in-service state, masks/stops the timer, increments a checked monotonic
-  delivery counter, and sends EOI. It never allocates, locks, or schedules.
+  delivery counter, expires deadlines under the shared IRQ lock, calls a due
+  owned handler, and sends EOI. It never allocates or switches stacks.
   A genuine APIC spurious interrupt returns without EOI. The delivery counter
   is not elapsed time: masking can suppress expirations. Ordered TSC samples
   provide the separate bootstrap elapsed-time source, not a production clock.
@@ -356,8 +371,24 @@ disabled for deliberately unsupported hardware entry points.
   to avoid missing an already-pending wakeup. HLT has no independent in-guest
   watchdog if hardware stops delivering interrupts; QEMU's 20-second host
   timeout rejects such hangs. Teardown masks/stops the timer, drains an already-
-  pending delivery while its handler/mapping are live, disables the local APIC,
-  restores its original base MSR, then releases all mapping frames.
+  pending delivery while its handler/mapping are live, then releases its APIC
+  reference. Final controller release disables the local APIC, restores its
+  original base MSR, then releases all mapping frames.
+- [ACPI discovery](src/platform.rs) uses bounded, checksum-validated
+  [parsers and route policy](src/irq_platform.rs). Firmware tables are copied
+  through owned read-only WB mappings, including SeaBIOS reserved RAM after
+  validating QEMU/PIIX identity and RAM bounds. The supported profile has one
+  xAPIC CPU, one I/O APIC, at most 1 GiB RAM, and a direct bus-zero PCI endpoint.
+  Route validation checks PIRQ programming, endpoint pin/line, ELCR and MADT
+  overrides; it does not evaluate ACPI `_PRT` or assume a fixed IRQ.
+- [The native e1000 IRQ proof](src/device_irq.rs) uses one ticket-checked claim
+  at vector `0x41`. `ICS` generates a device interrupt; reading `ICR` deasserts
+  it before EOI and directly signals a completion. The NIC IRQ guard keeps MMIO
+  live while masking the source, masking/draining the route and checking local
+  ISR/IRR plus I/O APIC remote-IRR. Only then are the handler and mapping retired.
+  Duplicate/stale claims fail explicitly. Bus mastering, RX and TX remain
+  disabled; DMA, shared-source demultiplexing, MSI/MSI-X and Linux `request_irq`
+  remain absent.
 - The four timer registry cases cover repeated hardware delivery/EOI, ordinary
   and already-pending HLT wakeups, all fifteen non-RSP GPRs plus RSP and IF/DF/
   arithmetic flags, LVT masking and a real bounded timeout, pending delivery
@@ -386,9 +417,10 @@ disabled for deliberately unsupported hardware entry points.
   A notification between preparation and registration makes the old token
   return `Notified` without sleeping. Fresh tokens do not inherit wake credits.
   Notifications are condition hints, not counting semaphores: callers must
-  recheck their condition. Wake operations are cooperative dispatcher requests,
+  recheck their condition. Wake operations directly update IRQ-locked runnable state,
   return the number of registered waiters made runnable, and select FIFO waiters.
-  No IRQ callback can invoke them yet.
+  Thread callers retain cooperative yielding; hardware IRQ callbacks use
+  `wake_one_irq`/`wake_all_irq` without switching stacks.
 - `sleep_us` and `sleep_until` use checked elapsed-TSC deadlines rather than IRQ
   delivery counts. `sleep_until` takes an absolute ordered-TSC value; relative
   microseconds require calibration. Zero-duration/past-deadline waits complete
@@ -396,22 +428,24 @@ disabled for deliberately unsupported hardware entry points.
   context, overflow, and an unavailable relative clock are explicit errors.
   The bounded policy stores at most one queue/deadline registration per task.
   It removes both before notification, expiry, or cancellation makes a task
-  runnable; equal deadlines preserve registration order. At a dispatcher
-  boundary, due deadlines are processed before a thread's wake request, so a
+  runnable; equal deadlines preserve registration order.   Before any wake
+  transition, due deadlines are processed, so a
   notification after expiry cannot turn that timeout into `Notified`.
 - `run_with_timer` checks deadlines in dispatcher context. With no runnable
   task, it arms the earliest deadline and idles on the dispatcher stack.
   Early timer IRQs only trigger a deadline recheck; tasks never resume before
   their elapsed-time deadline. Very distant deadlines use bounded APIC-count
-  chunks. The hard IRQ still does not access the scheduler or its Rust borrows.
+  chunks. IRQs access only shared runnable state, never borrowed task/context storage.
   IRQs are enabled only during dispatcher waits, so a non-yielding thread can
   still delay sleepers indefinitely.
 - No runnable tasks is distinct from all tasks finished. An untimed all-blocked
-  queue reports `thread_wait_deadlock`; an idle deadline without a supplied timer
+  queue without an armed device route reports `thread_wait_deadlock`; an idle deadline without a supplied timer
   reports `thread_timer_required`. These errors preserve suspended stacks and
   registrations for retry or cancellation. The owning scheduler remains
   exclusive until every started thread returns; another scheduler cannot
   consume notifications for its blocked waiters.
+  With an armed device route, untimed waiters can idle without a timer. A device
+  wake exits timer-backed idle immediately and stops the unused one-shot.
 - `cancel_wait(handle)` is a boot-dispatcher operation that resumes a blocked
   task with `Cancelled`. The caller must rerun the owning scheduler and let
   the task return normally so its Rust locals are dropped. It is not forced
@@ -437,13 +471,14 @@ disabled for deliberately unsupported hardware entry points.
   Positive relative timeouts require calibration; invalid context or timeout
   overflow leaves credits untouched. `None` waits indefinitely and `Some(0)`
   checks immediately. Locks are released before any cooperative wake or wait.
-- Completion signalling, consumption, waiting, and reset require an active
-  thread, IF clear, and zero IRQ guards. Interrupt/exception dispatch is also
+- Completion signalling and try-wait accept an active thread or supported
+  hardware IRQ, with IF clear and zero pre-existing IRQ guards. Waiting/reset
+  remain thread-only. Arbitrary exception dispatch is still
   explicitly rejected, even when it interrupted a running thread. Read-only
   `snapshot()` is available for diagnostics outside threads. A returning
   breakpoint probe verifies interrupt-entry rejection without modifying stored
-  credits. IRQ-safe deferred signalling and Linux completion
-  adapters remain future work.
+  credits. Completion metadata stays locked through the non-scheduling wake,
+  in completion-then-runnable-state order; thread callers yield after unlocking.
 - [Sleeping mutexes](src/mutex.rs) adapt Moss's protected-data/RAII-guard layout
   to the native thread runtime. Static `Mutex<T>` values expose `lock()`,
   `try_lock()`, and `lock_timeout(usec)`, returning guards with `Deref`/`DerefMut`
@@ -477,9 +512,11 @@ disabled for deliberately unsupported hardware entry points.
   quiescent boot dispatcher only `cond_resched` (returning 0), non-sleeping
   mutex acquisition, IRQ-save spinlocks, and object initialization/inspection/
   destruction are supported. Boot mutex contention fails explicitly; it cannot
-  block without a thread. Sleeps, completion signals/waits/reinitialization,
+  block without a thread. Sleeps, completion waits/reinitialization,
   and thread mutex operations reject boot, held IRQ guards, or interrupt/
   exception context. Native mutex unlock may cooperatively yield.
+  Completion signals reject quiescent boot, but accept the preinitialized
+  hardware-IRQ path described below.
 - C `struct mutex` and `spinlock_t` are distinct. IRQ-save spinlocks acquire
   real atomic ownership, preserve the caller's IF, count held guards, validate
   the boot/thread owner on release, and restore interrupts only after releasing
@@ -497,6 +534,8 @@ disabled for deliberately unsupported hardware entry points.
   before releasing a registry slot. Capacity exhaustion, null objects, invalid
   operations, and invalid lifecycle transitions fail explicitly. Callers must
   pair every C lock/unlock; the C test entry rejects return with owned mutexes.
+  Hardware IRQs may signal, inspect, or try-wait on preinitialized completion
+  objects, but may not initialize/reset/destroy or lazily register them.
 - The supported completion subset is `complete`, `complete_all`,
   `completion_done`, `try_wait_for_completion`, `wait_for_completion`, and
   `wait_for_completion_timeout`. `HZ` is 1000 for this adapter only;
@@ -573,7 +612,9 @@ disabled for deliberately unsupported hardware entry points.
   and only then releases frames. Failed mappings follow the same cleanup path.
 - [Rust platform code](src/) provides Limine requests, polled serial output,
   bus-zero CF8/CFC PCI discovery, BAR validation, an owned uncacheable MMIO
-  mapping, and PIT-channel-2-calibrated TSC delays. It needs no heap or scheduler.
+  mapping,   and PIT-channel-2-calibrated TSC delays. The boot MAC platform path needs no
+  scheduler; reference-counted APIC ownership and firmware copies use the
+  already-initialized heap.
 - [The C bridge](compat/bridge.c) owns all Linux-facing structs. Rust passes
   primitive PCI/MMIO parameters and receives a checked, fixed-layout result.
 - [The compatibility header](compat/kutox_compat.h) supplies the limited types,

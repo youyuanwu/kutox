@@ -337,6 +337,11 @@ pub(crate) fn timer_tick() {
     }
 }
 
+pub(crate) fn has_ready() -> bool {
+    let dispatch = DISPATCH.lock_save_irq();
+    dispatch.bound && dispatch.queue.ready_count() != 0
+}
+
 struct Running<'q> {
     queue: Option<&'q mut RunQueue<{ memory::MAX_STACKS }>>,
 }
@@ -603,8 +608,15 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
                 let deadline = match (deadline, timer.and_then(irq::Timer::handler_deadline)) {
                     (Some(wait), Some(handler)) => Some(wait.min(handler)),
                     (wait, handler) => wait.or(handler),
-                }
-                .ok_or(Failure::new("thread_wait_deadlock", -1))?;
+                };
+                let Some(deadline) = deadline else {
+                    if irq::external::is_armed() {
+                        irq::external::idle()?;
+                        stats.idle_sleeps += 1;
+                        continue;
+                    }
+                    return Err(Failure::new("thread_wait_deadlock", -1));
+                };
                 let timer = timer.ok_or(Failure::new("thread_timer_required", -1))?;
                 if timer.arm_for_idle(deadline)? {
                     timer.idle_until_tick()?;

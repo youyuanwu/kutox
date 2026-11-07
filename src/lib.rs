@@ -2,6 +2,7 @@
 
 pub mod completion_state;
 pub mod fw_cfg;
+pub mod irq_platform;
 pub mod mutex_state;
 pub mod run_queue;
 

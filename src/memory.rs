@@ -28,6 +28,8 @@ use x86_64::{
 
 const MMIO_BASE: u64 = 0x4000_0000_0000;
 const APIC_BASE: u64 = 0x5000_0000_0000;
+const IOAPIC_BASE: u64 = 0x5800_0000_0000;
+const FIRMWARE_BASE: u64 = 0x6000_0000_0000;
 const REGION_CAPACITY: usize = 128;
 const NEW_TABLES: usize = 3;
 pub const MMIO_LENGTH: usize = 0x20000;
@@ -40,6 +42,8 @@ const _: () = assert!(MAX_STACKS as u64 * STACK_STRIDE <= 2 * 1024 * 1024);
 static PAGE_TABLE_LOCK: SpinLockIrq<(), X86Cpu> = SpinLockIrq::new(());
 static MMIO_CLAIMED: AtomicBool = AtomicBool::new(false);
 static APIC_CLAIMED: AtomicBool = AtomicBool::new(false);
+static IOAPIC_CLAIMED: AtomicBool = AtomicBool::new(false);
+static FIRMWARE_CLAIMED: AtomicBool = AtomicBool::new(false);
 static STACK_CLAIMED: AtomicBool = AtomicBool::new(false);
 static INITIALIZATION: AtomicU8 = AtomicU8::new(0);
 static mut FRAMES: MaybeUninit<PhysicalFrames<'static>> = MaybeUninit::uninit();
@@ -338,7 +342,12 @@ pub fn mmio_window_unused(boot: &BootInfo) -> bool {
 }
 
 pub fn apic_window_unused(boot: &BootInfo) -> bool {
-    !APIC_CLAIMED.load(Ordering::Acquire) && window_unused(boot.hhdm_offset, APIC_BASE)
+    !APIC_CLAIMED.load(Ordering::Acquire)
+        && window_unused(boot.hhdm_offset, APIC_BASE)
+        && !IOAPIC_CLAIMED.load(Ordering::Acquire)
+        && window_unused(boot.hhdm_offset, IOAPIC_BASE)
+        && !FIRMWARE_CLAIMED.load(Ordering::Acquire)
+        && window_unused(boot.hhdm_offset, FIRMWARE_BASE)
 }
 
 pub fn stack_window_unused(boot: &BootInfo) -> bool {
@@ -441,13 +450,14 @@ pub fn map_mmio<'a, 'storage>(
     physical: u64,
     allocator: &'a PhysicalFrames<'storage>,
 ) -> Result<MmioMapping<'a, 'storage>, Failure> {
-    map_device_window(
+    map_window(
         boot,
         physical,
         allocator,
         MMIO_BASE,
         MMIO_LENGTH,
         &MMIO_CLAIMED,
+        PageTableFlags::WRITABLE | PageTableFlags::NO_CACHE | PageTableFlags::WRITE_THROUGH,
     )
 }
 
@@ -456,23 +466,103 @@ pub fn map_local_apic<'a, 'storage>(
     physical: u64,
     allocator: &'a PhysicalFrames<'storage>,
 ) -> Result<MmioMapping<'a, 'storage>, Failure> {
-    map_device_window(
+    map_window(
         boot,
         physical,
         allocator,
         APIC_BASE,
         PAGE_SIZE,
         &APIC_CLAIMED,
+        PageTableFlags::WRITABLE | PageTableFlags::NO_CACHE | PageTableFlags::WRITE_THROUGH,
     )
 }
 
-fn map_device_window<'a, 'storage>(
+pub fn map_ioapic<'a, 'storage>(
+    boot: &BootInfo,
+    physical: u64,
+    allocator: &'a PhysicalFrames<'storage>,
+) -> Result<MmioMapping<'a, 'storage>, Failure> {
+    map_window(
+        boot,
+        physical,
+        allocator,
+        IOAPIC_BASE,
+        PAGE_SIZE,
+        &IOAPIC_CLAIMED,
+        PageTableFlags::WRITABLE | PageTableFlags::NO_CACHE | PageTableFlags::WRITE_THROUGH,
+    )
+}
+
+pub fn map_firmware<'a, 'storage>(
+    boot: &BootInfo,
+    physical: u64,
+    length: usize,
+    allocator: &'a PhysicalFrames<'storage>,
+    ram_limit: u64,
+) -> Result<MmioMapping<'a, 'storage>, Failure> {
+    let end = physical
+        .checked_add(length as u64)
+        .ok_or(Failure::new("acpi_range", -1))?;
+    if length == 0
+        || length > kutox::irq_platform::MAX_TABLE
+        || end > 0x1_0000_0000
+        || !boot.memory_map.iter().any(|entry| {
+            entry.base <= physical
+                && entry
+                    .base
+                    .checked_add(entry.length)
+                    .is_some_and(|limit| end <= limit)
+                && (matches!(
+                    entry.entry_type,
+                    EntryType::ACPI_RECLAIMABLE | EntryType::ACPI_NVS
+                ) || (entry.entry_type == EntryType::RESERVED
+                    && kutox::irq_platform::reserved_firmware_range(physical, length, ram_limit)
+                        .is_ok()))
+        })
+    {
+        crate::serial::print(format_args!(
+            "# ACPI rejected physical={physical:#x} length={length}\n"
+        ));
+        for entry in boot.memory_map.iter().filter(|entry| {
+            entry.base <= physical
+                && entry
+                    .base
+                    .checked_add(entry.length)
+                    .is_some_and(|end| physical < end)
+        }) {
+            crate::serial::print(format_args!(
+                "# ACPI containing region base={:#x} length={:#x} reserved={} reclaimable={} nvs={} bootloader={}\n",
+                entry.base,
+                entry.length,
+                entry.entry_type == EntryType::RESERVED,
+                entry.entry_type == EntryType::ACPI_RECLAIMABLE,
+                entry.entry_type == EntryType::ACPI_NVS,
+                entry.entry_type == EntryType::BOOTLOADER_RECLAIMABLE
+            ));
+        }
+        return Err(Failure::new("acpi_memory_type", -1));
+    }
+    let base = physical & !(PAGE_SIZE as u64 - 1);
+    let pages_length = ((end - base) as usize).next_multiple_of(PAGE_SIZE);
+    map_window(
+        boot,
+        base,
+        allocator,
+        FIRMWARE_BASE,
+        pages_length,
+        &FIRMWARE_CLAIMED,
+        PageTableFlags::empty(),
+    )
+}
+
+fn map_window<'a, 'storage>(
     boot: &BootInfo,
     physical: u64,
     allocator: &'a PhysicalFrames<'storage>,
     base: u64,
     length: usize,
     claimed: &'static AtomicBool,
+    attributes: PageTableFlags,
 ) -> Result<MmioMapping<'a, 'storage>, Failure> {
     let pat_low: u32;
     let pat_high: u32;
@@ -480,7 +570,7 @@ fn map_device_window<'a, 'storage>(
         asm!("rdmsr", in("ecx") 0x277u32, out("eax") pat_low, out("edx") pat_high, options(nostack));
     }
     let pat = (u64::from(pat_high) << 32) | u64::from(pat_low);
-    if (pat >> 24) & 0xff != 0 {
+    if (pat >> 24) & 0xff != 0 || pat & 0xff != 6 {
         return Err(Failure::new("mmio_pat", -1));
     }
     if !physical.is_multiple_of(PAGE_SIZE as u64)
@@ -504,11 +594,7 @@ fn map_device_window<'a, 'storage>(
         pages: 0,
         attached: false,
     };
-    let flags = PageTableFlags::PRESENT
-        | PageTableFlags::WRITABLE
-        | PageTableFlags::NO_CACHE
-        | PageTableFlags::WRITE_THROUGH
-        | PageTableFlags::NO_EXECUTE;
+    let flags = PageTableFlags::PRESENT | PageTableFlags::NO_EXECUTE | attributes;
     let result = with_mapper(boot.hhdm_offset, |mapper| {
         if !mapper.level_4_table()[VirtAddr::new(base).p4_index()].is_unused() {
             return Err(Failure::new("mmio_window_in_use", -1));

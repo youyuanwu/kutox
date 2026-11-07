@@ -3,7 +3,7 @@ use crate::{
     boot::BootInfo,
     completion,
     cpu::{self, X86Cpu},
-    exceptions, heap, io, irq, linux_runtime, memory, mutex, serial, threads,
+    device_irq, exceptions, heap, io, irq, linux_runtime, memory, mutex, serial, threads,
 };
 use kutox::fw_cfg::BootMode;
 use moss_libkernel::CpuOps;
@@ -140,6 +140,18 @@ static TESTS: &[TestCase] = &[
         name: "linux.irq_completion",
         run: linux_runtime::test_irq_completion,
     },
+    TestCase {
+        name: "irq.platform_discovery",
+        run: device_irq::discovery,
+    },
+    TestCase {
+        name: "irq.device_delivery",
+        run: device_irq::delivery,
+    },
+    TestCase {
+        name: "irq.device_masking_cleanup",
+        run: device_irq::masking_cleanup,
+    },
 ];
 
 static INTENTIONAL_FAILURE: TestCase = TestCase {
@@ -164,6 +176,7 @@ pub fn run(boot: &BootInfo) -> ! {
         || !threads::irq_tests::quiescent()
         || !mutex::tests::quiescent()
         || !linux_runtime::quiescent()
+        || !device_irq::quiescent()
         || !memory::apic_window_unused(boot)
         || !memory::stack_window_unused(boot)
         || !memory::mmio_window_unused(boot)
@@ -228,6 +241,7 @@ pub fn run(boot: &BootInfo) -> ! {
             || !threads::irq_tests::quiescent()
             || !mutex::tests::quiescent()
             || !linux_runtime::quiescent()
+            || !device_irq::quiescent()
             || !memory::apic_window_unused(boot)
             || !memory::stack_window_unused(boot)
             || !memory::mmio_window_unused(boot);

@@ -64,10 +64,17 @@ class KernelSuiteTests(unittest.TestCase):
         self.assertEqual(KERNEL_TEST_NAMES[27], "linux.thread_execution")
 
     def test_requires_the_irq_wakeup_cases(self):
-        self.assertEqual(KERNEL_TEST_NAMES[28:], (
+        self.assertEqual(KERNEL_TEST_NAMES[28:31], (
             "sync.irq_completion",
             "threads.irq_wait_races",
             "linux.irq_completion",
+        ))
+
+    def test_requires_the_device_irq_cases(self):
+        self.assertEqual(KERNEL_TEST_NAMES[31:], (
+            "irq.platform_discovery",
+            "irq.device_delivery",
+            "irq.device_masking_cleanup",
         ))
 
     def test_rejects_missing_or_failed_timer_cases(self):
@@ -183,12 +190,12 @@ class KernelSuiteTests(unittest.TestCase):
             validate_result("kernel-tests-fail", 3, output)
         self.assertNotIsInstance(caught.exception, KernelSuiteFailure)
 
-    def test_suites_use_one_iso_without_a_network_device(self):
+    def test_suites_use_one_iso_with_the_device_irq_fixture(self):
         args = SimpleNamespace(qemu="qemu-system-x86_64", build_dir=Path("build"))
         for case in KERNEL_SUITE_CASES:
             command = qemu_test.qemu_command(args, case)
             self.assertEqual(command[command.index("-cdrom") + 1], str(Path("build/kutox.iso")))
-            self.assertNotIn("-netdev", command)
+            self.assertIn("user,id=irqtest,restrict=on", command)
 
     def test_low_memory_suite_uses_32_mib_without_a_new_mode_or_image(self):
         args = SimpleNamespace(qemu="qemu-system-x86_64", build_dir=Path("build"))

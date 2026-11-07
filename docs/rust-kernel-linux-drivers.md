@@ -21,8 +21,9 @@ save/restore and kernel-owned GDT/TSS/IDT.
 Shared-image tests cover lock nesting, returning breakpoints, fatal fault
 diagnostics, and double-fault emergency-stack delivery. An owned xAPIC one-shot
 timer now delivers returning hardware interrupts, while the PIC and other local
-interrupt sources remain masked. External device IRQ routing is not implemented;
-this is not yet an interrupt-driven Linux driver runtime.
+interrupt sources remain masked. A bounded external PCI INTx route now connects
+the QEMU `pc` e1000 to an owned I/O APIC claim. This is still not a complete
+interrupt-driven Linux driver runtime.
 
 The timer follows the reference kernels' one-shot model: pinned Moss uses the
 [ARM architectural timer](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/timer/armv8_arch.rs)
@@ -40,7 +41,10 @@ Bounded polling and interrupt-driven idle waits require a boot or scheduler
 dispatcher with no active thread, IF clear, and zero held IRQ guards. Adjacent `sti; hlt; cli` handles a wakeup
 already pending at the condition check; a host timeout remains the watchdog
 for halted guests whose hardware fails to deliver. Teardown drains any pending
-owned timer interrupt before disabling/unmapping the APIC. Tests cover register/
+owned timer interrupt before releasing its controller reference. The local APIC
+is independently reference-counted on the only supported CPU; a timer or I/O APIC
+owner keeps it live. Final controller release verifies no pending/in-service
+interrupt before disabling/unmapping it. Tests cover register/
 flags preservation, masking, timeout, rollback, and complete resource recovery.
 The timer owns one optional deadline-bound function handler. Registration and
 cancellation require the timer to be stopped with no pending/in-service IRQ;
@@ -48,8 +52,65 @@ replacement of a live handler fails explicitly. The dispatcher arms the earlier
 of the thread and handler deadlines, including an already-due handler. A handler
 is removed before invocation and must neither allocate nor sleep. Teardown keeps
 it available while draining pending delivery, then cancels any undelivered
-registration before releasing the APIC mapping. This is not a Linux callback
+registration before releasing its APIC reference. A device wake exits timer idle
+as soon as a thread becomes runnable, then stops/drains the remaining one-shot
+so the next idle can rearm safely. This is not a Linux callback
 timer service or a general timer queue.
+
+### Bounded device IRQ routing
+
+ACPI discovery uses the Limine base-revision-3 physical RSDP address, validates
+RSDP/root/MADT checksums and lengths, and requires one enabled xAPIC processor
+and one I/O APIC. Root entries and table lengths are bounded. Owned read-only,
+NX, write-back mappings copy firmware bytes before unmapping; device windows
+remain writable, NX and uncacheable. SeaBIOS reports its tables as reserved RAM.
+The reader first verifies the QEMU `fw_cfg` signature, i440FX/PIIX chipset, and
+RAM extent (at most 1 GiB); it accepts only ACPI memory types or reserved bytes
+inside that proven RAM extent, excluding legacy VGA/MMIO holes. Low reserved
+firmware is restricted to the BIOS `0xe0000..0x100000` range; allocator-owned
+usable pages and device MMIO are never accepted as tables.
+Bootloader/ACPI reservations are not reclaimed.
+
+The selected bus-zero endpoint must expose a valid interrupt pin and line.
+Its slot/pin swizzle selects a PIIX PIRQ byte; that programmed route must match
+the endpoint line and the ELCR level-trigger bit. MADT overrides are checked for
+compatible polarity/trigger semantics and the GSI must belong to the discovered
+controller. PIIX's routed ISA/GSI input is active-high and level-triggered;
+the PCI pin's active-low electrical convention is not programmed blindly into
+the I/O APIC. This follows the verified
+[QEMU pc swizzle](https://github.com/qemu/qemu/blob/v10.2.1/hw/i386/pc_piix.c)
+and [PIIX routing](https://github.com/qemu/qemu/blob/v10.2.1/hw/isa/piix.c).
+No IRQ 11/GSI 16 assumption, AML interpreter, or bridged PCI routing is added.
+
+Following Moss's
+[owned interrupt-handler model](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/interrupts/mod.rs),
+one live claim owns vector `0x41`, a GSI, a checked non-wrapping ticket, and a
+static handler. Duplicate claims and stale ticket operations fail explicitly.
+The manager retains the local APIC, and the claim borrows the I/O APIC owner.
+I/O APIC selector/window access is IRQ-locked; no metadata lock survives a
+handler callback. Other firmware routes must already be masked.
+
+The e1000 proof keeps bus mastering, RX, and TX disabled. It enables only
+`RXDMT0`, generates that cause with `ICS`, acknowledges/deasserts it by reading
+`ICR`, and signals a native completion before local-APIC EOI. The NIC IRQ guard
+borrows the MMIO owner, masks the source before retiring the route, and drains
+already-pending delivery while the handler and mappings remain live. Teardown
+requires cleared local ISR/IRR and I/O APIC remote-IRR state, restores the original
+masked redirection entry, then permits MMIO/BAR release. Drain uses a bounded
+elapsed-TSC poll. Untimed waiters can idle directly on an armed device route
+without a timer; their hardware-failure watchdog is the host timeout. Timed
+waiters still require a timer. Scheduling remains cooperative.
+
+Guest tests cover ACPI/controller discovery, mapping exhaustion/rollback,
+duplicate/stale claims, finite and untimed completion wakeups, timer-independent
+delivery, source and route masking, pending delivery, no interrupt storm, timeout,
+drain/retirement/reuse, and complete allocator/heap/window recovery. The same ISO
+tests PCI slots 3 and 5 at 128/32 MiB. General vector allocation, shared-source
+demultiplexing, PCI bridges, ACPI `_PRT` evaluation, MSI/MSI-X, SMP, IOMMU and
+physical-hardware acceptance remain unsupported. This native interrupt proof
+does not execute another upstream Linux driver unit or provide `request_irq`.
+
+### Other native foundations
 
 The buddy port preserves all bootstrap reservations, uses sparse metadata for
 usable pages, and supports naturally aligned power-of-two blocks up to 4 MiB.
@@ -213,7 +274,7 @@ stored credits, broadcast, no stack switching inside handlers, active-thread
 preservation, wake-before-registration, full-capacity FIFO/duplicate wakes,
 generation exhaustion, timeout/cancellation races, paused-owner rejection, and
 handler teardown/reuse.
-External interrupt routing, DMA, general timer
+Broader external interrupt routing, DMA, general timer
 callbacks, broader Linux execution APIs, and preemption remain future work.
 
 Nonfatal CPU, frame, heap, and thread tests run through a stable-Rust registry in one

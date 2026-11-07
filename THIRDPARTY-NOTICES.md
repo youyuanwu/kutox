@@ -213,3 +213,15 @@ is an x86 architectural reference for local-APIC one-shots and PIT channel 2
 calibration only. The APIC register access, owned mapping, IRQ dispatch, idle
 wait, teardown, and tests are kutox implementations; neither kernel's timer
 or interrupt-controller source is imported.
+
+The native ACPI parser, validated i440FX/PIIX routing policy, reference-counted
+local-APIC lifetime, I/O APIC claims and e1000 interrupt-cause tests are kutox code.
+Pinned Moss's
+[interrupt ownership/handler model](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/interrupts/mod.rs)
+is architectural prior art, not an imported GIC implementation. QEMU's
+[pc topology](https://github.com/qemu/qemu/blob/v10.2.1/hw/i386/pc_piix.c),
+[PIIX routing](https://github.com/qemu/qemu/blob/v10.2.1/hw/isa/piix.c), and
+[e1000 interrupt behavior](https://github.com/qemu/qemu/blob/v10.2.1/hw/net/e1000.c)
+were verified as platform documentation; no QEMU implementation source is copied.
+The selected Linux hardware translation unit remains unchanged, and the new
+native IRQ proof does not claim Linux driver-IRQ API compatibility.

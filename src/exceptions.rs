@@ -166,7 +166,10 @@ extern "C" fn kutox_exception_dispatch(frame: &ExceptionFrame) {
         io::finish(false);
     }
     let vector = frame.vector as usize;
-    if matches!(vector, irq::TIMER_VECTOR | irq::SPURIOUS_VECTOR) {
+    if matches!(
+        vector,
+        irq::TIMER_VECTOR | irq::DEVICE_VECTOR | irq::SPURIOUS_VECTOR
+    ) {
         HARDWARE_IRQ.store(true, Ordering::Release);
         match irq::dispatch(vector, frame.flags) {
             Ok(()) => {

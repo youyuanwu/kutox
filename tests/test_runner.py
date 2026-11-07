@@ -174,6 +174,12 @@ class CommandTests(unittest.TestCase):
         for case in (*FAULT_RESULTS, "heap-oom", "thread-stack-guard"):
             self.assertNotIn("-netdev", qemu_command(self.args, case))
 
+    def test_device_irq_suites_use_distinct_pci_slots_in_the_same_image(self):
+        for case, slot in (("kernel-tests", "3"), ("kernel-tests-low-memory", "5"), ("kernel-tests-fail", "3")):
+            command = qemu_command(self.args, case)
+            self.assertIn(f"e1000,netdev=irqtest,addr={slot},mac=52:54:00:12:34:56", command)
+            self.assertEqual(command[command.index("-cdrom") + 1], str(Path("build/kutox.iso")))
+
     def test_removed_nonfatal_cases_are_not_cli_choices(self):
         for case in ("memory", "cpu-locks", "breakpoint"):
             self.assertNotIn(case, CASES)
