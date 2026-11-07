@@ -210,9 +210,10 @@ The boot MAC helper is complete. Kernel scheduling, IRQ/DMA foundations and a
 native TX capture proof now validate the platform, but that native TX path is
 scaffolding rather than execution of Linux's packet driver.
 
-Next, audit and compile the original e1000 driver units, implement their real
-source-facing dependency closure, and execute original module/probe/open/close
-callbacks. Packet acceptance must then exercise Linux's xmit, IRQ/NAPI and RX
+The isolated original-source compile/dependency check is now complete. Next,
+implement its real execution/object/deferred and PCI/packet/DMA providers, then
+execute original module/probe/open/close callbacks. Packet acceptance must
+exercise Linux's xmit, IRQ/NAPI and RX
 cleanup paths. Upstream open requires RX setup and link work even for TX-first
 testing; declarations or constant-success substitutes do not satisfy it.
 

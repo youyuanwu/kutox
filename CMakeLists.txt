@@ -6,6 +6,8 @@ find_program(CARGO cargo REQUIRED)
 find_program(XORRISO xorriso REQUIRED)
 find_program(QEMU qemu-system-x86_64 REQUIRED)
 find_program(NM nm REQUIRED)
+find_program(LINUX_DRIVER_CLANG clang REQUIRED)
+find_program(LINUX_DRIVER_LD ld REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 include(FetchContent)
@@ -33,6 +35,19 @@ add_custom_command(
     VERBATIM
 )
 add_custom_target(images DEPENDS "${CMAKE_BINARY_DIR}/kutox.iso")
+
+add_custom_target(linux-driver-check
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/linux_driver_check.py"
+        --build-dir "${CMAKE_BINARY_DIR}" --clang "${LINUX_DRIVER_CLANG}" --ld "${LINUX_DRIVER_LD}"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    USES_TERMINAL
+    VERBATIM
+)
+add_test(NAME linux-driver-compile-check
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/linux_driver_check.py"
+        --build-dir "${CMAKE_BINARY_DIR}" --clang "${LINUX_DRIVER_CLANG}" --ld "${LINUX_DRIVER_LD}"
+)
+set_tests_properties(linux-driver-compile-check PROPERTIES TIMEOUT 65 RUN_SERIAL TRUE)
 
 foreach(case IN ITEMS known alternate missing unsupported ambiguous eeprom-timeout low-memory default-mode invalid-mode page-fault general-protection double-fault unexpected-page-fault smp-unsupported repeat provenance)
     add_test(NAME "mac-${case}"

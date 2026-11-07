@@ -1,0 +1,6 @@
+{
+  "asm/sockios.h": "asm-generic/sockios.h",
+  "asm/types.h": "asm-generic/types.h",
+  "linux/in6.h": "linux/in6.h",
+  "linux/if_ether.h": "linux/if_ether.h"
+}

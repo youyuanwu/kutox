@@ -19,7 +19,9 @@ RX path, general driver scheduler, or Linux application environment. A bounded
 native e1000 TX acceptance proof now exercises real packet DMA and IRQ completion.
 That TX proof validates platform services, not Linux's packet implementation.
 Only the upstream hardware helpers currently execute; `e1000_main.c` does not.
-The next milestone is its source/runtime dependency closure, not native RX.
+Its isolated source/dependency compile check is now implemented; the runtime
+environment and execution of original probe/open/xmit remain future phases,
+not native RX.
 The [third-party notice](../THIRDPARTY-NOTICES.md) records the source revision,
 MIT license, and adaptation boundaries.
 
@@ -552,6 +554,25 @@ contracts. Keep PM, netpoll, SMP, other NICs and general shared-source routing
 outside the selected profile. Record effective definitions and build provenance;
 source compilation alone is not a runtime support claim.
 
+The independent `linux-driver-check` target now compiles all four original units
+with modular, declaration-only source-facing headers. It reuses original UAPI,
+GFP and net-feature definitions and does not run Kbuild or build Linux itself.
+The generated manifest verifies **152 original function symbols**, **209
+unresolved runtime symbols**, original module/PCI/net-device/IRQ/NAPI/work
+callback references, two scalar parameters and thirteen 33-entry parameter
+arrays. Each unresolved API has a context, contract, phase owner, planned test
+and actual source/ELF caller evidence. Unknown, omitted, duplicated or
+fake-provider-resolved APIs fail the check.
+
+These objects carry `.kutox.compile_only`; the kernel linker retains/rejects
+that section even with section GC. A real negative-link test verifies the guard.
+The compile-profile structs/layouts are not a validated runtime ABI and cannot
+be mixed with the current boot-only C structs or eight-slot GFP-tag DMA adapter.
+The bridge has a checked single-provider switch for `e1000_get_hw_dev`, but
+shared MMIO/context/type integration is still required before full-driver link.
+The existing image continues to include only the hardware helper translation
+unit, so current MAC/IRQ/DMA/native-TX acceptance is unchanged.
+
 Capture the original `module_init` initializer and `pci_driver` registration,
 then invoke original probe and registered `net_device_ops`. The selected
 [ops table](../linux/drivers/net/ethernet/intel/e1000/e1000_main.c) points to
@@ -729,7 +750,9 @@ symbols or native DD/IRQ success alone are not sufficient. Keep native scaffold
 cases separate and retain exact KTAP/pcap validation, one ISO, fw_cfg selectors,
 and sequential low-memory regression runs.
 
-The next implementation item is **phase 1**. Integration with a native network
+Phase 1 is complete as **compile progress only**. The next implementation item
+is **phase 2: real execution/object/deferred services**, not a claim that the
+driver runs. Integration with a native network
 stack and extraction for a second Linux driver follow this roadmap; they do not
 replace its driver-execution gates.
 

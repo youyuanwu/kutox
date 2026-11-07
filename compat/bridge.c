@@ -68,6 +68,7 @@ void writel(u32 value, volatile void *address)
 
 void udelay(unsigned long usec) { kutox_delay_us(usec); }
 
+#ifndef KUTOX_E1000_FULL_SOURCE
 struct net_device *e1000_get_hw_dev(struct e1000_hw *hw)
 {
     struct e1000_adapter *adapter = hw->back;
@@ -75,6 +76,7 @@ struct net_device *e1000_get_hw_dev(struct e1000_hw *hw)
         kutox_platform_fail("log_context");
     return adapter->netdev;
 }
+#endif
 
 static void print_string(const char *string)
 {

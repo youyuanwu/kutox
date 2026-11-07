@@ -244,3 +244,10 @@ QEMU 10.2.1 TX writeback, synchronous processing and filter direction were
 verified as platform documentation; no QEMU source is imported. Real packet
 DMA acceptance is restricted to the selected QEMU 82540EM model, not hardware or
 the complete Linux driver runtime.
+
+The isolated source-closure check compiles all four original Linux e1000 units
+and includes unchanged Linux UAPI, GFP and net-feature headers. Original notices
+remain in the pinned submodule. The compile-only C declaration environment,
+metadata hooks, ELF/provenance audit and API classifications are kutox code.
+They neither copy the driver's packet algorithms nor provide a runnable Linux
+environment; the generated objects are excluded by the runtime linker.

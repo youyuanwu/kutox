@@ -74,17 +74,22 @@ implementation. TX descriptor construction uses the original Linux driver header
 the full Linux network driver is not linked. See the
 [milestone design](docs/linux-e1000-mac.md) for its scope and acceptance goals.
 
-The next work is the [Linux e1000 driver-reuse roadmap](docs/rust-kernel-linux-drivers.md#linux-e1000-driver-reuse-roadmap):
-compile and execute unchanged `e1000_main.c` with its hardware, parameter and
-ethtool units, implementing the required PCI, skb, streaming-DMA, workqueue and
-NAPI environment. Linux must own probe/open, packet submission and cleanup;
-Rust supplies OS services. A native RX implementation is not the next milestone.
+An isolated compile-only target now compiles unchanged `e1000_main.c` with its
+hardware, parameter and ethtool units. It records original registration/callbacks,
+parameter arrays, layouts, headers and **209 unresolved runtime dependencies**.
+These declaration-only objects are explicitly rejected by the runtime linker.
+This is not a running Linux packet driver.
+
+The [driver-reuse roadmap](docs/rust-kernel-linux-drivers.md#linux-e1000-driver-reuse-roadmap)
+next implements the required execution/object, workqueue and NAPI/IRQ services,
+then PCI/skb/streaming-DMA lifetimes. Linux must own probe/open, packet submission
+and cleanup; Rust supplies OS services. Native RX is not the next milestone.
 
 ## Requirements
 
 - Linux host with rustup; the repository pins Rust `1.99.1` and the
   `x86_64-unknown-none` target.
-- Clang, an archiver, and GNU binutils (`nm`).
+- Clang, an archiver, and GNU binutils (`nm`, `ld`).
 - CMake 3.24+, Ninja, Python 3, and xorriso.
 - `qemu-system-x86_64` with user-mode networking.
 - Network access on initial setup for Cargo dependencies and the
@@ -113,6 +118,22 @@ The acceptance suite boots with the BIOS firmware supplied by QEMU. The ISO
 also includes UEFI boot files; the automated suite does not verify UEFI boot.
 Guests use TCG, one CPU, 128 MiB of RAM (32 MiB for the low-memory test), restricted user-mode networking,
 no port forwarding, and no host hardware passthrough. Tests run sequentially.
+
+Compile/audit all four original e1000 units without building or changing the ISO:
+
+```sh
+cmake --build build --target linux-driver-check --parallel 1
+python3 scripts/linux_driver_check.py --build-dir build --verify
+```
+
+The check writes `build/linux-driver-check/manifest.json` and a relocatable
+`e1000-closure.o`, not a loadable module or executable. Its manifest contains
+per-API source/ELF callers, contexts, contracts, planned phase/tests, compiler
+arguments, header/source/object hashes, effective macros, parameter/callback
+metadata and compile-profile sizes. Verification rejects stale/missing evidence
+and fake runtime-provider substitutions. `linux-driver-compile-check` also runs
+as a standalone CTest entry. The current kernel's provenance rules remain
+hardware-helper-only.
 
 Run one case without rebuilding:
 
