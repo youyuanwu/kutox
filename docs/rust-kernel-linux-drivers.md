@@ -12,7 +12,8 @@ It executes upstream hardware helpers and now includes a fixed-capacity port
 of Moss's `Smalloc` to bootstrap metadata for its adapted buddy/frame allocator.
 The buddy allocator now owns usable RAM and MMIO page-table frames and backs
 an adapted Moss slab heap for Rust allocations. The kernel still has no
-packet data path, general driver scheduler, or Linux application environment.
+RX path, general driver scheduler, or Linux application environment. A bounded
+native e1000 TX acceptance proof now exercises real packet DMA and IRQ completion.
 The [third-party notice](../THIRDPARTY-NOTICES.md) records the source revision,
 MIT license, and adaptation boundaries.
 
@@ -90,7 +91,7 @@ The manager retains the local APIC, and the claim borrows the I/O APIC owner.
 I/O APIC selector/window access is IRQ-locked; no metadata lock survives a
 handler callback. Other firmware routes must already be masked.
 
-The e1000 proof keeps bus mastering, RX, and TX disabled. It enables only
+The interrupt-only e1000 proof keeps bus mastering, RX, and TX disabled. It enables only
 `RXDMT0`, generates that cause with `ICS`, acknowledges/deasserts it by reading
 `ICR`, and signals a native completion before local-APIC EOI. The NIC IRQ guard
 borrows the MMIO owner, masks the source before retiring the route, and drains
@@ -145,9 +146,61 @@ IOMMU/bounce mappings and GFP flags are not supplied as success-shaped stubs.
 Portable tests exercise exact layout/mask/counter/epoch boundaries. Guest tests
 check CPU/device address separation, physical alignment, full-block zeroing,
 exhaustion/reuse, ownership and stale witnesses, C output/free/lifecycle/context
-contracts, and exact resource recovery. Bus mastering stays disabled throughout;
-this milestone does not verify DMA performed by a device or send a packet.
-One real e1000 packet transfer remains the next separate proof.
+contracts, and exact resource recovery. Bus mastering stays disabled throughout
+these allocation-only tests. Real device DMA is tested separately below.
+
+### One-packet e1000 TX proof
+
+The native [TX fixture](../src/e1000_tx.rs) reuses a shared
+[NIC owner](../src/e1000.rs), rather than duplicating PCI/MMIO/source/route
+lifetimes. It allocates one 128-byte, 128-aligned ring (eight legacy descriptors)
+and a separate 60-byte coherent packet with Moss frame guards. The unchanged
+`e1000_hw.c` still executes EEPROM helpers to obtain the source MAC; descriptor
+construction in kutox's C bridge uses the unchanged `e1000_hw.h` structure,
+EOP/IFCS/RS flags, and checked Rust/C size/status offsets. No `e1000_main.c`
+functions, skb, NAPI, workqueue, or Linux networking stack execute. The latter
+file is register/ordering/teardown prior art only.
+
+Both buffers publish before a lifetime-bound, checked PCI bus-master guard
+enables DMA. RX remains disabled, and an already-up 1 Gb/s full-duplex QEMU link
+is required. One tail doorbell exposes only descriptor zero. Only TXDW is
+unmasked; the handler acknowledges ICR (TXQE may accompany TXDW) and directly
+wakes a completion waiter without switching stacks. A protocol-bound unsafe
+`device_read_u32()` performs an aligned/in-range volatile coherent status read
+followed by an acquire compiler barrier. It returns a value, never a CPU slice
+or reclamation rights. DD and absence of descriptor error flags are checked
+independently of completion signalling.
+
+Teardown follows the disable/flush/10 ms drain shape of Linux `e1000_down`, but
+its guarantee is deliberately restricted to the verified
+[QEMU 10.2.1 model](https://github.com/qemu/qemu/blob/v10.2.1/hw/net/e1000.c):
+`start_xmit` performs descriptor reads, packet reads, DD writeback and cause
+generation synchronously inside TDT/TCTL writes. An empty ring and flushed TX
+disable, disabled RX, cleared/read-back bus mastering, and source/route
+mask/drain/retirement together prove no DMA path remains. Buffers then reclaim
+through the domain/epoch witness; registers restore before normal guard release.
+Neither DD nor a timeout alone proves quiescence. Failure to establish drain is
+fatal without freeing live DMA buffers. The model's CTRL.RST merely self-clears,
+so it is not used as a reset witness. TIPG/TIDV are unmodelled and omitted;
+descriptor IDE is clear, and the modelled ITR/TADV delays are zero.
+
+This keeps Moss's contiguous-frame/direct-map/coherent-QEMU approach, researched
+in its pinned
+[VirtioHal](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/virtio_hal.rs),
+but retains owned guards and explicit quiescence rather than leaking/rebuilding
+allocation ownership or adding a second DMA allocator.
+
+Three new guest cases exercise repeated one-packet sessions, withheld-doorbell
+timeout, completed DD with a masked notification source, and Drop with a pending
+IRQ. They check native ownership exclusions, one IRQ per packet, timer-independent
+wakeup, descriptor errors, and exact frame/heap/controller/window recovery.
+Each normal, low-memory and intentional-failure suite captures NIC TX using a
+backend-RX `filter-dump`; the host requires exactly four ordered 60-byte Ethernet
+frames with the fixed MAC, experimental EtherType `0x88b5`, marker and sequence
+payload byte-for-byte. A missing/stale/malformed/extra packet cannot pass.
+This remains native hardware-helper reuse, not a port of the complete Linux
+network driver. RX, a networking stack, streaming mappings, and physical-hardware
+DMA acceptance remain later milestones.
 
 ### Other native foundations
 

@@ -35,6 +35,7 @@ typedef unsigned int gfp_t;
 #define max(a, b) ((a) > (b) ? (a) : (b))
 #define cpu_to_le16(x) ((u16)(x))
 #define cpu_to_le32(x) ((u32)(x))
+#define cpu_to_le64(x) ((u64)(x))
 #define le16_to_cpu(x) ((u16)(x))
 #define le32_to_cpu(x) ((u32)(x))
 #define PCI_COMMAND_INVALIDATE 0x10

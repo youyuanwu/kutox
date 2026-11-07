@@ -28,4 +28,7 @@ void kutox_read_mac(uintptr_t base, size_t length, uint16_t vendor,
                    uint16_t device, uint8_t revision, uint8_t deny_grant,
                    struct kutox_result *result);
 
+int kutox_e1000_tx_descriptor(void *ring, size_t ring_bytes,
+                             uint64_t packet_dma, uint16_t packet_bytes);
+
 #endif

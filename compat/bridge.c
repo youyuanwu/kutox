@@ -14,6 +14,26 @@ static u32 denied_grants;
 static u32 eeprom_reads;
 static bool probe_active;
 
+_Static_assert(sizeof(struct e1000_tx_desc) == 16, "TX descriptor size");
+_Static_assert(offsetof(struct e1000_tx_desc, upper) == 12, "TX status offset");
+
+int kutox_e1000_tx_descriptor(void *ring, size_t ring_bytes,
+                             u64 packet_dma, u16 packet_bytes)
+{
+    if (!ring || ((uintptr_t)ring & 15) || ring_bytes != 128 ||
+        packet_bytes < 60 || packet_bytes > 1514 ||
+        packet_dma > UINT32_MAX - packet_bytes + 1)
+        return -1;
+    struct e1000_tx_desc *desc = ring;
+    *desc = (struct e1000_tx_desc) {
+        .buffer_addr = cpu_to_le64(packet_dma),
+        .lower.data = cpu_to_le32(packet_bytes | E1000_TXD_CMD_EOP |
+                                 E1000_TXD_CMD_IFCS | E1000_TXD_CMD_RS),
+        .upper.data = 0,
+    };
+    return 0;
+}
+
 static void check_address(const volatile void *address)
 {
     uintptr_t value = (uintptr_t)address;

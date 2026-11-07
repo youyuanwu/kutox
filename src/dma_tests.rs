@@ -105,6 +105,13 @@ pub fn ownership(boot: &BootInfo, frames: &memory::PhysicalFrames<'static>) -> R
     let mut second = device.allocate(PAGE_SIZE, PAGE_SIZE).unwrap();
     first.bytes_mut().unwrap().fill(0x5a);
     first.publish().unwrap();
+    assert_eq!(unsafe { first.device_read_u32(0) }, Ok(0x5a5a5a5a));
+    for offset in [1, 64, usize::MAX] {
+        assert_eq!(
+            unsafe { first.device_read_u32(offset) },
+            Err(Error::Policy(dma_state::Error::Address))
+        );
+    }
     assert_eq!(
         first.cpu_address(),
         Err(Error::Policy(dma_state::Error::Busy))
@@ -128,6 +135,10 @@ pub fn ownership(boot: &BootInfo, frames: &memory::PhysicalFrames<'static>) -> R
     );
     let witness = unsafe { device.quiesced() }.unwrap();
     first.reclaim(&witness).unwrap();
+    assert_eq!(
+        unsafe { first.device_read_u32(0) },
+        Err(Error::Policy(dma_state::Error::Stale))
+    );
     second.reclaim(&witness).unwrap();
     assert!(first.bytes().unwrap().iter().all(|&byte| byte == 0x5a));
     assert_eq!(

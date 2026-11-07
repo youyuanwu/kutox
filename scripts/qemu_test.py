@@ -4,6 +4,7 @@
 import argparse
 from pathlib import Path
 import re
+import struct
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,6 +49,9 @@ KERNEL_TEST_NAMES = (
     "dma.coherent_allocation",
     "dma.ownership",
     "linux.coherent_dma",
+    "net.e1000_tx",
+    "net.e1000_tx_timeout",
+    "net.e1000_tx_pending_cleanup",
 )
 KERNEL_SUITE_CASES = {
     "kernel-tests": "kernel-tests",
@@ -334,9 +338,47 @@ def check_provenance(nm):
     for symbol in ("e1000_probe", "e1000_open", "e1000_xmit_frame"):
         if symbol in names:
             raise AssertionError(f"out-of-scope full-driver symbol: {symbol}")
+    if "kutox_e1000_tx_descriptor" not in names:
+        raise AssertionError("native C descriptor helper using the upstream header not linked")
 
 
-def qemu_command(args, case):
+def tx_packet(sequence):
+    packet = bytearray(
+        b"\xff" * 6 + bytes.fromhex("52540012345688b5")
+        + bytes((sequence + index) & 255 for index in range(14, 60))
+    )
+    packet[14:22] = b"KUTOX-TX"
+    packet[22] = sequence
+    return bytes(packet)
+
+
+def validate_tx_capture(data):
+    if len(data) < 24 or len(data) > 1024 * 1024:
+        raise AssertionError("missing, truncated, or oversized TX capture")
+    endian = {b"\xd4\xc3\xb2\xa1": "<", b"\xa1\xb2\xc3\xd4": ">"}.get(bytes(data[:4]))
+    if endian is None:
+        raise AssertionError("unsupported pcap format")
+    major, minor, _, _, snaplen, link = struct.unpack_from(endian + "HHIIII", data, 4)
+    if (major, minor, link) != (2, 4, 1) or snaplen < 60:
+        raise AssertionError("invalid Ethernet pcap header")
+    packets = []
+    offset = 24
+    while offset < len(data):
+        if len(data) - offset < 16:
+            raise AssertionError("truncated pcap record header")
+        _, usec, captured, original = struct.unpack_from(endian + "IIII", data, offset)
+        offset += 16
+        if usec >= 1_000_000 or captured != 60 or original != 60 or captured > len(data) - offset:
+            raise AssertionError("truncated or unexpected TX packet length")
+        packets.append(data[offset:offset + captured])
+        offset += captured
+        if len(packets) > 4:
+            raise AssertionError("unexpected extra TX packet")
+    if packets != [tx_packet(sequence) for sequence in (1, 2, 3, 4)]:
+        raise AssertionError("TX capture has missing, reordered, duplicate, or incorrect packet bytes")
+
+
+def qemu_command(args, case, capture=None):
     command = [
         args.qemu, "-machine", "pc", "-accel", "tcg", "-cpu", "qemu64",
         "-smp", "2,sockets=2,cores=1,threads=1" if case == "smp-unsupported" else "1",
@@ -374,13 +416,23 @@ def qemu_command(args, case):
             "-netdev", "user,id=irqtest,restrict=on",
             "-device", f"e1000,netdev=irqtest,addr={slot},mac=52:54:00:12:34:56",
         ]
+        if capture is not None:
+            # QEMU key/value options escape literal commas by doubling them.
+            filename = str(capture).replace(",", ",,")
+            command += [
+                # Directions are relative to the backend: its RX is the NIC's TX.
+                "-object", f"filter-dump,id=txcapture,netdev=irqtest,queue=rx,file={filename}",
+            ]
     return command
 
 
 def run_case(args, case, index=0):
-    command = qemu_command(args, case)
     log = args.build_dir / "test-logs" / f"{args.case}-{index}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
+    capture = log.with_suffix(".pcap") if case in KERNEL_SUITE_CASES else None
+    if capture is not None:
+        capture.unlink(missing_ok=True)
+    command = qemu_command(args, case, capture)
     try:
         completed = subprocess.run(
             command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -393,6 +445,11 @@ def run_case(args, case, index=0):
     output = completed.stdout.decode("utf-8", errors="replace")
     log.write_text(output, encoding="utf-8")
     try:
+        if capture is not None:
+            if not capture.is_file():
+                raise AssertionError("QEMU did not produce the required TX capture")
+            with capture.open("rb") as stream:
+                validate_tx_capture(stream.read(1024 * 1024 + 1))
         validate_result(case, completed.returncode, output)
     except KernelSuiteFailure as error:
         raise KernelSuiteFailure(f"{error}\nlog: {log}\n{output}") from error

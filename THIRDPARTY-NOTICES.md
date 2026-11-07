@@ -231,4 +231,16 @@ registered-device C adapter, and acceptance tests are kutox code. They reuse
 the existing adapted Moss frame allocator and IRQ lock without copying a Moss
 or Linux DMA implementation. The selected upstream e1000 source remains
 unchanged. Coherent allocation/mask/barrier API names do not imply a Linux
-binary device ABI, streaming DMA, IOMMU translation, or real packet-DMA acceptance.
+binary device ABI, streaming DMA, or IOMMU translation.
+
+The native one-packet TX owner, register/IRQ lifecycle, status observation and
+pcap acceptance harness are kutox code, reusing the adapted Moss frame guards.
+Pinned Moss's
+[VirtioHal](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/virtio_hal.rs)
+is DMA-allocation/coherent-QEMU prior art only. The C descriptor helper includes
+the unchanged Linux `e1000_hw.h` descriptor and command definitions;
+`e1000_main.c` TX configuration/cleanup was researched, not compiled or copied.
+QEMU 10.2.1 TX writeback, synchronous processing and filter direction were
+verified as platform documentation; no QEMU source is imported. Real packet
+DMA acceptance is restricted to the selected QEMU 82540EM model, not hardware or
+the complete Linux driver runtime.

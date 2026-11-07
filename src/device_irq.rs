@@ -1,13 +1,11 @@
+use crate::e1000::{self, ICR, ICS, Nic, read, write};
 use crate::{
     Failure,
     boot::BootInfo,
     completion::{Completion, WaitResult},
     cpu::{self, X86Cpu},
-    irq::{
-        self, LocalApic,
-        external::{ClaimedIrq, IoApic},
-    },
-    memory, pci, platform, serial,
+    irq::{self, LocalApic, external::IoApic},
+    memory, pci, platform,
     threads::Scheduler,
     time,
 };
@@ -15,127 +13,12 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use kutox::completion_state::CompletionState;
 use moss_libkernel::CpuOps;
 
-const ICR: usize = 0xc0;
-const ICS: usize = 0xc8;
-const IMS: usize = 0xd0;
-const IMC: usize = 0xd8;
 const CAUSE: u32 = 0x10;
-static ADDRESS: AtomicUsize = AtomicUsize::new(0);
 static RESUMED: AtomicUsize = AtomicUsize::new(0);
 static COMPLETION: Completion = Completion::new();
 
-fn read(base: usize, offset: usize) -> u32 {
-    unsafe { ((base + offset) as *const u32).read_volatile() }
-}
-
-fn write(base: usize, offset: usize, value: u32) {
-    unsafe { ((base + offset) as *mut u32).write_volatile(value) };
-    let _ = read(base, 8);
-}
-
-struct Nic<'a, 'storage> {
-    mapping: memory::MmioMapping<'a, 'storage>,
-    _bar: pci::Bar,
-    gsi: u32,
-}
-
-impl<'a, 'storage> Nic<'a, 'storage> {
-    fn start(
-        boot: &BootInfo,
-        frames: &'a memory::PhysicalFrames<'storage>,
-        topology: &kutox::irq_platform::Topology,
-    ) -> Result<Self, Failure> {
-        let device = pci::discover()?;
-        let gsi = device.interrupt_route(topology)?;
-        let bar = device.enable_mmio()?;
-        let mapping = memory::map_mmio(boot, bar.base, frames)?;
-        let address = mapping.address();
-        if read(address, IMS) != 0 || read(address, 0x100) & 2 != 0 || read(address, 0x400) & 2 != 0
-        {
-            return Err(Failure::new("e1000_irq_live_device", -1));
-        }
-        bar.enable_interrupts()?;
-        write(address, IMC, u32::MAX);
-        let _ = read(address, ICR);
-        if ADDRESS
-            .compare_exchange(0, address, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return Err(Failure::new("e1000_irq_owner", -1));
-        }
-        serial::print(format_args!(
-            "# e1000 IRQ gsi={gsi} source=piix vector={:#x} dma=disabled\n",
-            irq::DEVICE_VECTOR
-        ));
-        Ok(Self {
-            mapping,
-            _bar: bar,
-            gsi,
-        })
-    }
-
-    fn claim<'nic, 'controller>(
-        &'nic self,
-        controller: &'controller IoApic<'a, 'storage>,
-    ) -> Result<NicIrq<'nic, 'controller, 'a, 'storage>, Failure> {
-        let claim = controller.claim(self.gsi, handle)?;
-        let _ = read(self.mapping.address(), ICR);
-        write(self.mapping.address(), IMS, CAUSE);
-        if read(self.mapping.address(), IMS) != CAUSE {
-            return Err(Failure::new("e1000_irq_mask_readback", -1));
-        }
-        Ok(NicIrq {
-            nic: self,
-            claim,
-            live: true,
-        })
-    }
-
-    fn mask(&self) {
-        write(self.mapping.address(), IMC, u32::MAX);
-        assert_eq!(read(self.mapping.address(), IMS), 0, "NIC mask failed");
-    }
-}
-
-impl Drop for Nic<'_, '_> {
-    fn drop(&mut self) {
-        self.mask();
-        let _ = read(self.mapping.address(), ICR);
-        ADDRESS.store(0, Ordering::Release);
-    }
-}
-
-struct NicIrq<'nic, 'controller, 'a, 'storage> {
-    nic: &'nic Nic<'a, 'storage>,
-    claim: ClaimedIrq<'controller, 'a, 'storage>,
-    live: bool,
-}
-
-impl NicIrq<'_, '_, '_, '_> {
-    fn close(&mut self) -> Result<(), Failure> {
-        if !self.live {
-            return Err(Failure::new("e1000_irq_stale", -1));
-        }
-        self.nic.mask();
-        self.claim.close()?;
-        let _ = read(self.nic.mapping.address(), ICR);
-        self.live = false;
-        Ok(())
-    }
-}
-
-impl Drop for NicIrq<'_, '_, '_, '_> {
-    fn drop(&mut self) {
-        if self.live {
-            self.close().unwrap_or_else(|error| {
-                panic!("NIC IRQ teardown stage={} code={}", error.stage, error.code)
-            });
-        }
-    }
-}
-
 fn handle() -> Result<(), Failure> {
-    let address = ADDRESS.load(Ordering::Acquire);
+    let address = e1000::irq_address();
     if address == 0 || read(address, ICR) & CAUSE == 0 {
         return Err(Failure::new("e1000_irq_cause", -1));
     }
@@ -159,7 +42,7 @@ fn handle() -> Result<(), Failure> {
 }
 
 fn trigger(_: usize) {
-    let address = ADDRESS.load(Ordering::Acquire);
+    let address = e1000::irq_address();
     assert_ne!(address, 0);
     write(address, ICS, CAUSE);
 }
@@ -191,7 +74,7 @@ fn consume(_: usize) {
 }
 
 pub fn quiescent() -> bool {
-    ADDRESS.load(Ordering::Acquire) == 0 && COMPLETION.snapshot() == CompletionState::new()
+    e1000::irq_address() == 0 && COMPLETION.snapshot() == CompletionState::new()
 }
 
 pub fn discovery(boot: &BootInfo, frames: &memory::PhysicalFrames<'static>) -> Result<(), Failure> {
@@ -250,7 +133,7 @@ pub fn delivery(boot: &BootInfo, frames: &memory::PhysicalFrames<'static>) -> Re
     let apic = LocalApic::start(boot, frames)?;
     let controller = IoApic::start(boot, frames, &apic, &topology)?;
     let nic = Nic::start(boot, frames, &topology)?;
-    let mut route = nic.claim(&controller)?;
+    let mut route = nic.claim(&controller, CAUSE, handle)?;
     route.claim.unmask()?;
     let timer = irq::Timer::attach(&apic)?;
     let space = memory::StackSpace::new(boot, frames)?;
@@ -290,7 +173,7 @@ pub fn masking_cleanup(
     let nic = Nic::start(boot, frames, &topology)?;
     let space = memory::StackSpace::new(boot, frames)?;
     let mut scheduler = Scheduler::new(&space);
-    let mut route = nic.claim(&controller)?;
+    let mut route = nic.claim(&controller, CAUSE, handle)?;
     let stale = route.claim.token();
     let before = irq::external::deliveries();
     trigger(0);
@@ -311,7 +194,7 @@ pub fn masking_cleanup(
         matches!(controller.set_mask(stale, false), Err(error) if error.stage == "irq_stale_claim")
     );
 
-    let mut route = nic.claim(&controller)?;
+    let mut route = nic.claim(&controller, CAUSE, handle)?;
     route.claim.unmask()?;
     nic.mask();
     let timer = irq::Timer::attach(&apic)?;
@@ -322,7 +205,7 @@ pub fn masking_cleanup(
     drop(timer);
     route.close()?;
 
-    let mut route = nic.claim(&controller)?;
+    let mut route = nic.claim(&controller, CAUSE, handle)?;
     route.claim.unmask()?;
     trigger(0);
     time::delay_us(5_000);
@@ -334,7 +217,7 @@ pub fn masking_cleanup(
     );
     scheduler.spawn(consume, 0)?;
     scheduler.run()?;
-    let mut reused = nic.claim(&controller)?;
+    let mut reused = nic.claim(&controller, CAUSE, handle)?;
     reused.claim.unmask()?;
     scheduler.spawn(waiter, 0)?;
     scheduler.spawn(trigger, 0)?;

@@ -59,11 +59,17 @@ The current route is single-CPU, single-source, and not a Linux `request_irq` AP
 Owned coherent DMA buffers now reuse Moss contiguous frame guards, with checked
 32/64-bit masks, size/alignment, distinct CPU/device addresses, zero initialization,
 and explicit CPU/device ownership. A bounded C adapter supplies coherent allocation,
-free, mask selection and ordering barriers. Tests keep bus mastering disabled;
-real DMA, streaming mappings and packet transfer are not yet verified.
+free, mask selection and ordering barriers. The allocation-only tests keep
+bus mastering disabled; a separate native TX proof now performs real device DMA.
+
+The bounded e1000 TX proof sends one 60-byte Ethernet frame per owned descriptor
+ring, verifies descriptor `DD` and a real `TXDW` IRQ wakeup, and captures the exact
+bytes in QEMU. Timeout and pending-IRQ teardown stop/drain the device before
+reclaiming buffers. This is QEMU-only TX, not RX or a networking stack.
 
 This is hardware-helper reuse, not a complete Linux driver port or LinuxKPI
-implementation. There is no packet data path yet. See the
+implementation. TX descriptor construction uses the original Linux driver header;
+the full Linux network driver is not linked. See the
 [milestone design](docs/linux-e1000-mac.md) for its scope and acceptance goals.
 
 ## Requirements
@@ -93,6 +99,7 @@ The build produces:
 - `target/x86_64-unknown-none/release/kutox`: freestanding kernel ELF.
 - `build/kutox.iso`: one reusable Limine BIOS/UEFI image for every guest test.
 - `build/test-logs/`: serial output for each acceptance run.
+  Kernel suites also retain a `.pcap` capture of NIC-transmitted frames.
 
 The acceptance suite boots with the BIOS firmware supplied by QEMU. The ISO
 also includes UEFI boot files; the automated suite does not verify UEFI boot.
@@ -140,13 +147,13 @@ cargo test --locked -p moss-libkernel --target x86_64-unknown-linux-gnu
 ```
 
 The default nonfatal kernel suite reuses the same image and includes one e1000
-fixture for its device-IRQ cases:
+fixture for its device-IRQ and packet-DMA cases:
 
 ```sh
 python3 scripts/qemu_test.py --case kernel-tests --build-dir build
 ```
 
-Run the same thirty-seven registered cases with 32 MiB of guest RAM:
+Run the same forty registered cases with 32 MiB of guest RAM:
 
 ```sh
 python3 scripts/qemu_test.py --case kernel-tests-low-memory --build-dir build
@@ -169,7 +176,7 @@ hardware-configuration cases still use separate boots of the same ISO.
 
 ```text
 KTAP version 1
-1..37
+1..40
 ok 1 cpu.irq_lock_restore
 ok 2 cpu.breakpoint_return
 ok 3 memory.alignment_reservations
@@ -207,7 +214,10 @@ ok 34 irq.device_masking_cleanup
 ok 35 dma.coherent_allocation
 ok 36 dma.ownership
 ok 37 linux.coherent_dma
-# Totals: pass:37 fail:0 skip:0 total:37
+ok 38 net.e1000_tx
+ok 39 net.e1000_tx_timeout
+ok 40 net.e1000_tx_pending_cleanup
+# Totals: pass:40 fail:0 skip:0 total:40
 ```
 
 Tests run sequentially with interrupts disabled at case boundaries. After
@@ -218,6 +228,8 @@ scheduler with no suspended owner, a disabled/unclaimed local APIC, masked PICs,
 windows. Completion fixtures must have no stored credits, latched broadcasts,
 or in-flight waits; mutex fixtures must have no owner or pending lock calls.
 The C execution registry must be empty and its native objects quiescent.
+The TX fixture must have no completion credit or active DMA engine; its borrowed
+NIC, IRQ route, PCI bus-master guard, and coherent frame guards retire together.
 Empty slabs must release their frames before the next
 case; there is no deferred cache purge. Changed state causes a `Bail out!` and
 guest failure rather than continuing with a corrupted fixture. Ordinary
@@ -230,9 +242,16 @@ summary, and matching exit status. Missing/duplicate cases, skips, malformed
 output, premature shutdown, and timeouts cannot pass. Adding a registered case
 requires updating `KERNEL_TEST_NAMES` in the
 [host runner](scripts/qemu_test.py) as well.
+For kernel suites it also requires a fresh Ethernet pcap containing exactly four
+60-byte packets, in sequence, with every byte checked. These cover two successful
+one-packet sessions, one completed packet with its IRQ source masked, and one
+pending-IRQ teardown. The withheld-doorbell timeout must emit no packet.
+Missing, stale, truncated, extra, or incorrect captures fail even the
+intentional-failure acceptance check. QEMU's backend `queue=rx` captures the NIC's
+TX direction, excluding traffic sent toward the guest.
 
 The intentional-failure mode reports a failing `harness.intentional_failure`
-before the thirty-seven normal cases and exits with guest failure. This command
+before the forty normal cases and exits with guest failure. This command
 **must return nonzero**:
 
 ```sh
@@ -396,7 +415,7 @@ disabled for deliberately unsupported hardware entry points.
   live while masking the source, masking/draining the route and checking local
   ISR/IRR plus I/O APIC remote-IRR. Only then are the handler and mapping retired.
   Duplicate/stale claims fail explicitly. Bus mastering, RX and TX remain
-  disabled; actual device DMA, shared-source demultiplexing, MSI/MSI-X and Linux `request_irq`
+  disabled in this interrupt-only proof; shared-source demultiplexing, MSI/MSI-X and Linux `request_irq`
   remain absent.
 - [Coherent DMA buffers](src/dma.rs) retain exclusive Moss frame guards for
   physically contiguous blocks. Sizes are 1 byte through 4 MiB, with power-of-two
@@ -413,6 +432,9 @@ disabled for deliberately unsupported hardware entry points.
   witnesses. Dropping a device-owned buffer is fatal rather than freeing live
   frames. Coherent x86 WB publication/read barriers are compiler release/acquire
   fences, not a noncoherent cache-maintenance implementation.
+  A bounded unsafe `device_read_u32()` permits an aligned, in-range coherent
+  descriptor-status observation while device-owned, without exposing a slice or
+  transferring ownership.
 - [The coherent C adapter](src/linux_dma.rs) explicitly binds one static opaque
   C device and at most eight buffers. It supplies `dma_set_mask_and_coherent`,
   `dma_alloc_coherent`, `dma_free_coherent`, `dma_wmb` and `dma_rmb`.
@@ -426,8 +448,24 @@ disabled for deliberately unsupported hardware entry points.
   [C test](compat/dma_test.c) check exact alignment/mask boundaries, zeroing,
   disjoint buffers, exhaustion/reuse, counters, live/stale ownership, output
   preservation, invalid free/lifecycle/context requests and full cleanup.
-  They never enable bus mastering or a DMA engine; real packet DMA is the next
-  separate proof.
+  They never enable bus mastering or a DMA engine.
+- [The native TX proof](src/e1000_tx.rs) reuses the shared
+  [NIC/MMIO/IRQ owner](src/e1000.rs), a 128-byte ring of eight legacy descriptors,
+  and one 60-byte coherent packet. The [C bridge](compat/bridge.c) constructs the
+  first descriptor with the original Linux `e1000_tx_desc` and EOP/IFCS/RS flags.
+  No additional upstream translation unit or `e1000_main.c` entry point executes.
+  Buffers publish before bus mastering/TX enablement and the ordered tail
+  doorbell; a real TXDW handler acknowledges ICR and signals a waiting thread.
+  DD is read volatile without a CPU slice and descriptor errors fail acceptance.
+  RX, offloads, streaming DMA, packet queues and a network stack remain absent.
+- TX teardown flushes a disabled engine, allows the Linux-style 10 ms drain,
+  requires an empty hardware ring and disabled RX, clears/readbacks bus mastering,
+  masks/drains/retires its IRQ, then obtains a DMA quiescence witness and restores
+  registers. Failure to establish drain is fatal rather than freeing live DMA.
+  This relies on the validated QEMU 82540EM model's synchronous TDT/TCTL processing,
+  verified against QEMU 10.2.1; it is not a physical-hardware teardown guarantee.
+  QEMU does not model TIPG/TIDV; delayed-IRQ IDE is clear. Its CTRL.RST write is not
+  used as a fabricated reset/quiescence witness.
 - The four timer registry cases cover repeated hardware delivery/EOI, ordinary
   and already-pending HLT wakeups, all fifteen non-RSP GPRs plus RSP and IF/DF/
   arithmetic flags, LVT masking and a real bounded timeout, pending delivery

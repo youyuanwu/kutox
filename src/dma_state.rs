@@ -63,6 +63,13 @@ pub fn range(address: u64, length: usize, mask_value: u64) -> Result<(), Error> 
     Ok(())
 }
 
+pub fn status_word(size: usize, offset: usize) -> Result<(), Error> {
+    if !offset.is_multiple_of(4) || offset.checked_add(4).is_none_or(|end| end > size) {
+        return Err(Error::Address);
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct State {
     pub mask: u64,
@@ -141,6 +148,16 @@ impl Ownership {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_observation_is_aligned_and_inside_logical_length() {
+        for offset in [0, 4, 12] {
+            assert_eq!(status_word(16, offset), Ok(()));
+        }
+        for (size, offset) in [(3, 0), (16, 1), (16, 16), (16, usize::MAX), (0, 0)] {
+            assert_eq!(status_word(size, offset), Err(Error::Address));
+        }
+    }
 
     #[test]
     fn layouts_bound_size_order_and_both_required_alignments() {

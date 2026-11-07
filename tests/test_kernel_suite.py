@@ -1,4 +1,6 @@
 import sys
+import struct
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -78,15 +80,22 @@ class KernelSuiteTests(unittest.TestCase):
         ))
 
     def test_requires_the_dma_cases(self):
-        self.assertEqual(KERNEL_TEST_NAMES[34:], (
+        self.assertEqual(KERNEL_TEST_NAMES[34:37], (
             "dma.coherent_allocation",
             "dma.ownership",
             "linux.coherent_dma",
         ))
 
+    def test_requires_the_actual_tx_cases(self):
+        self.assertEqual(KERNEL_TEST_NAMES[37:], (
+            "net.e1000_tx",
+            "net.e1000_tx_timeout",
+            "net.e1000_tx_pending_cleanup",
+        ))
+
     def test_rejects_missing_or_failed_timer_cases(self):
         for index, name in enumerate(KERNEL_TEST_NAMES, 1):
-            if not name.startswith(("irq.", "dma.", "threads.wait_", "threads.timed_sleep", "threads.irq_", "sync.irq_", "sync.completion_", "sync.mutex_", "linux.")):
+            if not name.startswith(("irq.", "dma.", "net.", "threads.wait_", "threads.timed_sleep", "threads.irq_", "sync.irq_", "sync.completion_", "sync.mutex_", "linux.")):
                 continue
             result = f"ok {index} {name}"
             for replacement in ("", result.replace("ok ", "not ok ", 1)):
@@ -228,6 +237,94 @@ class KernelSuiteTests(unittest.TestCase):
             with patch.object(qemu_test, "run_case", side_effect=KernelSuiteFailure("expected")):
                 with self.assertRaises(KernelSuiteFailure):
                     qemu_test.main()
+
+
+def tx_pcap(packets=None, endian="<"):
+    if packets is None:
+        packets = [qemu_test.tx_packet(sequence) for sequence in (1, 2, 3, 4)]
+    magic = b"\xd4\xc3\xb2\xa1" if endian == "<" else b"\xa1\xb2\xc3\xd4"
+    data = magic + struct.pack(endian + "HHIIII", 2, 4, 0, 0, 65536, 1)
+    for packet in packets:
+        data += struct.pack(endian + "IIII", 1, 0, len(packet), len(packet)) + packet
+    return data
+
+
+class TxCaptureTests(unittest.TestCase):
+    def test_exact_packet_shape(self):
+        self.assertEqual(
+            qemu_test.tx_packet(1),
+            b"\xff" * 6 + bytes.fromhex("52540012345688b5")
+            + b"KUTOX-TX\x01" + bytes(range(24, 61)),
+        )
+
+    def test_accepts_both_classic_pcap_byte_orders(self):
+        for endian in ("<", ">"):
+            qemu_test.validate_tx_capture(tx_pcap(endian=endian))
+
+    def test_rejects_absent_extra_duplicate_reordered_or_wrong_packets(self):
+        packets = [qemu_test.tx_packet(sequence) for sequence in (1, 2, 3, 4)]
+        wrong = bytearray(packets[0])
+        wrong[-1] ^= 1
+        for frames in (
+            [], packets[:3], packets + [packets[0]], [packets[0]] * 4,
+            packets[::-1], [bytes(wrong), *packets[1:]],
+        ):
+            with self.subTest(frames=frames), self.assertRaises(AssertionError):
+                qemu_test.validate_tx_capture(tx_pcap(frames))
+
+    def test_rejects_truncation_and_trailing_garbage(self):
+        data = tx_pcap()
+        for invalid in (data[:23], data[:30], data[:-1], data + b"\0", b"\0" * 24):
+            with self.assertRaises(AssertionError):
+                qemu_test.validate_tx_capture(invalid)
+
+    def test_rejects_invalid_header_record_lengths_and_timestamp(self):
+        for offset, fmt, value in (
+            (4, "H", 3), (20, "I", 101), (16, "I", 59),
+            (28, "I", 1_000_000), (32, "I", 59), (36, "I", 61),
+        ):
+            data = bytearray(tx_pcap())
+            struct.pack_into("<" + fmt, data, offset, value)
+            with self.assertRaises(AssertionError):
+                qemu_test.validate_tx_capture(data)
+
+    def test_capture_is_transmit_only_and_uses_the_owned_fixture(self):
+        args = SimpleNamespace(qemu="qemu-system-x86_64", build_dir=Path("build"))
+        command = qemu_test.qemu_command(args, "kernel-tests", Path("build/a,b.pcap"))
+        self.assertEqual(
+            command[command.index("-object") + 1],
+            "filter-dump,id=txcapture,netdev=irqtest,queue=rx,file=build/a,,b.pcap",
+        )
+        self.assertNotIn("-object", qemu_test.qemu_command(args, "known", Path("unused")))
+
+    def test_runner_requires_fresh_capture_even_for_intentional_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(
+                qemu="qemu", build_dir=Path(directory), case="kernel-tests-fail", timeout=1,
+            )
+            capture = args.build_dir / "test-logs/kernel-tests-fail-0.pcap"
+            capture.parent.mkdir()
+            capture.write_bytes(tx_pcap())
+            completed = SimpleNamespace(returncode=3, stdout=suite_log(args.case).encode())
+            with patch.object(qemu_test.subprocess, "run", return_value=completed):
+                with self.assertRaises(AssertionError) as caught:
+                    qemu_test.run_case(args, args.case)
+            self.assertNotIsInstance(caught.exception, KernelSuiteFailure)
+            self.assertFalse(capture.exists(), "stale capture was reused")
+
+    def test_runner_checks_capture_before_accepting_intentional_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(
+                qemu="qemu", build_dir=Path(directory), case="kernel-tests-fail", timeout=1,
+            )
+            def execute(command, **kwargs):
+                filename = command[command.index("-object") + 1].split("file=", 1)[1]
+                Path(filename).write_bytes(tx_pcap())
+                return SimpleNamespace(returncode=3, stdout=suite_log(args.case).encode())
+
+            with patch.object(qemu_test.subprocess, "run", side_effect=execute):
+                with self.assertRaises(KernelSuiteFailure):
+                    qemu_test.run_case(args, args.case)
 
 
 if __name__ == "__main__":

@@ -198,6 +198,26 @@ pub struct Buffer<'a, 'storage> {
 }
 
 impl<'a, 'storage> Buffer<'a, 'storage> {
+    /// # Safety
+    /// The device protocol must permit a concurrent coherent 32-bit status read
+    /// at this offset. This grants neither a CPU slice nor reclamation rights.
+    pub unsafe fn device_read_u32(&self, offset: usize) -> Result<u32, Error> {
+        context()?;
+        if self.owner != Ownership::Device {
+            return Err(dma_state::Error::Stale.into());
+        }
+        dma_state::status_word(self.size(), offset)?;
+        let value = unsafe {
+            self.pointer
+                .as_ptr()
+                .add(offset)
+                .cast::<u32>()
+                .read_volatile()
+        };
+        read_barrier();
+        Ok(u32::from_le(value))
+    }
+
     pub fn address(&self) -> Address {
         self.address
     }
