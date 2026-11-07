@@ -46,34 +46,7 @@ void writel(u32 value, volatile void *address)
     __asm__ volatile ("" ::: "memory");
 }
 
-void kutox_lock(struct mutex *lock)
-{
-    kutox_check_boot_context();
-    if (__atomic_test_and_set(&lock->held, __ATOMIC_ACQUIRE))
-        kutox_platform_fail("lock_contention");
-}
-
-void kutox_unlock(struct mutex *lock)
-{
-    kutox_check_boot_context();
-    if (!__atomic_load_n(&lock->held, __ATOMIC_RELAXED))
-        kutox_platform_fail("unlock_unheld");
-    __atomic_clear(&lock->held, __ATOMIC_RELEASE);
-}
-
 void udelay(unsigned long usec) { kutox_delay_us(usec); }
-
-void msleep(unsigned int msec)
-{
-    kutox_platform_fail("msleep_without_scheduler");
-}
-
-int cond_resched(void)
-{
-    /* No runnable tasks exist in the single-CPU, interrupt-disabled probe. */
-    kutox_check_boot_context();
-    return 0;
-}
 
 struct net_device *e1000_get_hw_dev(struct e1000_hw *hw)
 {

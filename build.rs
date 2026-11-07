@@ -9,6 +9,7 @@ const HEADERS: &[&str] = &[
     "linux/bitfield.h",
     "linux/bitops.h",
     "linux/capability.h",
+    "linux/completion.h",
     "linux/delay.h",
     "linux/dma-mapping.h",
     "linux/errno.h",
@@ -110,6 +111,8 @@ fn main() {
         .include(&driver)
         .file(driver.join("e1000_hw.c"))
         .file("compat/bridge.c")
+        .file("compat/runtime.c")
+        .file("compat/execution_test.c")
         .flag("--target=x86_64-unknown-none")
         .flag("-std=gnu11")
         .flag("-ffreestanding")

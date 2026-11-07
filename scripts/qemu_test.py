@@ -38,6 +38,7 @@ KERNEL_TEST_NAMES = (
     "sync.mutex_exclusion",
     "sync.mutex_timeout_cancel",
     "sync.mutex_deadline_retry",
+    "linux.thread_execution",
 )
 KERNEL_SUITE_CASES = {
     "kernel-tests": "kernel-tests",

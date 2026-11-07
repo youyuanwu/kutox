@@ -47,16 +47,37 @@ struct pci_dev;
 struct sk_buff;
 struct page;
 
-struct mutex { u8 held; };
-typedef struct mutex spinlock_t;
+/* Static-lifetime address-bound native objects; copying a live object is invalid. */
+struct mutex { u8 boot_held; };
+struct completion { u8 reserved; };
+typedef struct { u8 held; u64 owner; } spinlock_t;
 #define DEFINE_MUTEX(name) struct mutex name = { 0 }
 #define DEFINE_SPINLOCK(name) spinlock_t name = { 0 }
-void kutox_lock(struct mutex *lock);
-void kutox_unlock(struct mutex *lock);
-#define mutex_lock(lock) kutox_lock(lock)
-#define mutex_unlock(lock) kutox_unlock(lock)
-#define spin_lock_irqsave(lock, flags) do { (flags) = 0; kutox_lock(lock); } while (0)
-#define spin_unlock_irqrestore(lock, flags) do { (void)(flags); kutox_unlock(lock); } while (0)
+#define DECLARE_COMPLETION(name) struct completion name = { 0 }
+void mutex_init(struct mutex *lock);
+void mutex_destroy(struct mutex *lock);
+void mutex_lock(struct mutex *lock);
+int mutex_trylock(struct mutex *lock);
+void mutex_unlock(struct mutex *lock);
+int mutex_is_locked(struct mutex *lock);
+void spin_lock_init(spinlock_t *lock);
+unsigned long kutox_spin_lock_irqsave(spinlock_t *lock);
+void kutox_spin_unlock_irqrestore(spinlock_t *lock, unsigned long flags);
+#define spin_lock_irqsave(lock, flags) do { (flags) = kutox_spin_lock_irqsave(lock); } while (0)
+#define spin_unlock_irqrestore(lock, flags) kutox_spin_unlock_irqrestore(lock, flags)
+
+#define HZ 1000UL
+unsigned long msecs_to_jiffies(unsigned int msec);
+void init_completion(struct completion *completion);
+void reinit_completion(struct completion *completion);
+void complete(struct completion *completion);
+void complete_all(struct completion *completion);
+bool completion_done(struct completion *completion);
+bool try_wait_for_completion(struct completion *completion);
+void wait_for_completion(struct completion *completion);
+unsigned long wait_for_completion_timeout(struct completion *completion, unsigned long timeout);
+/* Native lifecycle extension, not a Linux API. Requires a cleared idle object. */
+void kutox_destroy_completion(struct completion *completion);
 
 u32 readl(const volatile void *address);
 void writel(u32 value, volatile void *address);

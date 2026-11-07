@@ -32,6 +32,10 @@ Native counting completions remember signals before a wait, support a persistent
 `complete_all` latch, and preserve credits across timeout/cancellation. Their
 signalling and waiting APIs are thread-context-only, not IRQ-safe Linux APIs.
 
+Selected Linux-facing C sleep, mutex, spinlock, and completion operations now
+use these native services. A synthetic C test runs on real kernel threads;
+the unchanged Linux e1000 MAC proof remains boot-only.
+
 Sleeping mutexes now protect Rust data with owner-checked, non-transferable RAII
 guards. Threads can yield or sleep while holding them; contending threads block
 without holding an IRQ lock. Timed-out and cancelled waits never acquire ownership.
@@ -124,7 +128,7 @@ The default nonfatal kernel suite reuses the same image and needs no NIC:
 python3 scripts/qemu_test.py --case kernel-tests --build-dir build
 ```
 
-Run the same twenty-seven registered cases with 32 MiB of guest RAM:
+Run the same twenty-eight registered cases with 32 MiB of guest RAM:
 
 ```sh
 python3 scripts/qemu_test.py --case kernel-tests-low-memory --build-dir build
@@ -145,7 +149,7 @@ hardware-configuration cases still use separate boots of the same ISO.
 
 ```text
 KTAP version 1
-1..27
+1..28
 ok 1 cpu.irq_lock_restore
 ok 2 cpu.breakpoint_return
 ok 3 memory.alignment_reservations
@@ -173,7 +177,8 @@ ok 24 sync.completion_timeout_cancel
 ok 25 sync.mutex_exclusion
 ok 26 sync.mutex_timeout_cancel
 ok 27 sync.mutex_deadline_retry
-# Totals: pass:27 fail:0 skip:0 total:27
+ok 28 linux.thread_execution
+# Totals: pass:28 fail:0 skip:0 total:28
 ```
 
 Tests run sequentially with interrupts disabled at case boundaries. After
@@ -183,6 +188,7 @@ checks heap accounting/partial-slab invariants, zero held IRQ guards, an idle
 scheduler with no suspended owner, a disabled/unclaimed local APIC, masked PICs, and unused MMIO/APIC/stack
 windows. Completion fixtures must have no stored credits, latched broadcasts,
 or in-flight waits; mutex fixtures must have no owner or pending lock calls.
+The C execution registry must be empty and its native objects quiescent.
 Empty slabs must release their frames before the next
 case; there is no deferred cache purge. Changed state causes a `Bail out!` and
 guest failure rather than continuing with a corrupted fixture. Ordinary
@@ -197,7 +203,7 @@ requires updating `KERNEL_TEST_NAMES` in the
 [host runner](scripts/qemu_test.py) as well.
 
 The intentional-failure mode reports a failing `harness.intentional_failure`
-before the twenty-seven normal cases and exits with guest failure. This command
+before the twenty-eight normal cases and exits with guest failure. This command
 **must return nonzero**:
 
 ```sh
@@ -455,7 +461,54 @@ disabled for deliberately unsupported hardware entry points.
   cooperatively yield. Woken tasks recheck availability: there is no reserved
   ownership handoff, strict fairness, priority inheritance, poisoning,
   abandoned-owner recovery, or SMP support. These are native Rust mutexes;
-  the boot-only Linux C lock shim is unchanged.
+  the C execution adapter below supplies a deliberately smaller Linux-facing API.
+- [C execution services](compat/runtime.c) call the
+  [native adapter](src/linux_runtime.rs) for `msleep`, `cond_resched`, mutexes,
+  and selected completion APIs. In thread context `msleep` genuinely suspends
+  the C stack and `cond_resched` yields, returning 1. In the interrupt-disabled
+  quiescent boot dispatcher only `cond_resched` (returning 0), non-sleeping
+  mutex acquisition, IRQ-save spinlocks, and object initialization/inspection/
+  destruction are supported. Boot mutex contention fails explicitly; it cannot
+  block without a thread. Sleeps, completion signals/waits/reinitialization,
+  and thread mutex operations reject boot, held IRQ guards, or interrupt/
+  exception context. Native mutex unlock may cooperatively yield.
+- C `struct mutex` and `spinlock_t` are distinct. IRQ-save spinlocks acquire
+  real atomic ownership, preserve the caller's IF, count held guards, validate
+  the boot/thread owner on release, and restore interrupts only after releasing
+  the lock/count. On this single CPU, contention or recursion fails explicitly
+  rather than spinning with interrupts disabled. Hard IRQ/NMI use is not
+  supported yet. Mutex recursion and foreign unlock are also explicit failures.
+- C mutex/completion objects must be zero-initialized, static-lifetime,
+  stable-address objects, not copied, moved, stack-local, or freed while
+  registered. Eight permanent slots per object kind bind C addresses to native
+  objects without retaining mutable C references across scheduling. Definitions
+  can register lazily; `mutex_init`/`init_completion` explicitly register.
+  Initialization cannot reset live native state. `reinit_completion` clears
+  credits/latches only without in-flight waits. `mutex_destroy` and the native
+  extension `kutox_destroy_completion` require cleared idle registered objects
+  before releasing a registry slot. Capacity exhaustion, null objects, invalid
+  operations, and invalid lifecycle transitions fail explicitly. Callers must
+  pair every C lock/unlock; the C test entry rejects return with owned mutexes.
+- The supported completion subset is `complete`, `complete_all`,
+  `completion_done`, `try_wait_for_completion`, `wait_for_completion`, and
+  `wait_for_completion_timeout`. `HZ` is 1000 for this adapter only;
+  `msecs_to_jiffies` converts milliseconds to its timeout units. A timed wait
+  returns 0 on timeout or remaining ticks (at least 1) on success, including 1
+  for an immediately available credit with zero timeout. There is no global
+  Linux `jiffies` service, signals, interruptible waits, or general Linux ABI.
+  Unlike the native Rust completion API, the C timeout path rechecks available
+  credits at resumption: a late available credit is consumed and returns 1,
+  matching the pinned Linux completion implementation.
+  Cancellation of Linux uninterruptible waits or `msleep` is explicitly fatal,
+  not success-shaped. Unsupported operations and void-API failures terminate
+  through the existing platform-error diagnostic.
+- [The C execution test](compat/execution_test.c) verifies actual mutex
+  contention and sleeping while locked, stored and broadcast completions,
+  exact timeout return shapes and the expiry/late-credit race, measured minimum sleep/timeout durations,
+  nested spinlock IF/depth restoration, preserved C stack locals, invalid
+  ownership/context/lifecycle requests, registry capacity/reuse, and complete
+  cleanup. No additional Linux translation unit is imported for this test;
+  it proves this execution-API subset, not a complete Linux driver.
 - [Context switching](src/context_switch.S) saves the six SysV callee-saved
   registers and RSP; the saved return address resumes execution. The initial
   trampoline verifies SysV stack alignment. All switching requires interrupts
@@ -522,12 +575,11 @@ disabled for deliberately unsupported hardware entry points.
 - [The build script](build.rs) generates forwarding headers from an explicit
   allowlist and compiles the original `e1000_hw.c` with its original driver
   headers. Unused sections are discarded by the kernel linker.
-- EEPROM locking uses a real atomic acquisition with explicit contention and
-  reentrancy failure. The bridge and `cond_resched()` require the
-  interrupt-disabled boot dispatcher, outside any active thread run.
-  `cond_resched()` never schedules; cooperative threads do not make this
-  boot-only Linux compatibility layer usable as a driver-thread runtime.
-  Scheduling operations such as `msleep()` fail explicitly if reached.
+- The unchanged Linux EEPROM MAC path retains its boot-dispatcher requirement
+  and non-sleeping atomic mutex acquisition with explicit contention failure.
+  Its boot `cond_resched()` remains a no-op. The C thread execution subset is
+  separate: it does not authorize this boot-only MMIO/probe path in threads or
+  provide NIC interrupts, DMA, deferred work, or the full e1000 driver runtime.
 - MMIO accesses preserve ordering and upstream posted-write flushes. Other
   hardware paths that would require unsupported platform operations trap
   explicitly; they never return fabricated success.

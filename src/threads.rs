@@ -166,6 +166,19 @@ pub fn current_task_handle() -> Result<TaskHandle, SwitchError> {
     Ok(active()?.handle)
 }
 
+pub(crate) fn spin_lock_owner() -> Result<Option<TaskHandle>, SwitchError> {
+    if exceptions::is_dispatching() {
+        return Err(SwitchError::InterruptContext);
+    }
+    if cpu::interrupts_enabled() {
+        return Err(SwitchError::InterruptsEnabled);
+    }
+    if is_quiescent() {
+        return Ok(None);
+    }
+    active().map(|active| Some(active.handle))
+}
+
 pub(crate) fn wait_deadline(timeout_us: Option<u64>) -> Result<Option<u64>, SwitchError> {
     match timeout_us {
         Some(0) => Ok(Some(time::now_ticks())),

@@ -18,6 +18,10 @@ impl TaskHandle {
     pub fn slot(self) -> usize {
         self.id.0
     }
+
+    pub fn ticket(self) -> u64 {
+        self.ticket
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

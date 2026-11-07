@@ -168,7 +168,8 @@ The port is not an unchanged async mutex:
 
 The adapted mutex file retains MIT licensing. The separate kutox ownership
 policy, general thread/wait runtime, and tests retain their own repository
-licensing. This is not a Linux C mutex implementation.
+licensing. The separate native C adapter uses this Rust primitive for its
+bounded sleeping-mutex API; the adapted file itself is not Linux C code.
 
 ## Linux
 
@@ -176,6 +177,14 @@ The [Linux submodule](linux/) retains its upstream copyright notices,
 per-file SPDX identifiers, and [license rules](linux/Documentation/process/license-rules.rst).
 The selected e1000 hardware source is GPL-2.0-only. It is not relicensed by the
 Moss port.
+
+The native [C execution adapter](compat/runtime.c),
+[Rust registry/backend](src/linux_runtime.rs), and
+[C acceptance test](compat/execution_test.c) are kutox code. They expose a
+tested static-object subset of Linux-facing mutex, spinlock, sleep, and completion
+APIs without copying a Linux synchronization implementation. The Linux submodule
+and selected upstream e1000 translation unit remain unchanged; this addition
+does not claim full driver or Linux binary ABI compatibility.
 
 ## Other dependencies and references
 

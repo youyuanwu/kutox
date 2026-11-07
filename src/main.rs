@@ -11,6 +11,7 @@ mod heap;
 mod io;
 mod irq;
 mod kernel_tests;
+mod linux_runtime;
 mod memory;
 mod mutex;
 mod pci;

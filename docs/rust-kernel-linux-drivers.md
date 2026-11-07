@@ -136,9 +136,41 @@ recursive and exception-context rejection, hardware-timed sleep while owning a
 mutex, timeout/cancellation after unlock, unchanged retry deadlines, normal Rust
 destruction, and complete allocator/fixture recovery at 128 MiB and 32 MiB.
 
-These are native foundations, not functioning Linux wait/completion/mutex APIs.
-IRQ-safe deferred signalling, external interrupt routing,
-general timer callbacks, Linux execution adapters, and preemption remain future work.
+Selected Linux-facing C execution APIs now use the native foundations:
+`msleep` suspends the C stack, `cond_resched` yields in thread context, and
+separate mutex/spinlock types preserve sleeping versus IRQ-masking semantics.
+The original EEPROM MAC probe still requires the boot dispatcher, where its
+mutex cannot sleep and `cond_resched` remains a no-op. The MMIO/probe environment
+is not silently promoted into a thread-safe full driver runtime.
+
+Eight permanent mutex and eight completion slots bind zero-initialized static
+C objects by stable address. Callers may not copy, move, stack-allocate, or free
+registered objects. Explicit initialization/lazy definition, quiescent
+destruction, registry exhaustion/reuse, and live reset rejection are tested.
+No mutable registry borrow or C reference survives a context switch; native
+guards remain in their slots until the owning C task unlocks. IRQ-save C
+spinlocks use atomic acquisition, owner validation, IF restoration and the
+same per-CPU held-guard accounting as Rust locks. Contention/recursion fails
+explicitly on the only supported CPU, and interrupt/NMI lock use remains absent.
+
+The selected completion subset supplies remembered credits, a broadcast latch,
+reset, inspection, try-wait, and uninterruptible waits. Timeout units are 1000 Hz
+for this adapter; timed waits return zero on expiry or positive remaining ticks
+(at least one) on success. The C path rechecks credits at timeout resumption
+and can consume a late credit, returning one as the pinned Linux implementation
+does; native Rust timeouts keep their existing credit-preserving behavior.
+There is no global Linux jiffies/ABI service.
+Linux void-API errors and cancellation of uninterruptible waits are explicit
+fatal platform errors. Boot operations cannot sleep; thread operations cannot
+run while IRQ guards are held or during interrupt/exception dispatch.
+
+The synthetic C acceptance case runs on native guarded stacks and proves
+actual contention, sleep and completion wake/timeout, measured durations,
+return shapes, stack preservation, context/ownership checks, registry bounds,
+and cleanup. It does not execute a new upstream driver operation. The existing
+unchanged e1000 translation unit and MAC/failure/provenance tests remain intact.
+IRQ-safe deferred signalling, external interrupt routing, DMA, general timer
+callbacks, broader Linux execution APIs, and preemption remain future work.
 
 Nonfatal CPU, frame, heap, and thread tests run through a stable-Rust registry in one
 guest boot, with KTAP results and exact host-side plan/name/summary validation.
@@ -146,6 +178,7 @@ Fatal faults and hardware variants retain isolated boots. The runner checks
 frame accounting, per-order free-block counts, metadata/list invariants, and
 heap accounting, idle scheduler/zero held guards, quiescent APIC/masked PICs,
 empty completion fixtures, unowned mutex fixtures with no pending lock calls,
+an empty C execution registry,
 and MMIO/APIC/stack cleanup between
 cases. An intentional-failure suite verifies
 that failed test cases cannot be mistaken for successful QEMU shutdown.
@@ -324,8 +357,9 @@ Synchronization and ownership requirements:
 - Worker and interrupt paths must agree on buffer lifetimes and ordering.
 
 Embassy's executor alone does not provide these Linux execution semantics.
-The current boot-only lock checks and `cond_resched()` behavior must not be
-promoted unchanged into a general driver runtime.
+The C adapter distinguishes boot and thread semantics, but that is still only
+a tested static-object subset. Its thread-only completions and spinlock context
+restrictions cannot be assumed valid for Linux hard-IRQ/deferred-work paths.
 
 ## Driver compatibility scope
 
