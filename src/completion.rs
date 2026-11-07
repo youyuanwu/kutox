@@ -52,8 +52,8 @@ impl Completion {
     }
 
     fn signal(&'static self, all: bool) -> Result<(), Error> {
-        threads::check_thread_context()?;
-        let before = {
+        let irq = threads::check_signal_context()?;
+        {
             let mut state = self.state.lock_save_irq();
             let before = *state;
             let changed = if all {
@@ -64,23 +64,19 @@ impl Completion {
             if !changed {
                 return Ok(());
             }
-            before
-        };
-        let result = if all {
-            self.queue.wake_all()
-        } else {
-            self.queue.wake_one()
-        };
-        if let Err(error) = result {
-            // Wake errors occur before dispatch, so no task has observed the update.
-            *self.state.lock_save_irq() = before;
-            return Err(error.into());
+            if let Err(error) = self.queue.notify_without_switch(all) {
+                *state = before;
+                return Err(error.into());
+            }
+        }
+        if !irq {
+            threads::yield_now()?;
         }
         Ok(())
     }
 
     pub fn try_wait(&'static self) -> Result<bool, Error> {
-        threads::check_thread_context()?;
+        threads::check_signal_context()?;
         Ok(self.state.lock_save_irq().try_take())
     }
 

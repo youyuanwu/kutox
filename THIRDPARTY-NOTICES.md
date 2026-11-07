@@ -146,6 +146,15 @@ are not imported. Remembered credits, the broadcast latch, in-flight reset
 exclusion, synchronous cancellation/deadlines, and completion tests are not
 claimed as an unchanged Moss primitive or Linux completion implementation.
 
+The IRQ-safe wake integration follows the pinned Moss
+[timer IRQ/waker path](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/timer/mod.rs)
+and [scheduler waker](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/sched/waker.rs)
+as architectural prior art: waking makes work eligible without executing it.
+The bounded shared runnable-state publication, IRQ-serialized generation checks,
+stackful completion integration, owned single-handler timer registration, and
+Rust/C IRQ acceptance tests are native kutox implementations. Moss's async
+executor and concurrent task-state CAS machinery are not copied.
+
 ### Sleeping mutex adaptation
 
 [src/mutex.rs](src/mutex.rs) adapts the pinned Moss mutex's IRQ-locked metadata,

@@ -128,6 +128,18 @@ static TESTS: &[TestCase] = &[
         name: "linux.thread_execution",
         run: linux_runtime::test_execution,
     },
+    TestCase {
+        name: "sync.irq_completion",
+        run: threads::irq_tests::completions,
+    },
+    TestCase {
+        name: "threads.irq_wait_races",
+        run: threads::irq_tests::wait_races,
+    },
+    TestCase {
+        name: "linux.irq_completion",
+        run: linux_runtime::test_irq_completion,
+    },
 ];
 
 static INTENTIONAL_FAILURE: TestCase = TestCase {
@@ -149,6 +161,7 @@ pub fn run(boot: &BootInfo) -> ! {
         || !threads::is_quiescent()
         || !irq::is_quiescent()
         || !completion::tests::quiescent()
+        || !threads::irq_tests::quiescent()
         || !mutex::tests::quiescent()
         || !linux_runtime::quiescent()
         || !memory::apic_window_unused(boot)
@@ -212,6 +225,7 @@ pub fn run(boot: &BootInfo) -> ! {
             || !threads::is_quiescent()
             || !irq::is_quiescent()
             || !completion::tests::quiescent()
+            || !threads::irq_tests::quiescent()
             || !mutex::tests::quiescent()
             || !linux_runtime::quiescent()
             || !memory::apic_window_unused(boot)

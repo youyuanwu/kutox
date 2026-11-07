@@ -70,6 +70,7 @@ void kutox_spin_unlock_irqrestore(spinlock_t *lock, unsigned long flags);
 unsigned long msecs_to_jiffies(unsigned int msec);
 void init_completion(struct completion *completion);
 void reinit_completion(struct completion *completion);
+/* IRQ signalling/inspection requires initialization before enabling delivery. */
 void complete(struct completion *completion);
 void complete_all(struct completion *completion);
 bool completion_done(struct completion *completion);

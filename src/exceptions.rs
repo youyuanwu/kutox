@@ -32,6 +32,7 @@ const FAULT_ADDRESS: u64 = 0x0000_6000_0000_0000;
 const GP_SELECTOR: u64 = 0xfff8;
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 static DISPATCHING: AtomicBool = AtomicBool::new(false);
+static HARDWARE_IRQ: AtomicBool = AtomicBool::new(false);
 static mut CONTEXT_PROBE: Option<fn()> = None;
 static EXPECTED_VECTOR: AtomicUsize = AtomicUsize::new(usize::MAX);
 static BREAKPOINTS: AtomicUsize = AtomicUsize::new(0);
@@ -166,8 +167,10 @@ extern "C" fn kutox_exception_dispatch(frame: &ExceptionFrame) {
     }
     let vector = frame.vector as usize;
     if matches!(vector, irq::TIMER_VECTOR | irq::SPURIOUS_VECTOR) {
+        HARDWARE_IRQ.store(true, Ordering::Release);
         match irq::dispatch(vector, frame.flags) {
             Ok(()) => {
+                HARDWARE_IRQ.store(false, Ordering::Release);
                 DISPATCHING.store(false, Ordering::Release);
                 return;
             }
@@ -240,6 +243,10 @@ extern "C" fn kutox_exception_dispatch(frame: &ExceptionFrame) {
 
 pub fn is_dispatching() -> bool {
     DISPATCHING.load(Ordering::Acquire)
+}
+
+pub fn is_hardware_irq() -> bool {
+    HARDWARE_IRQ.load(Ordering::Acquire)
 }
 
 pub fn test_thread_context(probe: fn()) -> Result<(), Failure> {

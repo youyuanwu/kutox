@@ -30,11 +30,14 @@ sleep-capable Linux driver runtime.
 
 Native counting completions remember signals before a wait, support a persistent
 `complete_all` latch, and preserve credits across timeout/cancellation. Their
-signalling and waiting APIs are thread-context-only, not IRQ-safe Linux APIs.
+signalling and try-wait operations now also work in the supported hardware IRQ
+context. Like Moss's wakers, IRQ wakeups make tasks runnable without switching
+stacks; waiting and reset remain thread-only.
 
 Selected Linux-facing C sleep, mutex, spinlock, and completion operations now
 use these native services. A synthetic C test runs on real kernel threads;
 the unchanged Linux e1000 MAC proof remains boot-only.
+IRQ completion signalling requires C objects to be initialized before delivery.
 
 Sleeping mutexes now protect Rust data with owner-checked, non-transferable RAII
 guards. Threads can yield or sleep while holding them; contending threads block
@@ -44,6 +47,8 @@ An owned local-APIC one-shot timer now provides returning hardware interrupts,
 a monotonic delivery counter, bounded polling, and interrupt-driven idle waits.
 It follows Moss's one-shot timer model using native x86_64 code; legacy PIC
 interrupts remain masked. This does not enable timer preemption or device IRQs.
+One owned deadline-bound handler can signal waiters from the real timer IRQ;
+the dispatcher selects the earliest thread or handler deadline.
 
 This is hardware-helper reuse, not a complete Linux driver port or LinuxKPI
 implementation. There is no packet data path yet. See the
@@ -128,7 +133,7 @@ The default nonfatal kernel suite reuses the same image and needs no NIC:
 python3 scripts/qemu_test.py --case kernel-tests --build-dir build
 ```
 
-Run the same twenty-eight registered cases with 32 MiB of guest RAM:
+Run the same thirty-one registered cases with 32 MiB of guest RAM:
 
 ```sh
 python3 scripts/qemu_test.py --case kernel-tests-low-memory --build-dir build
@@ -149,7 +154,7 @@ hardware-configuration cases still use separate boots of the same ISO.
 
 ```text
 KTAP version 1
-1..28
+1..31
 ok 1 cpu.irq_lock_restore
 ok 2 cpu.breakpoint_return
 ok 3 memory.alignment_reservations
@@ -178,7 +183,10 @@ ok 25 sync.mutex_exclusion
 ok 26 sync.mutex_timeout_cancel
 ok 27 sync.mutex_deadline_retry
 ok 28 linux.thread_execution
-# Totals: pass:28 fail:0 skip:0 total:28
+ok 29 sync.irq_completion
+ok 30 threads.irq_wait_races
+ok 31 linux.irq_completion
+# Totals: pass:31 fail:0 skip:0 total:31
 ```
 
 Tests run sequentially with interrupts disabled at case boundaries. After
@@ -203,7 +211,7 @@ requires updating `KERNEL_TEST_NAMES` in the
 [host runner](scripts/qemu_test.py) as well.
 
 The intentional-failure mode reports a failing `harness.intentional_failure`
-before the twenty-eight normal cases and exits with guest failure. This command
+before the thirty-one normal cases and exits with guest failure. This command
 **must return nonzero**:
 
 ```sh

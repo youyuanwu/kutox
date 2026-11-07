@@ -2,14 +2,14 @@ use crate::{
     Failure,
     boot::BootInfo,
     cpu::{self, X86Cpu},
-    memory, threads, time,
+    exceptions, memory, threads, time,
 };
 use core::{
     arch::{asm, global_asm},
     marker::PhantomData,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
-use moss_libkernel::CpuOps;
+use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
 use x86_64::registers::model_specific::Msr;
 
 global_asm!(include_str!("irq_probe.S"));
@@ -37,6 +37,16 @@ static CLAIMED: AtomicBool = AtomicBool::new(false);
 static ADDRESS: AtomicUsize = AtomicUsize::new(0);
 static TICKS: AtomicU64 = AtomicU64::new(0);
 
+pub type Handler = fn() -> Result<(), Failure>;
+
+#[derive(Clone, Copy)]
+struct ScheduledHandler {
+    deadline: u64,
+    callback: Handler,
+}
+
+static HANDLER: SpinLockIrq<Option<ScheduledHandler>, X86Cpu> = SpinLockIrq::new(None);
+
 fn read(address: usize, register: usize) -> u32 {
     unsafe { ((address + register) as *const u32).read_volatile() }
 }
@@ -54,6 +64,9 @@ fn in_service(address: usize) -> bool {
 }
 
 fn context() -> Result<(), Failure> {
+    if exceptions::is_dispatching() {
+        return Err(Failure::new("timer_irq_operation", -1));
+    }
     if X86Cpu::irq_lock_depth() != 0 {
         return Err(Failure::new("timer_locks_held", -1));
     }
@@ -76,6 +89,7 @@ pub fn is_quiescent() -> bool {
         && unsafe { Msr::new(APIC_MSR).read() } & (GLOBAL_ENABLE | X2APIC) == 0
         && crate::io::read8(0x21) == 0xff
         && crate::io::read8(0xa1) == 0xff
+        && HANDLER.lock_save_irq().is_none()
 }
 
 struct Claim;
@@ -175,6 +189,54 @@ impl<'a, 'storage> Timer<'a, 'storage> {
         self.arm_count(self.interval_counts)
     }
 
+    pub fn schedule_handler(&self, deadline: u64, callback: Handler) -> Result<(), Failure> {
+        context()?;
+        let address = self.mapping.address();
+        if read(address, LVT_TIMER) & MASKED == 0
+            || vector_set(address, IRR, TIMER_VECTOR)
+            || in_service(address)
+        {
+            return Err(Failure::new("timer_handler_armed", -1));
+        }
+        let mut handler = HANDLER.lock_save_irq();
+        if handler.is_some() {
+            return Err(Failure::new("timer_handler_busy", -1));
+        }
+        *handler = Some(ScheduledHandler { deadline, callback });
+        Ok(())
+    }
+
+    pub fn cancel_handler(&self) -> Result<bool, Failure> {
+        context()?;
+        let address = self.mapping.address();
+        if read(address, LVT_TIMER) & MASKED == 0
+            || vector_set(address, IRR, TIMER_VECTOR)
+            || in_service(address)
+        {
+            return Err(Failure::new("timer_handler_armed", -1));
+        }
+        Ok(HANDLER.lock_save_irq().take().is_some())
+    }
+
+    pub(crate) fn handler_deadline(&self) -> Option<u64> {
+        HANDLER
+            .lock_save_irq()
+            .as_ref()
+            .map(|handler| handler.deadline)
+    }
+
+    pub(crate) fn arm_for_idle(&self, deadline: u64) -> Result<bool, Failure> {
+        if self
+            .handler_deadline()
+            .is_some_and(|when| when <= time::now_ticks())
+        {
+            self.arm_count(1)?;
+            Ok(true)
+        } else {
+            self.arm_until(deadline)
+        }
+    }
+
     pub fn arm_until(&self, deadline: u64) -> Result<bool, Failure> {
         context()?;
         let remaining = deadline.saturating_sub(time::now_ticks());
@@ -272,6 +334,7 @@ impl Drop for Timer<'_, '_> {
             unsafe { Msr::new(APIC_MSR).write(self.original_msr) };
             ADDRESS.store(0, Ordering::Release);
         }
+        HANDLER.lock_save_irq().take();
         X86Cpu::restore_interrupt_state(flags);
     }
 }
@@ -301,6 +364,21 @@ pub fn dispatch(vector: usize, saved_flags: u64) -> Result<(), Failure> {
         .checked_add(1)
         .ok_or(Failure::new("timer_tick_overflow", -1))?;
     TICKS.store(next, Ordering::Release);
+    threads::timer_tick();
+    let callback = {
+        let mut handler = HANDLER.lock_save_irq();
+        if handler
+            .as_ref()
+            .is_some_and(|handler| handler.deadline <= time::now_ticks())
+        {
+            handler.take().map(|handler| handler.callback)
+        } else {
+            None
+        }
+    };
+    if let Some(callback) = callback {
+        callback()?;
+    }
     write(address, EOI, 0);
     Ok(())
 }

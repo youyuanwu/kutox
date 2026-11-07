@@ -286,6 +286,10 @@ impl<const N: usize> RunQueue<N> {
         self.current.is_none() && self.length == 0 && self.states.iter().all(Option::is_none)
     }
 
+    pub fn ready_count(&self) -> usize {
+        self.length
+    }
+
     pub fn check_invariants(&self) -> Result<(), Error> {
         if self.length > N
             || self.blocked_length > N
@@ -331,6 +335,38 @@ impl<const N: usize> RunQueue<N> {
 mod tests {
     use super::*;
     use std::{collections::VecDeque, vec::Vec};
+
+    #[test]
+    fn direct_wakes_fill_capacity_without_duplicates_or_preempting_current() {
+        let mut queue = RunQueue::<8>::new();
+        let key = WaitKey(123);
+        for slot in 0..8 {
+            queue.add(TaskId(slot)).unwrap();
+        }
+        for slot in 0..7 {
+            assert_eq!(queue.dispatch(), Ok(Some(TaskId(slot))));
+            queue.block_running(Some(key), None).unwrap();
+        }
+        assert_eq!(queue.dispatch(), Ok(Some(TaskId(7))));
+        assert_eq!(queue.wake_one(key), Some(TaskId(0)));
+        assert_eq!(queue.wake_all(key), 6);
+        assert_eq!(queue.wake_all(key), 0);
+        assert_eq!(queue.ready_count(), 7);
+        assert_eq!(queue.dispatch(), Err(Error::AlreadyRunning));
+        queue.check_invariants().unwrap();
+        queue.yield_running().unwrap();
+        assert_eq!(queue.ready_count(), 8);
+        for slot in 0..8 {
+            assert_eq!(queue.dispatch(), Ok(Some(TaskId(slot))));
+            assert_eq!(
+                queue.take_wake_reason(TaskId(slot)),
+                Ok((slot < 7).then_some(WakeReason::Notified))
+            );
+            queue.finish_running().unwrap();
+            queue.reap(TaskId(slot)).unwrap();
+        }
+        assert!(queue.is_empty());
+    }
 
     #[test]
     fn fifo_round_robin_and_finished_tasks_are_never_requeued() {

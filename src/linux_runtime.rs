@@ -231,18 +231,26 @@ extern "C" fn kutox_linux_completion(key: usize, operation: u32) -> i32 {
 }
 
 fn completion_operation(key: usize, operation: u32) -> Result<i32, i32> {
-    context()?;
     if !matches!(
         operation,
         INIT | SIGNAL | TRY | ALL | DESTROY | DONE | RESET
     ) {
         return Err(INVALID);
     }
-    if matches!(operation, SIGNAL | TRY | ALL | RESET) {
+    let irq = exceptions::is_hardware_irq();
+    if irq {
+        if !matches!(operation, SIGNAL | TRY | ALL | DONE) {
+            return Err(threads::SwitchError::InterruptContext as i32);
+        }
+        threads::check_irq_context().map_err(|error| error as i32)?;
+    } else {
+        context()?;
+    }
+    if !irq && matches!(operation, SIGNAL | TRY | ALL | RESET) {
         thread_context()?;
     }
-    let Some(slot) = completion_slot(key, !matches!(operation, DESTROY | DONE))? else {
-        return if operation == DONE {
+    let Some(slot) = completion_slot(key, !irq && !matches!(operation, DESTROY | DONE))? else {
+        return if operation == DONE && !irq {
             Ok(0)
         } else {
             Err(INVALID)
@@ -414,6 +422,53 @@ unsafe extern "C" {
     fn kutox_c_execution_worker(role: usize);
     fn kutox_c_execution_verify();
     fn kutox_c_execution_destroy();
+    fn kutox_c_irq_init();
+    fn kutox_c_irq_signal(broadcast: usize);
+    fn kutox_c_irq_worker(role: usize);
+    fn kutox_c_irq_destroy();
+}
+
+fn c_irq_counted() -> Result<(), Failure> {
+    unsafe { kutox_c_irq_signal(0) };
+    Ok(())
+}
+
+fn c_irq_broadcast() -> Result<(), Failure> {
+    unsafe { kutox_c_irq_signal(1) };
+    Ok(())
+}
+
+pub fn test_irq_completion(
+    boot: &BootInfo,
+    frames: &memory::PhysicalFrames<'static>,
+) -> Result<(), Failure> {
+    let timer = irq::Timer::start(boot, frames)?;
+    let space = memory::StackSpace::new(boot, frames)?;
+    let mut scheduler = threads::Scheduler::new(&space);
+    for handler in [
+        c_irq_counted as irq::Handler,
+        c_irq_broadcast as irq::Handler,
+    ] {
+        unsafe { kutox_c_irq_init() };
+        timer.schedule_handler(time::now_ticks() + time::ticks_for_us(5_000)?, handler)?;
+        for role in 0..2 {
+            scheduler.spawn(|role| unsafe { kutox_c_irq_worker(role) }, role)?;
+        }
+        let stats = scheduler.run_with_timer(&timer)?;
+        if stats.finished != 2
+            || stats.blocks != 2
+            || stats.wakes != 2
+            || stats.timeouts != 0
+            || stats.idle_sleeps == 0
+        {
+            return Err(Failure::new("linux_c_irq_completion", -1));
+        }
+        unsafe { kutox_c_irq_destroy() };
+    }
+    if !quiescent() {
+        return Err(Failure::new("linux_c_irq_registry_cleanup", -1));
+    }
+    Ok(())
 }
 
 pub fn test_execution(

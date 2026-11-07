@@ -11,12 +11,15 @@ use core::{
 };
 pub use kutox::run_queue::WakeReason;
 use kutox::run_queue::{RunQueue, TaskHandle, WaitKey};
-use moss_libkernel::CpuOps;
+use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
 
 global_asm!(include_str!("context_switch.S"));
 
 #[path = "thread_wait_tests.rs"]
 pub mod wait_tests;
+
+#[path = "irq_wake_tests.rs"]
+pub mod irq_tests;
 
 #[repr(C)]
 #[derive(Default)]
@@ -72,7 +75,6 @@ struct Active {
 enum Reply {
     None,
     Wait(WakeReason),
-    Woken(usize),
 }
 
 #[derive(Clone, Copy)]
@@ -80,10 +82,7 @@ enum Request {
     Block {
         key: Option<WaitKey>,
         deadline: Option<u64>,
-    },
-    Notify {
-        key: WaitKey,
-        all: bool,
+        token: Option<WaitToken>,
     },
 }
 
@@ -122,18 +121,46 @@ impl WaitQueue {
     fn notify(&'static self, all: bool) -> Result<usize, SwitchError> {
         switch_allowed()?;
         active()?;
+        let count = self.notify_without_switch(all)?;
+        yield_now()?;
+        Ok(count)
+    }
+
+    pub fn wake_one_irq(&'static self) -> Result<usize, SwitchError> {
+        check_irq_context()?;
+        self.notify_without_switch(false)
+    }
+
+    pub fn wake_all_irq(&'static self) -> Result<usize, SwitchError> {
+        check_irq_context()?;
+        self.notify_without_switch(true)
+    }
+
+    pub(crate) fn notify_without_switch(&'static self, all: bool) -> Result<usize, SwitchError> {
+        let mut dispatch = DISPATCH.lock_save_irq();
+        if !dispatch.bound && OWNER.load(Ordering::Acquire) != 0 {
+            return Err(SwitchError::NotRunning);
+        }
         self.generation
             .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
                 value.checked_add(1)
             })
             .map_err(|_| SwitchError::NotificationOverflow)?;
-        match request(Request::Notify {
-            key: WaitKey(self as *const Self as usize),
-            all,
-        })? {
-            Reply::Woken(count) => Ok(count),
-            _ => fatal("invalid_notify_reply", -1),
+        if !dispatch.bound {
+            return Ok(0);
         }
+        dispatch.expire(time::now_ticks());
+        let key = WaitKey(self as *const Self as usize);
+        let count = if all {
+            dispatch.queue.wake_all(key)
+        } else {
+            usize::from(dispatch.queue.wake_one(key).is_some())
+        };
+        dispatch.wakes = dispatch
+            .wakes
+            .checked_add(count)
+            .expect("wake count overflow");
+        Ok(count)
     }
 }
 
@@ -152,6 +179,7 @@ impl WaitToken {
         block(
             Some(WaitKey(self.queue as *const WaitQueue as usize)),
             deadline,
+            Some(self),
         )
     }
 }
@@ -159,6 +187,29 @@ impl WaitToken {
 pub(crate) fn check_thread_context() -> Result<(), SwitchError> {
     switch_allowed()?;
     active().map(|_| ())
+}
+
+pub(crate) fn check_irq_context() -> Result<(), SwitchError> {
+    if !exceptions::is_hardware_irq() {
+        return Err(SwitchError::InterruptContext);
+    }
+    if cpu::interrupts_enabled() {
+        return Err(SwitchError::InterruptsEnabled);
+    }
+    if X86Cpu::irq_lock_depth() != 0 {
+        return Err(SwitchError::LocksHeld);
+    }
+    Ok(())
+}
+
+pub(crate) fn check_signal_context() -> Result<bool, SwitchError> {
+    if exceptions::is_hardware_irq() {
+        check_irq_context()?;
+        Ok(true)
+    } else {
+        check_thread_context()?;
+        Ok(false)
+    }
 }
 
 pub fn current_task_handle() -> Result<TaskHandle, SwitchError> {
@@ -212,14 +263,22 @@ pub fn sleep_us(usec: u64) -> Result<WakeReason, SwitchError> {
 pub fn sleep_until(deadline: u64) -> Result<WakeReason, SwitchError> {
     switch_allowed()?;
     active()?;
-    block(None, Some(deadline))
+    block(None, Some(deadline), None)
 }
 
-fn block(key: Option<WaitKey>, deadline: Option<u64>) -> Result<WakeReason, SwitchError> {
+fn block(
+    key: Option<WaitKey>,
+    deadline: Option<u64>,
+    token: Option<WaitToken>,
+) -> Result<WakeReason, SwitchError> {
     if deadline.is_some_and(|when| when <= time::now_ticks()) {
         return Ok(WakeReason::TimedOut);
     }
-    match request(Request::Block { key, deadline })? {
+    match request(Request::Block {
+        key,
+        deadline,
+        token,
+    })? {
         Reply::Wait(reason) => Ok(reason),
         _ => fatal("invalid_wait_reply", -1),
     }
@@ -244,10 +303,54 @@ const YIELDED: u8 = 1;
 const EXITED: u8 = 2;
 const REQUESTED: u8 = 3;
 
-struct Running;
+struct Dispatch {
+    queue: RunQueue<{ memory::MAX_STACKS }>,
+    bound: bool,
+    wakes: usize,
+    timeouts: usize,
+}
 
-impl Drop for Running {
+impl Dispatch {
+    const fn new() -> Self {
+        Self {
+            queue: RunQueue::new(),
+            bound: false,
+            wakes: 0,
+            timeouts: 0,
+        }
+    }
+
+    fn expire(&mut self, now: u64) {
+        self.timeouts = self
+            .timeouts
+            .checked_add(self.queue.expire(now))
+            .expect("timeout count overflow");
+    }
+}
+
+static DISPATCH: SpinLockIrq<Dispatch, X86Cpu> = SpinLockIrq::new(Dispatch::new());
+
+pub(crate) fn timer_tick() {
+    let mut dispatch = DISPATCH.lock_save_irq();
+    if dispatch.bound {
+        dispatch.expire(time::now_ticks());
+    }
+}
+
+struct Running<'q> {
+    queue: Option<&'q mut RunQueue<{ memory::MAX_STACKS }>>,
+}
+
+impl Drop for Running<'_> {
     fn drop(&mut self) {
+        if let Some(queue) = self.queue.take() {
+            let mut dispatch = DISPATCH.lock_save_irq();
+            assert!(dispatch.bound, "active queue lost");
+            *queue = core::mem::take(&mut dispatch.queue);
+            dispatch.bound = false;
+            dispatch.wakes = 0;
+            dispatch.timeouts = 0;
+        }
         unsafe { addr_of_mut!(ACTIVE).write(None) };
         unsafe { addr_of_mut!(REQUEST).write(None) };
         EVENT.store(0, Ordering::Release);
@@ -279,7 +382,10 @@ pub fn is_dispatcher_context() -> bool {
 }
 
 pub fn is_quiescent() -> bool {
-    is_idle() && OWNER.load(Ordering::Acquire) == 0
+    is_idle() && OWNER.load(Ordering::Acquire) == 0 && {
+        let dispatch = DISPATCH.lock_save_irq();
+        !dispatch.bound && dispatch.queue.is_empty()
+    }
 }
 
 fn fatal(stage: &str, code: i32) -> ! {
@@ -431,7 +537,7 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
                 SwitchError::Reentrant as i32,
             ));
         }
-        let _running = Running;
+        let mut running = Running { queue: None };
         if self.owner == 0 {
             self.owner = NEXT_OWNER
                 .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
@@ -444,30 +550,68 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
             Err(owner) if owner == self.owner => {}
             Err(_) => return Err(Failure::new("thread_scheduler_busy", -1)),
         }
+        {
+            let mut dispatch = DISPATCH.lock_save_irq();
+            assert!(
+                !dispatch.bound && dispatch.queue.is_empty(),
+                "active queue occupied"
+            );
+            dispatch.queue = core::mem::take(&mut self.queue);
+            dispatch.bound = true;
+        }
+        // The shared queue is BSS-owned while running, never an alias into this
+        // scheduler's exclusively borrowed task/context storage.
+        running.queue = Some(&mut self.queue);
         let mut dispatcher = Context::default();
         let mut stats = RunStats::default();
         loop {
-            stats.timeouts += self.queue.expire(time::now_ticks());
-            let Some(id) = self.queue.dispatch().expect("invalid run queue dispatch") else {
-                if self.queue.is_empty() {
+            let (next, empty, deadline) = {
+                let mut dispatch = DISPATCH.lock_save_irq();
+                dispatch.expire(time::now_ticks());
+                stats.timeouts += core::mem::take(&mut dispatch.timeouts);
+                stats.wakes += core::mem::take(&mut dispatch.wakes);
+                let next = dispatch
+                    .queue
+                    .dispatch()
+                    .expect("invalid run queue dispatch");
+                let next = next.map(|id| {
+                    (
+                        id,
+                        dispatch
+                            .queue
+                            .take_wake_reason(id)
+                            .expect("invalid wake reply"),
+                        dispatch
+                            .queue
+                            .handle(id)
+                            .expect("running task handle missing"),
+                    )
+                });
+                (
+                    next,
+                    dispatch.queue.is_empty(),
+                    dispatch.queue.next_deadline(),
+                )
+            };
+            let Some((id, reason, handle)) = next else {
+                if empty {
                     OWNER
                         .compare_exchange(self.owner, 0, Ordering::AcqRel, Ordering::Acquire)
                         .expect("scheduler ownership changed");
                     return Ok(stats);
                 }
-                let deadline = self
-                    .queue
-                    .next_deadline()
-                    .ok_or(Failure::new("thread_wait_deadlock", -1))?;
+                let deadline = match (deadline, timer.and_then(irq::Timer::handler_deadline)) {
+                    (Some(wait), Some(handler)) => Some(wait.min(handler)),
+                    (wait, handler) => wait.or(handler),
+                }
+                .ok_or(Failure::new("thread_wait_deadlock", -1))?;
                 let timer = timer.ok_or(Failure::new("thread_timer_required", -1))?;
-                if timer.arm_until(deadline)? {
+                if timer.arm_for_idle(deadline)? {
                     timer.idle_until_tick()?;
                     stats.idle_sleeps += 1;
                 }
                 continue;
             };
-            let reason = self.queue.take_wake_reason(id).expect("invalid wake reply");
-            let handle = self.queue.handle(id).expect("running task handle missing");
             {
                 let task = self.tasks[id.0].as_mut().expect("queued thread missing");
                 if let Some(reason) = reason {
@@ -494,49 +638,68 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
             stats.dispatches += 1;
             let event = EVENT.swap(0, Ordering::AcqRel);
             let request = unsafe { addr_of_mut!(REQUEST).replace(None) };
-            stats.timeouts += self.queue.expire(time::now_ticks());
+            {
+                let mut dispatch = DISPATCH.lock_save_irq();
+                dispatch.expire(time::now_ticks());
+            }
             match event {
                 YIELDED => {
-                    self.queue
+                    DISPATCH
+                        .lock_save_irq()
+                        .queue
                         .yield_running()
                         .expect("yielded thread not running");
                     stats.yields += 1;
                 }
                 EXITED => {
-                    self.queue
+                    DISPATCH
+                        .lock_save_irq()
+                        .queue
                         .finish_running()
                         .expect("exited thread not running");
                     // This is the dispatcher stack, not the finished task's.
                     drop(self.tasks[id.0].take().expect("finished thread missing"));
-                    self.queue
+                    DISPATCH
+                        .lock_save_irq()
+                        .queue
                         .reap(id)
                         .expect("finished thread cannot be reaped");
                     stats.finished += 1;
                 }
                 REQUESTED => match request.expect("missing thread request") {
-                    Request::Block { key, deadline } => {
-                        self.queue
-                            .block_running(key, deadline)
-                            .expect("invalid thread block");
-                        stats.blocks += 1;
-                    }
-                    Request::Notify { key, all } => {
-                        let count = if all {
-                            self.queue.wake_all(key)
+                    Request::Block {
+                        key,
+                        deadline,
+                        token,
+                    } => {
+                        let mut dispatch = DISPATCH.lock_save_irq();
+                        if token.is_some_and(|token| {
+                            token.queue.generation.load(Ordering::Acquire) != token.generation
+                        }) {
+                            dispatch
+                                .queue
+                                .yield_running()
+                                .expect("invalid pending sleep");
+                            self.tasks[id.0]
+                                .as_mut()
+                                .expect("waiting task missing")
+                                .reply = Reply::Wait(WakeReason::Notified);
                         } else {
-                            usize::from(self.queue.wake_one(key).is_some())
-                        };
-                        self.tasks[id.0]
-                            .as_mut()
-                            .expect("notifying task missing")
-                            .reply = Reply::Woken(count);
-                        stats.wakes += count;
-                        self.queue.yield_running().expect("invalid notifying task");
+                            dispatch
+                                .queue
+                                .block_running(key, deadline)
+                                .expect("invalid thread block");
+                            stats.blocks += 1;
+                        }
                     }
                 },
                 _ => fatal("switch_without_event", -1),
             }
-            self.queue.check_invariants().expect("run queue invariant");
+            DISPATCH
+                .lock_save_irq()
+                .queue
+                .check_invariants()
+                .expect("run queue invariant");
         }
     }
 }

@@ -19,6 +19,10 @@ static bool spin_seen;
 static bool timeout_race_seen;
 static struct mutex capacity_mutexes[9];
 static struct completion capacity_completions[9];
+static DECLARE_COMPLETION(irq_completion);
+static DECLARE_COMPLETION(irq_stored);
+static DECLARE_COMPLETION(irq_unregistered);
+static unsigned int irq_finished;
 
 static void check(bool condition, const char *operation)
 {
@@ -205,4 +209,65 @@ void kutox_c_execution_destroy(void)
     timeout_seen = false;
     spin_seen = false;
     timeout_race_seen = false;
+}
+
+void kutox_c_irq_init(void)
+{
+    check(!irq_finished, "c_irq_fixture_dirty");
+    init_completion(&irq_completion);
+    init_completion(&irq_stored);
+}
+
+void kutox_c_irq_signal(size_t broadcast)
+{
+    check(kutox_linux_context() == -57 && !irq_enabled() &&
+          kutox_linux_irq_depth() == 0, "c_irq_context");
+    check(kutox_linux_mutex((uintptr_t)&test_mutex, 1) == -57,
+          "c_irq_sleeping_mutex_rejected");
+    check(kutox_linux_completion((uintptr_t)&irq_completion, 0) == -57 &&
+          kutox_linux_completion((uintptr_t)&irq_completion, 6) == -57 &&
+          kutox_linux_completion((uintptr_t)&irq_completion, 4) == -57,
+          "c_irq_lifecycle_rejected");
+    check(kutox_linux_completion((uintptr_t)&irq_unregistered, 1) == -90,
+          "c_irq_unregistered_rejected");
+    complete(&irq_stored);
+    check(completion_done(&irq_stored) && try_wait_for_completion(&irq_stored) &&
+          !try_wait_for_completion(&irq_stored), "c_irq_try_completion");
+    if (broadcast) {
+        complete_all(&irq_completion);
+        complete_all(&irq_completion);
+    } else {
+        complete(&irq_completion);
+        complete(&irq_completion);
+    }
+    check(completion_done(&irq_completion) &&
+          __atomic_load_n(&irq_finished, __ATOMIC_RELAXED) == 0,
+          "c_irq_no_stack_switch");
+    check(!irq_enabled() && kutox_linux_irq_depth() == 0, "c_irq_signal_restore");
+}
+
+void kutox_c_irq_worker(size_t role)
+{
+    volatile u64 local[8];
+    for (size_t i = 0; i < ARRAY_SIZE(local); i++)
+        local[i] = role ^ i ^ 0x5eed;
+    if (role) {
+        unsigned long remaining = wait_for_completion_timeout(&irq_completion, 100);
+        check(remaining >= 1 && remaining <= 100, "c_irq_remaining_ticks");
+    } else {
+        wait_for_completion(&irq_completion);
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(local); i++)
+        check(local[i] == (role ^ i ^ 0x5eed), "c_irq_stack_preserved");
+    check(!irq_enabled() && kutox_linux_irq_depth() == 0, "c_irq_wait_restore");
+    if (__atomic_add_fetch(&irq_finished, 1, __ATOMIC_RELAXED) == 2)
+        reinit_completion(&irq_completion);
+}
+
+void kutox_c_irq_destroy(void)
+{
+    check(irq_finished == 2, "c_irq_waiters_finished");
+    kutox_destroy_completion(&irq_completion);
+    kutox_destroy_completion(&irq_stored);
+    irq_finished = 0;
 }

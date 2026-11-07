@@ -31,7 +31,8 @@ with a GIC, while standalone Ginux documents an
 kutox's xAPIC implementation is native code, not copied Ginux source. It uses
 an owned uncacheable mapping, masked divide-by-16 calibration through the existing
 bounded PIT/TSC helper, and explicit rearming. Its handler records a checked
-monotonic delivery count and sends EOI without scheduling or allocating. Ordered
+monotonic delivery count, expires thread deadlines, invokes a due owned handler,
+and sends EOI without switching stacks or allocating. Ordered
 TSC samples are the separate bootstrap elapsed-time source; neither calibration
 nor delivery counts constitute a production timekeeping service.
 
@@ -41,6 +42,14 @@ already pending at the condition check; a host timeout remains the watchdog
 for halted guests whose hardware fails to deliver. Teardown drains any pending
 owned timer interrupt before disabling/unmapping the APIC. Tests cover register/
 flags preservation, masking, timeout, rollback, and complete resource recovery.
+The timer owns one optional deadline-bound function handler. Registration and
+cancellation require the timer to be stopped with no pending/in-service IRQ;
+replacement of a live handler fails explicitly. The dispatcher arms the earlier
+of the thread and handler deadlines, including an already-due handler. A handler
+is removed before invocation and must neither allocate nor sleep. Teardown keeps
+it available while draining pending delivery, then cancels any undelivered
+registration before releasing the APIC mapping. This is not a Linux callback
+timer service or a general timer queue.
 
 The buddy port preserves all bootstrap reservations, uses sparse metadata for
 usable pages, and supports naturally aligned power-of-two blocks up to 4 MiB.
@@ -73,18 +82,41 @@ at 128 MiB and 32 MiB. Boot/IST stacks remain unguarded.
 
 Native static wait queues now use preparation-generation tokens to prevent a
 notification before registration from being lost. FIFO wake-one/wake-all
-requests run on the cooperative dispatcher, not in an IRQ handler. Each task
+transitions now operate directly on IRQ-locked runnable state. Each task
 can register one wait queue, one elapsed-TSC deadline, or both. The dispatcher
-checks deadlines and, when all remaining tasks are blocked, arms the earliest
+and timer IRQ check deadlines and, when all remaining tasks are blocked, the
+dispatcher arms the earliest
 one-shot and idles on its own stack. Actual deadlines are rechecked after each
 IRQ, so early calibration wakeups cannot resume a sleeper early. No periodic
 tick policy or preemptive scheduling is introduced; non-yielding threads can
 delay delivery of cooperative wakeups.
 
+This follows pinned Moss's separation of
+[IRQ wakeups](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/timer/mod.rs)
+from [task execution](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/sched/waker.rs).
+During a run, the scheduler transfers its bounded queue into permanent shared
+BSS protected by the Moss-derived IRQ-saving spinlock; it transfers it back on
+return, including errors. IRQs never access the exclusively borrowed stack/context
+storage, and no queue guard crosses a switch or interrupt-enabled idle window.
+There is no intermediate event FIFO. `wake_one_irq`/`wake_all_irq` and completion
+signals enqueue eligible waiters without running them. Existing thread-context
+notification calls retain their cooperative yield behavior.
+
+The preparation generation is rechecked under the runnable-state lock before
+committing a pending sleep. Single-CPU IRQ masking serializes this transition;
+Moss's concurrent `Woken`/`PendingSleep` CAS protocol and future executor are not
+imported. Supported IRQ calls require IF clear and zero pre-existing IRQ guards;
+exceptions, NMI, and machine-check handlers remain excluded. An IRQ can store
+completion credits before any scheduler exists, but notification against a
+paused owning scheduler is rejected without mutation. Fixed task capacity bounds
+runnable entries; duplicate signals do not duplicate queue entries, and generation
+or credit exhaustion is an explicit error.
+
 Cancellation removes the wait/deadline and resumes the task with a cancellation
 result, allowing ordinary Rust destruction before off-stack reclamation. Unique
 task-handle tickets reject stale or foreign cancellation after slot reuse.
-An untimed all-blocked scheduler reports deadlock; timed blocking without a
+An untimed all-blocked scheduler without a scheduled IRQ handler reports deadlock;
+timed blocking without a
 timer reports a missing-timer error. Suspended tasks remain owned for retry or
 cancellation, and that scheduler remains exclusive until they return. Discarding
 started suspended stacks is rejected rather than leaking their Rust locals.
@@ -104,8 +136,11 @@ wait queue. Pinned Moss's
 [condition variable](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/condvar.rs)
 and waker registration were reviewed as prior art, not imported as a future-based
 interface. The counting policy and synchronous integration are kutox code.
-Signalling, consumption, waiting, and reset require thread context with IF clear
-and no held IRQ guard. Interrupt/exception entry is explicitly excluded, even
+Signalling and try-wait also accept the supported hardware IRQ context. Completion
+state stays IRQ-locked through the non-scheduling wake transition, with lock order
+completion then runnable state; failures roll back credits before releasing the
+lock. Thread signalling yields only after both locks are dropped. Waiting and
+reset remain thread-only. Arbitrary exception entry is explicitly excluded, even
 when a thread was active before entry; a returning breakpoint test verifies
 that completion credits are unchanged. The portable tests exercise exact finite
 counter limits and a reference model; guest tests cover stored signals, multiple
@@ -145,7 +180,9 @@ is not silently promoted into a thread-safe full driver runtime.
 
 Eight permanent mutex and eight completion slots bind zero-initialized static
 C objects by stable address. Callers may not copy, move, stack-allocate, or free
-registered objects. Explicit initialization/lazy definition, quiescent
+registered objects. IRQ completion signalling, try-wait, and inspection require
+prior initialization; IRQs cannot lazily register, reset, initialize, or destroy
+objects. Explicit initialization/lazy definition in boot/thread context, quiescent
 destruction, registry exhaustion/reuse, and live reset rejection are tested.
 No mutable registry borrow or C reference survives a context switch; native
 guards remain in their slots until the owning C task unlocks. IRQ-save C
@@ -162,14 +199,21 @@ does; native Rust timeouts keep their existing credit-preserving behavior.
 There is no global Linux jiffies/ABI service.
 Linux void-API errors and cancellation of uninterruptible waits are explicit
 fatal platform errors. Boot operations cannot sleep; thread operations cannot
-run while IRQ guards are held or during interrupt/exception dispatch.
+run while IRQ guards are held. Only the selected non-sleeping completion operations
+are authorized during hardware IRQ dispatch; mutexes, sleep, rescheduling, and
+completion lifecycle operations remain excluded.
 
 The synthetic C acceptance case runs on native guarded stacks and proves
 actual contention, sleep and completion wake/timeout, measured durations,
 return shapes, stack preservation, context/ownership checks, registry bounds,
 and cleanup. It does not execute a new upstream driver operation. The existing
 unchanged e1000 translation unit and MAC/failure/provenance tests remain intact.
-IRQ-safe deferred signalling, external interrupt routing, DMA, general timer
+Additional real timer-IRQ cases prove direct Rust/C completion signalling,
+stored credits, broadcast, no stack switching inside handlers, active-thread
+preservation, wake-before-registration, full-capacity FIFO/duplicate wakes,
+generation exhaustion, timeout/cancellation races, paused-owner rejection, and
+handler teardown/reuse.
+External interrupt routing, DMA, general timer
 callbacks, broader Linux execution APIs, and preemption remain future work.
 
 Nonfatal CPU, frame, heap, and thread tests run through a stable-Rust registry in one

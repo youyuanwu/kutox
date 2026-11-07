@@ -61,11 +61,18 @@ class KernelSuiteTests(unittest.TestCase):
         ))
 
     def test_requires_the_c_execution_case(self):
-        self.assertEqual(KERNEL_TEST_NAMES[27:], ("linux.thread_execution",))
+        self.assertEqual(KERNEL_TEST_NAMES[27], "linux.thread_execution")
+
+    def test_requires_the_irq_wakeup_cases(self):
+        self.assertEqual(KERNEL_TEST_NAMES[28:], (
+            "sync.irq_completion",
+            "threads.irq_wait_races",
+            "linux.irq_completion",
+        ))
 
     def test_rejects_missing_or_failed_timer_cases(self):
         for index, name in enumerate(KERNEL_TEST_NAMES, 1):
-            if not name.startswith(("irq.", "threads.wait_", "threads.timed_sleep", "sync.completion_", "sync.mutex_", "linux.")):
+            if not name.startswith(("irq.", "threads.wait_", "threads.timed_sleep", "threads.irq_", "sync.irq_", "sync.completion_", "sync.mutex_", "linux.")):
                 continue
             result = f"ok {index} {name}"
             for replacement in ("", result.replace("ok ", "not ok ", 1)):
