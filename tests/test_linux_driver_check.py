@@ -13,6 +13,18 @@ import linux_driver_check as check
 
 
 class InputTests(unittest.TestCase):
+    def test_service_abi_is_explicit_and_covers_rust_primitives(self):
+        names = check.lines(check.DECLARATIONS / "service-ffi.txt")
+        self.assertEqual(names, sorted(names))
+        self.assertTrue({"memcpy", "memset", "kutox_jiffies", "kutox_driver_dma_map",
+                         "kutox_driver_gate", "kutox_driver_pci"} <= set(names))
+        with self.assertRaises(ValueError):
+            check.verify_service_closure(Path("unused"), None)
+        with self.assertRaises(ValueError):
+            check.verify_service_closure(Path("unused"), {
+                "missing_providers": 0, "units": [],
+            })
+
     def test_source_runtime_execution_layouts_are_exact(self):
         raw = struct.pack("<" + "Q" * len(check.EXECUTION_LAYOUTS), *check.EXECUTION_LAYOUTS.values())
         elf = SimpleNamespace(by_name={".kutox.execution_layouts": {"data": raw}})

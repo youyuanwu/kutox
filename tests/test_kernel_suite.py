@@ -101,13 +101,22 @@ class KernelSuiteTests(unittest.TestCase):
         ))
 
     def test_requires_driver_execution_services(self):
-        self.assertEqual(KERNEL_TEST_NAMES[40:], (
+        self.assertEqual(KERNEL_TEST_NAMES[40:46], (
             "linux.driver_atomics",
             "linux.driver_lifecycle",
             "linux.driver_work",
             "linux.driver_napi",
             "linux.driver_irq",
             "linux.driver_worker_rollback",
+        ))
+
+    def test_requires_driver_memory_packet_contracts(self):
+        self.assertEqual(KERNEL_TEST_NAMES[46:], (
+            "linux.driver_allocation",
+            "linux.driver_streaming_dma",
+            "linux.driver_packets",
+            "linux.driver_capacity",
+            "linux.driver_failed_open",
         ))
 
     def test_rejects_missing_or_failed_timer_cases(self):

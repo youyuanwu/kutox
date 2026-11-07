@@ -435,3 +435,38 @@ pub fn quiescent() -> bool {
         && !atomic_context()
         && SERVICES.lock_save_irq().state.is_empty()
 }
+
+pub fn retire_range(base: usize, size: usize) -> Result<(), Error> {
+    let end = base.checked_add(size).ok_or(Error::Invalid)?;
+    let mut services = SERVICES.lock_save_irq();
+    let bindings = services.bindings;
+    for binding in bindings
+        .into_iter()
+        .flatten()
+        .filter(|binding| binding.address >= base && binding.address < end)
+    {
+        services
+            .state
+            .can_unregister(binding.key, binding.address)?;
+    }
+    for binding in bindings
+        .into_iter()
+        .flatten()
+        .filter(|binding| binding.address >= base && binding.address < end)
+    {
+        services.state.unregister(binding.key, binding.address)?;
+        let slot = services
+            .bindings
+            .iter_mut()
+            .find(|slot| slot.is_some_and(|slot| slot.key == binding.key))
+            .ok_or(Error::Stale)?;
+        *slot = None;
+    }
+    Ok(())
+}
+
+pub fn callbacks_idle() -> bool {
+    CURRENT_WORK.load(Ordering::Acquire) == 0
+        && CURRENT_NAPI.load(Ordering::Acquire) == 0
+        && SERVICES.lock_save_irq().state.callbacks_drained()
+}

@@ -6,6 +6,7 @@ use crate::{
     device_irq, dma, e1000_tx, exceptions, heap, io, irq, linux_deferred, linux_dma,
     linux_driver_tests, linux_irq, linux_runtime, memory, mutex, serial, threads,
 };
+use crate::{driver_memory, driver_platform, driver_service_tests};
 use kutox::fw_cfg::BootMode;
 use moss_libkernel::CpuOps;
 
@@ -201,6 +202,26 @@ static TESTS: &[TestCase] = &[
         name: "linux.driver_worker_rollback",
         run: linux_driver_tests::worker_rollback,
     },
+    TestCase {
+        name: "linux.driver_allocation",
+        run: driver_service_tests::allocation,
+    },
+    TestCase {
+        name: "linux.driver_streaming_dma",
+        run: driver_service_tests::dma,
+    },
+    TestCase {
+        name: "linux.driver_packets",
+        run: driver_service_tests::packets,
+    },
+    TestCase {
+        name: "linux.driver_capacity",
+        run: driver_service_tests::capacity,
+    },
+    TestCase {
+        name: "linux.driver_failed_open",
+        run: driver_service_tests::failed_open,
+    },
 ];
 
 static INTENTIONAL_FAILURE: TestCase = TestCase {
@@ -227,6 +248,8 @@ pub fn run(boot: &BootInfo) -> ! {
         || !linux_runtime::quiescent()
         || !linux_deferred::quiescent()
         || !linux_irq::quiescent()
+        || !driver_memory::quiescent()
+        || !driver_platform::quiescent()
         || !device_irq::quiescent()
         || !e1000_tx::quiescent()
         || !linux_dma::quiescent()
@@ -296,6 +319,8 @@ pub fn run(boot: &BootInfo) -> ! {
             || !linux_runtime::quiescent()
             || !linux_deferred::quiescent()
             || !linux_irq::quiescent()
+            || !driver_memory::quiescent()
+            || !driver_platform::quiescent()
             || !device_irq::quiescent()
             || !e1000_tx::quiescent()
             || !linux_dma::quiescent()

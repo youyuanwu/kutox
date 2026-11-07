@@ -189,7 +189,7 @@ def metadata(path):
     return result
 
 
-def make_headers(output):
+def make_headers(output, wrapper="driver.h"):
     include = output / "include"
     headers = lines(ROOT / "compat/headers.txt") + lines(DECLARATIONS / "headers.txt")
     if len(set(headers)) != len(headers):
@@ -199,7 +199,7 @@ def make_headers(output):
             raise ValueError(f"invalid forwarding header: {header}")
         path = include / header
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text('#include "driver.h"\n')
+        path.write_text(f'#include "{wrapper}"\n')
     for header, target in json.loads((DECLARATIONS / "uapi-forwarders.json").read_text()).items():
         if not re.fullmatch(r"(?:[a-z0-9_-]+/)+[a-z0-9_-]+\.h", header) or ".." in Path(target).parts:
             raise ValueError(f"invalid original UAPI path: {header}: {target}")
@@ -252,6 +252,8 @@ def build_inputs():
              ROOT / "compat/execution_layout.c", ROOT / "compat/diagnostics_services.h",
              ROOT / "linker.ld", DRIVER / "Makefile"]
     files += sorted(path for path in DECLARATIONS.rglob("*") if path.is_file())
+    files += [ROOT / "compat" / name for name in SERVICE_SOURCES + BOOT_SERVICE_SOURCES]
+    files += [ROOT / "compat/driver_services.h"]
     return {str(path.relative_to(ROOT)): digest(path) for path in files}
 
 
@@ -356,6 +358,76 @@ def execution_layouts(args, flags, output):
     return result
 
 
+SERVICE_SOURCES = ("driver_memory.c", "driver_pci.c", "driver_packet.c", "driver_optional.c")
+BOOT_SERVICE_SOURCES = ("runtime.c", "execution_ops.c", "deferred.c", "diagnostics.c")
+
+
+def service_closure(args, flags, output):
+    objects = [output / "e1000-closure.o", output / "bridge-guard-1.o"]
+    evidence = []
+    service_include = make_headers(output / "services", "driver_services.h")
+    boot_flags = ["-Wall", "-Wextra", "-Werror", *lines(ROOT / "compat/cflags.txt"),
+                  "-DKUTOX_DRIVER_COMPILE_ONLY=1", "-include", str(DECLARATIONS / "marker.h"),
+                  "-I" + str(output / "boot-include"), "-I" + str(ROOT / "compat")]
+    for filename in SERVICE_SOURCES + BOOT_SERVICE_SOURCES:
+        path = output / ("service-" + Path(filename).stem + ".o")
+        selected = [*["-I" + str(service_include) if flag == "-I" + str(output / "include") else flag for flag in flags],
+                    "-I" + str(ROOT / "compat")] if filename in SERVICE_SOURCES else boot_flags
+        source = ROOT / "compat" / filename
+        command = [args.clang, *selected, "-c", str(source), "-o", str(path)]
+        run(command, output / ("service-" + Path(filename).stem + ".log"))
+        objects.append(path)
+        evidence.append({"source": str(source.relative_to(ROOT)), "sha256": digest(source),
+                         "object": path.name, "object_sha256": digest(path), "command": command})
+    closure = output / "e1000-services-closure.o"
+    run([args.ld, "-r", "-o", str(closure), *map(str, objects)], output / "services-link.log")
+    symbols = Elf(closure).symbols()
+    undefined = sorted({symbol["name"] for symbol in symbols if not symbol["owner"] and symbol["name"]})
+    expected = lines(DECLARATIONS / "service-ffi.txt")
+    if undefined != expected:
+        raise ValueError("service Rust ABI mismatch: " + ", ".join(sorted(set(undefined) ^ set(expected))))
+    rust_providers = {"memcpy", "memset", "kutox_jiffies"}
+    remaining = sorted((set(undefined) & contracts().keys()) - rust_providers)
+    if remaining:
+        raise ValueError("driver services missing providers: " + ", ".join(remaining))
+    (output / "service-ffi.txt").write_text("\n".join(undefined) + "\n")
+    return {"units": evidence, "sha256": digest(closure), "undefined": undefined,
+            "rust_driver_providers": sorted(rust_providers), "missing_providers": 0}
+
+def verify_service_closure(output, evidence):
+    if not isinstance(evidence, dict) or evidence.get("missing_providers") != 0:
+        raise ValueError("missing service provider evidence")
+    units = evidence.get("units")
+    if not isinstance(units, list) or [unit.get("source") for unit in units] != [
+        f"compat/{name}" for name in SERVICE_SOURCES + BOOT_SERVICE_SOURCES
+    ]:
+        raise ValueError("missing or reordered service provider units")
+    for unit in units:
+        if digest(ROOT / unit["source"]) != unit["sha256"] or digest(output / unit["object"]) != unit["object_sha256"]:
+            raise ValueError("stale service provider object")
+        filename = Path(unit["source"]).name
+        flags = compiler_flags(output)
+        if filename in SERVICE_SOURCES:
+            flags = ["-I" + str(output / "services/include") if flag == "-I" + str(output / "include") else flag
+                     for flag in flags] + ["-I" + str(ROOT / "compat")]
+        else:
+            flags = ["-Wall", "-Wextra", "-Werror", *lines(ROOT / "compat/cflags.txt"),
+                     "-DKUTOX_DRIVER_COMPILE_ONLY=1", "-include", str(DECLARATIONS / "marker.h"),
+                     "-I" + str(output / "boot-include"), "-I" + str(ROOT / "compat")]
+        if unit["command"][1:] != [*flags, "-c", str(ROOT / unit["source"]), "-o", str(output / unit["object"])]:
+            raise ValueError("service provider compiler arguments changed")
+    closure = output / "e1000-services-closure.o"
+    if digest(closure) != evidence.get("sha256"):
+        raise ValueError("stale service closure")
+    undefined = sorted({symbol["name"] for symbol in Elf(closure).symbols() if not symbol["owner"] and symbol["name"]})
+    if undefined != lines(DECLARATIONS / "service-ffi.txt") or evidence.get("undefined") != undefined:
+        raise ValueError("service ABI changed or provider omitted")
+    if evidence.get("rust_driver_providers") != ["kutox_jiffies", "memcpy", "memset"]:
+        raise ValueError("Rust driver primitive provider classification changed")
+    if ".kutox.compile_only" not in Elf(closure).by_name:
+        raise ValueError("service closure lost runtime barrier")
+
+
 def validate_symbols(report, symbols, inventory):
     undefined = sorted({symbol["name"] for symbol in symbols if symbol["owner"] == 0 and symbol["name"]})
     defined = sorted({symbol["name"] for symbol in symbols if symbol["owner"] and symbol["type"] == 2})
@@ -412,6 +484,7 @@ def verify(args, report=None):
     validate_symbols(report, symbols, inventory)
     if digest(output / "layout.o") != report.get("layout_sha256") or read_layout(output / "layout.o") != report.get("layouts"):
         raise ValueError("compiler layout evidence changed")
+    verify_service_closure(output, report.get("service_closure"))
     for name in ("source", "runtime"):
         path = output / f"execution-layout-{name}.o"
         evidence = report.get("execution_layouts", {}).get(name, {})
@@ -489,6 +562,7 @@ def build(args):
     layouts = probe_layout(args, flags, output)
     guard = check_bridge_guard(args, output)
     execution = execution_layouts(args, flags, output)
+    services = service_closure(args, flags, output)
     excluded = check_runtime_exclusion(args, flags, output)
     macros = run([args.clang, *flags, "-dM", "-E", str(DECLARATIONS / "layout.c")], output / "macros.log")
     macro_inventory = parse_macros(macros)
@@ -497,6 +571,7 @@ def build(args):
               "macros": macro_inventory, "macros_sha256": digest(output / "macros.log"), "bridge_guard": guard,
               "runtime_link_rejected": excluded,
               "execution_layouts": execution,
+              "service_closure": services,
               "units": units, "undefined": [{"symbol": name, **inventory[name],
                                             "source_references": source_references(inventory[name]["source_names"]),
                                             "object_references": [reference for reference in references if reference["target"] == name]}

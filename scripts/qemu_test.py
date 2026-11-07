@@ -58,6 +58,11 @@ KERNEL_TEST_NAMES = (
     "linux.driver_napi",
     "linux.driver_irq",
     "linux.driver_worker_rollback",
+    "linux.driver_allocation",
+    "linux.driver_streaming_dma",
+    "linux.driver_packets",
+    "linux.driver_capacity",
+    "linux.driver_failed_open",
 )
 KERNEL_SUITE_CASES = {
     "kernel-tests": "kernel-tests",
@@ -340,7 +345,8 @@ def check_provenance(nm):
     elf = ROOT / "target/x86_64-unknown-none/release/kutox"
     symbols = subprocess.check_output([nm, "--defined-only", str(elf)], text=True)
     names = {line.split()[-1] for line in symbols.splitlines() if line.split()}
-    for symbol in ("e1000_set_mac_type", "e1000_init_eeprom_params", "e1000_read_mac_addr"):
+    for symbol in ("e1000_set_mac_type", "e1000_init_eeprom_params", "e1000_read_mac_addr",
+                   "kutox_jiffies", "memcpy", "memset"):
         if symbol not in names:
             raise AssertionError(f"upstream function not linked: {symbol}")
     for symbol in ("e1000_probe", "e1000_open", "e1000_xmit_frame"):

@@ -211,8 +211,8 @@ native TX capture proof now validate the platform, but that native TX path is
 scaffolding rather than execution of Linux's packet driver.
 
 The isolated original-source compile/dependency check and synthetic
-execution/object/deferred-service contracts are now complete. Next,
-implement the PCI/packet/DMA providers, then
+execution/object/deferred and PCI/packet/DMA service contracts are now complete.
+Next,
 execute original module/probe/open/close callbacks. Packet acceptance must
 exercise Linux's xmit, IRQ/NAPI and RX
 cleanup paths. Upstream open requires RX setup and link work even for TX-first

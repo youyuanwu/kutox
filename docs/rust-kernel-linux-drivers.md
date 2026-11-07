@@ -629,6 +629,81 @@ invokes original `e1000_intr`, which schedules original `e1000_clean`.
 Do not copy static functions into a bridge, pre-read ICR before the C handler,
 or replace Linux cleanup with native descriptor observation.
 
+### Source-facing PCI, packet and DMA services
+
+Phase 3 supplies [C providers](../compat/driver_services.h) using the same
+source-facing PCI/netdev/skb types as the compile check. Rust retains physical
+allocation/MMIO/PCI ownership; C owns its structs and original callback tables.
+The normal image still links only the upstream hardware helper, not the
+original packet driver.
+
+[Memory ownership](../src/driver_memory.rs) consists of 2048 registered
+buddy-backed allocations and 1024 streaming map slots. Original allocation
+guards are retained; frees never reconstruct ownership from an arbitrary
+pointer. Complete backing blocks are zeroed, cache/page aligned, RAM/mask
+checked and fallible. GFP_KERNEL is sleepable; GFP_ATOMIC never sleeps.
+Overflows, unsupported flags and pressure failures produce explicit diagnostics
+and NULL without a fabricated buffer.
+
+Streaming maps pin their live allocation, device, DMA address, exact size and
+direction. CPU sync may cover a prefix of the mapping, as original RX copybreak
+requires. Wrong/double unmap or free while pinned is rejected. The standard
+unsafe DMA caller must first observe the original driver's completion, abandon
+a submission that was never published, or stop the relevant engine for abort.
+Matching arguments are not themselves a completion witness. In particular,
+TX unmap does not stop unrelated RX. Tests exercise that separation.
+
+Coherent C descriptors are raw protocol-shared memory; no live exclusive Rust
+slice is created. Free checks exact provenance and disabled engines/idle
+callbacks, even if attempted through generic free. The platform owner and all
+MMIO/device backing remain live through reclamation.
+
+The owner structure borrows embclox's device/region lifetime design, not its
+native packet logic or reset-only teardown. Linux's Rust `Coherent` model
+similarly separates raw device-shared addresses from unsafe Rust references.
+Moss supplies the underlying buddy allocator; its unsafe Virtio share/unshare
+contract is not a runtime completion proof.
+
+#### QEMU failed-open and reset gate
+
+Original `e1000_open` enables RX in `e1000_configure` before requesting IRQ.
+Its failed-IRQ path releases RX backing before its later reset. The
+[platform gate](../src/driver_platform.rs) therefore runs before returning a
+failed C IRQ request, not after the original open has already freed memory.
+It also accompanies original source CTRL.RST writes.
+
+The gate clears/flushed RX/TX enable bits, masks/drains the owned IRQ route
+with C handler/MMIO backing live and checks readback. In the selected QEMU
+model, TX DMA completes synchronously and receive callbacks reject disabled RX.
+The grace interval supplements those conditions; CTRL.RST, BME alone and time
+alone are not witnesses. RX remains disabled until newly owned rings are
+configured. A later source IMS enable restores the retained route after reset.
+Pending host injection/reopen-epoch acceptance remains part of original RX
+integration, not a claim made by the synthetic tests.
+
+#### Packets and dependency evidence
+
+Netdev/private allocations, original ops registration, stop/carrier/queue
+accounting and feature negotiation are real state. The initial adapter rejects
+GSO/partial checksums/VLAN input before xmit, and BUSY retains the skb.
+Linear skb head/data/tail/shared-info, padding and RX fragment provenance are
+checked. Original cleanup's interior `data + 66` fragment free is supported.
+Build-skb can claim fragment backing before original unmap, but cannot expose
+CPU data while pinned. Ethernet ingress preserves exact L2 bytes in an owned
+bounded FIFO; there is no Linux IP stack or GRO aggregation.
+
+Freed driver containers automatically retire idle embedded work/mutex/
+completion registrations. Pending/running callbacks, waits or pins prevent
+free; unchanged source need not call kutox destruction extensions.
+
+The independent source-plus-services closure resolves driver APIs to actual C
+providers, optional-profile errors or three existing Rust primitives
+(`memcpy`, `memset`, elapsed jiffies). Its 48 remaining platform symbols have an
+explicit exact allowlist; missing, stale or changed providers fail evidence
+verification. The compile-only barrier remains present. All four unchanged
+source units, callbacks and default 256-ring layouts remain audited; resolving
+providers is not execution of original lifecycle or packets.
+
 ### Source-facing dependency and lifetime requirements
 
 The next dependency audit must distinguish compile/link closure from the
@@ -638,10 +713,10 @@ Each retained API needs an explicit provider or an enforced unsupported contract
 
 | Required surface | Gap in the current implementation |
 | --- | --- |
-| Module/PCI/net-device registration and object lifetimes | No original probe binding; current net-device type has only a name, and DMA device is opaque. |
-| MMIO in driver threads and hardware IRQs | The C bridge authorizes only the boot helper's global active window. |
-| Driver allocation and packet buffers | No kmalloc/vmalloc/skb or RX page-fragment ownership, padding, build-skb, queue/feature or ingress environment. |
-| Coherent descriptor sharing and streaming map/sync/unmap | Current APIs are allocation-only with native publish/reclaim extensions; upstream code does not call those extensions. |
+| Module/PCI/net-device registration and object lifetimes | Source-facing providers exist; original module/probe callbacks are not invoked yet. |
+| MMIO in driver threads and hardware IRQs | An owned source-service window exists separately from boot MAC; original-driver integration remains. |
+| Driver allocation and packet buffers | Synthetic linear/RX fragment/ingress services exist; no original packet-path acceptance yet. |
+| Coherent descriptor sharing and streaming map/sync/unmap | Standard per-region contracts and failed-open gate exist; original completion/abort/reopen paths need integration tests. |
 | Delayed work, jiffies, lifecycle locking and cancellation | Synthetic execution providers exist; original watchdog/reset and lifecycle ordering are not yet integrated. |
 | IRQ registration and NAPI scheduling/budget/disable | Tested C handler/dev-id and budgeted poll lifetimes exist; original e1000 callbacks are not yet invoked. |
 | Probe/open/error/close/remove cleanup | The native TX stop proof is not the RX-capable original driver lifecycle. |
@@ -773,7 +848,8 @@ phases replace a native-RX-first roadmap:
 3. **PCI/allocation/packet/DMA environment.** Implement original probe ordering,
    net-device/skb lifecycle, queue/feature state, GFP/error behavior, streaming
    leases and coherent descriptor sharing. Capacity must cover the configured
-   RX/TX rings and unwind. No required API may remain a placeholder.
+   RX/TX rings and unwind. No required API may remain a placeholder. This phase
+   is complete for the selected synthetic source-service profile.
 4. **Original lifecycle.** Link the complete selected closure and execute
    original module/probe/open/close/remove, option/EEPROM/reset/PHY code,
    watchdog link work and IRQ/NAPI setup. Verify error unwind and resource
@@ -799,8 +875,8 @@ symbols or native DD/IRQ success alone are not sufficient. Keep native scaffold
 cases separate and retain exact KTAP/pcap validation, one ISO, fw_cfg selectors,
 and sequential low-memory regression runs.
 
-Phase 1 is complete as **compile progress only**. The next implementation item
-is **phase 2: real execution/object/deferred services**, not a claim that the
+Phases 1-3 are complete as compile/provider and synthetic-service progress.
+The next item is **phase 4: original probe/open/close**, not a claim that the
 driver runs. Integration with a native network
 stack and extraction for a second Linux driver follow this roadmap; they do not
 replace its driver-execution gates.

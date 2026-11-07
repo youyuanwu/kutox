@@ -199,3 +199,32 @@ extern "C" fn kutox_linux_irq_pending() -> i32 {
 pub fn quiescent() -> bool {
     BINDING.lock_save_irq().is_none()
 }
+
+pub fn handler_running() -> bool {
+    BINDING
+        .lock_save_irq()
+        .as_ref()
+        .is_some_and(|binding| binding.running)
+}
+pub fn gate() -> Result<(), Failure> {
+    let registration = *BINDING.lock_save_irq();
+    if let Some(registration) = registration {
+        if registration.running {
+            return Err(Failure::new("driver_gate_irq_running", -16));
+        }
+
+        external::set_bound_mask(registration.token, true)?;
+        if registration.handler.is_some() {
+            external::synchronize_bound(registration.token)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn resume() -> Result<(), Failure> {
+    let registration = *BINDING.lock_save_irq();
+    if let Some(registration) = registration.filter(|registration| registration.handler.is_some()) {
+        external::set_bound_mask(registration.token, false)?;
+    }
+    Ok(())
+}

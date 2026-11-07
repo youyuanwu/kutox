@@ -226,7 +226,7 @@ void *dma_alloc_coherent(struct device *device, size_t size, dma_addr_t *handle,
     uintptr_t cpu = 0;
     u64 address = 0;
     int result = kutox_linux_dma_alloc(key(device), size, flags, &cpu, &address);
-    if (result == -126 || result == -127)
+    if (result == -126 || result == -127 || result == -12 || result == -5)
         return NULL;
     checked(result, "dma_alloc_coherent");
     *handle = address;

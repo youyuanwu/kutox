@@ -1,7 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef KUTOX_DRIVER_CHECK_PROFILE_H
 #define KUTOX_DRIVER_CHECK_PROFILE_H
+#ifndef KUTOX_DRIVER_SERVICE_RUNTIME
 #include "marker.h"
+#endif
 #define CONFIG_E1000 1
 #define __KERNEL__ 1
 #define CONFIG_PCI 1

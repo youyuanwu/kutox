@@ -3,13 +3,13 @@
     {
       "name": "memory-strings", "phase": 3, "contexts": ["thread", "worker", "napi", "irq"],
       "contract": "Bounded memory/string operations on caller-owned live ranges; no allocation, hidden libc, or sleep.",
-      "policy": "required", "test": "planned: linux.driver_memory",
+      "policy": "required", "test": "linux.driver_allocation and linux.driver_packets",
       "symbols": ["memcpy", "memset", "strcpy", "strscpy"]
     },
     {
       "name": "allocation", "phase": 3, "contexts": ["thread", "worker", "napi"],
       "contract": "Checked size/alignment and GFP behavior, zeroing where requested, NULL on exhaustion, exact object lifetime and no free while mapped.",
-      "policy": "required", "test": "planned: linux.driver_allocation",
+      "policy": "required", "test": "linux.driver_allocation (pressure, overflow, GFP and rollback)",
       "symbols": ["kcalloc", "kfree", "kmalloc", "kmalloc_array", "kzalloc", "vfree", "vzalloc"]
     },
     {
@@ -81,13 +81,13 @@
     {
       "name": "pci-binding-resources", "phase": 3, "contexts": ["thread", "worker"],
       "contract": "Original registration/probe/remove order, owned regions/config state and stable device/private association; enabling master before ioremap must be supported.",
-      "policy": "required", "test": "planned: linux.driver_pci",
+      "policy": "required", "test": "linux.driver_allocation and linux.driver_failed_open (synthetic PCI ordering)",
       "symbols": ["pci_register_driver", "pci_unregister_driver", "pci_enable_device", "pci_enable_device_mem", "pci_disable_device", "pci_select_bars", "pci_request_selected_regions", "pci_release_selected_regions", "pci_set_master", "pci_save_state", "pci_set_drvdata", "pci_get_drvdata", "pci_name", "pci_resource_len", "pci_resource_flags", "pci_resource_start", "pci_read_config_word", "device_set_wakeup_enable", "pci_channel_offline"]
     },
     {
       "name": "alternate-pci-quirks", "phase": 3, "contexts": ["thread"],
       "contract": "MWI/PCI-X paths retained by source; audit reachability for 82540EM and enforce alternate-device rejection, not fabricated config values.",
-      "policy": "alternate-hardware", "test": "planned: linux.driver_pci_profile",
+      "policy": "alternate-hardware", "test": "linux.driver_allocation (MWI readback failure); alternate PCI-X rejected",
       "symbols": ["pci_set_mwi", "pci_clear_mwi", "pcix_get_mmrbc", "pcix_set_mmrbc"]
     },
     {
@@ -99,7 +99,7 @@
     {
       "name": "owned-mmio", "phase": 3, "contexts": ["thread", "worker", "napi", "irq"],
       "contract": "Map/unmap only in lifecycle context; volatile accesses authorized by live owned range and context, with posted-write ordering and no stolen ICR read.",
-      "policy": "required", "test": "planned: linux.driver_mmio",
+      "policy": "required", "test": "linux.driver_streaming_dma and linux.driver_failed_open",
       "symbols": ["readl", "writel", "ioremap", "iounmap", "pci_ioremap_bar"]
     },
     {
@@ -111,13 +111,13 @@
     {
       "name": "coherent-rings", "phase": 3, "contexts": ["thread"],
       "contract": "Whole backing range mask/alignment/zeroing, raw protocol-shared descriptor memory, and exact coherent-free after relevant engine/callback quiescence.",
-      "policy": "required", "test": "planned: linux.driver_coherent_dma",
+      "policy": "required", "test": "linux.driver_streaming_dma (coherent exclusion and failure output)",
       "symbols": ["dma_set_mask_and_coherent", "dma_alloc_coherent", "dma_free_coherent"]
     },
     {
       "name": "streaming-linear", "phase": 3, "contexts": ["thread", "napi"],
       "contract": "Device/direction/range-bound pins, mapping-error propagation, CPU/device sync and exact unmap after per-region completion or safe aborted submission.",
-      "policy": "required", "test": "planned: linux.driver_streaming_dma",
+      "policy": "required", "test": "linux.driver_streaming_dma and linux.driver_capacity",
       "symbols": ["dma_map_single", "dma_mapping_error", "dma_unmap_single", "dma_sync_single_for_cpu", "dma_sync_single_for_device"]
     },
     {
@@ -129,31 +129,31 @@
     {
       "name": "net-device-lifecycle", "phase": 3, "contexts": ["thread", "worker", "napi"],
       "contract": "Owned netdev/private backing, registered original ops, feature/link/running state, stable address iterators and exact unregister/free.",
-      "policy": "required", "test": "planned: linux.driver_netdev",
+      "policy": "required", "test": "linux.driver_packets (synthetic ops/lifecycle)",
       "symbols": ["alloc_etherdev", "free_netdev", "register_netdev", "unregister_netdev", "netdev_priv", "set_netdev_dev", "netif_carrier_off", "netif_carrier_on", "netif_carrier_ok", "netif_running", "netif_device_attach", "netif_device_detach", "netdev_addr_next", "netdev_mc_first", "netdev_uc_first", "netdev_uc_count"]
     },
     {
       "name": "queue-ownership", "phase": 3, "contexts": ["thread", "worker", "napi"],
       "contract": "Real stop/wake/BUSY state and TX byte/packet accounting; original cleanup drives completion, not skb free or a native descriptor loop alone.",
-      "policy": "required", "test": "planned: linux.driver_tx_queue",
+      "policy": "required", "test": "linux.driver_packets (BUSY and queue accounting)",
       "symbols": ["netdev_sent_queue", "netdev_completed_queue", "netdev_reset_queue", "netdev_get_tx_queue", "netdev_xmit_more", "netif_xmit_stopped", "netif_queue_stopped", "netif_start_queue", "netif_stop_queue", "netif_wake_queue", "netif_tx_disable"]
     },
     {
       "name": "linear-skb", "phase": 3, "contexts": ["thread", "napi"],
       "contract": "Live head/data/tail/length/shared-info ownership, checked padding/trimming, allocation failure and exactly-once consumption; metadata helpers inspect actual values.",
-      "policy": "required", "test": "planned: linux.driver_skb",
+      "policy": "required", "test": "linux.driver_packets (linear padding, ownership and metadata)",
       "symbols": ["alloc_skb", "skb_headlen", "skb_shinfo", "skb_is_gso", "skb_put", "skb_put_data", "skb_reserve", "skb_tail_pointer", "skb_trim", "eth_skb_pad", "skb_tx_timestamp", "skb_checksum_none_assert", "dev_kfree_skb", "dev_kfree_skb_any", "napi_consume_skb", "vlan_get_protocol", "skb_vlan_tag_get", "skb_vlan_tag_present"]
     },
     {
       "name": "rx-fragment-handoff", "phase": 3, "contexts": ["thread", "napi"],
       "contract": "RX fragment backing is required even for linear profile; retain mappings/backing through copybreak or build-skb handoff and replenish without double free.",
-      "policy": "required", "test": "planned: linux.driver_rx_buffers",
+      "policy": "required", "test": "linux.driver_packets and linux.driver_capacity",
       "symbols": ["netdev_alloc_frag", "skb_free_frag", "napi_alloc_skb", "napi_build_skb", "napi_free_frags"]
     },
     {
       "name": "ethernet-ingress", "phase": 3, "contexts": ["thread", "napi"],
       "contract": "Real address validation/copy, L2 header/protocol/FCS handling and owned native ingress transfer; no claim of full IP/GRO stack.",
-      "policy": "required", "test": "planned: linux.driver_ingress",
+      "policy": "required", "test": "linux.driver_packets (exact copybreak/build-skb ingress)",
       "symbols": ["eth_hw_addr_set", "eth_type_trans", "eth_validate_addr", "is_broadcast_ether_addr", "is_multicast_ether_addr", "is_valid_ether_addr", "napi_gro_receive"]
     },
     {

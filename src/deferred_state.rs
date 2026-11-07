@@ -136,6 +136,17 @@ impl<const N: usize> Registry<N> {
     }
 
     pub fn unregister(&mut self, key: Key, address: usize) -> Result<(), Error> {
+        self.can_unregister(key, address)?;
+        let index = self
+            .slots
+            .iter()
+            .position(|slot| slot.is_some_and(|slot| slot.key == key))
+            .ok_or(Error::Stale)?;
+        self.slots[index] = None;
+        Ok(())
+    }
+
+    pub fn can_unregister(&self, key: Key, address: usize) -> Result<(), Error> {
         let slot = self.slot(key, address)?;
         if slot.running
             || slot.pending.is_some()
@@ -145,12 +156,6 @@ impl<const N: usize> Registry<N> {
         {
             return Err(Error::Busy);
         }
-        let index = self
-            .slots
-            .iter()
-            .position(|slot| slot.is_some_and(|slot| slot.key == key))
-            .ok_or(Error::Stale)?;
-        self.slots[index] = None;
         Ok(())
     }
 
@@ -344,6 +349,16 @@ impl<const N: usize> Registry<N> {
     pub fn is_empty(&self) -> bool {
         self.slots.iter().all(Option::is_none)
     }
+
+    pub fn callbacks_drained(&self) -> bool {
+        self.slots.iter().flatten().all(|slot| {
+            !slot.running
+                && slot.pending.is_none()
+                && !slot.enabled
+                && !slot.scheduled
+                && !slot.cancelling
+        })
+    }
 }
 
 pub fn time_after(a: u64, b: u64) -> bool {
@@ -372,7 +387,9 @@ mod tests {
     fn work_deadline_dedup_requeue_cancel() {
         let mut registry = Registry::<2>::new();
         let key = registry.register(1, Kind::Work).unwrap();
+        assert!(registry.callbacks_drained());
         assert!(registry.enqueue(key, 1, 20).unwrap());
+        assert!(!registry.callbacks_drained());
         assert!(!registry.enqueue(key, 1, 0).unwrap());
         assert_eq!(registry.take(Kind::Work, 19), None);
         let invocation = registry.take(Kind::Work, 20).unwrap();
@@ -383,6 +400,7 @@ mod tests {
         assert_eq!(registry.unregister(key, 1), Err(Error::Busy));
         registry.finish(invocation, 0, 0).unwrap();
         registry.cancel_finish(key, 1).unwrap();
+        assert!(registry.callbacks_drained());
         assert_eq!(registry.take(Kind::Work, u64::MAX), None);
         registry.unregister(key, 1).unwrap();
         assert!(registry.is_empty());
@@ -432,6 +450,7 @@ mod tests {
         let mut registry = Registry::<1>::new();
         let key = registry.register(1, Kind::Napi).unwrap();
         registry.enable(key, 1).unwrap();
+        assert!(!registry.callbacks_drained());
         registry.prepare(key, 1).unwrap();
         registry.schedule_napi(key, 1).unwrap();
         let invocation = registry.take(Kind::Napi, 0).unwrap();
@@ -441,6 +460,7 @@ mod tests {
         assert!(!registry.prepare(key, 1).unwrap());
         registry.finish(invocation, 64, 64).unwrap();
         registry.disable_finish(key, 1).unwrap();
+        assert!(registry.callbacks_drained());
         assert_eq!(registry.take(Kind::Napi, 0), None);
         registry.unregister(key, 1).unwrap();
     }

@@ -85,4 +85,42 @@ fn main() {
         build.flag(flag);
     }
     build.compile("linux_e1000");
+    let source_include = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("source-include");
+    let extra = fs::read_to_string("compat/driver-check/headers.txt").expect("source header list");
+    for header in headers.lines().chain(extra.lines()) {
+        let path = source_include.join(header);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "#include <driver_services.h>\n").unwrap();
+    }
+    for (header, target) in [
+        ("asm/sockios.h", "asm-generic/sockios.h"),
+        ("asm/types.h", "asm-generic/types.h"),
+        ("linux/in6.h", "linux/in6.h"),
+        ("linux/if_ether.h", "linux/if_ether.h"),
+    ] {
+        let path = source_include.join(header);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, format!("#include <uapi/{target}>\n")).unwrap();
+    }
+    // These providers/tests use source-facing types; original packet units stay
+    // in the isolated compile check until the lifecycle integration milestone.
+    let mut source = cc::Build::new();
+    source
+        .compiler("clang")
+        .include(&source_include)
+        .include("compat")
+        .include("linux/include")
+        .include("linux/include/uapi")
+        .include("linux/arch/x86/include/uapi")
+        .file("compat/driver_memory.c")
+        .file("compat/driver_pci.c")
+        .file("compat/driver_packet.c")
+        .file("compat/driver_optional.c")
+        .file("compat/driver_services_test.c")
+        .warnings_into_errors(true);
+    for flag in flags.lines() {
+        source.flag(flag);
+    }
+    source.flag("-Wno-pointer-sign").flag("-Wno-sign-compare");
+    source.compile("linux_driver_services");
 }

@@ -48,6 +48,25 @@ impl Device {
         io::write16(0xcfc, value);
     }
 
+    pub fn read_word(self, offset: u8) -> Result<u16, Failure> {
+        if offset & 1 != 0 {
+            return Err(Failure::new("pci_word_offset", -22));
+        }
+        Ok((self.read(offset) >> ((offset & 2) * 8)) as u16)
+    }
+
+    pub fn set_command(self, command: u16) -> Result<(), Failure> {
+        self.command(command);
+        if self.read(4) as u16 != command {
+            return Err(Failure::new("pci_command_readback", -1));
+        }
+        Ok(())
+    }
+
+    pub fn location(self) -> (u8, u8) {
+        (self.slot, self.function)
+    }
+
     pub fn enable_mmio(self) -> Result<Bar, Failure> {
         let raw = self.read(0x10);
         if raw & 0xf != 0 || raw & !0xf == 0 {

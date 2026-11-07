@@ -45,6 +45,9 @@ fn device(state: &State, key: usize) -> Result<&Device<'static, 'static>, Error>
 
 #[unsafe(no_mangle)]
 extern "C" fn kutox_linux_dma_mask(key: usize, mask: u64) -> i32 {
+    if crate::driver_platform::check_device(key).is_ok() {
+        return crate::driver_platform::kutox_driver_pci(8, mask, 0);
+    }
     with_registry(|state| device(state, key)?.set_mask(mask))
         .map(|()| 0)
         .unwrap_or_else(|err| error("mask", err))
@@ -74,6 +77,25 @@ unsafe extern "C" fn kutox_linux_dma_alloc(
     cpu: *mut usize,
     address: *mut u64,
 ) -> i32 {
+    if crate::driver_platform::check_device(key).is_ok() {
+        if cpu.is_null() || address.is_null() {
+            return -22;
+        }
+        let result = crate::driver_memory::coherent_allocate(size, flags);
+        return match result {
+            Ok((pointer, dma)) => {
+                unsafe {
+                    cpu.write(pointer);
+                    address.write(dma);
+                }
+                0
+            }
+            Err(code) => {
+                serial::print(format_args!("# driver coherent_alloc code={code}\n"));
+                code
+            }
+        };
+    }
     let result = with_registry(|state| {
         if flags != 0 || cpu.is_null() || address.is_null() {
             return Err(dma_state::Error::Layout.into());
@@ -116,6 +138,15 @@ fn find(state: &mut State, key: usize, cpu: usize) -> Result<usize, Error> {
 
 #[unsafe(no_mangle)]
 extern "C" fn kutox_linux_dma_free(key: usize, size: usize, cpu: usize, address: u64) -> i32 {
+    if crate::driver_platform::check_device(key).is_ok() {
+        return crate::driver_memory::coherent_free(cpu, size, address).map_or_else(
+            |code| {
+                serial::print(format_args!("# driver coherent_free code={code}\n"));
+                code
+            },
+            |_| 0,
+        );
+    }
     with_registry(|state| {
         let index = find(state, key, cpu)?;
         let buffer = state.buffers[index]

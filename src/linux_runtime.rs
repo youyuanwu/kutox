@@ -486,6 +486,48 @@ pub fn quiescent() -> bool {
     })
 }
 
+pub fn can_retire_range(base: usize, size: usize) -> Result<(), i32> {
+    let end = base.checked_add(size).ok_or(INVALID)?;
+    for slot in &MUTEXES {
+        let key = slot.key.load(Ordering::Acquire);
+        if key < base || key >= end {
+            continue;
+        }
+        if slot.object.snapshot() != MutexState::new() || unsafe { (&*slot.guard.get()).is_some() }
+        {
+            return Err(BUSY);
+        }
+    }
+    for slot in &COMPLETIONS {
+        let key = slot.key.load(Ordering::Acquire);
+        if key < base || key >= end {
+            continue;
+        }
+        if slot.object.snapshot() != CompletionState::new() {
+            return Err(BUSY);
+        }
+    }
+    Ok(())
+}
+
+pub fn retire_range(base: usize, size: usize) -> Result<(), i32> {
+    can_retire_range(base, size)?;
+    let end = base.checked_add(size).ok_or(INVALID)?;
+    for slot in &MUTEXES {
+        let key = slot.key.load(Ordering::Acquire);
+        if key >= base && key < end {
+            slot.key.store(0, Ordering::Release);
+        }
+    }
+    for slot in &COMPLETIONS {
+        let key = slot.key.load(Ordering::Acquire);
+        if key >= base && key < end {
+            slot.key.store(0, Ordering::Release);
+        }
+    }
+    Ok(())
+}
+
 unsafe extern "C" {
     fn kutox_c_execution_init();
     fn kutox_c_execution_worker(role: usize);

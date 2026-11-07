@@ -13,6 +13,7 @@ static bool deny_eeprom_grant;
 static u32 denied_grants;
 static u32 eeprom_reads;
 static bool probe_active;
+extern bool kutox_driver_mmio(uintptr_t, u32, bool);
 
 _Static_assert(sizeof(struct e1000_tx_desc) == 16, "TX descriptor size");
 _Static_assert(offsetof(struct e1000_tx_desc, upper) == 12, "TX status offset");
@@ -34,21 +35,22 @@ int kutox_e1000_tx_descriptor(void *ring, size_t ring_bytes,
     return 0;
 }
 
-static void check_address(const volatile void *address)
+static void check_address(const volatile void *address, u32 value, bool writing)
 {
-    uintptr_t value = (uintptr_t)address;
-    if (!probe_active || value < mmio_base || value - mmio_base > mmio_length - 4 ||
-        (value & 3))
+    uintptr_t pointer = (uintptr_t)address;
+    if (!probe_active && kutox_driver_mmio(pointer, value, writing)) return;
+    if (!probe_active || pointer < mmio_base || pointer - mmio_base > mmio_length - 4 ||
+        (pointer & 3))
         kutox_platform_fail("mmio_bounds");
 }
 
 u32 readl(const volatile void *address)
 {
-    check_address(address);
+    check_address(address, 0, false);
     __asm__ volatile ("" ::: "memory");
     u32 value = *(const volatile u32 *)address;
     __asm__ volatile ("lfence" ::: "memory");
-    if ((uintptr_t)address == mmio_base + E1000_EECD) {
+    if (probe_active && (uintptr_t)address == mmio_base + E1000_EECD) {
         eeprom_reads++;
         if (deny_eeprom_grant) {
             value &= ~E1000_EECD_GNT;
@@ -60,7 +62,7 @@ u32 readl(const volatile void *address)
 
 void writel(u32 value, volatile void *address)
 {
-    check_address(address);
+    check_address(address, value, true);
     __asm__ volatile ("" ::: "memory");
     *(volatile u32 *)address = value;
     __asm__ volatile ("" ::: "memory");

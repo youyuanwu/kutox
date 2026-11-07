@@ -77,12 +77,16 @@ the full Linux network driver is not linked. See the
 An isolated compile-only target now compiles unchanged `e1000_main.c` with its
 hardware, parameter and ethtool units. It records original registration/callbacks,
 parameter arrays, layouts, headers and **209 unresolved runtime dependencies**.
-These declaration-only objects are explicitly rejected by the runtime linker.
+These objects are explicitly rejected by the runtime linker. A second
+source-plus-services relocatable closure now checks every driver API has a
+C provider or an explicitly listed Rust primitive; its remaining 48 platform
+symbols are recorded, not hidden by success stubs.
 This is not a running Linux packet driver.
 
 The [driver-reuse roadmap](docs/rust-kernel-linux-drivers.md#linux-e1000-driver-reuse-roadmap)
-now has tested execution/object, workqueue and NAPI/IRQ services. Next are
-PCI/skb/streaming-DMA lifetimes. Linux must own probe/open, packet submission
+now has tested execution/object, workqueue, NAPI/IRQ and PCI/skb/streaming-DMA
+services. Next is executing the original module/probe/open/close lifecycle.
+Linux must own probe/open, packet submission
 and cleanup; Rust supplies OS services. Native RX is not the next milestone.
 
 ## Requirements
@@ -205,7 +209,7 @@ hardware-configuration cases still use separate boots of the same ISO.
 
 ```text
 KTAP version 1
-1..46
+1..51
 ok 1 cpu.irq_lock_restore
 ok 2 cpu.breakpoint_return
 ok 3 memory.alignment_reservations
@@ -253,7 +257,12 @@ ok 43 linux.driver_work
 ok 44 linux.driver_napi
 ok 45 linux.driver_irq
 ok 46 linux.driver_worker_rollback
-# Totals: pass:46 fail:0 skip:0 total:46
+ok 47 linux.driver_allocation
+ok 48 linux.driver_streaming_dma
+ok 49 linux.driver_packets
+ok 50 linux.driver_capacity
+ok 51 linux.driver_failed_open
+# Totals: pass:51 fail:0 skip:0 total:51
 ```
 
 Tests run sequentially with interrupts disabled at case boundaries. After
@@ -289,7 +298,7 @@ intentional-failure acceptance check. QEMU's backend `queue=rx` captures the NIC
 TX direction, excluding traffic sent toward the guest.
 
 The intentional-failure mode reports a failing `harness.intentional_failure`
-before the forty-six normal cases and exits with guest failure. This command
+before the fifty-one normal cases and exits with guest failure. This command
 **must return nonzero**:
 
 ```sh
@@ -495,7 +504,8 @@ disabled for deliberately unsupported hardware entry points.
   Buffers publish before bus mastering/TX enablement and the ordered tail
   doorbell; a real TXDW handler acknowledges ICR and signals a waiting thread.
   DD is read volatile without a CPU slice and descriptor errors fail acceptance.
-  RX, offloads, streaming DMA, packet queues and a network stack remain absent.
+  Actual Linux RX/TX and a network stack remain absent. Separate synthetic
+  services now provide standard streaming DMA and linear packet ownership.
 - TX teardown flushes a disabled engine, allows the Linux-style 10 ms drain,
   requires an empty hardware ring and disabled RX, clears/readbacks bus mastering,
   masks/drains/retires its IRQ, then obtains a DMA quiescence witness and restores
@@ -719,7 +729,9 @@ disabled for deliberately unsupported hardware entry points.
   preserve their normal contracts. Infallible `Box`/`Vec` OOM reaches Rust's
   default allocation-failure panic and the allocation-free serial panic handler.
   The lock order is heap then frame allocator. Per-CPU caches, allocations from
-  NMI/machine-check handlers, Linux `kmalloc`, and general DMA support are absent.
+  NMI/machine-check handlers and general hardware/IOMMU DMA support are absent.
+  Source-facing allocation uses owned buddy pages with exact provenance and
+  actual selected GFP values; it is a separate, bounded driver-service registry.
 - Limine supplies the memory map. Only `USABLE` RAM enters the allocation
   pool; all other types, including unknown and bootloader-reclaimable entries,
   remain reserved. Low memory, the kernel image, and the active root page table
@@ -738,8 +750,9 @@ disabled for deliberately unsupported hardware entry points.
 - [The compatibility header](compat/kutox_compat.h) supplies the limited types,
   macros, and platform interfaces needed to compile the upstream translation
   unit. Execution types are shared with the source check and synthetic tests;
-  remaining networking/allocation/DMA declarations are **not** functioning
-  full-driver subsystems or a compatible Linux binary ABI.
+  separately compiled [source services](compat/driver_services.h) implement
+  the selected PCI/allocation/linear-packet/DMA contracts. This is not a
+  compatible Linux binary ABI or proof of original driver execution.
 - [The build script](build.rs) generates forwarding headers from an explicit
   allowlist and compiles the original `e1000_hw.c` with its original driver
   headers. Unused sections are discarded by the kernel linker.
@@ -748,12 +761,42 @@ disabled for deliberately unsupported hardware entry points.
   Its boot `cond_resched()` remains a no-op. The C thread execution subset is
   separate: it does not authorize this boot-only MMIO/probe path in threads or
   authorize the full e1000 driver runtime. Separately tested services supply
-  deferred work/NAPI and C IRQ lifetimes, but not full-driver PCI/packet/DMA.
+  deferred work/NAPI, C IRQ and source-facing PCI/packet/DMA lifetimes.
 - MMIO accesses preserve ordering and upstream posted-write flushes. Other
   hardware paths that would require unsupported platform operations trap
   explicitly; they never return fabricated success.
-- PCI bus mastering stays disabled during the probe. The mapping is removed
-  and the original PCI command restored before the terminal result.
+- PCI bus mastering stays disabled during the boot-MAC probe. Its mapping is
+  removed and the original PCI command restored before the terminal result.
+
+### Source-facing driver memory and packet services
+
+[The driver memory backend](src/driver_memory.rs) retains exclusive buddy-page
+allocation guards in a 2048-entry provenance registry. Streaming DMA has 1024
+range/direction/device-bound slots; allocations remain pinned through map,
+partial CPU sync and exact unmap. Standard unmap trusts the unchanged driver's
+completion or unpublished-abort contract, rather than guessing completion or
+requiring custom publish/reclaim calls. Normal TX unmap does not stop RX.
+
+[The platform owner](src/driver_platform.rs) binds PCI, validated identity-DMA
+RAM and an owned MMIO mapping before upstream-style master/map/mask ordering.
+The boot-MAC MMIO window remains separate. A QEMU-only gate disables/flushed
+RX/TX, masks/drains the IRQ route with backing live, and checks disabled engines.
+It runs before returning failed IRQ registration and before source reset.
+Later QEMU receive callbacks reject disabled RX; CTRL.RST and the grace delay
+are not independent quiescence witnesses. This is not physical-hardware support.
+
+[C packet services](compat/driver_packet.c) own netdev/private objects, queue/
+carrier/feature state, linear skb backing, RX fragments and build-skb handoff.
+Native ingress is an owned bounded eight-packet FIFO, not an IP/GRO stack.
+Freeing private backing retires idle embedded synchronization/work registrations;
+pending/running users prevent reclamation. Offload/fragment/PM controls remain
+explicitly outside the initial profile.
+
+Five synthetic C cases validate real exhaustion/recovery and fault injection,
+probe ordering, exact map/sync/unmap/free checks, coherent free exclusion,
+padding/BUSY ownership, copybreak/build-skb ingress, failed-open gating and
+256 RX plus 256 TX mappings together at 32 MiB. No original Linux
+probe/open/IRQ/NAPI/packet callback executes in these cases.
 
 The build and provenance test require Linux `v7.3.1`, commit
 `79a907609d53d5cd645b42c11550d295d43abf99`, with no submodule modifications.

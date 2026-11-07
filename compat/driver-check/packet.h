@@ -11,6 +11,12 @@ struct sk_buff {
     u16 csum_offset;
     u8 ip_summed, no_fcs;
     __be16 protocol;
+    unsigned char *head, *tail, *end;
+    unsigned int mac_header, network_header, transport_header;
+    struct net_device *device;
+    u8 backing_kind, vlan_present;
+    u16 vlan_tci;
+    unsigned int references;
 };
 struct page { unsigned long state; };
 typedef struct { struct page *page; unsigned int offset, size; } skb_frag_t;
@@ -50,6 +56,12 @@ struct net_device {
     const struct net_device_ops *netdev_ops;
     const struct ethtool_ops *ethtool_ops;
     struct net_device_stats stats;
+    struct device *parent;
+    void *private_data;
+    size_t private_size;
+    unsigned int lifecycle;
+    bool registered, running, carrier, stopped, detached;
+    unsigned long sent_packets, sent_bytes, completed_packets, completed_bytes;
 };
 #define IFF_SUPP_NOFCS BIT(14)
 #define IFF_UNICAST_FLT BIT(12)

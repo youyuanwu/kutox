@@ -118,3 +118,14 @@ bool kutox_c_deferred_empty(void)
         if (napi_bindings[slot] || queue_bindings[slot][0] || queue_bindings[slot][1]) return false;
     return true;
 }
+
+void kutox_c_retire_napi_device(struct net_device *device)
+{
+    for (size_t slot = 0; slot < ARRAY_SIZE(napi_bindings); slot++) {
+        if (!napi_bindings[slot] || napi_bindings[slot]->device != device) continue;
+        struct napi_struct *napi = napi_bindings[slot];
+        queue_bindings[slot][0] = NULL;
+        queue_bindings[slot][1] = NULL;
+        netif_napi_del(napi);
+    }
+}

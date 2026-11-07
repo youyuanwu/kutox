@@ -5,6 +5,8 @@ extern int kutox_linux_context(void);
 extern void kutox_linux_sleep_range(u64, u64);
 extern int kutox_linux_request_irq(unsigned int, irq_handler_t, u64, uintptr_t);
 extern int kutox_linux_irq(unsigned int, uintptr_t, unsigned int);
+extern uintptr_t kutox_driver_device(void);
+extern void kutox_driver_gate(void);
 
 static void address(const void *pointer, size_t width)
 {
@@ -96,8 +98,9 @@ void spin_unlock(spinlock_t *lock) { kutox_spin_unlock_irqrestore(lock, 0); }
 
 int request_irq(unsigned int irq, irq_handler_t handler, unsigned long flags, const char *name, void *device)
 {
-    if (!name) return -22;
-    return kutox_linux_request_irq(irq, handler, flags, (uintptr_t)device);
+    int result = !name ? -22 : kutox_linux_request_irq(irq, handler, flags, (uintptr_t)device);
+    if (result < 0 && kutox_driver_device()) kutox_driver_gate();
+    return result;
 }
 void synchronize_irq(unsigned int irq)
 {
