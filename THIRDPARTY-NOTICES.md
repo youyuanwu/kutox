@@ -225,3 +225,10 @@ is architectural prior art, not an imported GIC implementation. QEMU's
 were verified as platform documentation; no QEMU implementation source is copied.
 The selected Linux hardware translation unit remains unchanged, and the new
 native IRQ proof does not claim Linux driver-IRQ API compatibility.
+
+The native DMA layout/ownership policy, frame-guard-backed coherent buffers,
+registered-device C adapter, and acceptance tests are kutox code. They reuse
+the existing adapted Moss frame allocator and IRQ lock without copying a Moss
+or Linux DMA implementation. The selected upstream e1000 source remains
+unchanged. Coherent allocation/mask/barrier API names do not imply a Linux
+binary device ABI, streaming DMA, IOMMU translation, or real packet-DMA acceptance.

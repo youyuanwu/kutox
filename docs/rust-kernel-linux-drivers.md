@@ -110,6 +110,45 @@ demultiplexing, PCI bridges, ACPI `_PRT` evaluation, MSI/MSI-X, SMP, IOMMU and
 physical-hardware acceptance remain unsupported. This native interrupt proof
 does not execute another upstream Linux driver unit or provide `request_irq`.
 
+### Coherent DMA foundations
+
+Native coherent buffers retain the existing Moss contiguous frame guard, not a
+second physical allocator. A device domain binds the validated QEMU `pc` profile,
+WB HHDM offset, RAM extent, and actual e1000 identity; advertised DMAR/IVRS IOMMUs
+are rejected. Device addresses are a distinct type carrying identity physical
+addresses, never CPU virtual pointers. This is not a general DMA translation HAL.
+Sizes are 1 byte through 4 MiB, with power-of-two alignment through 4 MiB.
+The full rounded backing block is mask/RAM/alignment checked and zero initialized.
+Only 32/64-bit masks are supported; changing a mask with live buffers fails.
+
+Buffers start CPU-owned. Publication changes ownership and applies a compiler
+release fence; CPU slices and release then reject the device-owned state.
+Reclamation applies an acquire fence and requires a domain/epoch-bound witness
+from an unsafe caller that has actually stopped/drained all DMA, descriptors,
+and IRQ paths. A cleared PCI bus-master bit is checked but is not itself proof.
+New publication invalidates older witnesses. Drop of an unreclaimed buffer is
+fatal, preserving its frame ownership rather than returning live DMA memory.
+These fences implement coherent x86 WB ordering, not noncoherent cache maintenance.
+Allocation/lifecycle operations require the existing quiescent boot or thread
+context, IF clear and zero held IRQ guards; IRQ/NMI allocation is unsupported.
+
+The C subset explicitly binds one static opaque device and eight buffer slots.
+It exposes coherent allocation/free, mask selection and DMA read/write barriers.
+Only the adapter's `GFP_KERNEL` tag is accepted. Allocation exhaustion/capacity
+returns null with a diagnostic and unchanged output handle; invalid free/void-API
+operations fail explicitly. Free validates the exact device, pointer, requested
+size, DMA address and ownership. Native publish/reclaim/device-destroy extensions
+provide the bounded lifecycle contract; C reclamation retains the same hardware
+quiescence obligation. Arbitrary Linux device structs, streaming maps/unmaps,
+IOMMU/bounce mappings and GFP flags are not supplied as success-shaped stubs.
+
+Portable tests exercise exact layout/mask/counter/epoch boundaries. Guest tests
+check CPU/device address separation, physical alignment, full-block zeroing,
+exhaustion/reuse, ownership and stale witnesses, C output/free/lifecycle/context
+contracts, and exact resource recovery. Bus mastering stays disabled throughout;
+this milestone does not verify DMA performed by a device or send a packet.
+One real e1000 packet transfer remains the next separate proof.
+
 ### Other native foundations
 
 The buddy port preserves all bootstrap reservations, uses sparse metadata for
@@ -125,8 +164,7 @@ without per-CPU caches. `GlobalAlloc` enables `Box` and `Vec`, with tested
 alignment, zeroing, reallocation, exhaustion/recovery, and frame accounting.
 Fallible OOM returns null; infallible allocation failure reaches Rust's normal
 allocation-failure panic, tested in a separate guest. Locks are acquired heap
-then frame allocator, never in the opposite order. This is not Linux `kmalloc`,
-DMA allocation, or a complete driver execution environment.
+then frame allocator, never in the opposite order. This is not Linux `kmalloc` or a complete driver execution environment.
 
 Cooperative kernel threads now provide a first stackful execution foundation:
 a bounded eight-slot FIFO, owned 16 KiB guarded stacks, and native x86_64
@@ -274,7 +312,7 @@ stored credits, broadcast, no stack switching inside handlers, active-thread
 preservation, wake-before-registration, full-capacity FIFO/duplicate wakes,
 generation exhaustion, timeout/cancellation races, paused-owner rejection, and
 handler teardown/reuse.
-Broader external interrupt routing, DMA, general timer
+Broader external interrupt routing, actual packet/streaming DMA, general timer
 callbacks, broader Linux execution APIs, and preemption remain future work.
 
 Nonfatal CPU, frame, heap, and thread tests run through a stable-Rust registry in one

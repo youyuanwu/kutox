@@ -15,6 +15,10 @@ pub struct Device {
 }
 
 impl Device {
+    pub fn bus_mastering_disabled(self) -> bool {
+        self.read(4) & 4 == 0
+    }
+
     fn select(self, offset: u8) {
         io::write32(
             0xcf8,

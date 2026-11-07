@@ -212,6 +212,15 @@ pub(crate) fn check_signal_context() -> Result<bool, SwitchError> {
     }
 }
 
+pub(crate) fn check_boot_or_thread_context() -> Result<bool, SwitchError> {
+    switch_allowed()?;
+    if is_quiescent() {
+        return Ok(false);
+    }
+    check_thread_context()?;
+    Ok(true)
+}
+
 pub fn current_task_handle() -> Result<TaskHandle, SwitchError> {
     check_thread_context()?;
     Ok(active()?.handle)

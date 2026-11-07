@@ -12,6 +12,14 @@ extern u64 kutox_linux_spin_owner(void);
 extern void kutox_linux_irq_acquired(void);
 extern void kutox_linux_irq_released(u64 flags);
 extern void kutox_platform_fail(const char *operation) __attribute__((noreturn));
+extern int kutox_linux_dma_mask(uintptr_t key, u64 mask);
+extern int kutox_linux_dma_alloc(uintptr_t key, size_t size, unsigned int flags, uintptr_t *cpu, u64 *address);
+extern int kutox_linux_dma_free(uintptr_t key, size_t size, uintptr_t cpu, u64 address);
+extern int kutox_linux_dma_publish(uintptr_t key, uintptr_t cpu);
+extern int kutox_linux_dma_reclaim(uintptr_t key, uintptr_t cpu);
+extern int kutox_linux_dma_unregister(uintptr_t key);
+extern void kutox_linux_dma_wmb(void);
+extern void kutox_linux_dma_rmb(void);
 
 _Static_assert(sizeof(unsigned long) == sizeof(u64), "x86_64 timeout/flags ABI");
 
@@ -178,3 +186,33 @@ void kutox_destroy_completion(struct completion *object)
 
 void msleep(unsigned int msec) { kutox_linux_msleep(msec); }
 int cond_resched(void) { return kutox_linux_cond_resched(); }
+
+int dma_set_mask_and_coherent(struct device *device, u64 mask)
+{
+    return kutox_linux_dma_mask(key(device), mask);
+}
+
+void *dma_alloc_coherent(struct device *device, size_t size, dma_addr_t *handle, gfp_t flags)
+{
+    if (!handle)
+        kutox_platform_fail("dma_null_handle");
+    uintptr_t cpu = 0;
+    u64 address = 0;
+    int result = kutox_linux_dma_alloc(key(device), size, flags, &cpu, &address);
+    if (result == -126 || result == -127)
+        return NULL;
+    checked(result, "dma_alloc_coherent");
+    *handle = address;
+    return (void *)cpu;
+}
+
+void dma_free_coherent(struct device *device, size_t size, void *cpu, dma_addr_t handle)
+{
+    checked(kutox_linux_dma_free(key(device), size, key(cpu), handle), "dma_free_coherent");
+}
+
+void dma_wmb(void) { kutox_linux_dma_wmb(); }
+void dma_rmb(void) { kutox_linux_dma_rmb(); }
+int kutox_dma_publish(struct device *device, void *cpu) { return kutox_linux_dma_publish(key(device), key(cpu)); }
+int kutox_dma_reclaim(struct device *device, void *cpu) { return kutox_linux_dma_reclaim(key(device), key(cpu)); }
+int kutox_destroy_dma_device(struct device *device) { return kutox_linux_dma_unregister(key(device)); }

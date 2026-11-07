@@ -3,14 +3,15 @@ use crate::{
     boot::BootInfo,
     completion,
     cpu::{self, X86Cpu},
-    device_irq, exceptions, heap, io, irq, linux_runtime, memory, mutex, serial, threads,
+    device_irq, dma, exceptions, heap, io, irq, linux_dma, linux_runtime, memory, mutex, serial,
+    threads,
 };
 use kutox::fw_cfg::BootMode;
 use moss_libkernel::CpuOps;
 
 struct TestCase {
     name: &'static str,
-    run: fn(&BootInfo, &memory::PhysicalFrames<'static>) -> Result<(), Failure>,
+    run: fn(&BootInfo, &'static memory::PhysicalFrames<'static>) -> Result<(), Failure>,
 }
 
 static TESTS: &[TestCase] = &[
@@ -152,6 +153,18 @@ static TESTS: &[TestCase] = &[
         name: "irq.device_masking_cleanup",
         run: device_irq::masking_cleanup,
     },
+    TestCase {
+        name: "dma.coherent_allocation",
+        run: dma::tests::allocation,
+    },
+    TestCase {
+        name: "dma.ownership",
+        run: dma::tests::ownership,
+    },
+    TestCase {
+        name: "linux.coherent_dma",
+        run: linux_dma::test,
+    },
 ];
 
 static INTENTIONAL_FAILURE: TestCase = TestCase {
@@ -177,6 +190,7 @@ pub fn run(boot: &BootInfo) -> ! {
         || !mutex::tests::quiescent()
         || !linux_runtime::quiescent()
         || !device_irq::quiescent()
+        || !linux_dma::quiescent()
         || !memory::apic_window_unused(boot)
         || !memory::stack_window_unused(boot)
         || !memory::mmio_window_unused(boot)
@@ -242,6 +256,7 @@ pub fn run(boot: &BootInfo) -> ! {
             || !mutex::tests::quiescent()
             || !linux_runtime::quiescent()
             || !device_irq::quiescent()
+            || !linux_dma::quiescent()
             || !memory::apic_window_unused(boot)
             || !memory::stack_window_unused(boot)
             || !memory::mmio_window_unused(boot);

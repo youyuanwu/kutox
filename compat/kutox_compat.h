@@ -19,6 +19,9 @@ typedef u16 __le16;
 typedef u32 __le32;
 typedef u64 __le64;
 typedef u64 dma_addr_t;
+typedef unsigned int gfp_t;
+#define GFP_KERNEL ((gfp_t)0)
+#define DMA_BIT_MASK(bits) ((bits) == 64 ? ~0ULL : ((1ULL << (bits)) - 1))
 
 #define __iomem
 #define __packed __attribute__((packed))
@@ -46,6 +49,18 @@ struct net_device { const char *name; };
 struct pci_dev;
 struct sk_buff;
 struct page;
+
+/* Address-bound opaque device, explicitly registered by the native DMA backend. */
+struct device { u8 reserved; };
+int dma_set_mask_and_coherent(struct device *device, u64 mask);
+void *dma_alloc_coherent(struct device *device, size_t size, dma_addr_t *handle, gfp_t flags);
+void dma_free_coherent(struct device *device, size_t size, void *cpu, dma_addr_t handle);
+void dma_wmb(void);
+void dma_rmb(void);
+/* Native ownership extensions; reclaim requires all DMA/descriptor/IRQ paths stopped. */
+int kutox_dma_publish(struct device *device, void *cpu);
+int kutox_dma_reclaim(struct device *device, void *cpu);
+int kutox_destroy_dma_device(struct device *device);
 
 /* Static-lifetime address-bound native objects; copying a live object is invalid. */
 struct mutex { u8 boot_held; };

@@ -113,6 +113,7 @@ fn main() {
         .file("compat/bridge.c")
         .file("compat/runtime.c")
         .file("compat/execution_test.c")
+        .file("compat/dma_test.c")
         .flag("--target=x86_64-unknown-none")
         .flag("-std=gnu11")
         .flag("-ffreestanding")

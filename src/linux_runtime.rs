@@ -75,21 +75,7 @@ fn fatal(operation: &str, code: i32) -> ! {
 }
 
 fn context() -> Result<bool, i32> {
-    if exceptions::is_dispatching() {
-        return Err(threads::SwitchError::InterruptContext as i32);
-    }
-    if X86Cpu::irq_lock_depth() != 0 {
-        return Err(threads::SwitchError::LocksHeld as i32);
-    }
-    if cpu::interrupts_enabled() {
-        return Err(threads::SwitchError::InterruptsEnabled as i32);
-    }
-    if threads::is_quiescent() {
-        return Ok(false);
-    }
-    threads::check_thread_context()
-        .map(|()| true)
-        .map_err(|error| error as i32)
+    threads::check_boot_or_thread_context().map_err(|error| error as i32)
 }
 
 fn thread_context() -> Result<(), i32> {

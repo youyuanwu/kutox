@@ -45,6 +45,9 @@ KERNEL_TEST_NAMES = (
     "irq.platform_discovery",
     "irq.device_delivery",
     "irq.device_masking_cleanup",
+    "dma.coherent_allocation",
+    "dma.ownership",
+    "linux.coherent_dma",
 )
 KERNEL_SUITE_CASES = {
     "kernel-tests": "kernel-tests",

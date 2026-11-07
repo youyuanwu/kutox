@@ -43,6 +43,21 @@ fn table(
 }
 
 pub fn discover(boot: &BootInfo, frames: &memory::PhysicalFrames<'_>) -> Result<Topology, Failure> {
+    Ok(discover_inner(boot, frames)?.0)
+}
+
+pub fn dma_ram_limit(boot: &BootInfo, frames: &memory::PhysicalFrames<'_>) -> Result<u64, Failure> {
+    let (_, ram_limit, iommu) = discover_inner(boot, frames)?;
+    if iommu {
+        return Err(Failure::new("dma_iommu_unsupported", -1));
+    }
+    Ok(ram_limit)
+}
+
+fn discover_inner(
+    boot: &BootInfo,
+    frames: &memory::PhysicalFrames<'_>,
+) -> Result<(Topology, u64, bool), Failure> {
     if cpu::interrupts_enabled() || X86Cpu::irq_lock_depth() != 0 || exceptions::is_dispatching() {
         return Err(Failure::new("acpi_context", -1));
     }
@@ -74,8 +89,10 @@ pub fn discover(boot: &BootInfo, frames: &memory::PhysicalFrames<'_>) -> Result<
         irq_platform::root_entries(&table(boot, frames, root.address, ram_limit)?, root.xsdt)
             .map_err(failure)?;
     let mut topology = None;
+    let mut iommu = false;
     for &physical in &entries[..count] {
         let header = read(boot, frames, physical, 36, ram_limit)?;
+        iommu |= matches!(&header[..4], b"DMAR" | b"IVRS");
         if &header[..4] == b"APIC" {
             if topology.is_some() {
                 return Err(Failure::new("acpi_madt_duplicate", -1));
@@ -89,5 +106,7 @@ pub fn discover(boot: &BootInfo, frames: &memory::PhysicalFrames<'_>) -> Result<
             );
         }
     }
-    topology.ok_or(Failure::new("acpi_madt_missing", -1))
+    topology
+        .map(|topology| (topology, ram_limit, iommu))
+        .ok_or(Failure::new("acpi_madt_missing", -1))
 }

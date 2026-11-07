@@ -56,6 +56,12 @@ directly wakes a completion waiter without DMA. Local-APIC ownership is separate
 from the timer, so device delivery continues after the timer is dropped.
 The current route is single-CPU, single-source, and not a Linux `request_irq` API.
 
+Owned coherent DMA buffers now reuse Moss contiguous frame guards, with checked
+32/64-bit masks, size/alignment, distinct CPU/device addresses, zero initialization,
+and explicit CPU/device ownership. A bounded C adapter supplies coherent allocation,
+free, mask selection and ordering barriers. Tests keep bus mastering disabled;
+real DMA, streaming mappings and packet transfer are not yet verified.
+
 This is hardware-helper reuse, not a complete Linux driver port or LinuxKPI
 implementation. There is no packet data path yet. See the
 [milestone design](docs/linux-e1000-mac.md) for its scope and acceptance goals.
@@ -126,7 +132,7 @@ initialization or device access. Guest logs report the selected mode and whether
 it came from `fw_cfg` or the default. The former Limine `test=...` command-line
 selection and per-mode ISOs are no longer used.
 
-Portable boot/ACPI parsers, IRQ-route/run-queue/completion/mutex policies, and allocator tests need no ISO or QEMU:
+Portable boot/ACPI parsers, IRQ-route/DMA/run-queue/completion/mutex policies, and allocator tests need no ISO or QEMU:
 
 ```sh
 cargo test --locked -p kutox --lib --target x86_64-unknown-linux-gnu
@@ -140,7 +146,7 @@ fixture for its device-IRQ cases:
 python3 scripts/qemu_test.py --case kernel-tests --build-dir build
 ```
 
-Run the same thirty-four registered cases with 32 MiB of guest RAM:
+Run the same thirty-seven registered cases with 32 MiB of guest RAM:
 
 ```sh
 python3 scripts/qemu_test.py --case kernel-tests-low-memory --build-dir build
@@ -163,7 +169,7 @@ hardware-configuration cases still use separate boots of the same ISO.
 
 ```text
 KTAP version 1
-1..34
+1..37
 ok 1 cpu.irq_lock_restore
 ok 2 cpu.breakpoint_return
 ok 3 memory.alignment_reservations
@@ -198,7 +204,10 @@ ok 31 linux.irq_completion
 ok 32 irq.platform_discovery
 ok 33 irq.device_delivery
 ok 34 irq.device_masking_cleanup
-# Totals: pass:34 fail:0 skip:0 total:34
+ok 35 dma.coherent_allocation
+ok 36 dma.ownership
+ok 37 linux.coherent_dma
+# Totals: pass:37 fail:0 skip:0 total:37
 ```
 
 Tests run sequentially with interrupts disabled at case boundaries. After
@@ -223,7 +232,7 @@ requires updating `KERNEL_TEST_NAMES` in the
 [host runner](scripts/qemu_test.py) as well.
 
 The intentional-failure mode reports a failing `harness.intentional_failure`
-before the thirty-four normal cases and exits with guest failure. This command
+before the thirty-seven normal cases and exits with guest failure. This command
 **must return nonzero**:
 
 ```sh
@@ -387,8 +396,38 @@ disabled for deliberately unsupported hardware entry points.
   live while masking the source, masking/draining the route and checking local
   ISR/IRR plus I/O APIC remote-IRR. Only then are the handler and mapping retired.
   Duplicate/stale claims fail explicitly. Bus mastering, RX and TX remain
-  disabled; DMA, shared-source demultiplexing, MSI/MSI-X and Linux `request_irq`
+  disabled; actual device DMA, shared-source demultiplexing, MSI/MSI-X and Linux `request_irq`
   remain absent.
+- [Coherent DMA buffers](src/dma.rs) retain exclusive Moss frame guards for
+  physically contiguous blocks. Sizes are 1 byte through 4 MiB, with power-of-two
+  alignment up to 4 MiB; the complete rounded backing block is zeroed and checked
+  against the device mask and verified RAM extent. CPU addresses use the WB HHDM,
+  while distinct `Address` values hold identity device addresses. The supported
+  QEMU profile rejects advertised DMAR/IVRS IOMMUs; identity DMA is not general
+  physical-hardware support. Mask changes require no live buffers.
+- `publish()` transfers a DMA buffer to device ownership; safe CPU slices and
+  release then fail without mutation. Reclamation requires a domain/epoch-bound
+  witness from an unsafe caller that has actually stopped/drained all DMA and
+  descriptor/IRQ paths. Merely clearing PCI bus mastering or receiving a
+  completion signal is insufficient. A later publication invalidates older
+  witnesses. Dropping a device-owned buffer is fatal rather than freeing live
+  frames. Coherent x86 WB publication/read barriers are compiler release/acquire
+  fences, not a noncoherent cache-maintenance implementation.
+- [The coherent C adapter](src/linux_dma.rs) explicitly binds one static opaque
+  C device and at most eight buffers. It supplies `dma_set_mask_and_coherent`,
+  `dma_alloc_coherent`, `dma_free_coherent`, `dma_wmb` and `dma_rmb`.
+  Only `GFP_KERNEL` (the adapter's zero-valued tag) is accepted. Exhaustion/capacity
+  failures return null with a diagnostic and unchanged DMA handle; invalid void
+  API operations are fatal. Free validates device, CPU address, size, DMA address
+  and ownership. Native publish/reclaim extensions retain the same caller
+  quiescence obligation, and device destruction rejects live buffers.
+  Streaming DMA, bounce buffers and IOMMU mappings are not stubbed.
+- [DMA acceptance tests](src/dma_tests.rs) and the
+  [C test](compat/dma_test.c) check exact alignment/mask boundaries, zeroing,
+  disjoint buffers, exhaustion/reuse, counters, live/stale ownership, output
+  preservation, invalid free/lifecycle/context requests and full cleanup.
+  They never enable bus mastering or a DMA engine; real packet DMA is the next
+  separate proof.
 - The four timer registry cases cover repeated hardware delivery/EOI, ordinary
   and already-pending HLT wakeups, all fifteen non-RSP GPRs plus RSP and IF/DF/
   arithmetic flags, LVT masking and a real bounded timeout, pending delivery
@@ -586,7 +625,8 @@ disabled for deliberately unsupported hardware entry points.
   RAM. Metadata covers complete usable pages only, not physical-address holes.
   Every page touched by a reservation remains unavailable. Unlike upstream's
   maximum-order-only initialization, small regions and edge fragments are used.
-  Allocation reference counting and DMA APIs are not implemented.
+  Frame allocation reference counting is not implemented; the coherent DMA
+  wrapper retains the existing exclusive allocation guard.
 - [Moss heap](third_party/moss-libkernel/src/memory/allocators/slab/) adapts
   power-of-two size classes from 2 through 8192 bytes using 16 KiB slabs.
   Slab headers and free slots are in-band; each slab owns its buddy frame guard.

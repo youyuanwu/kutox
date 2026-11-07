@@ -71,15 +71,22 @@ class KernelSuiteTests(unittest.TestCase):
         ))
 
     def test_requires_the_device_irq_cases(self):
-        self.assertEqual(KERNEL_TEST_NAMES[31:], (
+        self.assertEqual(KERNEL_TEST_NAMES[31:34], (
             "irq.platform_discovery",
             "irq.device_delivery",
             "irq.device_masking_cleanup",
         ))
 
+    def test_requires_the_dma_cases(self):
+        self.assertEqual(KERNEL_TEST_NAMES[34:], (
+            "dma.coherent_allocation",
+            "dma.ownership",
+            "linux.coherent_dma",
+        ))
+
     def test_rejects_missing_or_failed_timer_cases(self):
         for index, name in enumerate(KERNEL_TEST_NAMES, 1):
-            if not name.startswith(("irq.", "threads.wait_", "threads.timed_sleep", "threads.irq_", "sync.irq_", "sync.completion_", "sync.mutex_", "linux.")):
+            if not name.startswith(("irq.", "dma.", "threads.wait_", "threads.timed_sleep", "threads.irq_", "sync.irq_", "sync.completion_", "sync.mutex_", "linux.")):
                 continue
             result = f"ok {index} {name}"
             for replacement in ("", result.replace("ok ", "not ok ", 1)):
