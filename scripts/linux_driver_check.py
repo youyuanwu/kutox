@@ -248,6 +248,8 @@ def compiler_flags(output):
 def build_inputs():
     files = [ROOT / "scripts/linux_driver_check.py", ROOT / "compat/cflags.txt",
              ROOT / "compat/headers.txt", ROOT / "compat/bridge.c", ROOT / "compat/kutox_compat.h",
+             ROOT / "compat/execution_types.h", ROOT / "compat/execution_services.h",
+             ROOT / "compat/execution_layout.c", ROOT / "compat/diagnostics_services.h",
              ROOT / "linker.ld", DRIVER / "Makefile"]
     files += sorted(path for path in DECLARATIONS.rglob("*") if path.is_file())
     return {str(path.relative_to(ROOT)): digest(path) for path in files}
@@ -299,7 +301,7 @@ def check_bridge_guard(args, output):
         present = any(symbol["name"] == "e1000_get_hw_dev" and symbol["owner"] for symbol in symbols)
         if present == full:
             raise ValueError("boot/full-source helper provider guard is incorrect")
-    return "boot helper present normally; omitted with KUTOX_E1000_FULL_SOURCE; shared runtime ABI still pending"
+    return "boot helper present normally; omitted with KUTOX_E1000_FULL_SOURCE; device/MMIO runtime ABI still pending"
 
 
 def check_runtime_exclusion(args, flags, output):
@@ -316,6 +318,42 @@ def check_runtime_exclusion(args, flags, output):
     if result.returncode == 0 or "compile-only Linux driver objects are not a runtime driver" not in result.stdout:
         raise ValueError(f"runtime linker failed to reject compile-only input: {result.stdout}")
     return True
+
+
+EXECUTION_LAYOUTS = {
+    "work_size": 16, "work_align": 8, "work_function": 0, "work_generation": 8,
+    "delayed_size": 16, "delayed_work": 0,
+    "napi_size": 32, "napi_align": 8, "napi_poll": 0, "napi_generation": 8,
+    "napi_device": 16, "napi_irq": 24,
+    "mutex_size": 16, "mutex_align": 8, "mutex_boot_held": 0, "mutex_generation": 8,
+    "completion_size": 16, "completion_generation": 8,
+    "spin_size": 16, "spin_align": 8, "spin_held": 0, "spin_owner": 8,
+    "atomic_size": 4, "atomic_counter": 0,
+}
+
+
+def read_execution_layout(path):
+    raw = Elf(path).by_name[".kutox.execution_layouts"]["data"]
+    if len(raw) != len(EXECUTION_LAYOUTS) * 8:
+        raise ValueError("invalid execution layout evidence")
+    result = dict(zip(EXECUTION_LAYOUTS, struct.unpack("<" + "Q" * len(EXECUTION_LAYOUTS), raw)))
+    if result != EXECUTION_LAYOUTS:
+        raise ValueError("unsupported execution ABI layout")
+    return result
+
+
+def execution_layouts(args, flags, output):
+    boot_flags = ["-Wall", "-Wextra", "-Werror", *lines(ROOT / "compat/cflags.txt"),
+                  "-DKUTOX_DRIVER_COMPILE_ONLY=1", "-include", str(DECLARATIONS / "marker.h"),
+                  "-I" + str(output / "boot-include"), "-I" + str(ROOT / "compat")]
+    result = {}
+    for name, selected in (("source", [*flags, "-I" + str(ROOT / "compat"), "-DKUTOX_EXECUTION_SOURCE_PROFILE=1"]),
+                           ("runtime", boot_flags)):
+        path = output / f"execution-layout-{name}.o"
+        run([args.clang, *selected, "-c", str(ROOT / "compat/execution_layout.c"), "-o", str(path)],
+            output / f"execution-layout-{name}.log")
+        result[name] = {"sha256": digest(path), "layouts": read_execution_layout(path)}
+    return result
 
 
 def validate_symbols(report, symbols, inventory):
@@ -374,6 +412,11 @@ def verify(args, report=None):
     validate_symbols(report, symbols, inventory)
     if digest(output / "layout.o") != report.get("layout_sha256") or read_layout(output / "layout.o") != report.get("layouts"):
         raise ValueError("compiler layout evidence changed")
+    for name in ("source", "runtime"):
+        path = output / f"execution-layout-{name}.o"
+        evidence = report.get("execution_layouts", {}).get(name, {})
+        if digest(path) != evidence.get("sha256") or read_execution_layout(path) != evidence.get("layouts"):
+            raise ValueError("source/runtime execution ABI evidence changed")
     if digest(output / "macros.log") != report.get("macros_sha256") or parse_macros((output / "macros.log").read_text()) != report.get("macros"):
         raise ValueError("preprocessor evidence changed")
     if report.get("runtime_link_rejected") is not True:
@@ -445,6 +488,7 @@ def build(args):
     references = Elf(combined).references()
     layouts = probe_layout(args, flags, output)
     guard = check_bridge_guard(args, output)
+    execution = execution_layouts(args, flags, output)
     excluded = check_runtime_exclusion(args, flags, output)
     macros = run([args.clang, *flags, "-dM", "-E", str(DECLARATIONS / "layout.c")], output / "macros.log")
     macro_inventory = parse_macros(macros)
@@ -452,6 +496,7 @@ def build(args):
               "build_inputs": build_inputs(), "layouts": layouts, "layout_sha256": digest(output / "layout.o"),
               "macros": macro_inventory, "macros_sha256": digest(output / "macros.log"), "bridge_guard": guard,
               "runtime_link_rejected": excluded,
+              "execution_layouts": execution,
               "units": units, "undefined": [{"symbol": name, **inventory[name],
                                             "source_references": source_references(inventory[name]["source_names"]),
                                             "object_references": [reference for reference in references if reference["target"] == name]}

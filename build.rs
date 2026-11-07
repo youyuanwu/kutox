@@ -74,6 +74,10 @@ fn main() {
         .file(driver.join("e1000_hw.c"))
         .file("compat/bridge.c")
         .file("compat/runtime.c")
+        .file("compat/execution_ops.c")
+        .file("compat/deferred.c")
+        .file("compat/diagnostics.c")
+        .file("compat/driver_execution_test.c")
         .file("compat/execution_test.c")
         .file("compat/dma_test.c")
         .warnings_into_errors(true);

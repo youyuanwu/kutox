@@ -122,11 +122,11 @@ struct net_device;
 struct device;
 void netdev_printk(const struct net_device *, const char *, ...);
 void dev_printk(const struct device *, const char *, ...);
-void netif_log(const void *, const char *, const struct net_device *, const char *, ...);
-#define netif_err(a,l,d,...) netif_log(a,#l,d,__VA_ARGS__)
-#define netif_info(a,l,d,...) netif_log(a,#l,d,__VA_ARGS__)
-#define netif_warn(a,l,d,...) netif_log(a,#l,d,__VA_ARGS__)
-#define netif_dbg(a,l,d,...) netif_log(a,#l,d,__VA_ARGS__)
+void netif_log(u32, const char *, const struct net_device *, const char *, ...);
+#define netif_err(a,l,d,...) netif_log((a)->msg_enable,#l,d,__VA_ARGS__)
+#define netif_info(a,l,d,...) netif_log((a)->msg_enable,#l,d,__VA_ARGS__)
+#define netif_warn(a,l,d,...) netif_log((a)->msg_enable,#l,d,__VA_ARGS__)
+#define netif_dbg(a,l,d,...) netif_log((a)->msg_enable,#l,d,__VA_ARGS__)
 #define KERN_ERR "\0013"
 #define DUMP_PREFIX_OFFSET 1
 void print_hex_dump(const char *, const char *, int,int,int,const void *,size_t,bool);

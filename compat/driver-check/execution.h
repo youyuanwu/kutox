@@ -1,12 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef KUTOX_DRIVER_CHECK_EXECUTION_H
 #define KUTOX_DRIVER_CHECK_EXECUTION_H
-struct work_struct { void (*function)(struct work_struct *); unsigned long state; };
-struct delayed_work { struct work_struct work; unsigned long deadline; };
-struct napi_struct { int (*poll)(struct napi_struct *, int); unsigned long state; };
-struct mutex { unsigned long state; };
-typedef struct { unsigned long state; } spinlock_t;
-typedef struct { int counter; } atomic_t;
+#include "../execution_types.h"
 struct list_head { struct list_head *next, *prev; };
 struct timer_list { unsigned long state; };
 struct module { unsigned long state; };
@@ -26,7 +21,7 @@ struct kutox_parameter { const char *name; const char *type; void *value; size_t
 #define MODULE_DEVICE_TABLE(t,n) static const void *const kutox_table_##n __attribute__((used,section(".kutox.device_tables"))) = n
 #define DEFINE_MUTEX(n) struct mutex n = {0}
 #define DEFINE_SPINLOCK(n) spinlock_t n = {0}
-extern unsigned long jiffies;
+#include "../execution_services.h"
 void mutex_lock(struct mutex *);
 void mutex_unlock(struct mutex *);
 void mutex_init(struct mutex *);
@@ -54,14 +49,6 @@ bool test_bit(unsigned int, const unsigned long *);
 bool test_and_set_bit(unsigned int, unsigned long *);
 void set_bit(unsigned int, unsigned long *);
 void clear_bit(unsigned int, unsigned long *);
-void kutox_check_store_release(void *, unsigned long, size_t);
-#define smp_store_release(p,v) kutox_check_store_release(p,v,sizeof(*(p)))
-u64 kutox_check_load_acquire(const void *, size_t);
-u64 kutox_check_read_once(const void *, size_t);
-#define smp_load_acquire(p) ((typeof(*(p)))kutox_check_load_acquire(p,sizeof(*(p))))
-#define READ_ONCE(v) ((typeof(v))kutox_check_read_once(&(v),sizeof(v)))
-void kutox_check_write_once(void *, u64, size_t);
-#define WRITE_ONCE(p,v) kutox_check_write_once(&(p),v,sizeof(p))
 unsigned long msecs_to_jiffies(unsigned int);
 bool time_after(unsigned long, unsigned long);
 bool time_before(unsigned long, unsigned long);
@@ -74,8 +61,6 @@ void usleep_range(unsigned long, unsigned long);
 int cond_resched(void);
 void init_work(struct work_struct *, void (*)(struct work_struct *));
 void init_delayed_work(struct delayed_work *, void (*)(struct work_struct *));
-#define INIT_WORK(w,f) init_work(w,f)
-#define INIT_DELAYED_WORK(w,f) init_delayed_work(w,f)
 bool schedule_work(struct work_struct *);
 bool schedule_delayed_work(struct delayed_work *, unsigned long);
 bool cancel_work_sync(struct work_struct *);
@@ -83,10 +68,6 @@ bool cancel_delayed_work_sync(struct delayed_work *);
 void rtnl_lock(void);
 void rtnl_unlock(void);
 bool rtnl_is_locked(void);
-typedef enum { IRQ_NONE, IRQ_HANDLED } irqreturn_t;
-typedef irqreturn_t (*irq_handler_t)(int, void *);
-#define IRQF_SHARED 0x80
-#define IRQF_PROBE_SHARED 0x100
 int request_irq(unsigned int, irq_handler_t, unsigned long, const char *, void *);
 void free_irq(unsigned int, void *);
 void synchronize_irq(unsigned int);

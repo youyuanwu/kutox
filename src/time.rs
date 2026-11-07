@@ -5,6 +5,8 @@ use core::{
 };
 
 static TICKS_PER_US: AtomicU64 = AtomicU64::new(0);
+static EPOCH: AtomicU64 = AtomicU64::new(0);
+static JIFFY_TICKS: AtomicU64 = AtomicU64::new(0);
 const PIT_COUNT: u16 = 11932;
 pub const PIT_INTERVAL_US: u64 = PIT_COUNT as u64 * 1_000_000 / 1_193_182;
 
@@ -40,12 +42,35 @@ pub fn measure_pit_interval<T>(mut sample: impl FnMut() -> T) -> Result<(u64, T,
                 return Err(Failure::new("tsc_calibration", -1));
             }
             TICKS_PER_US.store(ticks, Ordering::Relaxed);
+            if JIFFY_TICKS.load(Ordering::Relaxed) == 0 {
+                EPOCH.store(start, Ordering::Relaxed);
+                JIFFY_TICKS.store(ticks * 1000, Ordering::Release);
+            }
             return Ok((ticks, first, last));
         }
+
         core::hint::spin_loop();
     }
     io::write8(0x61, original);
     Err(Failure::new("pit_timeout", -1))
+}
+
+pub fn elapsed_jiffies() -> Result<u64, Failure> {
+    let duration = JIFFY_TICKS.load(Ordering::Acquire);
+    if duration == 0 {
+        return Err(Failure::new("jiffies_not_calibrated", -1));
+    }
+    Ok(now_ticks().wrapping_sub(EPOCH.load(Ordering::Relaxed)) / duration)
+}
+
+pub fn ticks_for_jiffies(duration: u64) -> Result<u64, Failure> {
+    let ticks = JIFFY_TICKS.load(Ordering::Acquire);
+    if ticks == 0 {
+        return Err(Failure::new("jiffies_not_calibrated", -1));
+    }
+    duration
+        .checked_mul(ticks)
+        .ok_or(Failure::new("jiffies_duration_overflow", -1))
 }
 
 pub fn ticks_for_us(usec: u64) -> Result<u64, Failure> {

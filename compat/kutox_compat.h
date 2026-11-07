@@ -41,11 +41,9 @@ typedef unsigned int gfp_t;
 #define PCI_COMMAND_INVALIDATE 0x10
 #define KBUILD_MODNAME "e1000"
 
-/* Declaration-only subsystem types; none of their operations is provided. */
-struct napi_struct { u8 unsupported; };
-struct work_struct { u8 unsupported; };
-struct delayed_work { struct work_struct work; };
-typedef struct { int counter; } atomic_t;
+struct net_device;
+#include "execution_types.h"
+#include "execution_services.h"
 struct net_device { const char *name; };
 struct pci_dev;
 struct sk_buff;
@@ -53,6 +51,7 @@ struct page;
 
 /* Address-bound opaque device, explicitly registered by the native DMA backend. */
 struct device { u8 reserved; };
+#include "diagnostics_services.h"
 int dma_set_mask_and_coherent(struct device *device, u64 mask);
 void *dma_alloc_coherent(struct device *device, size_t size, dma_addr_t *handle, gfp_t flags);
 void dma_free_coherent(struct device *device, size_t size, void *cpu, dma_addr_t handle);
@@ -63,10 +62,7 @@ int kutox_dma_publish(struct device *device, void *cpu);
 int kutox_dma_reclaim(struct device *device, void *cpu);
 int kutox_destroy_dma_device(struct device *device);
 
-/* Static-lifetime address-bound native objects; copying a live object is invalid. */
-struct mutex { u8 boot_held; };
-struct completion { u8 reserved; };
-typedef struct { u8 held; u64 owner; } spinlock_t;
+/* Static initializers and dynamically initialized objects share the backend. */
 #define DEFINE_MUTEX(name) struct mutex name = { 0 }
 #define DEFINE_SPINLOCK(name) spinlock_t name = { 0 }
 #define DECLARE_COMPLETION(name) struct completion name = { 0 }

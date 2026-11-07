@@ -44,11 +44,15 @@ pub enum SwitchError {
     ClockUnavailable = -55,
     DeadlineOverflow = -56,
     InterruptContext = -57,
+    DeferredContext = -58,
 }
 
 fn switch_allowed() -> Result<(), SwitchError> {
     if exceptions::is_dispatching() {
         return Err(SwitchError::InterruptContext);
+    }
+    if crate::linux_deferred::atomic_context() {
+        return Err(SwitchError::DeferredContext);
     }
     if X86Cpu::irq_lock_depth() != 0 {
         return Err(SwitchError::LocksHeld);
@@ -516,6 +520,23 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
 
     pub fn run(&mut self) -> Result<RunStats, Failure> {
         self.run_inner(None)
+    }
+
+    pub fn discard_unstarted(&mut self, handle: TaskHandle) -> Result<(), Failure> {
+        switch_allowed().map_err(|error| Failure::new("thread_discard_context", error as i32))?;
+        let task = self
+            .tasks
+            .get(handle.slot())
+            .and_then(Option::as_ref)
+            .ok_or(Failure::new("thread_discard_missing", -1))?;
+        if task.started {
+            return Err(Failure::new("thread_discard_started", -1));
+        }
+        self.queue
+            .remove_runnable(handle)
+            .map_err(|error| Failure::new("thread_discard_queue", error as i32))?;
+        drop(self.tasks[handle.slot()].take());
+        Ok(())
     }
 
     pub fn run_with_timer(&mut self, timer: &irq::Timer<'_, '_>) -> Result<RunStats, Failure> {

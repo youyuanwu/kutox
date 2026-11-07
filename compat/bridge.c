@@ -78,54 +78,14 @@ struct net_device *e1000_get_hw_dev(struct e1000_hw *hw)
 }
 #endif
 
-static void print_string(const char *string)
-{
-    while (*string)
-        kutox_serial_byte((u8)*string++);
-}
-
-static void print_number(unsigned int value, unsigned int base)
-{
-    char digits[32];
-    unsigned int length = 0;
-    do {
-        digits[length++] = "0123456789abcdef"[value % base];
-        value /= base;
-    } while (value);
-    while (length)
-        kutox_serial_byte((u8)digits[--length]);
-}
-
 void kutox_debug(const struct net_device *dev, const char *format, ...)
 {
     if (!dev || !dev->name)
         kutox_platform_fail("log_context");
-    print_string("LINUX_E1000 ");
-    print_string(dev->name);
-    print_string(": ");
+    printk("LINUX_E1000 %s: ", dev->name);
     va_list arguments;
     va_start(arguments, format);
-    for (; *format; format++) {
-        if (*format != '%') {
-            kutox_serial_byte((u8)*format);
-            continue;
-        }
-        format++;
-        switch (*format) {
-        case '%': kutox_serial_byte('%'); break;
-        case 's': print_string(va_arg(arguments, const char *)); break;
-        case 'u': print_number(va_arg(arguments, unsigned int), 10); break;
-        case 'x': print_number(va_arg(arguments, unsigned int), 16); break;
-        case 'd': {
-            int value = va_arg(arguments, int);
-            if (value < 0)
-                kutox_serial_byte('-');
-            print_number(value < 0 ? 0u - (unsigned int)value : (unsigned int)value, 10);
-            break;
-        }
-        default: kutox_platform_fail("unsupported_log_format");
-        }
-    }
+    kutox_vprint(format, arguments);
     va_end(arguments);
 }
 

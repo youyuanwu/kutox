@@ -23,6 +23,7 @@ def suite_log(case="kernel-tests"):
         f"BOOT_MODE mode={KERNEL_SUITE_CASES[case]} source=fw_cfg",
         "KTAP version 1",
         f"1..{len(names)}",
+        "# linux format=-7/0000002A/4294967296/12:34:56:78:9a:bc/end",
     ]
     for index, name in enumerate(names, 1):
         status = "not ok" if name == "harness.intentional_failure" else "ok"
@@ -33,6 +34,12 @@ def suite_log(case="kernel-tests"):
 
 
 class KernelSuiteTests(unittest.TestCase):
+    def test_checks_exact_driver_diagnostic_format(self):
+        marker = "# linux format=-7/0000002A/4294967296/12:34:56:78:9a:bc/end"
+        for replacement in ("", marker + "\n" + marker, marker.replace("0000002A", "2a")):
+            with self.subTest(replacement=replacement), self.assertRaises(AssertionError):
+                validate_result("kernel-tests", 1, suite_log().replace(marker, replacement))
+
     def test_requires_the_timer_milestone_cases(self):
         self.assertEqual(KERNEL_TEST_NAMES[14:18], (
             "irq.timer_delivery",
@@ -87,10 +94,20 @@ class KernelSuiteTests(unittest.TestCase):
         ))
 
     def test_requires_the_actual_tx_cases(self):
-        self.assertEqual(KERNEL_TEST_NAMES[37:], (
+        self.assertEqual(KERNEL_TEST_NAMES[37:40], (
             "net.e1000_tx",
             "net.e1000_tx_timeout",
             "net.e1000_tx_pending_cleanup",
+        ))
+
+    def test_requires_driver_execution_services(self):
+        self.assertEqual(KERNEL_TEST_NAMES[40:], (
+            "linux.driver_atomics",
+            "linux.driver_lifecycle",
+            "linux.driver_work",
+            "linux.driver_napi",
+            "linux.driver_irq",
+            "linux.driver_worker_rollback",
         ))
 
     def test_rejects_missing_or_failed_timer_cases(self):

@@ -2,6 +2,7 @@
 #include "kutox_compat.h"
 
 extern int kutox_linux_context(void);
+extern u64 kutox_linux_object_generation(uintptr_t, unsigned int);
 extern int kutox_linux_mutex(uintptr_t key, unsigned int operation);
 extern int kutox_linux_completion(uintptr_t key, unsigned int operation);
 extern u64 kutox_linux_wait_completion(uintptr_t key, u64 timeout, u8 timed);
@@ -39,25 +40,49 @@ static uintptr_t key(const void *object)
     return (uintptr_t)object;
 }
 
+static uintptr_t mutex_key(struct mutex *lock)
+{
+    uintptr_t address = key(lock);
+    if (!lock->generation) {
+        int thread = checked(kutox_linux_context(), "mutex_register_context");
+        if (!thread) return address;
+        checked(kutox_linux_mutex(address, INIT), "mutex_register");
+        lock->generation = kutox_linux_object_generation(address, 0);
+    }
+    if (!lock->generation || lock->generation != kutox_linux_object_generation(address, 0))
+        kutox_platform_fail("stale_mutex_generation");
+    return address;
+}
+
+static uintptr_t completion_key(struct completion *object)
+{
+    uintptr_t address = key(object);
+    if (!object->generation || object->generation != kutox_linux_object_generation(address, 1))
+        kutox_platform_fail("stale_completion_generation");
+    return address;
+}
+
 void mutex_init(struct mutex *lock)
 {
     key(lock);
-    if (lock->boot_held)
+    if (kutox_linux_object_generation(key(lock), 0) && lock->boot_held)
         kutox_platform_fail("mutex_init_boot_held");
     checked(kutox_linux_mutex(key(lock), INIT), "mutex_init");
     lock->boot_held = 0;
+    lock->generation = kutox_linux_object_generation(key(lock), 0);
 }
 
 void mutex_destroy(struct mutex *lock)
 {
     if (!lock || lock->boot_held)
         kutox_platform_fail("mutex_destroy_held");
-    checked(kutox_linux_mutex(key(lock), DESTROY), "mutex_destroy");
+    checked(kutox_linux_mutex(mutex_key(lock), DESTROY), "mutex_destroy");
+    lock->generation = 0;
 }
 
 void mutex_lock(struct mutex *lock)
 {
-    uintptr_t address = key(lock);
+    uintptr_t address = mutex_key(lock);
     int thread = checked(kutox_linux_context(), "mutex_context");
     if (!thread) {
         if (checked(kutox_linux_mutex(address, DONE), "mutex_boot_owner") ||
@@ -72,7 +97,7 @@ void mutex_lock(struct mutex *lock)
 
 int mutex_trylock(struct mutex *lock)
 {
-    uintptr_t address = key(lock);
+    uintptr_t address = mutex_key(lock);
     int thread = checked(kutox_linux_context(), "mutex_trylock_context");
     if (!thread) {
         if (checked(kutox_linux_mutex(address, DONE), "mutex_boot_owner"))
@@ -86,7 +111,7 @@ int mutex_trylock(struct mutex *lock)
 
 void mutex_unlock(struct mutex *lock)
 {
-    uintptr_t address = key(lock);
+    uintptr_t address = mutex_key(lock);
     int thread = checked(kutox_linux_context(), "mutex_unlock_context");
     if (!thread) {
         if (!__atomic_load_n(&lock->boot_held, __ATOMIC_RELAXED))
@@ -99,7 +124,7 @@ void mutex_unlock(struct mutex *lock)
 
 int mutex_is_locked(struct mutex *lock)
 {
-    uintptr_t address = key(lock);
+    uintptr_t address = mutex_key(lock);
     checked(kutox_linux_context(), "mutex_is_locked_context");
     return lock->boot_held ||
         checked(kutox_linux_mutex(address, DONE), "mutex_is_locked");
@@ -142,46 +167,48 @@ unsigned long msecs_to_jiffies(unsigned int msec) { return msec; }
 void init_completion(struct completion *object)
 {
     checked(kutox_linux_completion(key(object), INIT), "init_completion");
+    object->generation = kutox_linux_object_generation(key(object), 1);
 }
 
 void reinit_completion(struct completion *object)
 {
-    checked(kutox_linux_completion(key(object), RESET), "reinit_completion");
+    checked(kutox_linux_completion(completion_key(object), RESET), "reinit_completion");
 }
 
 void complete(struct completion *object)
 {
-    checked(kutox_linux_completion(key(object), LOCK), "complete");
+    checked(kutox_linux_completion(completion_key(object), LOCK), "complete");
 }
 
 void complete_all(struct completion *object)
 {
-    checked(kutox_linux_completion(key(object), UNLOCK), "complete_all");
+    checked(kutox_linux_completion(completion_key(object), UNLOCK), "complete_all");
 }
 
 bool completion_done(struct completion *object)
 {
-    return checked(kutox_linux_completion(key(object), DONE), "completion_done") != 0;
+    return checked(kutox_linux_completion(completion_key(object), DONE), "completion_done") != 0;
 }
 
 bool try_wait_for_completion(struct completion *object)
 {
-    return checked(kutox_linux_completion(key(object), TRY), "try_completion") != 0;
+    return checked(kutox_linux_completion(completion_key(object), TRY), "try_completion") != 0;
 }
 
 void wait_for_completion(struct completion *object)
 {
-    (void)kutox_linux_wait_completion(key(object), 0, 0);
+    (void)kutox_linux_wait_completion(completion_key(object), 0, 0);
 }
 
 unsigned long wait_for_completion_timeout(struct completion *object, unsigned long timeout)
 {
-    return kutox_linux_wait_completion(key(object), timeout, 1);
+    return kutox_linux_wait_completion(completion_key(object), timeout, 1);
 }
 
 void kutox_destroy_completion(struct completion *object)
 {
-    checked(kutox_linux_completion(key(object), DESTROY), "destroy_completion");
+    checked(kutox_linux_completion(completion_key(object), DESTROY), "destroy_completion");
+    object->generation = 0;
 }
 
 void msleep(unsigned int msec) { kutox_linux_msleep(msec); }

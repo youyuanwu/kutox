@@ -10,10 +10,11 @@ use crate::{
 use core::{
     arch::asm,
     cell::UnsafeCell,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 use kutox::{completion_state::CompletionState, mutex_state::MutexState};
 use moss_libkernel::CpuOps;
+use moss_libkernel::sync::spinlock::SpinLockIrq;
 
 const CAPACITY: usize = 8;
 const IF: u64 = 1 << 9;
@@ -32,6 +33,7 @@ const BUSY: i32 = -92;
 
 struct MutexSlot {
     key: AtomicUsize,
+    generation: AtomicU64,
     object: Mutex<()>,
     guard: UnsafeCell<Option<MutexGuard<()>>>,
 }
@@ -44,6 +46,7 @@ impl MutexSlot {
     const fn new() -> Self {
         Self {
             key: AtomicUsize::new(0),
+            generation: AtomicU64::new(0),
             object: Mutex::new(()),
             guard: UnsafeCell::new(None),
         }
@@ -52,6 +55,7 @@ impl MutexSlot {
 
 struct CompletionSlot {
     key: AtomicUsize,
+    generation: AtomicU64,
     object: Completion,
 }
 
@@ -59,6 +63,7 @@ impl CompletionSlot {
     const fn new() -> Self {
         Self {
             key: AtomicUsize::new(0),
+            generation: AtomicU64::new(0),
             object: Completion::new(),
         }
     }
@@ -66,6 +71,58 @@ impl CompletionSlot {
 
 static MUTEXES: [MutexSlot; CAPACITY] = [const { MutexSlot::new() }; CAPACITY];
 static COMPLETIONS: [CompletionSlot; CAPACITY] = [const { CompletionSlot::new() }; CAPACITY];
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+static RATE: SpinLockIrq<(u64, u32), X86Cpu> = SpinLockIrq::new((0, 0));
+
+#[unsafe(no_mangle)]
+extern "C" fn kutox_linux_ratelimit() -> bool {
+    let now = kutox_jiffies();
+    let mut rate = RATE.lock_save_irq();
+    if now.wrapping_sub(rate.0) >= 5000 {
+        *rate = (now, 0);
+    }
+    if rate.1 == 10 {
+        return false;
+    }
+    rate.1 += 1;
+    true
+}
+
+fn generation() -> Result<u64, i32> {
+    GENERATION
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+            value.checked_add(1)
+        })
+        .map(|old| old + 1)
+        .map_err(|_| INVALID)
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn kutox_linux_object_generation(key: usize, kind: u32) -> u64 {
+    if key == 0 {
+        return 0;
+    }
+    match kind {
+        0 => MUTEXES
+            .iter()
+            .find(|slot| slot.key.load(Ordering::Acquire) == key)
+            .map_or(0, |slot| slot.generation.load(Ordering::Acquire)),
+        1 => COMPLETIONS
+            .iter()
+            .find(|slot| slot.key.load(Ordering::Acquire) == key)
+            .map_or(0, |slot| slot.generation.load(Ordering::Acquire)),
+        _ => fatal("object_kind", INVALID),
+    }
+}
+
+pub(crate) fn holds_mutex() -> bool {
+    let Ok(owner) = threads::current_task_handle() else {
+        return false;
+    };
+    MUTEXES
+        .iter()
+        .any(|slot| slot.object.snapshot().owner() == Some(owner))
+}
 
 fn fatal(operation: &str, code: i32) -> ! {
     serial::print(format_args!(
@@ -119,6 +176,7 @@ fn mutex_slot(key: usize, create: bool) -> Result<Option<&'static MutexSlot>, i3
         .iter()
         .find(|slot| slot.key.load(Ordering::Acquire) == 0)
         .ok_or(CAPACITY_ERROR)?;
+    slot.generation.store(generation()?, Ordering::Release);
     slot.key.store(key, Ordering::Release);
     Ok(Some(slot))
 }
@@ -140,6 +198,7 @@ fn completion_slot(key: usize, create: bool) -> Result<Option<&'static Completio
         .iter()
         .find(|slot| slot.key.load(Ordering::Acquire) == 0)
         .ok_or(CAPACITY_ERROR)?;
+    slot.generation.store(generation()?, Ordering::Release);
     slot.key.store(key, Ordering::Release);
     Ok(Some(slot))
 }
@@ -352,12 +411,20 @@ extern "C" fn kutox_linux_cond_resched() -> i32 {
 extern "C" fn kutox_linux_irq_save() -> u64 {
     let flags: u64;
     unsafe { asm!("pushfq", "pop {}", "cli", out(reg) flags) };
-    threads::spin_lock_owner().unwrap_or_else(|error| fatal("spin_context", error as i32));
+    if !exceptions::is_hardware_irq() {
+        threads::spin_lock_owner().unwrap_or_else(|error| fatal("spin_context", error as i32));
+    }
     flags & IF
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn kutox_linux_spin_owner() -> u64 {
+    if exceptions::is_hardware_irq() {
+        if cpu::interrupts_enabled() {
+            fatal("irq_spin_if", INVALID);
+        }
+        return u64::MAX;
+    }
     threads::spin_lock_owner()
         .unwrap_or_else(|error| fatal("spin_owner_context", error as i32))
         .map_or(0, |handle| handle.ticket())
@@ -391,6 +458,22 @@ extern "C" fn kutox_linux_irq_released(flags: u64) {
 extern "C" fn kutox_linux_test_now_us() -> u64 {
     let ticks = time::ticks_for_us(1).unwrap_or_else(|error| fatal(error.stage, error.code));
     time::now_ticks() / ticks
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn kutox_jiffies() -> u64 {
+    time::elapsed_jiffies().unwrap_or_else(|error| fatal(error.stage, error.code))
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn kutox_linux_sleep_range(minimum: u64, maximum: u64) {
+    thread_context().unwrap_or_else(|error| fatal("usleep_context", error));
+    if minimum > maximum || maximum > 1_000_000 {
+        fatal("usleep_range", INVALID);
+    }
+    if threads::sleep_us(minimum) != Ok(threads::WakeReason::TimedOut) {
+        fatal("usleep_cancelled", INVALID);
+    }
 }
 
 pub fn quiescent() -> bool {

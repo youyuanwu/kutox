@@ -290,6 +290,27 @@ impl<const N: usize> RunQueue<N> {
         self.length
     }
 
+    pub fn remove_runnable(&mut self, handle: TaskHandle) -> Result<(), Error> {
+        let id = TaskId(handle.slot());
+        if self.handle(id)? != handle {
+            return Err(Error::InvalidTask);
+        }
+        if self.states[id.0] != Some(TaskState::Runnable) {
+            return Err(Error::InvalidState);
+        }
+        let offset = (0..self.length)
+            .find(|&offset| self.ready[(self.head + offset) % N] == id)
+            .ok_or(Error::InvalidState)?;
+        for position in offset..self.length - 1 {
+            self.ready[(self.head + position) % N] = self.ready[(self.head + position + 1) % N];
+        }
+        self.length -= 1;
+        self.states[id.0] = None;
+        self.tickets[id.0] = 0;
+        self.wake_reasons[id.0] = None;
+        Ok(())
+    }
+
     pub fn check_invariants(&self) -> Result<(), Error> {
         if self.length > N
             || self.blocked_length > N
@@ -335,6 +356,23 @@ impl<const N: usize> RunQueue<N> {
 mod tests {
     use super::*;
     use std::{collections::VecDeque, vec::Vec};
+
+    #[test]
+    fn rollback_preserves_fifo_and_rejects_stale_handles() {
+        let mut queue = RunQueue::<3>::new();
+        for index in 0..3 {
+            queue.add(TaskId(index)).unwrap();
+        }
+        let stale = queue.handle(TaskId(1)).unwrap();
+        queue.remove_runnable(stale).unwrap();
+        queue.add(TaskId(1)).unwrap();
+        assert_eq!(queue.remove_runnable(stale), Err(Error::InvalidTask));
+        queue.check_invariants().unwrap();
+        assert_eq!(queue.dispatch(), Ok(Some(TaskId(0))));
+        queue.finish_running().unwrap();
+        queue.reap(TaskId(0)).unwrap();
+        assert_eq!(queue.dispatch(), Ok(Some(TaskId(2))));
+    }
 
     #[test]
     fn direct_wakes_fill_capacity_without_duplicates_or_preempting_current() {

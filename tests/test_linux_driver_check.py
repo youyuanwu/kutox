@@ -1,5 +1,6 @@
 import copy
 import json
+import struct
 from pathlib import Path
 import sys
 import tempfile
@@ -12,6 +13,16 @@ import linux_driver_check as check
 
 
 class InputTests(unittest.TestCase):
+    def test_source_runtime_execution_layouts_are_exact(self):
+        raw = struct.pack("<" + "Q" * len(check.EXECUTION_LAYOUTS), *check.EXECUTION_LAYOUTS.values())
+        elf = SimpleNamespace(by_name={".kutox.execution_layouts": {"data": raw}})
+        with patch.object(check, "Elf", return_value=elf):
+            self.assertEqual(check.read_execution_layout(Path("unused")), check.EXECUTION_LAYOUTS)
+        for wrong in (raw[:-1], struct.pack("<Q", 8) + raw[8:]):
+            elf.by_name[".kutox.execution_layouts"]["data"] = wrong
+            with patch.object(check, "Elf", return_value=elf), self.assertRaises(ValueError):
+                check.read_execution_layout(Path("unused"))
+
     def test_pinned_revision_and_clean_tree_are_required(self):
         for replies in (["wrong\n"], [check.REVISION + "\n", " M e1000_main.c\n"]):
             with patch.object(check, "run", side_effect=replies), self.assertRaises(ValueError):

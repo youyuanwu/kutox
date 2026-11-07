@@ -341,9 +341,10 @@ The original EEPROM MAC probe still requires the boot dispatcher, where its
 mutex cannot sleep and `cond_resched` remains a no-op. The MMIO/probe environment
 is not silently promoted into a thread-safe full driver runtime.
 
-Eight permanent mutex and eight completion slots bind zero-initialized static
-C objects by stable address. Callers may not copy, move, stack-allocate, or free
-registered objects. IRQ completion signalling, try-wait, and inspection require
+Eight permanent mutex and eight completion slots bind static or dynamically
+initialized C objects by stable address and generation. Stack objects are
+supported when kept live until all users join and unregister. Callers may not
+copy, move or free registered objects. IRQ completion signalling, try-wait, and inspection require
 prior initialization; IRQs cannot lazily register, reset, initialize, or destroy
 objects. Explicit initialization/lazy definition in boot/thread context, quiescent
 destruction, registry exhaustion/reuse, and live reset rejection are tested.
@@ -351,7 +352,8 @@ No mutable registry borrow or C reference survives a context switch; native
 guards remain in their slots until the owning C task unlocks. IRQ-save C
 spinlocks use atomic acquisition, owner validation, IF restoration and the
 same per-CPU held-guard accounting as Rust locks. Contention/recursion fails
-explicitly on the only supported CPU, and interrupt/NMI lock use remains absent.
+explicitly on the only supported CPU. Hardware IRQ lock ownership is supported;
+NMI lock use remains absent.
 
 The selected completion subset supplies remembered credits, a broadcast latch,
 reset, inspection, try-wait, and uninterruptible waits. Timeout units are 1000 Hz
@@ -566,12 +568,58 @@ fake-provider-resolved APIs fail the check.
 
 These objects carry `.kutox.compile_only`; the kernel linker retains/rejects
 that section even with section GC. A real negative-link test verifies the guard.
-The compile-profile structs/layouts are not a validated runtime ABI and cannot
+Shared execution types now have compiler-verified identical source/runtime
+sizes, alignment and field offsets. The remaining compile-profile structs/layouts
+are not a validated runtime ABI and cannot
 be mixed with the current boot-only C structs or eight-slot GFP-tag DMA adapter.
 The bridge has a checked single-provider switch for `e1000_get_hw_dev`, but
 shared MMIO/context/type integration is still required before full-driver link.
-The existing image continues to include only the hardware helper translation
-unit, so current MAC/IRQ/DMA/native-TX acceptance is unchanged.
+The existing image continues to include only the upstream hardware helper
+translation unit, with additional synthetic execution-service cases; original
+MAC/IRQ/DMA/native-TX acceptance remains intact.
+
+### Tested execution-service profile
+
+[Shared C execution types](../compat/execution_types.h) and
+[native deferred services](../src/linux_deferred.rs) now supply Phase 2's
+bounded environment, tested through [synthetic C callbacks](../compat/driver_execution_test.c).
+These are OS services, not replacement implementations of Linux's watchdog,
+IRQ, poll or packet algorithms.
+
+- One cooperative sleepable work worker and one deferred-atomic NAPI executor
+  run on owned guarded stacks. IRQs enqueue/wake only. BH nesting and poll
+  context reject stack switches and sleeping operations diagnostically.
+- A preallocated 32-object registry (at most four NAPI objects) accepts stable
+  dynamic C addresses with monotonically checked generations. No allocation or
+  mutable registry borrow occurs across enqueue/IRQ/switch. Duplicate scheduling,
+  stale/copy identities and live reinitialization have explicit outcomes.
+- Work has pending/running/self-requeue/cancelling states. Relative delayed work
+  uses calibrated elapsed-time 1000 Hz deadlines; cancelled deadlines are removed
+  and a running callback is joined before destruction. Self-joins are rejected.
+  Joining running work while holding a sleeping mutex is also rejected: later
+  lifecycle integration must establish cancellation-safe lock ordering, not
+  wait for callbacks that need the caller's held lock.
+- NAPI has prepare/deduplication/missed-schedule state, budget 64, completion,
+  rescheduling, disable/join, deletion and explicit RX/TX queue associations.
+  Poll callbacks never execute inline in the IRQ or scheduler.
+- [C IRQ binding](../src/linux_irq.rs) retains the owned I/O APIC claim and
+  handler/`dev_id` backing. The one selected source accepts `IRQF_SHARED`;
+  another claimant fails with `-EBUSY`, and probe-shared flags are unsupported.
+  The C handler reads the cause itself. IRQ_NONE/HANDLED are counted, invalid
+  returns fail, and free masks/drains the route before retiring the handler.
+  Synthetic pending-free acceptance observes the APIC IRR bit, not an assumed
+  delay or a pre-read of the NIC's ICR.
+- Typed atomic/bitmap/once/acquire/release operations, x86 ordering, plain
+  IF-clear and IRQ-save locks, `rtnl` exclusion and real `usleep_range` are tested.
+  Diagnostics are allocation-free and bounded, with actual message/rate/once
+  state. Unsupported formats/widths/contexts fail rather than fabricate success.
+- Worker startup rolls back an unstarted first stack if the second cannot be
+  admitted. Shutdown requires no registered work/poll objects and wakes both
+  workers to normal return; tests require allocator/registry/IRQ recovery.
+
+The unchanged original driver remains compile-only, with all 209 dependencies
+unresolved in that isolated closure. Shared execution layouts do not authorize
+mixing its PCI/netdev/skb/GFP/DMA types with the boot-only runtime.
 
 Capture the original `module_init` initializer and `pci_driver` registration,
 then invoke original probe and registered `net_device_ops`. The selected
@@ -594,8 +642,8 @@ Each retained API needs an explicit provider or an enforced unsupported contract
 | MMIO in driver threads and hardware IRQs | The C bridge authorizes only the boot helper's global active window. |
 | Driver allocation and packet buffers | No kmalloc/vmalloc/skb or RX page-fragment ownership, padding, build-skb, queue/feature or ingress environment. |
 | Coherent descriptor sharing and streaming map/sync/unmap | Current APIs are allocation-only with native publish/reclaim extensions; upstream code does not call those extensions. |
-| Delayed work, jiffies, lifecycle locking and cancellation | Current handler/deadline helpers are not Linux workqueues or global elapsed-time jiffies. |
-| IRQ registration and NAPI scheduling/budget/disable | Native IRQ claims and completion wakeups exist, but not the C handler/dev-id or poll lifecycle. |
+| Delayed work, jiffies, lifecycle locking and cancellation | Synthetic execution providers exist; original watchdog/reset and lifecycle ordering are not yet integrated. |
+| IRQ registration and NAPI scheduling/budget/disable | Tested C handler/dev-id and budgeted poll lifetimes exist; original e1000 callbacks are not yet invoked. |
 | Probe/open/error/close/remove cleanup | The native TX stop proof is not the RX-capable original driver lifecycle. |
 
 Three ordering constraints shape the environment:
@@ -668,10 +716,10 @@ Synchronization and ownership requirements:
 - Worker and interrupt paths must agree on buffer lifetimes and ordering.
 
 Embassy's executor alone does not provide these Linux execution semantics.
-The C adapter distinguishes boot and thread semantics, but that is still only
-a tested static-object subset. Selected completion signalling already supports
-hardware IRQs; that does not provide the full driver work/NAPI execution model
-or authorize arbitrary C MMIO access and allocation in those contexts.
+The C adapter distinguishes boot, sleepable thread/worker, deferred-atomic
+poll/BH and hardware-IRQ semantics. Synthetic work/NAPI/C-IRQ tests do not
+authorize arbitrary C MMIO access and allocation in those contexts or establish
+execution of the original full driver.
 
 ## Driver compatibility scope
 
@@ -720,7 +768,8 @@ phases replace a native-RX-first roadmap:
 2. **Execution/object/deferred services.** Provide stable registrations,
    thread/IRQ/deferred-atomic contexts, elapsed jiffies, work cancellation,
    NAPI budgets and C IRQ registration. Prove their semantics with synthetic C
-   cases before relying on them in the original driver.
+   cases before relying on them in the original driver. This phase is complete
+   for the bounded synthetic profile above.
 3. **PCI/allocation/packet/DMA environment.** Implement original probe ordering,
    net-device/skb lifecycle, queue/feature state, GFP/error behavior, streaming
    leases and coherent descriptor sharing. Capacity must cover the configured

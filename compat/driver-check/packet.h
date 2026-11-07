@@ -91,12 +91,15 @@ void netdev_completed_queue(struct net_device *, unsigned int, unsigned int);
 void netdev_reset_queue(struct net_device *);
 void netif_trans_update(struct net_device *);
 u32 netif_msg_init(int, int);
-bool netif_msg_tx_done(const void *);
-bool netif_msg_rx_status(const void *);
+bool netif_msg_tx_done(u32);
+bool netif_msg_rx_status(u32);
 bool netif_msg_pktdata(const void *);
 bool netif_msg_tx_queued(const void *);
 bool netif_msg_intr(const void *);
-bool netif_msg_hw(const void *);
+bool netif_msg_hw(u32);
+#define netif_msg_hw(a) netif_msg_hw((a)->msg_enable)
+#define netif_msg_rx_status(a) netif_msg_rx_status((a)->msg_enable)
+#define netif_msg_tx_done(a) netif_msg_tx_done((a)->msg_enable)
 void eth_hw_addr_set(struct net_device *, const u8 *);
 bool is_valid_ether_addr(const u8 *);
 bool is_multicast_ether_addr(const u8 *);

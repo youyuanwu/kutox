@@ -137,23 +137,83 @@ impl<'a, 'storage> IoApic<'a, 'storage> {
 
     pub fn set_mask(&self, token: Token, masked: bool) -> Result<(), Failure> {
         context()?;
-        let mut route = ROUTE.lock_save_irq();
-        let route = route
-            .as_mut()
-            .filter(|route| route.token == token && route.address == self.mapping.address())
-            .ok_or(Failure::new("irq_stale_claim", -1))?;
-        let low = io_read(route.address, route.register);
-        route.enabled = !masked;
-        io_write(
-            route.address,
-            route.register,
-            if masked { low | MASK } else { low & !MASK },
-        );
-        if (io_read(route.address, route.register) & MASK != 0) != masked {
-            return Err(Failure::new("irq_mask_readback", -1));
+        if ROUTE
+            .lock_save_irq()
+            .as_ref()
+            .is_none_or(|route| route.token != token || route.address != self.mapping.address())
+        {
+            return Err(Failure::new("irq_stale_claim", -1));
         }
-        Ok(())
+        set_bound_mask(token, masked)
     }
+}
+
+fn bound_context() -> Result<(), Failure> {
+    threads::check_boot_or_thread_context()
+        .map(|_| ())
+        .map_err(|error| Failure::new("irq_bound_context", error as i32))
+}
+
+pub fn set_bound_mask(token: Token, masked: bool) -> Result<(), Failure> {
+    bound_context()?;
+    let mut route = ROUTE.lock_save_irq();
+    let route = route
+        .as_mut()
+        .filter(|route| route.token == token)
+        .ok_or(Failure::new("irq_stale_claim", -1))?;
+    let low = io_read(route.address, route.register);
+    route.enabled = !masked;
+    io_write(
+        route.address,
+        route.register,
+        if masked { low | MASK } else { low & !MASK },
+    );
+    if (io_read(route.address, route.register) & MASK != 0) != masked {
+        return Err(Failure::new("irq_mask_readback", -1));
+    }
+    Ok(())
+}
+
+pub fn synchronize_bound(token: Token) -> Result<(), Failure> {
+    bound_context()?;
+    let route = ROUTE
+        .lock_save_irq()
+        .as_ref()
+        .filter(|route| route.token == token)
+        .copied()
+        .ok_or(Failure::new("irq_stale_claim", -1))?;
+    let apic = ADDRESS.load(Ordering::Acquire);
+    let deadline = time::now_ticks()
+        .checked_add(time::ticks_for_us(POLL_TIMEOUT_US)?)
+        .ok_or(Failure::new("irq_drain_deadline", -1))?;
+    while vector_set(apic, IRR, DEVICE_VECTOR)
+        || vector_set(apic, ISR, DEVICE_VECTOR)
+        || io_read(route.address, route.register) & REMOTE_IRR != 0
+    {
+        if time::now_ticks() >= deadline {
+            return Err(Failure::new("irq_drain_timeout", -1));
+        }
+        X86Cpu::enable_interrupts();
+        core::hint::spin_loop();
+        X86Cpu::disable_interrupts();
+    }
+    Ok(())
+}
+
+pub fn pending_bound(token: Token) -> Result<bool, Failure> {
+    bound_context()?;
+    if ROUTE
+        .lock_save_irq()
+        .as_ref()
+        .is_none_or(|route| route.token != token)
+    {
+        return Err(Failure::new("irq_stale_claim", -1));
+    }
+    Ok(vector_set(
+        ADDRESS.load(Ordering::Acquire),
+        IRR,
+        DEVICE_VECTOR,
+    ))
 }
 
 pub struct ClaimedIrq<'controller, 'a, 'storage> {

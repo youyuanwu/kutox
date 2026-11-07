@@ -15,37 +15,37 @@
     {
       "name": "atomics-bitmaps", "phase": 2, "contexts": ["thread", "worker", "napi", "irq"],
       "contract": "Typed atomic/once/acquire/release and bitmap transitions with ordering, width/range validation and no scheduling.",
-      "policy": "required", "test": "planned: linux.driver_atomics",
+      "policy": "required", "test": "linux.driver_atomics (synthetic C; not original driver execution)",
       "symbols": ["atomic_read", "atomic_set", "clear_bit", "find_first_bit", "find_next_bit", "set_bit", "test_and_set_bit", "test_bit", "kutox_check_load_acquire", "kutox_check_read_once", "kutox_check_store_release", "kutox_check_write_once"]
     },
     {
       "name": "ordering", "phase": 2, "contexts": ["thread", "worker", "napi", "irq"],
       "contract": "CPU and coherent-DMA ordering are distinct contracts; reuse native fences only after checking selected x86 semantics.",
-      "policy": "required", "test": "planned: linux.driver_ordering",
+      "policy": "required", "test": "linux.driver_atomics (CPU/DMA ordering)",
       "symbols": ["dma_rmb", "dma_wmb", "smp_mb", "smp_mb__before_atomic"]
     },
     {
       "name": "irq-spinlocks", "phase": 2, "contexts": ["thread", "worker", "napi", "irq"],
       "contract": "Stable lock identity, owner checks, exact saved IF/guard accounting and no sleep or switch while held.",
-      "policy": "required", "test": "planned: linux.driver_spinlocks",
+      "policy": "required", "test": "linux.driver_atomics and linux.driver_irq",
       "symbols": ["spin_lock_init", "kutox_check_spin_lock_irqsave", "kutox_check_spin_unlock_irqrestore"]
     },
     {
       "name": "sleeping-lifecycle-locks", "phase": 2, "contexts": ["thread", "worker"],
       "contract": "Real sleeping mutex/lifecycle exclusion; cancellation cannot await a callback needing the caller's held lock.",
-      "policy": "required", "test": "planned: linux.driver_lifecycle_locks",
+      "policy": "required", "test": "linux.driver_lifecycle and linux.driver_work",
       "symbols": ["mutex_lock", "mutex_unlock", "rtnl_lock", "rtnl_unlock"]
     },
     {
       "name": "busy-delays", "phase": 2, "contexts": ["thread", "worker", "napi", "irq"],
       "contract": "Calibrated bounded busy delay, not completion signalling or timer-delivery-count time.",
-      "policy": "required", "test": "planned: linux.driver_delays",
+      "policy": "required", "test": "linux.driver_atomics and linux.driver_work",
       "symbols": ["udelay", "mdelay"]
     },
     {
       "name": "sleeping-delays", "phase": 2, "contexts": ["thread", "worker"],
       "contract": "Suspend real kernel stacks with elapsed-time deadlines; reject IRQ/deferred-atomic contexts.",
-      "policy": "required", "test": "planned: linux.driver_sleep",
+      "policy": "required", "test": "linux.thread_execution and linux.driver_work",
       "symbols": ["msleep", "usleep_range", "cond_resched"]
     },
     {
@@ -57,25 +57,25 @@
     {
       "name": "elapsed-jiffies", "phase": 2, "contexts": ["thread", "worker", "napi", "irq"],
       "contract": "Monotonic elapsed-time jiffies and wrap-safe comparisons, published without torn reads.",
-      "policy": "required", "test": "planned: linux.driver_jiffies",
-      "symbols": ["jiffies", "time_after", "time_after_eq"]
+      "policy": "required", "test": "linux.driver_atomics and linux.driver_work",
+      "symbols": ["kutox_jiffies", "time_after", "time_after_eq"]
     },
     {
       "name": "work-lifetime", "phase": 2, "contexts": ["thread", "worker", "irq"],
       "contract": "Prebound stable work identities, deduplicated immediate/delayed enqueue, requeue and synchronous cancellation; IRQ only enqueues.",
-      "policy": "required", "test": "planned: linux.driver_work",
+      "policy": "required", "test": "linux.driver_work and linux.driver_worker_rollback",
       "symbols": ["init_work", "init_delayed_work", "schedule_work", "schedule_delayed_work", "cancel_work_sync", "cancel_delayed_work_sync"]
     },
     {
       "name": "irq-registration", "phase": 2, "contexts": ["thread"],
       "contract": "Owned route plus C handler/dev_id, one supported source, no pre-read of ICR, synchronize/drain before retiring callback backing.",
-      "policy": "required", "test": "planned: linux.driver_irq",
+      "policy": "required", "test": "linux.driver_irq (real QEMU IRQ; synthetic C handler)",
       "symbols": ["request_irq", "free_irq", "synchronize_irq"]
     },
     {
       "name": "napi-control", "phase": 2, "contexts": ["thread", "napi", "irq"],
       "contract": "Enable/disable/join are lifecycle operations; IRQ schedule-prep/enqueue never polls inline; budgets, completion and reschedule are real state.",
-      "policy": "required", "test": "planned: linux.driver_napi",
+      "policy": "required", "test": "linux.driver_napi and linux.driver_irq",
       "symbols": ["__napi_schedule", "napi_schedule_prep", "napi_complete_done", "napi_enable", "napi_disable", "netif_napi_add", "netif_napi_set_irq", "netif_queue_set_napi"]
     },
     {
@@ -177,7 +177,7 @@
     {
       "name": "diagnostics-scalars", "phase": 2, "contexts": ["thread", "worker", "napi", "irq"],
       "contract": "Allocation-free bounded diagnostics, actual message-level/rate state, BUG/WARN outcomes, prefetch and endian/scalar semantics; no silent default logging.",
-      "policy": "required", "test": "planned: linux.driver_diagnostics",
+      "policy": "required", "test": "linux.driver_atomics plus exact host-checked format output",
       "symbols": ["bug", "warn_on", "dev_printk", "netdev_printk", "netdev_warn_once", "netif_log", "netif_msg_hw", "netif_msg_init", "netif_msg_rx_status", "netif_msg_tx_done", "net_ratelimit", "print_hex_dump", "printk", "prefetch", "fls", "cpu_to_le16s", "le16_to_cpus"]
     }
   ],
@@ -197,6 +197,7 @@
     "napi_free_frags": {"contexts": ["thread", "napi"], "contract": "Unconditional RX ring cleanup calls this even at MTU 1500; inspect and release real NAPI fragment state, including an empty state, rather than treating it as an unsupported jumbo-only operation."}
   },
   "aliases": {
+    "kutox_jiffies": ["jiffies"],
     "bug": ["BUG"],
     "warn_on": ["WARN_ON"],
     "kutox_check_load_acquire": ["smp_load_acquire"],

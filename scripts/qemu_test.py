@@ -52,6 +52,12 @@ KERNEL_TEST_NAMES = (
     "net.e1000_tx",
     "net.e1000_tx_timeout",
     "net.e1000_tx_pending_cleanup",
+    "linux.driver_atomics",
+    "linux.driver_lifecycle",
+    "linux.driver_work",
+    "linux.driver_napi",
+    "linux.driver_irq",
+    "linux.driver_worker_rollback",
 )
 KERNEL_SUITE_CASES = {
     "kernel-tests": "kernel-tests",
@@ -128,6 +134,8 @@ def validate_kernel_suite(case, returncode, output):
     if summary is None:
         raise AssertionError("missing or nonterminal KTAP summary")
     results = []
+    if protocol.count("# linux format=-7/0000002A/4294967296/12:34:56:78:9a:bc/end") != 1:
+        raise AssertionError("missing, duplicate, or incorrect driver diagnostic formatting")
     for line in protocol[1:-1]:
         if line.startswith("# ") and not line.startswith("# Totals"):
             continue

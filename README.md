@@ -81,8 +81,8 @@ These declaration-only objects are explicitly rejected by the runtime linker.
 This is not a running Linux packet driver.
 
 The [driver-reuse roadmap](docs/rust-kernel-linux-drivers.md#linux-e1000-driver-reuse-roadmap)
-next implements the required execution/object, workqueue and NAPI/IRQ services,
-then PCI/skb/streaming-DMA lifetimes. Linux must own probe/open, packet submission
+now has tested execution/object, workqueue and NAPI/IRQ services. Next are
+PCI/skb/streaming-DMA lifetimes. Linux must own probe/open, packet submission
 and cleanup; Rust supplies OS services. Native RX is not the next milestone.
 
 ## Requirements
@@ -205,7 +205,7 @@ hardware-configuration cases still use separate boots of the same ISO.
 
 ```text
 KTAP version 1
-1..40
+1..46
 ok 1 cpu.irq_lock_restore
 ok 2 cpu.breakpoint_return
 ok 3 memory.alignment_reservations
@@ -246,7 +246,14 @@ ok 37 linux.coherent_dma
 ok 38 net.e1000_tx
 ok 39 net.e1000_tx_timeout
 ok 40 net.e1000_tx_pending_cleanup
-# Totals: pass:40 fail:0 skip:0 total:40
+# linux format=-7/0000002A/4294967296/12:34:56:78:9a:bc/end
+ok 41 linux.driver_atomics
+ok 42 linux.driver_lifecycle
+ok 43 linux.driver_work
+ok 44 linux.driver_napi
+ok 45 linux.driver_irq
+ok 46 linux.driver_worker_rollback
+# Totals: pass:46 fail:0 skip:0 total:46
 ```
 
 Tests run sequentially with interrupts disabled at case boundaries. After
@@ -257,6 +264,8 @@ scheduler with no suspended owner, a disabled/unclaimed local APIC, masked PICs,
 windows. Completion fixtures must have no stored credits, latched broadcasts,
 or in-flight waits; mutex fixtures must have no owner or pending lock calls.
 The C execution registry must be empty and its native objects quiescent.
+Driver-service cases also require joined work/poll stacks, no deferred deadline,
+no C handler/binding or NAPI queue association, and an empty generation registry.
 The TX fixture must have no completion credit or active DMA engine; its borrowed
 NIC, IRQ route, PCI bus-master guard, and coherent frame guards retire together.
 Empty slabs must release their frames before the next
@@ -280,7 +289,7 @@ intentional-failure acceptance check. QEMU's backend `queue=rx` captures the NIC
 TX direction, excluding traffic sent toward the guest.
 
 The intentional-failure mode reports a failing `harness.intentional_failure`
-before the forty normal cases and exits with guest failure. This command
+before the forty-six normal cases and exits with guest failure. This command
 **must return nonzero**:
 
 ```sh
@@ -625,14 +634,15 @@ disabled for deliberately unsupported hardware entry points.
   hardware-IRQ path described below.
 - C `struct mutex` and `spinlock_t` are distinct. IRQ-save spinlocks acquire
   real atomic ownership, preserve the caller's IF, count held guards, validate
-  the boot/thread owner on release, and restore interrupts only after releasing
+  the boot/thread/hardware-IRQ owner on release, and restore interrupts only after releasing
   the lock/count. On this single CPU, contention or recursion fails explicitly
-  rather than spinning with interrupts disabled. Hard IRQ/NMI use is not
-  supported yet. Mutex recursion and foreign unlock are also explicit failures.
-- C mutex/completion objects must be zero-initialized, static-lifetime,
-  stable-address objects, not copied, moved, stack-local, or freed while
+  rather than spinning with interrupts disabled. NMI use is not supported.
+  Mutex recursion and foreign unlock are also explicit failures.
+- C mutex/completion objects have stable addresses and checked generations.
+  Explicit initialization supports dynamic/stack objects; they must not be
+  copied, moved or freed while
   registered. Eight permanent slots per object kind bind C addresses to native
-  objects without retaining mutable C references across scheduling. Definitions
+  objects without retaining mutable C references across scheduling. Static definitions
   can register lazily; `mutex_init`/`init_completion` explicitly register.
   Initialization cannot reset live native state. `reinit_completion` clears
   credits/latches only without in-flight waits. `mutex_destroy` and the native
@@ -647,8 +657,9 @@ disabled for deliberately unsupported hardware entry points.
   `wait_for_completion_timeout`. `HZ` is 1000 for this adapter only;
   `msecs_to_jiffies` converts milliseconds to its timeout units. A timed wait
   returns 0 on timeout or remaining ticks (at least 1) on success, including 1
-  for an immediately available credit with zero timeout. There is no global
-  Linux `jiffies` service, signals, interruptible waits, or general Linux ABI.
+  for an immediately available credit with zero timeout. Elapsed-time `jiffies`
+  now uses the calibrated TSC, not IRQ counts; signals, interruptible waits and
+  a general Linux ABI remain absent.
   Unlike the native Rust completion API, the C timeout path rechecks available
   credits at resumption: a late available credit is consumed and returns 1,
   matching the pinned Linux completion implementation.
@@ -726,8 +737,9 @@ disabled for deliberately unsupported hardware entry points.
   primitive PCI/MMIO parameters and receives a checked, fixed-layout result.
 - [The compatibility header](compat/kutox_compat.h) supplies the limited types,
   macros, and platform interfaces needed to compile the upstream translation
-  unit. Declaration-only networking/workqueue types are **not** functioning
-  subsystems or a compatible Linux binary ABI.
+  unit. Execution types are shared with the source check and synthetic tests;
+  remaining networking/allocation/DMA declarations are **not** functioning
+  full-driver subsystems or a compatible Linux binary ABI.
 - [The build script](build.rs) generates forwarding headers from an explicit
   allowlist and compiles the original `e1000_hw.c` with its original driver
   headers. Unused sections are discarded by the kernel linker.
@@ -735,7 +747,8 @@ disabled for deliberately unsupported hardware entry points.
   and non-sleeping atomic mutex acquisition with explicit contention failure.
   Its boot `cond_resched()` remains a no-op. The C thread execution subset is
   separate: it does not authorize this boot-only MMIO/probe path in threads or
-  provide NIC interrupts, DMA, deferred work, or the full e1000 driver runtime.
+  authorize the full e1000 driver runtime. Separately tested services supply
+  deferred work/NAPI and C IRQ lifetimes, but not full-driver PCI/packet/DMA.
 - MMIO accesses preserve ordering and upstream posted-write flushes. Other
   hardware paths that would require unsupported platform operations trap
   explicitly; they never return fabricated success.
