@@ -216,11 +216,12 @@ pub fn counts() -> (u64, u64) {
 
 #[unsafe(no_mangle)]
 extern "C" fn kutox_linux_irq_pending() -> i32 {
+    i32::from(pending().unwrap_or_else(|error| fail(error.stage, error.code)))
+}
+
+pub fn pending() -> Result<bool, Failure> {
     let registration = (*BINDING.lock_save_irq()).expect("test IRQ binding missing");
-    i32::from(
-        external::pending_bound(registration.token)
-            .unwrap_or_else(|error| fail(error.stage, error.code)),
-    )
+    external::pending_bound(registration.token)
 }
 pub fn quiescent() -> bool {
     BINDING.lock_save_irq().is_none()

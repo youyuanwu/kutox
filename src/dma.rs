@@ -58,7 +58,7 @@ impl Address {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Profile {
     hhdm: u64,
     ram_limit: u64,

@@ -36,6 +36,7 @@ impl Owner {
         boot: &BootInfo,
         frames: &'static memory::PhysicalFrames<'static>,
         key: usize,
+        device: pci::Device,
     ) -> Result<Self, Failure> {
         driver_memory::context(false)
             .map_err(|error| Failure::new("driver_bind_context", error))?;
@@ -43,7 +44,6 @@ impl Owner {
             return Err(Failure::new("driver_bind_live", -16));
         }
         let ram = platform::dma_ram_limit(boot, frames)?;
-        let device = pci::discover()?;
         let bar = device.enable_mmio()?;
         let mapping = memory::map_mmio(boot, bar.base, frames)?;
         if read(mapping.address(), 0x100) & 2 != 0 || read(mapping.address(), 0x400) & 2 != 0 {
@@ -258,11 +258,11 @@ extern "C" fn kutox_driver_pci_value(operation: u32) -> u64 {
     let binding = unsafe { (&*BINDING.0.get()).as_ref() }.expect("unbound PCI query");
     match operation {
         0 => binding.bar.base,
-        1 => memory::MMIO_LENGTH as u64,
+        1 => binding.bar.length,
         2 => MMIO.load(Ordering::Acquire) as u64,
         3 => {
-            let (slot, function) = binding.device.location();
-            (u64::from(slot) << 8) | u64::from(function)
+            let (bus, slot, function) = binding.device.location();
+            (u64::from(bus) << 16) | (u64::from(slot) << 8) | u64::from(function)
         }
         4 => u64::from(binding.bar.io_port),
         _ => fail(Failure::new("driver_pci_query", -22)),

@@ -5,7 +5,7 @@ use crate::{
     irq::{self, LocalApic, external::IoApic},
     linux_deferred,
     linux_irq::{self, BoundIrq},
-    linux_runtime, memory, pci, platform, threads,
+    linux_runtime, memory, platform, threads,
 };
 
 unsafe extern "C" {
@@ -93,7 +93,7 @@ pub fn irq(boot: &BootInfo, frames: &memory::PhysicalFrames<'static>) -> Result<
     let apic = LocalApic::start(boot, frames)?;
     let controller = IoApic::start(boot, frames, &apic, &topology)?;
     let nic = e1000::Nic::start(boot, frames, &topology)?;
-    let gsi = pci::discover()?.interrupt_route(&topology)?;
+    let gsi = nic.gsi();
     let binding = BoundIrq::bind(&controller, gsi)?;
     unsafe { kutox_c_driver_irq_config(nic.address(), gsi) };
     let timer = irq::Timer::attach(&apic)?;

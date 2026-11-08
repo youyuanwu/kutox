@@ -71,7 +71,7 @@ pub fn allocation(
         .map_err(|error| Failure::new("dma_donate", error as i32))?;
     let mut metadata = [const { Frame::EMPTY }; 4];
     let limited = memory::donated_allocator(donated.region(), &mut metadata)?;
-    let bounded = Device::bind(&limited, device.inner.profile);
+    let bounded = Device::bind(&limited, device.inner.profile.clone());
     let before = limited.stats();
     let mut buffers: [Option<Buffer<'_, '_>>; 4] =
         core::array::from_fn(|_| Some(bounded.allocate(16, 16).unwrap()));
@@ -99,7 +99,7 @@ pub fn allocation(
 
 pub fn ownership(boot: &BootInfo, frames: &memory::PhysicalFrames<'static>) -> Result<(), Failure> {
     let device = Device::new(boot, frames)?;
-    let other = Device::bind(frames, device.inner.profile);
+    let other = Device::bind(frames, device.inner.profile.clone());
     let before = frames.stats();
     let mut first = device.allocate(64, 16).unwrap();
     let mut second = device.allocate(PAGE_SIZE, PAGE_SIZE).unwrap();

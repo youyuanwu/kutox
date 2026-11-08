@@ -73,6 +73,14 @@ add_test(NAME kernel-suite-low-memory
         --qemu "${QEMU}" --timeout 80
 )
 set_tests_properties(kernel-suite kernel-suite-rejection kernel-suite-low-memory PROPERTIES TIMEOUT 85 RUN_SERIAL TRUE)
+foreach(topology IN ITEMS bridge nested bridge-low-memory nested-low-memory)
+    add_test(NAME "kernel-suite-${topology}"
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --case "kernel-tests-${topology}" --build-dir "${CMAKE_BINARY_DIR}"
+            --qemu "${QEMU}" --timeout 80
+    )
+    set_tests_properties("kernel-suite-${topology}" PROPERTIES TIMEOUT 85 RUN_SERIAL TRUE)
+endforeach()
 add_test(NAME heap-oom-rejection
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
         --case heap-oom --build-dir "${CMAKE_BINARY_DIR}"

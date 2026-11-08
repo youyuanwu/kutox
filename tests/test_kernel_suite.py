@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import qemu_test
-from qemu_test import KERNEL_SUITE_CASES, KERNEL_TEST_NAMES, KernelSuiteFailure, REVISION, validate_result
+from qemu_test import KERNEL_SUITE_CASES, KERNEL_TEST_NAMES, KernelSuiteFailure, REVISION, pci_layout, validate_result
 
 FOUNDATION = "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled"
 CALLBACK_SYMBOLS = {name: 0xffffffff80001000 + index * 16 for index, name in enumerate(
@@ -277,6 +277,26 @@ def hard_log(name):
     return lines
 
 
+def pci_log(case):
+    root, leaf, parents = pci_layout(case)
+    pin = 1
+    child = leaf
+    for _, parent in parents:
+        pin = (child + pin - 1) % 4 + 1
+        child = parent
+    pirqs = [10, 11, 10, 11]
+    irq = pirqs[(root - 1 + pin - 1) & 3]
+    depth = len(parents)
+    lines = [
+        f"# PCI_HIERARCHY bdf=0000:{depth:02x}:{leaf:02x}.0 depth={depth} functions={6 + depth} buses={depth + 1} bridges={depth} root_slot={root} root_pin={pin} gsi={irq} pirqs=10,11,10,11 line={irq} elcr=0c00 mem=80020000/131072 io=3000/64 metadata=57272"
+    ]
+    lines.extend(
+        f"# PCI_PARENT bdf=0000:{bus:02x}:{slot:02x}.0 primary={bus} secondary={bus + 1} subordinate={depth}"
+        for bus, slot in parents
+    )
+    return lines
+
+
 def suite_log(case="kernel-tests"):
     names = KERNEL_TEST_NAMES
     if case == "kernel-tests-fail":
@@ -290,6 +310,8 @@ def suite_log(case="kernel-tests"):
         "# linux format=-7/0000002A/4294967296/12:34:56:78:9a:bc/end",
     ]
     for index, name in enumerate(names, 1):
+        if name == "pci.hierarchy":
+            lines.extend(pci_log(case))
         if name.startswith("linux.e1000_"):
             if name.endswith(("_wrap","_backpressure","_teardown")):
                 lines.extend(hard_log(name.rsplit("_",1)[1]))
@@ -303,8 +325,36 @@ def suite_log(case="kernel-tests"):
 
 
 class KernelSuiteTests(unittest.TestCase):
+    def test_pci_hierarchy_rejects_missing_duplicate_and_wrong_identity(self):
+        case = "kernel-tests-nested"
+        output = suite_log(case)
+        for changed in [
+            output.replace(pci_log(case)[0] + "\n", ""),
+            output.replace(pci_log(case)[0], pci_log(case)[0] + "\n" + pci_log(case)[0]),
+            output.replace("bdf=0000:02:05.0", "bdf=0000:00:05.0"),
+            output.replace("root_pin=2", "root_pin=1"),
+            output.replace("metadata=57272", "metadata=65537"),
+            output.replace(pci_log(case)[1] + "\n", ""),
+            output.replace("primary=1 secondary=2 subordinate=2", "primary=1 secondary=3 subordinate=3"),
+        ]:
+            with self.subTest(changed=changed[:100]), self.assertRaises(AssertionError):
+                validate_result(case, 1, changed)
+
+    def test_pci_parent_order_and_route_cannot_be_fabricated(self):
+        case = "kernel-tests-nested-low-memory"
+        output = suite_log(case)
+        parents = pci_log(case)[1:]
+        for changed in [
+            output.replace("\n".join(parents), "\n".join(reversed(parents))),
+            output.replace("line=11", "line=10"),
+            output.replace("elcr=0c00", "elcr=0000"),
+            output.replace("bridges=2", "bridges=1"),
+        ]:
+            with self.subTest(changed=changed[:100]), self.assertRaises(AssertionError):
+                validate_result(case, 1, changed)
+
     def test_requires_original_driver_lifecycle_cases(self):
-        self.assertEqual(KERNEL_TEST_NAMES[48:], (
+        self.assertEqual(KERNEL_TEST_NAMES[49:], (
             "linux.e1000_lifecycle", "linux.e1000_failures", "linux.e1000_tx", "linux.e1000_rx",
             "linux.e1000_wrap", "linux.e1000_backpressure", "linux.e1000_teardown",
         ))
@@ -395,14 +445,15 @@ class KernelSuiteTests(unittest.TestCase):
         ))
 
     def test_requires_the_device_irq_cases(self):
-        self.assertEqual(KERNEL_TEST_NAMES[31:34], (
+        self.assertEqual(KERNEL_TEST_NAMES[31:35], (
             "irq.platform_discovery",
+            "pci.hierarchy",
             "irq.device_delivery",
             "irq.device_masking_cleanup",
         ))
 
     def test_requires_the_dma_cases(self):
-        self.assertEqual(KERNEL_TEST_NAMES[34:37], (
+        self.assertEqual(KERNEL_TEST_NAMES[35:38], (
             "dma.coherent_allocation",
             "dma.ownership",
             "linux.coherent_dma",
@@ -426,7 +477,7 @@ class KernelSuiteTests(unittest.TestCase):
             qemu_test.check_provenance("nm")
 
     def test_requires_driver_execution_services(self):
-        self.assertEqual(KERNEL_TEST_NAMES[37:43], (
+        self.assertEqual(KERNEL_TEST_NAMES[38:44], (
             "linux.driver_atomics",
             "linux.driver_lifecycle",
             "linux.driver_work",
@@ -436,7 +487,7 @@ class KernelSuiteTests(unittest.TestCase):
         ))
 
     def test_requires_driver_memory_packet_contracts(self):
-        self.assertEqual(KERNEL_TEST_NAMES[43:48], (
+        self.assertEqual(KERNEL_TEST_NAMES[44:49], (
             "linux.driver_allocation",
             "linux.driver_streaming_dma",
             "linux.driver_packets",

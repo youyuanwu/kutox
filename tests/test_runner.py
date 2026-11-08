@@ -180,6 +180,23 @@ class CommandTests(unittest.TestCase):
             self.assertIn(f"e1000,netdev=irqtest,addr={slot},mac=52:54:00:12:34:56", command)
             self.assertEqual(command[command.index("-cdrom") + 1], str(Path("build/kutox.iso")))
 
+    def test_bridge_suites_use_firmware_assigned_buses_and_owned_socket(self):
+        for case, root, leaf, nested in [
+            ("kernel-tests-bridge", 3, 5, False),
+            ("kernel-tests-nested", 3, 5, True),
+            ("kernel-tests-bridge-low-memory", 5, 7, False),
+            ("kernel-tests-nested-low-memory", 5, 7, True),
+        ]:
+            with self.subTest(case=case):
+                command = qemu_command(self.args, case, net_fd=17)
+                self.assertIn(f"pci-bridge,id=bridge0,chassis_nr=1,shpc=off,msi=off,addr={root}", command)
+                if nested:
+                    self.assertIn("pci-bridge,id=bridge1,chassis_nr=2,shpc=off,msi=off,bus=bridge0,addr=4", command)
+                self.assertIn(f"e1000,netdev=irqtest,bus=bridge{int(nested)},addr={leaf},mac=52:54:00:12:34:56", command)
+                self.assertIn("socket,id=irqtest,fd=17", command)
+                self.assertEqual(command[command.index("-m") + 1], "32M" if case.endswith("low-memory") else "128M")
+                self.assertEqual(command[command.index("-fw_cfg") + 1], "name=opt/kutox/test-mode,string=kernel-tests")
+
     def test_removed_nonfatal_cases_are_not_cli_choices(self):
         for case in ("memory", "cpu-locks", "breakpoint"):
             self.assertNotIn(case, CASES)

@@ -15,7 +15,11 @@ struct pci_dev *kutox_c_driver_endpoint(unsigned int irq)
 {
     if (bound) kutox_platform_fail("pci_endpoint_live");
     memset(&endpoint, 0, sizeof(endpoint));
-    endpoint.vendor = 0x8086; endpoint.device = 0x100e; endpoint.irq = irq;
+    int vendor = kutox_driver_pci(10, 0, 0);
+    int device = kutox_driver_pci(10, 2, 0);
+    driver_check(vendor, "pci_vendor"); driver_check(device, "pci_device");
+    if (vendor != 0x8086 || device != 0x100e) kutox_platform_fail("pci_endpoint_profile");
+    endpoint.vendor = (u16)vendor; endpoint.device = (u16)device; endpoint.irq = irq;
     int revision = kutox_driver_pci(10, 8, 0);
     driver_check(revision, "pci_revision"); endpoint.revision = (u8)revision;
     int subsystem_vendor = kutox_driver_pci(10, 0x2c, 0);
@@ -23,7 +27,11 @@ struct pci_dev *kutox_c_driver_endpoint(unsigned int irq)
     driver_check(subsystem_vendor, "pci_subvendor"); driver_check(subsystem_device, "pci_subdevice");
     endpoint.subsystem_vendor = (u16)subsystem_vendor; endpoint.subsystem_device = (u16)subsystem_device;
     u64 address = kutox_driver_pci_value(3);
+    if (address >> 24 || ((address >> 8) & 255) >= 32 || (address & 255) >= 8)
+        kutox_platform_fail("pci_location_profile");
     strcpy(location, "0000:00:00.0");
+    location[5] = "0123456789abcdef"[(address >> 20) & 15];
+    location[6] = "0123456789abcdef"[(address >> 16) & 15];
     location[8] = "0123456789abcdef"[(address >> 12) & 15];
     location[9] = "0123456789abcdef"[(address >> 8) & 15];
     location[11] = "0123456789abcdef"[address & 7];

@@ -1,7 +1,7 @@
 use crate::{
     driver_memory, linux_deferred,
     linux_driver::{DriverHandle, control},
-    serial, threads,
+    serial, threads, time,
 };
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -348,10 +348,21 @@ fn teardown() {
     DONE.store(0, Ordering::Release);
     let handle = opened();
     TICKET.store(handle.0, Ordering::Release);
+    handle.wait_irq_poll_idle();
     assert_eq!(kick(&handle, 0), 0, "watchdog must have requeued");
     assert_eq!(handle.packet(&packet(3, 1, 60, false)[..60]), 0);
     assert_eq!(handle.transmit(), 0);
     assert_eq!(handle.tx_status(), 1);
+    let start = time::now_ticks();
+    let budget = time::ticks_for_us(100_000)
+        .unwrap_or_else(|error| panic!("pending TX IRQ clock: {} {}", error.stage, error.code));
+    while unsafe { kutox_linux_irq_pending() } == 0 {
+        assert!(
+            time::now_ticks().wrapping_sub(start) < budget,
+            "TX IRQ did not become pending"
+        );
+        core::hint::spin_loop();
+    }
     assert_eq!(unsafe { kutox_linux_irq_pending() }, 1);
     serial::print(format_args!(
         "# LINUX_HARD_IRQ pending=1 tx=1 watchdog=queued\n"

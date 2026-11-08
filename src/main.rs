@@ -180,6 +180,8 @@ fn probe() -> Result<[u8; 6], Failure> {
     );
     let table_count = mapping.table_frame_count();
     drop(mapping);
+    drop(bar);
+    drop(device);
     if allocator.stats() != stats {
         return Err(Failure::new("frame_allocator_cleanup", -1));
     }

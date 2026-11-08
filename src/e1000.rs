@@ -31,6 +31,10 @@ pub struct Nic<'a, 'storage> {
 }
 
 impl<'a, 'storage> Nic<'a, 'storage> {
+    pub fn gsi(&self) -> u32 {
+        self.gsi
+    }
+
     pub fn start(
         boot: &BootInfo,
         frames: &'a memory::PhysicalFrames<'storage>,

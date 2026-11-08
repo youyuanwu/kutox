@@ -49,6 +49,7 @@ KERNEL_TEST_NAMES = (
     "threads.irq_wait_races",
     "linux.irq_completion",
     "irq.platform_discovery",
+    "pci.hierarchy",
     "irq.device_delivery",
     "irq.device_masking_cleanup",
     "dma.coherent_allocation",
@@ -77,6 +78,10 @@ KERNEL_SUITE_CASES = {
     "kernel-tests": "kernel-tests",
     "kernel-tests-low-memory": "kernel-tests",
     "kernel-tests-fail": "kernel-tests-fail",
+    "kernel-tests-bridge": "kernel-tests",
+    "kernel-tests-nested": "kernel-tests",
+    "kernel-tests-bridge-low-memory": "kernel-tests",
+    "kernel-tests-nested-low-memory": "kernel-tests",
 }
 FAULT_RESULTS = {
     "page-fault": "CPU_TEST_OK test=page-fault vector=14 address=0x600000000000 error=0x0",
@@ -105,6 +110,56 @@ CASES = {
 class KernelSuiteFailure(AssertionError):
     """A complete, consistent guest suite reported failed test cases."""
 
+def pci_layout(case):
+    low = case.endswith("low-memory")
+    root = 5 if low else 3
+    if "nested" in case:
+        return root, 7 if low else 5, [(1, 4), (0, root)]
+    if "bridge" in case:
+        return root, 7 if low else 5, [(0, root)]
+    return root, root, []
+
+
+def validate_pci_hierarchy(lines, case):
+    root, leaf, parents = pci_layout(case)
+    matches = [line for line in lines if line.startswith("# PCI_HIERARCHY")]
+    if len(matches) != 1:
+        raise AssertionError("missing or duplicate PCI hierarchy evidence")
+    match = re.fullmatch(
+        r"# PCI_HIERARCHY bdf=0000:([0-9a-f]{2}):([0-9a-f]{2})\.0 depth=(\d+) functions=(\d+) buses=(\d+) bridges=(\d+) root_slot=(\d+) root_pin=(\d+) gsi=(\d+) pirqs=(\d+),(\d+),(\d+),(\d+) line=(\d+) elcr=([0-9a-f]{4}) mem=([0-9a-f]+)/(\d+) io=([0-9a-f]+)/64 metadata=(\d+)",
+        matches[0],
+    )
+    if match is None:
+        raise AssertionError("malformed PCI hierarchy evidence")
+    bus, slot, depth, functions, buses, bridges, root_slot, root_pin, gsi, *remaining = match.groups()
+    pin = 1
+    child = leaf
+    for _, parent_slot in parents:
+        pin = (child + pin - 1) % 4 + 1
+        child = parent_slot
+    if (int(bus, 16), int(slot, 16), int(depth), int(buses), int(bridges), int(root_slot), int(root_pin)) != (
+        len(parents), leaf, len(parents), len(parents) + 1, len(parents), root, pin,
+    ) or int(functions) != 6 + len(parents):
+        raise AssertionError("wrong PCI BDF, hierarchy, count or swizzled pin")
+    pirqs = [int(value) for value in remaining[:4]]
+    line = int(remaining[4])
+    elcr = int(remaining[5], 16)
+    memory, length, io, metadata = int(remaining[6], 16), int(remaining[7]), int(remaining[8], 16), int(remaining[9])
+    expected = pirqs[(root - 1 + pin - 1) & 3]
+    if line != expected or int(gsi) != expected or expected not in (10, 11) or not elcr & (1 << expected):
+        raise AssertionError("PCI IRQ line/PIRQ/ELCR/APIC route mismatch")
+    if length != 0x20000 or memory % length or not memory or memory + length > 2**32 or io % 64 or not 0x1000 <= io <= 0xffc0 or not 0 < metadata <= 65536:
+        raise AssertionError("invalid selected PCI BAR or metadata budget")
+    expected_parents = [
+        f"# PCI_PARENT bdf=0000:{bus:02x}:{slot:02x}.0 primary={bus} secondary={bus + 1} subordinate={len(parents)}"
+        for bus, slot in parents
+    ]
+    if [line for line in lines if line.startswith("# PCI_PARENT")] != expected_parents:
+        raise AssertionError("missing, changed or reordered PCI ancestor path")
+    accepted = [index for index, line in enumerate(lines) if re.fullmatch(r"ok \d+ pci\.hierarchy", line)]
+    if len(accepted) != 1 or lines.index(matches[0]) > accepted[0]:
+        raise AssertionError("PCI hierarchy evidence is missing or follows acceptance")
+
 
 def validate_boot_preamble(lines, mode):
     if [line for line in lines if line.startswith("KUTOX_BOOT")] != [
@@ -124,6 +179,7 @@ def validate_boot_preamble(lines, mode):
 def validate_kernel_suite(case, returncode, output):
     lines = output.splitlines()
     validate_boot_preamble(lines, KERNEL_SUITE_CASES[case])
+    validate_pci_hierarchy(lines, case)
     if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "THREAD_", "Bail out!")) for line in lines):
         raise AssertionError("suite aborted or reached an unexpected exception/device path")
     headers = [
@@ -1017,7 +1073,7 @@ def qemu_command(args, case, capture=None, net_fd=None):
     command = [
         args.qemu, "-machine", "pc", "-accel", "tcg", "-cpu", "qemu64",
         "-smp", "2,sockets=2,cores=1,threads=1" if case == "smp-unsupported" else "1",
-        "-m", "32M" if case in ("low-memory", "kernel-tests-low-memory") else "128M",
+        "-m", "32M" if case.endswith("low-memory") else "128M",
         "-display", "none", "-monitor", "none", "-serial", "stdio",
         "-no-reboot", "-boot", "d",
         "-cdrom", str(args.build_dir / "kutox.iso"), "-nic", "none",
@@ -1048,10 +1104,15 @@ def qemu_command(args, case, capture=None, net_fd=None):
     if case in KERNEL_SUITE_CASES:
         if net_fd is None or net_fd < 0:
             raise AssertionError("kernel suite requires an owned RX socket")
-        slot = "5" if case == "kernel-tests-low-memory" else "3"
+        root, leaf, parents = pci_layout(case)
+        if parents:
+            command += ["-device", f"pci-bridge,id=bridge0,chassis_nr=1,shpc=off,msi=off,addr={root:x}"]
+            if len(parents) == 2:
+                command += ["-device", "pci-bridge,id=bridge1,chassis_nr=2,shpc=off,msi=off,bus=bridge0,addr=4"]
+        bus = f",bus=bridge{len(parents) - 1}" if parents else ""
         command += [
             "-netdev", f"socket,id=irqtest,fd={net_fd}",
-            "-device", f"e1000,netdev=irqtest,addr={slot},mac=52:54:00:12:34:56",
+            "-device", f"e1000,netdev=irqtest{bus},addr={leaf:x},mac=52:54:00:12:34:56",
         ]
         if capture is not None:
             # QEMU key/value options escape literal commas by doubling them.

@@ -81,8 +81,9 @@ firmware is restricted to the BIOS `0xe0000..0x100000` range; allocator-owned
 usable pages and device MMIO are never accepted as tables.
 Bootloader/ACPI reservations are not reclaimed.
 
-The selected bus-zero endpoint must expose a valid interrupt pin and line.
-Its slot/pin swizzle selects a PIIX PIRQ byte; that programmed route must match
+The selected endpoint must expose a valid interrupt pin and line. Conventional
+bridge paths swizzle the child slot/pin at every parent before the root slot/pin
+selects a PIIX PIRQ byte; that programmed route must match
 the endpoint line and the ELCR level-trigger bit. MADT overrides are checked for
 compatible polarity/trigger semantics and the GSI must belong to the discovered
 controller. PIIX's routed ISA/GSI input is active-high and level-triggered;
@@ -90,7 +91,8 @@ the PCI pin's active-low electrical convention is not programmed blindly into
 the I/O APIC. This follows the verified
 [QEMU pc swizzle](https://github.com/qemu/qemu/blob/v10.2.1/hw/i386/pc_piix.c)
 and [PIIX routing](https://github.com/qemu/qemu/blob/v10.2.1/hw/isa/piix.c).
-No IRQ 11/GSI 16 assumption, AML interpreter, or bridged PCI routing is added.
+No IRQ 11/GSI 16 assumption or AML interpreter is added. Root PIIX lookup remains
+on bus zero even when the selected device is on a secondary bus.
 
 Following Moss's
 [owned interrupt-handler model](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/interrupts/mod.rs),
@@ -115,8 +117,9 @@ Guest tests cover ACPI/controller discovery, mapping exhaustion/rollback,
 duplicate/stale claims, finite and untimed completion wakeups, timer-independent
 delivery, source and route masking, pending delivery, no interrupt storm, timeout,
 drain/retirement/reuse, and complete allocator/heap/window recovery. The same ISO
-tests PCI slots 3 and 5 at 128/32 MiB. General vector allocation, shared-source
-demultiplexing, PCI bridges, ACPI `_PRT` evaluation, MSI/MSI-X, SMP, IOMMU and
+tests root PCI slots 3/5 and one/two conventional bridge levels at 128/32 MiB.
+General vector allocation, shared-source demultiplexing, bridge resource
+assignment, ACPI `_PRT` evaluation, MSI/MSI-X, SMP, IOMMU and
 physical-hardware acceptance remain unsupported. This native interrupt proof
 does not execute another upstream Linux driver unit or provide `request_irq`.
 
@@ -931,7 +934,7 @@ one pinned configuration, not support for every retained optional callback.
 | Boundary | Supported / excluded |
 | --- | --- |
 | Source | Four unchanged e1000 units from Linux `v7.3.1`, commit `79a907609d53d5cd645b42c11550d295d43abf99`; original UAPI/GFP/net-feature definitions, separate audited runtime objects. |
-| Platform | QEMU 82540EM `8086:100e`, BIOS `pc`/i440FX/PIIX, one BSP, owned INTx route, validated RAM/identity DMA and BARs; tested with 128/32 MiB, NIC slots 3/5. |
+| Platform | QEMU 82540EM `8086:100e`, BIOS `pc`/i440FX/PIIX, one BSP, owned INTx route, validated RAM/identity DMA and BARs; tested with 128/32 MiB, root slots 3/5 and one/two firmware-configured conventional PCI bridges. |
 | Driver | Original module/probe/open/close/remove, reset/PHY/options, xmit, IRQ, watchdog and NAPI TX/RX cleanup; 256-entry rings, one queue each, MTU 1500, zero offloads. |
 | Native boundary | Owned linear TX packets and eight-packet full-L2 ingress FIFO; Linux owns descriptors and packet algorithms. No native Rust e1000 driver remains. |
 | Lifecycle evidence | Ring wrap, BUSY/stop/wake/retry, allocation/map failures, repeated lifecycle and cooperative pending IRQ/work/NAPI/TX/RX teardown with callback joins and serialized reopen. |
@@ -1042,7 +1045,7 @@ they do not replace this roadmap's driver-execution gates.
 
 ### Planned Moss-style driver infrastructure
 
-The next integration milestone has **Phase 1 implemented; the remaining phases
+The next integration milestone has **Phases 1-2 implemented; the remaining phases
 are planned**. The native [registry policy](../src/driver_registry.rs) and
 [owned manager boundary](../src/drivers.rs) are portable-tested foundations.
 The existing e1000 backend works in kernel fixtures, but normal boot still
@@ -1053,7 +1056,7 @@ Follow pinned Moss's
 and [retained driver manager](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/mod.rs)
 model: register compiled-in drivers, discover devices, match/probe candidates,
 retry dependency-deferred probes while progress occurs, and retain successful
-instances. Moss currently discovers FDT-compatible devices; kutox's planned
+instances. Moss currently discovers FDT-compatible devices; kutox's implemented
 bus is x86 PCI, not an imported ARM/device-tree implementation or `.ko` loader.
 
 The selected integration scope includes persistent e1000 use, changing the
@@ -1070,6 +1073,7 @@ The planned phases are:
    Implemented and portable-tested; kernel startup wiring is still subsequent.
 2. **PCI hierarchy:** read-only assigned-bus discovery, parent/window validation
    and INTx swizzling through each bridge into the existing PIIX/APIC route.
+   Implemented, with actual Linux packet/lifetime acceptance behind bridges.
 3. **Built-in startup:** retained linker initializer records and deterministic
    kernel-thread probe coordination, with synthetic multi-driver tests.
 4. **Persistent kernel services:** boot-owned scheduler/controller/worker
@@ -1107,12 +1111,49 @@ tests do not claim real kernel-thread startup or PCI hierarchy support.
 The new registry/manager is kutox code following Moss's model, not a wholesale
 copy of Moss's FDT/VFS driver subsystem.
 
+Phase 2's [portable inventory](../src/pci_state.rs) enumerates present functions
+and firmware-assigned type-1 bridge buses without touching unrelated command/
+BAR registers or assigning resources. It rejects malformed headers, primary/
+secondary/subordinate conflicts, sibling overlap, stale identity/parent paths
+and capacity overflow; ordinary nested subordinate ranges remain valid.
+Unconfigured bridges stay recorded without traversing or assigning a child bus.
+Selection remains a separate one-e1000 fixture policy.
+
+[Native PCI owners](../src/pci.rs) retain an immutable inventory through device/
+BAR/DMA lifetimes and bind the selected full BDF without rediscovery. Source C
+config operations and location strings carry the same bus identity. Before
+MMIO or I/O reset, the selected BAR spans must fit every enabled ancestor window.
+QEMU bridge I/O/memory decode bits control forwarding; its bridge bus-master
+bit is not a BAR-forwarding or DMA-completion witness. Endpoint mastering and
+the original stopped-engine/callback-drain contract are unchanged. Failed window
+validation reports the actual bridge registers, and selected BAR sizing restores
+BARs and command state.
+
+PCI inventory capacity is 256 functions/buses. Its conservative metadata bound,
+including scan workspace, is 6,944 bytes; manager state plus header allowance
+and inventory is 57,272 bytes, below 64 KiB. Seventeen portable PCI tests cover
+config addresses, multifunction discovery, topology/window failures and routing.
+The `pci.hierarchy` guest case requires exact BDF, parent bus ranges, counts,
+swizzled pin, PIRQ/line/ELCR/GSI agreement, BAR spans and sizing recovery. Full
+Linux TX/RX acceptance runs at root and one/two bridge levels on the same ISO.
+Normal boot still performs the MAC proof; built-in driver startup is Phase 3.
+
+Bridge timing also exposed two fixture assumptions: an earlier link IRQ's
+queued NAPI may legitimately clean a new TX before its TXDW interrupt, and
+interrupt moderation need not assert APIC IRR immediately after submission.
+The baseline TX/pending-teardown fixtures now establish real IRQ/NAPI idle
+before submission and bound the wait for an actual pending IRQ with IF clear.
+This changes fixture ordering only, not Linux's algorithms or the host's
+original-TX-IRQ-before-cleanup acceptance rule. Enabled idle NAPI is not callback
+destruction/drain readiness.
+
 Initial infrastructure is bounded; the actual Linux backend retains its
 one-e1000-instance limit while native synthetic drivers prove generic registry
 behavior. PCI bridges are firmware-configured on the selected QEMU i440FX/PIIX
 machine; bus/window assignment, general AML routing, PCIe/MSI, physical hardware,
-SMP, module loading and an IP stack remain outside this plan. The current
-as-built support statement above is unchanged until new acceptance passes.
+SMP, module loading and an IP stack remain outside this plan. Bridge support
+is limited to the validated QEMU firmware-configured profile, not arbitrary
+PCI topology or hardware.
 
 ### Rust OS and userspace track
 

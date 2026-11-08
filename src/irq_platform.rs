@@ -251,6 +251,13 @@ pub fn madt(bytes: &[u8], bsp: u8) -> Result<Topology, Error> {
     })
 }
 
+pub fn swizzle(slot: u8, pin: u8) -> Result<u8, Error> {
+    if slot >= 32 || !(1..=4).contains(&pin) {
+        return Err(Error::Route);
+    }
+    Ok((slot + pin - 1) % 4 + 1)
+}
+
 pub fn piix_route(
     slot: u8,
     pin: u8,

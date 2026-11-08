@@ -499,3 +499,7 @@ pub fn callbacks_idle() -> bool {
         && CURRENT_NAPI.load(Ordering::Acquire) == 0
         && SERVICES.lock_save_irq().state.callbacks_drained()
 }
+
+pub fn napi_idle() -> bool {
+    CURRENT_NAPI.load(Ordering::Acquire) == 0 && SERVICES.lock_save_irq().state.napi_idle()
+}

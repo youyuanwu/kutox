@@ -5,7 +5,7 @@ use crate::{
     completion,
     cpu::{self, X86Cpu},
     device_irq, dma, exceptions, heap, io, irq, linux_deferred, linux_dma, linux_driver_tests,
-    linux_irq, linux_runtime, memory, mutex, serial, threads,
+    linux_irq, linux_runtime, memory, mutex, pci, serial, threads,
 };
 use crate::{driver_memory, driver_platform, driver_service_tests};
 use kutox::fw_cfg::BootMode;
@@ -146,6 +146,10 @@ static TESTS: &[TestCase] = &[
     TestCase {
         name: "irq.platform_discovery",
         run: device_irq::discovery,
+    },
+    TestCase {
+        name: "pci.hierarchy",
+        run: pci::test_hierarchy,
     },
     TestCase {
         name: "irq.device_delivery",

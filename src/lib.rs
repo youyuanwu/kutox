@@ -10,6 +10,7 @@ pub mod drivers;
 pub mod fw_cfg;
 pub mod irq_platform;
 pub mod mutex_state;
+pub mod pci_state;
 pub mod run_queue;
 
 #[cfg(test)]

@@ -176,6 +176,21 @@ impl DriverHandle {
         }
         panic!("original watchdog did not establish link readiness");
     }
+    pub(crate) fn wait_irq_poll_idle(&self) {
+        assert!(self.ready(), "IRQ/NAPI idle requires an open ready driver");
+        for _ in 0..300 {
+            if linux_deferred::napi_idle()
+                && !crate::linux_irq::pending().unwrap_or_else(|error| {
+                    panic!("TX idle IRQ query: {} {}", error.stage, error.code)
+                })
+            {
+                return;
+            }
+            assert_eq!(threads::sleep_us(10_000), Ok(threads::WakeReason::TimedOut));
+        }
+        panic!("link IRQ/NAPI did not drain before TX acceptance fixture");
+    }
+
     pub(crate) fn wait_transmitted(&self) -> Result<(), Failure> {
         for _ in 0..300 {
             match self.tx_status() {
@@ -282,10 +297,12 @@ fn run(
     which: usize,
 ) -> Result<(), Failure> {
     let topology = platform::discover(boot, frames)?;
-    let owner = driver_platform::Owner::bind(boot, frames, unsafe { kutox_c_driver_device() })?;
+    let device = pci::discover()?;
+    let gsi = device.interrupt_route(&topology)?;
+    let owner =
+        driver_platform::Owner::bind(boot, frames, unsafe { kutox_c_driver_device() }, device)?;
     let apic = LocalApic::start(boot, frames)?;
     let controller = IoApic::start(boot, frames, &apic, &topology)?;
-    let gsi = pci::discover()?.interrupt_route(&topology)?;
     let binding = BoundIrq::bind(&controller, gsi)?;
     unsafe { kutox_c_linux_bind_irq(gsi) };
     let timer = irq::Timer::attach(&apic)?;
@@ -432,6 +449,7 @@ fn tx_worker() {
         handle.wait_ready();
         let baseline = driver_memory::snapshot();
         for (index, &size) in LENGTHS.iter().enumerate().skip(session * 2).take(2) {
+            handle.wait_irq_poll_idle();
             assert_eq!(handle.packet(&tx_packet(index as u8 + 1, size)[..size]), 0);
             assert_eq!(handle.tx_status(), 0);
             assert_eq!(handle.transmit(), 0, "original xmit did not accept skb");

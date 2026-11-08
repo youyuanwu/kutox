@@ -96,7 +96,8 @@ this is not generic LinuxKPI, physical-hardware or network-stack support.
 
 Moss-style native driver registration and owned-device policy foundations now
 have portable tests. [Persistent boot integration](docs/rust-kernel-linux-drivers.md#planned-moss-style-driver-infrastructure)
-is still being implemented; the normal default remains the boot MAC proof.
+is still being implemented; PCI hierarchy/routing now also passes real guest
+tests, but the normal default remains the boot MAC proof.
 
 ## Requirements
 
@@ -198,7 +199,7 @@ fixture for its device-IRQ and packet-DMA cases:
 python3 scripts/qemu_test.py --case kernel-tests --build-dir build
 ```
 
-Run the same 55 registered cases with 32 MiB of guest RAM:
+Run the same 56 registered cases with 32 MiB of guest RAM:
 
 ```sh
 python3 scripts/qemu_test.py --case kernel-tests-low-memory --build-dir build
@@ -208,6 +209,18 @@ This selects the existing `kernel-tests` mode and the same ISO; there is no
 additional guest boot selector or per-memory-size image.
 The normal suite places the NIC at PCI slot 3; the low-memory suite uses slot 5
 to exercise routing discovery rather than a fixed IRQ number.
+
+The same suite also runs behind one or two firmware-configured conventional
+PCI bridges, with exact Linux packet/cleanup acceptance:
+
+```sh
+python3 scripts/qemu_test.py --case kernel-tests-bridge --build-dir build
+python3 scripts/qemu_test.py --case kernel-tests-nested-low-memory --build-dir build
+```
+
+Bridge suites disable bridge SHPC/MSI, use owned local Ethernet sockets and
+the same ISO/fw_cfg mode. They validate full BDF/parent paths, forwarding windows
+and per-bridge INTx swizzling; they do not assign buses or bridge resources.
 
 The old `memory`, `cpu-locks`, and `breakpoint` CLI cases and the corresponding
 standalone boot modes have been removed. Use `kernel-tests` for all nonfatal
@@ -221,7 +234,7 @@ hardware-configuration cases still use separate boots of the same ISO.
 
 ```text
 KTAP version 1
-1..55
+1..56
 ok 1 cpu.irq_lock_restore
 ok 2 cpu.breakpoint_return
 ok 3 memory.alignment_reservations
@@ -254,31 +267,32 @@ ok 29 sync.irq_completion
 ok 30 threads.irq_wait_races
 ok 31 linux.irq_completion
 ok 32 irq.platform_discovery
-ok 33 irq.device_delivery
-ok 34 irq.device_masking_cleanup
-ok 35 dma.coherent_allocation
-ok 36 dma.ownership
-ok 37 linux.coherent_dma
+ok 33 pci.hierarchy
+ok 34 irq.device_delivery
+ok 35 irq.device_masking_cleanup
+ok 36 dma.coherent_allocation
+ok 37 dma.ownership
+ok 38 linux.coherent_dma
 # linux format=-7/0000002A/4294967296/12:34:56:78:9a:bc/end
-ok 38 linux.driver_atomics
-ok 39 linux.driver_lifecycle
-ok 40 linux.driver_work
-ok 41 linux.driver_napi
-ok 42 linux.driver_irq
-ok 43 linux.driver_worker_rollback
-ok 44 linux.driver_allocation
-ok 45 linux.driver_streaming_dma
-ok 46 linux.driver_packets
-ok 47 linux.driver_capacity
-ok 48 linux.driver_failed_open
-ok 49 linux.e1000_lifecycle
-ok 50 linux.e1000_failures
-ok 51 linux.e1000_tx
-ok 52 linux.e1000_rx
-ok 53 linux.e1000_wrap
-ok 54 linux.e1000_backpressure
-ok 55 linux.e1000_teardown
-# Totals: pass:55 fail:0 skip:0 total:55
+ok 39 linux.driver_atomics
+ok 40 linux.driver_lifecycle
+ok 41 linux.driver_work
+ok 42 linux.driver_napi
+ok 43 linux.driver_irq
+ok 44 linux.driver_worker_rollback
+ok 45 linux.driver_allocation
+ok 46 linux.driver_streaming_dma
+ok 47 linux.driver_packets
+ok 48 linux.driver_capacity
+ok 49 linux.driver_failed_open
+ok 50 linux.e1000_lifecycle
+ok 51 linux.e1000_failures
+ok 52 linux.e1000_tx
+ok 53 linux.e1000_rx
+ok 54 linux.e1000_wrap
+ok 55 linux.e1000_backpressure
+ok 56 linux.e1000_teardown
+# Totals: pass:56 fail:0 skip:0 total:56
 ```
 
 Tests run sequentially with interrupts disabled at case boundaries. After
@@ -469,7 +483,8 @@ disabled for deliberately unsupported hardware entry points.
   [parsers and route policy](src/irq_platform.rs). Firmware tables are copied
   through owned read-only WB mappings, including SeaBIOS reserved RAM after
   validating QEMU/PIIX identity and RAM bounds. The supported profile has one
-  xAPIC CPU, one I/O APIC, at most 1 GiB RAM, and a direct bus-zero PCI endpoint.
+  xAPIC CPU, one I/O APIC, at most 1 GiB RAM, and a root or conventionally bridged
+  PCI endpoint on the validated i440FX/PIIX machine.
   Route validation checks PIRQ programming, endpoint pin/line, ELCR and MADT
   overrides; it does not evaluate ACPI `_PRT` or assume a fixed IRQ.
 - [The native e1000 IRQ proof](src/device_irq.rs) uses one ticket-checked claim
@@ -743,7 +758,7 @@ disabled for deliberately unsupported hardware entry points.
   table frames. It unmaps leaves, detaches the private subtree, flushes the TLB,
   and only then releases frames. Failed mappings follow the same cleanup path.
 - [Rust platform code](src/) provides Limine requests, polled serial output,
-  bus-zero CF8/CFC PCI discovery, BAR validation, an owned uncacheable MMIO
+  bus-aware CF8/CFC PCI hierarchy discovery, selected BAR/parent-window validation, an owned uncacheable MMIO
   mapping,   and PIT-channel-2-calibrated TSC delays. The boot MAC platform path needs no
   scheduler; reference-counted APIC ownership and firmware copies use the
   already-initialized heap.
