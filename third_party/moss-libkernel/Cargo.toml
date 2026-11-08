@@ -14,4 +14,6 @@ sources = [
     "libkernel/src/memory/address.rs",
     "libkernel/src/memory/region.rs",
     "libkernel/src/sync/spinlock.rs",
+    "libkernel/src/sync/waker_set.rs",
+    "src/sched/sched_task/state.rs",
 ]

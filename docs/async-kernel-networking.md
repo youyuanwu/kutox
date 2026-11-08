@@ -2,10 +2,16 @@
 
 ## Status, scope and outcome
 
-This is a **design and implementation plan, not implemented behavior**.
+This is a **design and implementation plan, not yet network boot behavior**.
 The baseline is merged driver integration at `ac637ab` (PR #7). Current normal
 boot retains Linux e1000 and kernel workers but starts no application clients
 or IP stack; see the [current architecture](rust-kernel-linux-drivers.md#moss-style-driver-infrastructure).
+
+Phase 1 implements the [portable async ownership policy](../src/async_state.rs)
+and bounded Moss task/registration adaptations, with host-tested wake races,
+sixteen-record capacity and retained-waker retirement. Future polling,
+IRQ/deadline integration, the broker and IPv4 service remain subsequent phases;
+normal boot is unchanged.
 
 The next milestone adds a bounded Moss-inspired Rust async runtime and
 ARP/static IPv4/ICMP echo over the existing unchanged Linux e1000. After explicit
@@ -115,6 +121,16 @@ added; planning does not pretend those ports/dependencies are already present.
 - Retain stable task/waker records until outstanding wakers are released.
   Closed-epoch wakes cannot enqueue a replacement; retained records consume
   the fixed admission budget rather than accumulating unbounded tombstones.
+
+The portable policy holds metadata only. Its linear waker leases must be
+cloned/released through the owning table; abandoning a lease consumes bounded
+capacity rather than releasing a future. The executor must retain that same
+table across epoch reopen, own pinned future payloads separately, and acknowledge
+payload destruction only off-lock after any active poll returns. Completion,
+cancellation and closure are not that acknowledgement. Event waits snapshot a
+generation, register and recheck; an already-changed token must re-evaluate the
+condition rather than sleep. Drop-aware registrations remove only copyable
+metadata, never invoke arbitrary Waker hooks while holding the set's IRQ lock.
 
 After at most 16 future polls, yield the executor's kernel thread. Each ready
 future receives a turn; a self-waking future must not starve Linux workers.

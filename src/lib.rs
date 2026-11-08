@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+pub mod async_state;
 pub mod completion_state;
 pub mod deferred_state;
 pub mod dma_state;

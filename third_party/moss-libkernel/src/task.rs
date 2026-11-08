@@ -2,6 +2,8 @@
 // Copyright 2025 Matthew Leach
 //! Synchronous subset of Moss's sched_task/state.rs lifecycle.
 
+pub mod async_state;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TaskState {
     Runnable,

@@ -19,6 +19,7 @@
   [regions](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/region.rs),
   [CpuOps in lib.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/lib.rs),
   [task lifecycle states](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/sched/sched_task/state.rs),
+  [waker registration](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/waker_set.rs),
   [spinlock.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/spinlock.rs),
   and [mutex.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/mutex.rs).
 - Locations: portable primitives in
@@ -121,11 +122,37 @@ this depth to reject cooperative switching while any IRQ-safe guard is held.
 `Running`, `Sleeping`, and `Finished` states and named
 activate/runnable/sleep/wake/finish transitions.
 The subset uses exclusive mutable access and typed invalid-transition errors,
-not the upstream atomic-enum dependency. The upstream `Woken`, pending-sleep,
-stopping, and async-future lifecycle machinery is not copied. kutox's single-CPU
+not the upstream atomic-enum dependency. The separate async subset below adds
+`Woken` and pending-sleep without changing synchronous callers. kutox's single-CPU
 cooperative dispatcher registers waits with interrupts disabled and uses native
 notification-generation tokens for early wakes; this is not Moss's concurrent
 CAS-based wake/deactivation protocol or a claim of SMP-safe sleeping.
+
+### Bounded async task and registration adaptations
+
+[task/async_state.rs](third_party/moss-libkernel/src/task/async_state.rs)
+adapts the same pinned state source's wake-during-poll, `PendingSleep`
+deactivation and finished-task wake behavior. Caller-serialized mutable access
+replaces atomic enums/CAS; already-queued wakes coalesce, and a wake during poll
+or deactivation requires another FIFO turn. Stopped/process/preemption/ARM/SMP
+scheduler machinery is not imported.
+
+[sync/waker_set.rs](third_party/moss-libkernel/src/sync/waker_set.rs)
+adapts pinned Moss's registration, FIFO removal and drop-aware unregister model.
+Fixed caller-owned slots and globally checked nonwrapping registration IDs
+replace its dynamic `BTreeMap` and wrapping tokens. The set holds only copyable
+wake metadata, not arbitrary `Waker`s or user payloads; notification extracts
+metadata instead of invoking Waker hooks under an IRQ lock. Registration guards
+borrow the set without retaining a held lock and drop only copyable metadata.
+The upstream `Arc`/`WaitUntil` future implementation is not copied.
+
+[src/async_state.rs](src/async_state.rs) is native kutox policy using these
+adaptations: checked epochs, sixteen live/retained task slots, FIFO admission,
+event generations, sixteen registrations/deadlines and explicit cancellation,
+failure and off-lock payload-release acknowledgement. Waker records retain
+metadata slots only, including across epoch reopen. This portable layer does
+not yet supply the future executor, hardware IRQ/timer integration or packet
+broker. Its host tests are not claims of guest execution or source DMA drain.
 
 Moss's reviewed run queue is deadline/virtual-clock based and its kernel work
 is future-based; it is not copied as a stackful scheduler. kutox's bounded FIFO
@@ -141,8 +168,10 @@ on the existing Moss IRQ-lock adaptation and native wait queues. Pinned Moss's
 [async condition variable](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/condvar.rs)
 and
 [waker registration](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/waker_set.rs)
-were reviewed as prior art. Their `Arc`, future, and `Waker` implementations
-are not imported. Remembered credits, the broadcast latch, in-flight reset
+were reviewed as prior art for counting completions. Their `Arc`, future, and
+`Waker` implementations are not imported; the separate bounded registration
+adaptation above is not used by the stackful completion path.
+Remembered credits, the broadcast latch, in-flight reset
 exclusion, synchronous cancellation/deadlines, and completion tests are not
 claimed as an unchanged Moss primitive or Linux completion implementation.
 
