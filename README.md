@@ -110,8 +110,8 @@ The production initializer registers one supported e1000 backend, with native
 [network handles](src/net_device.rs) for real MAC/link/MTU/statistics, owned
 Ethernet frames, checked TX receipts and FIFO RX. Linux remains the only packet
 driver. [Persistent boot integration](docs/rust-kernel-linux-drivers.md#planned-moss-style-driver-infrastructure)
-is implemented for the selected QEMU profile; failure/teardown hardening and
-final as-built documentation remain subsequent phases.
+and managed failure/teardown hardening are implemented for the selected QEMU
+profile; final as-built documentation remains the next phase.
 
 ## Requirements
 
@@ -147,7 +147,7 @@ For a feature-off build of the same image:
 cmake -S . -B build -G Ninja -DKUTOX_GUEST_TESTS=OFF
 cmake --build build --target images --parallel 1
 ctest --test-dir build --output-on-failure --parallel 1 \
-  -R '^(kernel-build-profile|guest-tests-disabled|driver-runtime-tests-disabled|driver-network-tests-disabled|mac-known|driver-runtime-default|driver-runtime-run|driver-runtime-default-no-nic|driver-runtime-default-unsupported)$'
+  -R '^(kernel-build-profile|guest-tests-disabled|driver-runtime-tests-disabled|driver-network-tests-disabled|driver-hardening-tests-disabled|mac-known|driver-runtime-default|driver-runtime-run|driver-runtime-default-no-nic|driver-runtime-default-unsupported)$'
 ```
 
 This omits guest fixtures, C test objects, fault injection, checkpoints and
@@ -219,6 +219,7 @@ The runner selects a mode at launch through QEMU's `fw_cfg` file
 | `kernel-tests-fail` | Run the same suite with an additional intentionally failing case to test host rejection. |
 | `driver-runtime-tests` | Select acceptance from real PCI inventory: five no-NIC lifetime tests, managed packet clients for e1000, or unclaimed-runtime acceptance for an unsupported NIC. |
 | `driver-network-tests` | Exercise the managed e1000 runtime with exact packets, retained clients, typed errors and joined shutdown; reject two matching NICs before probing. |
+| `driver-hardening-tests` | Run five bounded manager/failure/FIFO/concurrent-consumer/pending-source teardown cases through the managed runtime. |
 | `heap-oom` | Attempt an oversized `Vec` allocation and verify Rust's fatal allocation-failure panic. |
 | `thread-stack-guard` | Read a thread's unmapped lower guard and verify the hardware page fault came from its mapped stack. |
 | `page-fault` | Read a deliberately unmapped address and verify the fatal exception diagnostics. |
@@ -264,7 +265,7 @@ partial worker admission rollback, real one-shot IRQ wake/dependency publication
 worker callbacks after a client returns, and shutdown retry while a source work
 object is still live. Three service stacks plus up to three clients use at most
 six of eight guarded stack slots. The combined conservative infrastructure
-metadata bound is 60,377 bytes, below 64 KiB. These no-NIC cases do not bind
+metadata bound is 60,385 bytes, below 64 KiB. These no-NIC cases do not bind
 e1000 or claim network readiness. Feature-off
 builds omit these fixtures and reject `driver-runtime-tests` before allocation.
 
@@ -350,6 +351,48 @@ qemu-system-x86_64 -machine pc -accel tcg -cpu qemu64 -smp 1 -m 128M \
 
 The runtime stays in the dispatcher; use Ctrl+C to end this owned manual session.
 Booting does not automatically generate application packets, DHCP or IP traffic.
+
+### Managed failure and teardown hardening
+
+```sh
+ctest --test-dir build --output-on-failure --parallel 1 \
+  -R '^(driver-hardening-tests|driver-hardening-tests-low-memory|driver-hardening-tests-nested-low-memory)$'
+```
+
+The same image exercises five cases at root/128 MiB, root/32 MiB and nested
+PCI/32 MiB. Native manager tests fill 256 discovered identities, 32 bindings
+and 32 operations; later service publication retries a deferred driver once,
+while an optional failure and selective stop leave unrelated ownership intact.
+Managed startup tests cover PCI regions/MMIO, source allocation/open/coherent/
+streaming-DMA/IRQ failures and shared-worker/client admission rollback, followed
+by actual Linux TX recovery. Original open's partial RX-allocation success is
+preserved and diagnosed, not silently changed into a fake probe failure.
+
+FIFO acceptance injects 13 real 60-byte frames, receives 12 in exact wrap order
+and measures one capacity drop through native `Info::statistics.rx_dropped`.
+Concurrent clients prove admission closes and waiters wake **before** source
+close can run, while a retained manager reservation keeps backing live. Old
+handles/receipts cannot reach a replacement; copied native RX bytes can outlive
+source removal safely.
+
+Pending acceptance observes an actual TX IRQ and 256 streaming maps, then
+reprobes on the same retained platform/IRQ parents. Original NAPI/work
+reservations hold backing during source close, and premature coherent-ring
+free returns `-16` even with engines disabled. Checkpoints suspend the native
+worker **before entering** the atomic C callback, never inside a C NAPI/IRQ
+body. Exact pending RX bytes are read only after the existing CPU-access check,
+drained through original NAPI, then purged before replacement admission.
+Source-private counters, Linux algorithms and DMA/drain rules are unchanged.
+
+Manager `begin_stop` is an idempotent non-sleeping admission/wakeup boundary,
+separate from `stop`'s source close/remove and backing retirement. Lifecycle
+completion wakes the probe coordinator; it retains readiness events while
+another thread is removing/probing instead of treating that state as a failure
+or polling. The host requires exact socket/PCAP bytes, error/injection ledgers,
+original callback identities and causal wake/join/free/purge/reprobe order.
+Peak concurrency remains six of eight guarded stacks; infrastructure metadata
+is 60,385 bytes. These fixtures are omitted in test-free builds, which reject
+the mode with `-25`. Independent original 539-TX/304-hard-RX acceptance remains.
 
 Run the same 59 registered cases with 32 MiB of guest RAM:
 

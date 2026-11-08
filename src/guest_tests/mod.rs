@@ -6,7 +6,7 @@ pub(crate) mod e1000_irq;
 pub(crate) mod linux_e1000;
 mod linux_execution;
 pub(crate) mod linux_hardening;
-mod native_drivers;
+pub(crate) mod native_drivers;
 
 use self::{
     driver_services as driver_service_tests, linux_e1000 as linux_driver,
@@ -340,6 +340,8 @@ pub fn run(boot: &BootInfo) -> ! {
         }
     } else if boot.mode == BootMode::DriverNetworkTests {
         crate::linux_driver::tests::TESTS
+    } else if boot.mode == BootMode::DriverHardeningTests {
+        crate::linux_driver::hardening::TESTS
     } else {
         TESTS
     };

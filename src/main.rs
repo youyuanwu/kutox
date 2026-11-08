@@ -239,6 +239,7 @@ fn probe() -> Result<BootOutcome, Failure> {
             | BootMode::KernelTestsFail
             | BootMode::DriverRuntimeTests
             | BootMode::DriverNetworkTests
+            | BootMode::DriverHardeningTests
     ) {
         guest_tests::run(&boot);
     }

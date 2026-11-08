@@ -141,6 +141,20 @@ pub(crate) fn source_join(kind: u32) {
         serial::print(format_args!("# LINUX_HARD_JOIN kind={kind} backing=live\n"));
     }
 }
+pub(crate) fn hold_source(kind: u32, ticket: u64) {
+    TICKET.store(ticket, Ordering::Release);
+    arm(kind);
+}
+pub(crate) fn source_held(kind: u32) -> bool {
+    PAUSED.load(Ordering::Acquire) == kind
+}
+pub(crate) fn source_joined(kind: u32) -> bool {
+    JOIN.load(Ordering::Acquire) == kind
+}
+pub(crate) fn release_source() {
+    RELEASE.store(true, Ordering::Release);
+    PAUSE_QUEUE.notify_without_switch(true).unwrap();
+}
 pub(crate) fn atomic_reentry() {
     if REENTRY.swap(false, Ordering::AcqRel) {
         assert_eq!(DriverHandle(TICKET.load(Ordering::Acquire)).close(), -58);

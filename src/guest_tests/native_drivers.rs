@@ -29,6 +29,158 @@ static LIVE: AtomicUsize = AtomicUsize::new(0);
 static STOPPED: AtomicUsize = AtomicUsize::new(0);
 static DROPPED: AtomicUsize = AtomicUsize::new(0);
 
+pub(crate) fn hardening(
+    boot: &BootInfo,
+    frames: &'static memory::PhysicalFrames<'static>,
+) -> Result<(), Failure> {
+    run(
+        boot,
+        frames,
+        |_| {
+            struct CapacityDriver(DriverSpec, bool);
+            impl NativeDriver for CapacityDriver {
+                fn spec(&self) -> DriverSpec {
+                    self.0
+                }
+                fn probe(&self, _: DeviceInfo) -> ProbeResult {
+                    threads::tests::check_current_stack().unwrap();
+                    assert_eq!(X86Cpu::irq_lock_depth(), 0);
+                    if self.1 {
+                        return ProbeResult::Failed(-12);
+                    }
+                    LIVE.fetch_add(1, Ordering::Relaxed);
+                    ProbeResult::Bound(Arc::new(Device {
+                        stopped: AtomicBool::new(false),
+                    }))
+                }
+            }
+            reset(&MANAGER);
+            clear_counts(4, 0);
+            let spec = DriverSpec {
+                id: id(50),
+                priority: 50,
+                scope: Scope::Test,
+                matcher: Matcher::Synthetic(50),
+                max_instances: kutox::driver_registry::MAX_BOUND,
+                dependencies: [None; MAX_DEPENDENCIES],
+            };
+            MANAGER
+                .initialize(|manager| manager.register(Arc::new(CapacityDriver(spec, false))))
+                .unwrap();
+            let mut first = None;
+            for index in 0..kutox::driver_registry::MAX_DEVICES {
+                let handle = MANAGER
+                    .discover(DeviceInfo::Synthetic {
+                        identity: index as u64 + 1,
+                        kind: 50,
+                    })
+                    .unwrap();
+                first.get_or_insert(handle);
+            }
+            assert_eq!(
+                MANAGER.discover(DeviceInfo::Synthetic {
+                    identity: 999,
+                    kind: 50
+                }),
+                Err(Error::Capacity)
+            );
+            let summary = MANAGER
+                .coordinate_probes(|event| {
+                    assert!(matches!(
+                        event,
+                        ProbeDiagnostic::Failed {
+                            error: Error::Driver(-170),
+                            ..
+                        }
+                    ))
+                })
+                .unwrap();
+            assert_eq!((summary.bound, summary.failed), (32, 224));
+            let first = first.unwrap();
+            let mut held = alloc::vec::Vec::new();
+            for _ in 0..kutox::driver_registry::MAX_OPERATIONS {
+                held.push(MANAGER.operation(first).unwrap());
+            }
+            assert!(matches!(MANAGER.operation(first), Err(Error::Capacity)));
+            assert_eq!(MANAGER.shutdown(), Err(Error::Busy));
+            assert_eq!(LIVE.load(Ordering::Relaxed), 1);
+            assert_eq!(STOPPED.load(Ordering::Relaxed), 31);
+            drop(held);
+            MANAGER.shutdown().unwrap();
+            assert_eq!(STOPPED.load(Ordering::Relaxed), 32);
+            assert_eq!(DROPPED.load(Ordering::Relaxed), 32);
+            serial::print(format_args!(
+                "# MANAGED_HARD_MANAGER discovered=256 bound=32 limited=224 operations=32 stopped=32 dropped=32 retained=1\n"
+            ));
+            MANAGER.restart().unwrap();
+            clear_counts(5, 0);
+            let service = service(7);
+            let mut delayed = spec;
+            delayed.dependencies[0] = Some(Dependency::Service(service));
+            let mut other = spec;
+            other.id = id(51);
+            other.matcher = Matcher::Synthetic(51);
+            let mut failed = spec;
+            failed.id = id(52);
+            failed.matcher = Matcher::Synthetic(52);
+            MANAGER
+                .initialize(|manager| {
+                    manager.register(Arc::new(CapacityDriver(delayed, false)))?;
+                    manager.register(Arc::new(CapacityDriver(other, false)))?;
+                    manager.register(Arc::new(CapacityDriver(failed, true)))
+                })
+                .unwrap();
+            let target = MANAGER
+                .discover(DeviceInfo::Synthetic {
+                    identity: 1,
+                    kind: 50,
+                })
+                .unwrap();
+            let survivor = MANAGER
+                .discover(DeviceInfo::Synthetic {
+                    identity: 2,
+                    kind: 51,
+                })
+                .unwrap();
+            MANAGER
+                .discover(DeviceInfo::Synthetic {
+                    identity: 3,
+                    kind: 52,
+                })
+                .unwrap();
+            let summary = MANAGER.coordinate_probes(|_| ()).unwrap();
+            assert_eq!(
+                (
+                    summary.attempts,
+                    summary.bound,
+                    summary.failed,
+                    summary.waiting
+                ),
+                (2, 1, 1, 1)
+            );
+            assert_eq!(MANAGER.coordinate_probes(|_| ()).unwrap().attempts, 0);
+            assert!(MANAGER.publish_service(service).unwrap());
+            assert_eq!(MANAGER.coordinate_probes(|_| ()).unwrap().attempts, 1);
+            assert_eq!(MANAGER.coordinate_probes(|_| ()).unwrap().attempts, 0);
+            MANAGER.stop(target).unwrap();
+            assert_eq!(MANAGER.operation(survivor).unwrap().ready(), Ok(true));
+            assert_eq!(STOPPED.load(Ordering::Relaxed), 1);
+            MANAGER.shutdown().unwrap();
+            assert_eq!(
+                (
+                    STOPPED.load(Ordering::Relaxed),
+                    DROPPED.load(Ordering::Relaxed)
+                ),
+                (2, 2)
+            );
+            serial::print(format_args!(
+                "# MANAGED_HARD_DEPENDENCY attempts=2 bound=1 failed=1 waiting=1 retries=1 no_progress=0 stopped_target=1 survivor=1\n"
+            ));
+        },
+        0,
+    )
+}
+
 const fn id(value: u32) -> DriverId {
     match DriverId::new(value) {
         Ok(id) => id,

@@ -135,6 +135,8 @@ pub trait NativeDevice: Send + Sync {
     fn network(&self) -> Option<&dyn crate::net_state::NetworkDevice> {
         None
     }
+    /// Close admission and wake waiters idempotently; do not sleep or release backing.
+    fn begin_stop(&self) {}
     /// Success confirms that callbacks and device activity no longer use backing.
     fn stop(&self) -> Result<(), i32>;
 }
@@ -156,6 +158,8 @@ pub trait NativeDriver: Send + Sync {
 pub struct Hooks {
     pub check_context: fn() -> Result<(), Error>,
     pub report_error: fn(&'static str, Error),
+    /// Unlocked, non-sleeping notification after a probe or stop invocation completes.
+    pub progress: fn(),
 }
 
 struct State {
@@ -500,6 +504,7 @@ impl<CPU: CpuOps> Manager<CPU> {
 
     pub fn stop(&self, handle: DeviceHandle) -> Result<(), Error> {
         self.update("driver-stop", |state| state.registry.begin_stop(handle))?;
+        self.notify_stop(handle)?;
         let stop = self.update("driver-stop-reserve", |state| {
             if state.registry.inspect(handle)?.state == DeviceState::Retired {
                 return Ok(None);
@@ -515,6 +520,14 @@ impl<CPU: CpuOps> Manager<CPU> {
 
     pub fn shutdown(&self) -> Result<(), Error> {
         self.update("driver-shutdown", |state| state.registry.begin_shutdown())?;
+        for slot in 0..MAX_BOUND {
+            let device = self.update("driver-shutdown-notify", |state| {
+                Ok(state.devices[slot].clone())
+            })?;
+            if let Some(device) = device {
+                device.begin_stop();
+            }
+        }
         loop {
             let stop = self.update("driver-shutdown-reserve", |state| {
                 Ok(state
@@ -539,6 +552,24 @@ impl<CPU: CpuOps> Manager<CPU> {
             ))
         })?;
         drop(drivers);
+        Ok(())
+    }
+
+    fn notify_stop(&self, handle: DeviceHandle) -> Result<(), Error> {
+        let device = self.metadata("driver-stop-notify", |state| {
+            if matches!(
+                state.registry.inspect(handle)?.state,
+                DeviceState::Stopping { .. }
+            ) {
+                let slot = state.registry.binding_slot(handle)?;
+                Ok(state.devices[slot].clone())
+            } else {
+                Ok(None)
+            }
+        })?;
+        if let Some(device) = device {
+            device.begin_stop();
+        }
         Ok(())
     }
 
@@ -592,6 +623,12 @@ impl<CPU: CpuOps> Probe<'_, CPU> {
         });
         if result.is_ok() {
             self.finished = true;
+        }
+        if matches!(result, Ok(DeviceState::Stopping { .. })) && outcome == ProbeOutcome::Bound {
+            self.manager.notify_stop(self.invocation.device)?;
+        }
+        if result.is_ok() && CPU::irq_lock_depth() == 0 {
+            (self.manager.hooks.progress)();
         }
         result
     }
@@ -721,6 +758,9 @@ impl<CPU: CpuOps> Stop<'_, CPU> {
             .expect("native stop reservation invalid");
         self.finished = true;
         drop(retired);
+        if CPU::irq_lock_depth() == 0 {
+            (self.manager.hooks.progress)();
+        }
     }
 
     fn run(mut self) -> Result<(), Error> {

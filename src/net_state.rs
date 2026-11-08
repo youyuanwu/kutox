@@ -87,10 +87,11 @@ pub struct Statistics {
     pub rx_bytes: u64,
     pub queued_packets: u64,
     pub completed_packets: u64,
+    pub rx_dropped: u64,
 }
 
-impl From<[u64; 6]> for Statistics {
-    fn from(values: [u64; 6]) -> Self {
+impl From<[u64; 7]> for Statistics {
+    fn from(values: [u64; 7]) -> Self {
         Self {
             tx_packets: values[0],
             tx_bytes: values[1],
@@ -98,6 +99,7 @@ impl From<[u64; 6]> for Statistics {
             rx_bytes: values[3],
             queued_packets: values[4],
             completed_packets: values[5],
+            rx_dropped: values[6],
         }
     }
 }

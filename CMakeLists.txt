@@ -142,6 +142,14 @@ foreach(case IN ITEMS driver-network-tests driver-network-tests-low-memory drive
     )
     set_tests_properties("${case}" PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 endforeach()
+foreach(case IN ITEMS driver-hardening-tests driver-hardening-tests-low-memory driver-hardening-tests-nested-low-memory)
+    add_test(NAME "${case}"
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --case "${case}" --build-dir "${CMAKE_BINARY_DIR}"
+            --qemu "${QEMU}" --nm "${NM}" --timeout 75
+    )
+    set_tests_properties("${case}" PROPERTIES TIMEOUT 80 RUN_SERIAL TRUE)
+endforeach()
 else()
     add_test(NAME guest-tests-disabled
         COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
@@ -161,6 +169,12 @@ else()
             --qemu "${QEMU}" --timeout 20
     )
     set_tests_properties(driver-network-tests-disabled PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
+    add_test(NAME driver-hardening-tests-disabled
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --case driver-hardening-tests-disabled --build-dir "${CMAKE_BINARY_DIR}"
+            --qemu "${QEMU}" --timeout 20
+    )
+    set_tests_properties(driver-hardening-tests-disabled PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
 endif()
 add_test(NAME harness-unit
     COMMAND ${Python3_EXECUTABLE} -m unittest discover -s tests -v

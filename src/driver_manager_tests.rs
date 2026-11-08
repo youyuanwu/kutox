@@ -56,6 +56,7 @@ fn manager() -> Manager<Cpu> {
     Manager::new(
         Scope::Test,
         Hooks {
+            progress: || assert_eq!(Cpu::irq_lock_depth(), 0),
             check_context: context,
             report_error: report,
         },
@@ -82,6 +83,7 @@ struct Counts {
     live: AtomicUsize,
     stop_error: AtomicI32,
     ready_error: AtomicI32,
+    admissions: AtomicUsize,
 }
 
 enum Behavior {
@@ -141,6 +143,7 @@ impl NativeDriver for Driver {
                     identity,
                     counts: self.counts.clone(),
                     stopped: AtomicBool::new(false),
+                    admission_closed: AtomicBool::new(false),
                     manager: self.manager.clone(),
                 }))
             }
@@ -164,9 +167,16 @@ struct Device {
     identity: u64,
     counts: Arc<Counts>,
     stopped: AtomicBool,
+    admission_closed: AtomicBool,
     manager: Option<Weak<Manager<Cpu>>>,
 }
 impl NativeDevice for Device {
+    fn begin_stop(&self) {
+        assert_eq!(Cpu::irq_lock_depth(), 0);
+        if !self.admission_closed.swap(true, Ordering::Relaxed) {
+            self.counts.admissions.fetch_add(1, Ordering::Relaxed);
+        }
+    }
     fn ready(&self) -> Result<bool, i32> {
         assert_eq!(Cpu::irq_lock_depth(), 0);
         match self.counts.ready_error.load(Ordering::Relaxed) {
@@ -372,6 +382,7 @@ fn shutdown_retains_a_running_probe_then_stops_the_returned_instance() {
         invocation.run().unwrap(),
         DeviceState::Stopping { .. }
     ));
+    assert_eq!(driver.counts.admissions.load(Ordering::Relaxed), 1);
     assert!(matches!(manager.operation(handle), Err(Error::Busy)));
     manager.shutdown().unwrap();
     assert_eq!(driver.counts.stops.load(Ordering::Relaxed), 1);
@@ -390,12 +401,14 @@ fn consumer_reservations_block_stop_and_new_operations_are_rejected() {
     let operation = manager.operation(handle).unwrap();
     assert_eq!(manager.shutdown(), Err(Error::Busy));
     assert_eq!(driver.counts.stops.load(Ordering::Relaxed), 0);
+    assert_eq!(driver.counts.admissions.load(Ordering::Relaxed), 1);
     assert_eq!(driver.counts.live.load(Ordering::Relaxed), 1);
     assert!(matches!(manager.operation(handle), Err(Error::Busy)));
     assert_eq!(operation.ready(), Err(Error::Busy));
     drop(operation);
     manager.shutdown().unwrap();
     assert_eq!(driver.counts.live.load(Ordering::Relaxed), 0);
+    assert_eq!(driver.counts.admissions.load(Ordering::Relaxed), 1);
 }
 
 #[test]
@@ -751,6 +764,149 @@ fn coordinator_reports_failed_readiness_without_publishing_success() {
         manager.inspect(handle).unwrap().state,
         DeviceState::Bound { ready: false, .. }
     ));
+    manager.shutdown().unwrap();
+}
+
+#[test]
+fn context_rejected_reserved_probe_does_not_invoke_progress_under_an_outer_irq_guard() {
+    let manager = manager();
+    let driver = Driver::new(spec(1, 1), Behavior::Bind);
+    manager
+        .initialize(|manager| manager.register(driver.clone()))
+        .unwrap();
+    let handle = manager.discover(info(1, 1)).unwrap();
+    let probe = manager.reserve_probe().unwrap().unwrap();
+    let outer = SpinLockIrq::<(), Cpu>::new(());
+    {
+        let _guard = outer.lock_save_irq();
+        assert_eq!(probe.run(), Err(Error::Context));
+    }
+    assert_eq!(driver.counts.probes.load(Ordering::Relaxed), 0);
+    assert!(matches!(
+        manager.inspect(handle).unwrap().state,
+        DeviceState::Failed { code: -166, .. }
+    ));
+    manager.shutdown().unwrap();
+}
+
+#[test]
+fn dependency_publication_after_startup_retries_once_and_preserves_optional_failures() {
+    let manager = manager();
+    let service = ServiceId::new(7).unwrap();
+    let mut delayed = spec(1, 1);
+    delayed.dependencies[0] = Some(Dependency::Service(service));
+    let dependent = Driver::new(delayed, Behavior::Bind);
+    let survivor = Driver::new(spec(2, 2), Behavior::Bind);
+    manager
+        .initialize(|manager| {
+            manager.register(dependent.clone())?;
+            manager.register(survivor.clone())?;
+            manager.register(Driver::new(spec(3, 3), Behavior::Fail(-12)))
+        })
+        .unwrap();
+    let target = manager.discover(info(1, 1)).unwrap();
+    let other = manager.discover(info(2, 2)).unwrap();
+    manager.discover(info(3, 3)).unwrap();
+    let summary = manager.coordinate_probes(|_| ()).unwrap();
+    assert_eq!(
+        (
+            summary.attempts,
+            summary.bound,
+            summary.failed,
+            summary.waiting
+        ),
+        (2, 1, 1, 1)
+    );
+    assert_eq!(manager.coordinate_probes(|_| ()).unwrap().attempts, 0);
+    assert!(manager.publish_service(service).unwrap());
+    assert_eq!(manager.coordinate_probes(|_| ()).unwrap().attempts, 1);
+    assert_eq!(manager.coordinate_probes(|_| ()).unwrap().attempts, 0);
+    manager.stop(target).unwrap();
+    assert_eq!(manager.operation(other).unwrap().ready(), Ok(true));
+    assert_eq!(survivor.counts.admissions.load(Ordering::Relaxed), 0);
+    assert_eq!(dependent.counts.stops.load(Ordering::Relaxed), 1);
+    manager.shutdown().unwrap();
+}
+
+#[test]
+fn manager_capacities_reject_admission_without_losing_owned_instances() {
+    let manager = manager();
+    let first = Driver::new(spec(1, 1), Behavior::Bind);
+    let second = Driver::new(spec(2, 2), Behavior::Bind);
+    manager
+        .initialize(|manager| {
+            manager.register(first.clone())?;
+            manager.register(second.clone())?;
+            for id in 3..=MAX_DRIVERS as u32 {
+                manager.register(Driver::new(spec(id, id), Behavior::NoMatch))?;
+            }
+            assert_eq!(
+                manager.register(Driver::new(spec(99, 99), Behavior::Bind)),
+                Err(Error::Capacity)
+            );
+            Ok(())
+        })
+        .unwrap();
+    for index in 1..=MAX_DEVICES {
+        manager
+            .discover(info(index as u64, if index % 2 == 0 { 2 } else { 1 }))
+            .unwrap();
+    }
+    assert_eq!(manager.discover(info(999, 1)), Err(Error::Capacity));
+    let mut handles = Vec::new();
+    for _ in 0..MAX_BOUND {
+        handles.push(probe(&manager));
+    }
+    assert!(matches!(manager.reserve_probe(), Err(Error::Capacity)));
+    let mut operations = Vec::new();
+    for _ in 0..crate::driver_registry::MAX_OPERATIONS {
+        operations.push(manager.operation(handles[0]).unwrap());
+    }
+    assert!(matches!(
+        manager.operation(handles[0]),
+        Err(Error::Capacity)
+    ));
+    assert_eq!(manager.shutdown(), Err(Error::Busy));
+    assert_eq!(
+        first.counts.live.load(Ordering::Relaxed) + second.counts.live.load(Ordering::Relaxed),
+        1
+    );
+    drop(operations);
+    manager.shutdown().unwrap();
+    assert_eq!(
+        first.counts.live.load(Ordering::Relaxed) + second.counts.live.load(Ordering::Relaxed),
+        0
+    );
+    assert_eq!(
+        first.counts.stops.load(Ordering::Relaxed) + second.counts.stops.load(Ordering::Relaxed),
+        MAX_BOUND
+    );
+}
+
+#[test]
+fn selective_stop_notifies_only_the_target_before_consumers_release() {
+    let manager = manager();
+    let first = Driver::new(spec(1, 1), Behavior::Bind);
+    let second = Driver::new(spec(2, 2), Behavior::Bind);
+    manager
+        .initialize(|manager| {
+            manager.register(first.clone())?;
+            manager.register(second.clone())
+        })
+        .unwrap();
+    manager.discover(info(1, 1)).unwrap();
+    manager.discover(info(2, 2)).unwrap();
+    let target = probe(&manager);
+    let survivor = probe(&manager);
+    let held = manager.operation(target).unwrap();
+    assert_eq!(manager.stop(target), Err(Error::Busy));
+    assert_eq!(first.counts.admissions.load(Ordering::Relaxed), 1);
+    assert_eq!(second.counts.admissions.load(Ordering::Relaxed), 0);
+    assert_eq!(manager.operation(survivor).unwrap().ready(), Ok(true));
+    drop(held);
+    manager.stop(target).unwrap();
+    assert_eq!(first.counts.stops.load(Ordering::Relaxed), 1);
+    assert_eq!(second.counts.stops.load(Ordering::Relaxed), 0);
     manager.shutdown().unwrap();
 }
 

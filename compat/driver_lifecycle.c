@@ -74,6 +74,7 @@ int kutox_c_linux_statistics(uint64_t ticket, uint64_t *statistics)
     statistics[3] = device->stats.rx_bytes;
     statistics[4] = device->sent_packets;
     statistics[5] = device->completed_packets;
+    statistics[6] = device->stats.rx_dropped;
     return 0;
 }
 bool kutox_c_linux_rx_failure_seen(uint64_t ticket)

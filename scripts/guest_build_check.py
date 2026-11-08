@@ -20,6 +20,7 @@ GUEST_SYMBOLS = {
     "kutox_guest_native_probe",
     "kutox_guest_runtime_work",
     "kutox_guest_network_client",
+    "kutox_guest_managed_hardening",
 } | NATIVE_INIT_SYMBOLS
 RUNTIME_SYMBOLS = {
     "e1000_probe", "e1000_open", "e1000_close", "e1000_xmit_frame",

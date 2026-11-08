@@ -1048,8 +1048,8 @@ they do not replace this roadmap's driver-execution gates.
 
 ### Planned Moss-style driver infrastructure
 
-The next integration milestone has **Phases 1-6 implemented; the remaining phases
-are planned**. The native [registry policy](../src/driver_registry.rs) and
+The next integration milestone has **Phases 1-7 implemented; the remaining phase
+is planned**. The native [registry policy](../src/driver_registry.rs) and
 [owned manager boundary](../src/drivers.rs) have portable and guarded-thread
 guest tests, including retained built-in initializers and probe coordination.
 The e1000 backend now works behind retained native network handles in the
@@ -1093,6 +1093,7 @@ The planned phases are:
    Implemented, including measured default liveness and no-NIC/unknown-NIC startup.
 7. **Hardening:** dependency progress, failures/capacity, consumer lifetime and
    pending source callback/packet teardown with complete resource recovery.
+   Implemented and verified in portable and managed root/low-memory/nested tests.
 8. **Documentation:** actual interfaces, default-mode migration, budgets,
    provenance, commands and supported/unsupported profile.
 
@@ -1269,7 +1270,7 @@ fabricated polling worker.
 
 - `enumerate(runtime)` returns bound network handles even while link readiness
   is still pending. `info()` returns actual MAC, full BDF, link, MTU and source
-  TX/RX/queue statistics.
+  TX/RX/queue/drop statistics.
 - `Frame::from_bytes` fallibly copies, while `Frame::from_owned` reuses bounded
   owned storage. Ethernet II sizes are 14-1514 bytes; LLC, VLAN/QinQ and other
   offload profiles are explicitly unsupported. Heap-backed frame values avoid
@@ -1286,8 +1287,10 @@ fabricated polling worker.
   Destination storage is allocated before consuming a FIFO entry. The existing
   eight RX slots and one outstanding production TX remain unchanged.
 - Errors distinguish not-ready, stale, BUSY, timeout, allocation, consumed drop,
-  closed, unsupported and context failures. Stop rejects new operations, wakes
-  waiters, stops observation before source RX teardown, invokes original close/
+  closed, unsupported and context failures. `begin_stop` closes native admission
+  and wakes waiters without sleeping or freeing backing, even when consumer
+  reservations prevent `stop` from running. Stop waits for reservations,
+  stops observation before source RX teardown, invokes original close/
   remove once, retires pending receipts only after source stop/drain, and purges
   copied ingress before releasing the parent owners.
 
@@ -1357,7 +1360,71 @@ run and default no-NIC/unsupported liveness checks, and provides
 `driver-runtime-unsupported`, plus bridged/nested/no-NIC/unknown low-memory
 variants. All use the selected `build/kutox.iso`; no per-mode images or module
 loader is introduced. Independent original packet/hardening acceptance remains
-unchanged. Expanded failure/teardown hardening and final docs are Phases 7-8.
+unchanged. Expanded failure/teardown hardening is implemented; final docs are
+Phase 8.
+
+#### Managed failure, concurrency and callback lifetime
+
+[Manager stop admission](../src/drivers.rs) invokes `NativeDevice::begin_stop`
+outside IRQ locks before reserving final retirement. The selected e1000 adapter
+atomically closes existing/new views and wakes waiters, while active operations
+retain their Arc/source backing. `stop` remains the source close/remove and
+retirement boundary; retry does not repeat an already completed close.
+Late probes completing during shutdown also close admission before retirement.
+Unlocked, non-sleeping lifecycle-completion hooks wake the runtime coordinator.
+It preserves pending readiness requests while another thread is probing/
+stopping and resumes on actual completion, not polling or success-shaped error
+suppression. Context-rejected calls do not invoke notifications under outer
+IRQ guards.
+
+[Portable manager tests](../src/driver_manager_tests.rs) exercise exact driver/
+device/binding/operation capacities, notification before late reservation
+release, selective stop isolation, deferred publication after startup and
+context-safe completion. The existing duplicate/metadata/cycle/failure/restart
+tests remain independent. A guarded-thread guest fills 256 identities,
+32 native bindings and 32 operations; 224 instance-limit failures do not
+truncate discovery. One retained operation keeps its backing alive through
+partial shutdown. An actual later service publication retries one synthetic
+dependent while optional failure/target stop leave a survivor usable.
+
+[Five managed hardening cases](../src/guest_tests/network_hardening.rs) use
+explicit `driver-hardening-tests`, separate from the unchanged 59-case suite.
+They run at 128/32 MiB and through retained nested PCI parents:
+
+- Nine admission/failure epochs cover regions, MMIO, allocation, coherent
+  TX/RX setup, streaming RX mapping, IRQ and shared-worker/client stack
+  admission. Actual resource snapshots balance, followed by original TX
+  recovery. Linux's successful open with partial RX allocation is measured,
+  preserved and closed normally; void source registration APIs are not
+  replaced with fictitious recoverable returns.
+- Thirteen actual ingress frames exercise the eight-slot FIFO and wrap;
+  12 exact deliveries plus one source-accounted capacity drop are required.
+  Native statistics now include `rx_dropped` through a seven-value internal
+  C/Rust snapshot, without exposing or resetting private layouts/counters.
+- Three concurrent clients prove pre-close waiter wake, closed retained views,
+  live backing under busy stop, deliberate reservation release, same-parent
+  rebind, stale old handles and copied RX bytes released after replacement.
+- Pending TX observes the actual APIC IRQ and 256 streaming mappings. Further
+  epochs retain original NAPI/work reservations through close; source callbacks
+  join before coherent/backing release. Premature coherent-ring free returns
+  `-16` while engines are disabled. Atomic callbacks are never suspended inside
+  C: the native worker's pre-invocation checkpoint is the retained boundary.
+  The original NAPI path drains exact pending RX bytes under the existing
+  CPU-access validation; copied ingress is purged before replacement use.
+
+[Host hardening tests](../tests/test_managed_hardening.py) require exact
+injection/error counts, owned-socket/PCAP packets and original callback
+identity/lifetime. Wake-before-close, callback join before free, exact drain
+before purge and new-generation use are causal requirements, not incidental
+scheduler order or timeout/BME/reset proxies. Source algorithms, private
+counters, ring sizes, RX grant revocation and independent original
+539-TX/304-hard-RX acceptance are unchanged.
+
+Peak managed acceptance remains six guarded stacks. The additional native drop
+statistic brings conservative infrastructure to **60,385 bytes**; lifecycle
+hook storage fits the existing manager-header allowance. All hardening
+callbacks/checkpoints are feature-gated and absent from test-free ELFs. No new
+Linux source, module loader, multi-Linux-instance support or IP stack is added.
 
 Bridge timing also exposed two fixture assumptions: an earlier link IRQ's
 queued NAPI may legitimately clean a new TX before its TXDW interrupt, and

@@ -77,6 +77,7 @@ pub fn validate_boot_metadata() -> Result<(), Failure> {
 }
 
 pub const HOOKS: Hooks = Hooks {
+    progress: crate::kernel_runtime::source_progress,
     check_context: || threads::check_thread_context().map_err(|_| Error::Context),
     report_error: |operation, error| {
         serial::print(format_args!(

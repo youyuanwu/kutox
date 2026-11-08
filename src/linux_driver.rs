@@ -243,12 +243,17 @@ fn bind_managed(address: PciAddress) -> Result<ManagedDevice, i32> {
         receipt: None,
     });
     MANAGED_TICKET.store(ticket, Ordering::Release);
-    Ok(ManagedDevice { ticket, address })
+    Ok(ManagedDevice {
+        ticket,
+        address,
+        stopping: AtomicBool::new(false),
+    })
 }
 
 struct ManagedDevice {
     ticket: u64,
     address: PciAddress,
+    stopping: AtomicBool,
 }
 
 impl ManagedDevice {
@@ -258,7 +263,13 @@ impl ManagedDevice {
         call: impl FnOnce(&mut ManagedState) -> Result<T, Error>,
     ) -> Result<T, Error> {
         let result = (|| {
+            if self.stopping.load(Ordering::Acquire) {
+                return Err(Error::Closed);
+            }
             let mut state = managed_lock().map_err(Error::from_code)?;
+            if self.stopping.load(Ordering::Acquire) {
+                return Err(Error::Closed);
+            }
             let state = state.as_mut().ok_or(Error::Closed)?;
             if state.driver.0 != self.ticket {
                 return Err(Error::Stale);
@@ -285,7 +296,15 @@ impl ManagedDevice {
 }
 
 impl NativeDevice for ManagedDevice {
+    fn begin_stop(&self) {
+        if !self.stopping.swap(true, Ordering::AcqRel) {
+            crate::net_device::wake();
+        }
+    }
     fn ready(&self) -> Result<bool, i32> {
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(-19);
+        }
         let mut state = managed_lock()?;
         let state = state.as_mut().ok_or(-19)?;
         if state.driver.0 != self.ticket {
@@ -304,7 +323,7 @@ impl NativeDevice for ManagedDevice {
     }
 
     fn stop(&self) -> Result<(), i32> {
-        crate::net_device::wake();
+        self.begin_stop();
         let mut owner = managed_lock()?;
         let state = owner.as_mut().ok_or(-19)?;
         if state.driver.0 != self.ticket {
@@ -343,7 +362,7 @@ impl NetworkDevice for ManagedDevice {
                 mtu: 0,
                 link: false,
                 ready: false,
-                statistics: [0; 6].into(),
+                statistics: [0; 7].into(),
             };
             let mut link = 0;
             checked(control("info", || unsafe {
@@ -351,7 +370,7 @@ impl NetworkDevice for ManagedDevice {
             }))
             .map_err(Error::from_code)?;
             info.link = link != 0;
-            let mut statistics = [0; 6];
+            let mut statistics = [0; 7];
             checked(control("statistics", || unsafe {
                 kutox_c_linux_statistics(self.ticket, statistics.as_mut_ptr())
             }))
@@ -462,6 +481,10 @@ impl NetworkDevice for ManagedDevice {
 #[cfg(feature = "guest-tests")]
 #[path = "guest_tests/network.rs"]
 pub mod tests;
+
+#[cfg(feature = "guest-tests")]
+#[path = "guest_tests/network_hardening.rs"]
+pub mod hardening;
 
 pub(crate) struct DriverHandle(pub(crate) u64);
 impl DriverHandle {

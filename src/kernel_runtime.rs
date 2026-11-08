@@ -653,7 +653,12 @@ fn coordinator(address: usize) {
                 }
             }
         }
+        let snapshot = MANAGER
+            .snapshot()
+            .expect("runtime manager control snapshot");
         if !CONTROL.stopping.load(Ordering::Acquire)
+            && snapshot.probing == 0
+            && snapshot.stopping == 0
             && CONTROL.probe_pending.swap(false, Ordering::AcqRel)
         {
             CONTROL.probe_running.store(true, Ordering::Release);

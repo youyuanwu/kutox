@@ -97,6 +97,10 @@ unsafe extern "C" fn kutox_driver_ingress(pointer: usize, size: usize) -> i32 {
     ingress.lengths[index] = size;
     ingress.count += 1;
     drop(ingress);
+    #[cfg(feature = "guest-tests")]
+    if crate::linux_driver::tracing() {
+        unsafe { crate::linux_driver::hardening::drained_ingress(pointer, size) };
+    }
     crate::net_device::wake();
     0
 }

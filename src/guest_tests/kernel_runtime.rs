@@ -90,6 +90,9 @@ fn unclaimed(
 }
 
 static FAIL_STAGE: AtomicUsize = AtomicUsize::new(0);
+pub(crate) fn fail_next(stage: Stage) {
+    FAIL_STAGE.store(stage as usize, Ordering::Release);
+}
 static JOBS: AtomicUsize = AtomicUsize::new(0);
 static RETURNED: AtomicUsize = AtomicUsize::new(0);
 static WORK: AtomicUsize = AtomicUsize::new(0);

@@ -114,6 +114,12 @@ LIVE_CASES = {
     "driver-runtime-default-no-nic": (None, False),
     "driver-runtime-default-unsupported": (None, False),
 }
+HARDENING_CASES = {
+    case: "driver-hardening-tests" for case in (
+        "driver-hardening-tests", "driver-hardening-tests-low-memory", "driver-hardening-tests-nested-low-memory",
+    )
+}
+HARDENING_NAMES = ("hardening.manager", "hardening.failures", "hardening.fifo", "hardening.consumers", "hardening.pending")
 FAULT_RESULTS = {
     "page-fault": "CPU_TEST_OK test=page-fault vector=14 address=0x600000000000 error=0x0",
     "general-protection": "CPU_TEST_OK test=general-protection vector=13 error=0xfff8",
@@ -132,6 +138,7 @@ CASES = {
     "guest-tests-disabled": (None, "boot_mode"),
     "driver-runtime-tests-disabled": (None, "boot_mode"),
     "driver-network-tests-disabled": (None, "boot_mode"),
+    "driver-hardening-tests-disabled": (None, "boot_mode"),
     **{case: (None, None) for case in FAULT_RESULTS},
     "smp-unsupported": (None, "cpu_single_processor_required"),
     "heap-oom": (None, None),
@@ -142,6 +149,7 @@ CASES = {
     **{case: (None, None) for case in RUNTIME_NETWORK_CASES},
     **{case: (None, None) for case in UNCLAIMED_CASES},
     **{case: (None, None) for case in LIVE_CASES},
+    **{case: (None, None) for case in HARDENING_CASES},
 }
 
 
@@ -725,7 +733,7 @@ def validate_thread_guard(returncode, output):
 def validate_result(case, returncode, output):
     if case in LIVE_CASES:
         raise AssertionError("persistent runtime requires measured live execution, not an exit code")
-    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled"):
+    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled"):
         lines = output.splitlines()
         expected = "E1000_MAC_FAIL stage=boot_mode code=-25"
         if returncode != 3 or not lines or lines[-1] != expected:
@@ -750,6 +758,9 @@ def validate_result(case, returncode, output):
         return
     if case in UNCLAIMED_CASES:
         validate_unclaimed_suite(case, returncode, output)
+        return
+    if case in HARDENING_CASES:
+        validate_managed_hardening(case, returncode, output)
         return
     if case in FAULT_RESULTS:
         validate_fault_result(case, returncode, output)
@@ -1606,6 +1617,229 @@ def execute_live(args, case):
         return subprocess.CompletedProcess(command, process.returncode, bytes(output)), elapsed
 
 
+def managed_hard_packet(sequence, incoming=False):
+    data = bytearray((sequence * 19 + index * 7) & 255 for index in range(60))
+    nic, host = bytes.fromhex("525400123456"), bytes.fromhex("020000000009")
+    data[:6], data[6:12] = (nic, host) if incoming else (host, nic)
+    data[12:14] = bytes((0x88, 0xbc if incoming else 0xbd))
+    return bytes(data)
+
+
+class ManagedHardProtocol:
+    def __init__(self, send=None):
+        self.send = send
+        self.offers, self.receipts = [], []
+        self.expected_offers = [("fifo", 1, 9), ("fifo", 10, 4), ("late", 30, 1), ("pending", 20, 1)]
+        self.expected_receipts = [("fifo", sequence) for sequence in [1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13]] + [("late", 30)]
+        self.closed = set()
+
+    def observe(self, line):
+        if line.startswith("# MANAGED_HARD_OFFER"):
+            match = re.fullmatch(r"# MANAGED_HARD_OFFER name=(fifo|late|pending) first=(\d+) count=(\d+) bytes=60", line)
+            if match is None:
+                raise AssertionError("invalid managed hardening RX offer")
+            offer = (match[1], int(match[2]), int(match[3]))
+            if match[1] in self.closed or self.offers != self.expected_offers[:len(self.offers)] or len(self.offers) >= 4 or offer != self.expected_offers[len(self.offers)]:
+                raise AssertionError("duplicate, reordered or post-stop managed RX offer")
+            self.offers.append(offer)
+            if self.send:
+                self.send(b"".join(struct.pack("!I", 60) + managed_hard_packet(sequence, True)
+                                   for sequence in range(offer[1], offer[1] + offer[2])))
+        elif line.startswith("# MANAGED_HARD_RX "):
+            match = re.fullmatch(r"# MANAGED_HARD_RX name=(fifo|late) seq=(\d+) bytes=60 data=([0-9a-f]+)", line)
+            if match is None:
+                raise AssertionError("invalid managed hardening full-frame receipt")
+            receipt = (match[1], int(match[2]))
+            if len(self.receipts) >= len(self.expected_receipts) or receipt != self.expected_receipts[len(self.receipts)] or bytes.fromhex(match[3]) != managed_hard_packet(receipt[1], True):
+                raise AssertionError("incorrect FIFO ordering, bytes or dropped frame delivery")
+            if not any(name == receipt[0] and first <= receipt[1] < first + count for name, first, count in self.offers):
+                raise AssertionError("managed receipt without actual host injection")
+            self.receipts.append(receipt)
+        elif line.startswith("# MANAGED_HARD_JOIN mode="):
+            match = re.match(r"# MANAGED_HARD_JOIN mode=(\d+)", line)
+            name = {1: "fifo", 2: "late", 3: "pending"}.get(int(match[1]))
+            if name:
+                self.closed.add(name)
+
+    def finish(self):
+        if self.offers != self.expected_offers or self.receipts != self.expected_receipts:
+            raise AssertionError("incomplete managed hardening injection/FIFO ledger")
+
+
+def validate_managed_hardening(case, returncode, output, symbols=None):
+    lines = output.splitlines()
+    validate_boot_preamble(lines, "driver-hardening-tests")
+    if validate_ktap(lines, returncode, HARDENING_NAMES):
+        raise KernelSuiteFailure("managed driver hardening failed")
+    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "THREAD_", "Bail out!")) for line in lines):
+        raise AssertionError("managed hardening aborted or used another boot path")
+    protocol = ManagedHardProtocol()
+    for line in lines:
+        protocol.observe(line)
+    protocol.finish()
+    proofs = [line for line in lines if line.startswith("# MANAGED_HARD_")]
+    allowed = {"MANAGER", "DEPENDENCY", "FAILURE", "ROLLBACK", "READY", "RECOVERY", "OFFER", "RX", "FIFO", "BUSY", "WAKE", "VIEW", "REBIND", "LATE", "PENDING", "SOURCE", "DRAINED", "PURGE", "JOIN"}
+    for line in proofs:
+        match = re.match(r"# MANAGED_HARD_([A-Z]+)", line)
+        if match is None or match[1] not in allowed:
+            raise AssertionError("unexpected managed hardening proof")
+    readies = [re.fullmatch(r"# MANAGED_HARD_READY mode=([0-3]) identity=(\d+) workers=2", line)
+               for line in proofs if line.startswith("# MANAGED_HARD_READY")]
+    if any(match is None or not int(match[2]) for match in readies) or [int(match[1]) for match in readies] != [0, 0, 1, 2, 3]:
+        raise AssertionError("source-ready managed failure/recovery epochs are missing")
+    if proofs[:1] != ["# MANAGED_HARD_MANAGER discovered=256 bound=32 limited=224 operations=32 stopped=32 dropped=32 retained=1"]:
+        raise AssertionError("manager capacity/late-consumer retirement proof missing")
+    rollbacks = [line for line in proofs if line.startswith("# MANAGED_HARD_ROLLBACK")]
+    if rollbacks != [f"# MANAGED_HARD_ROLLBACK kind={fault} balanced=1 workers=0 backing=0" for fault in range(1, 10)]:
+        raise AssertionError("failed managed probe/open/worker admission did not restore resources")
+    failures = [line for line in proofs if line.startswith("# MANAGED_HARD_FAILURE")]
+    if failures != [f"# MANAGED_HARD_FAILURE kind={fault} bound={int(fault == 6)} failed={int(fault != 6)} workers=2" for fault in range(1, 8)]:
+        raise AssertionError("optional failure/readiness accounting mismatch")
+    for expected in (
+        "# MANAGED_HARD_RECOVERY tx=1 bytes=60 ready=1",
+        "# MANAGED_HARD_FIFO received=13 delivered=12 dropped=1 bytes=780 capacity=8 wrapped=1",
+        "# MANAGED_HARD_BUSY operations=1 backing=live admission=closed",
+        "# MANAGED_HARD_WAKE before_close=1 operations=1 closed=1",
+        "# MANAGED_HARD_VIEW reserved=1 closed=1 backing=live",
+        "# MANAGED_HARD_LATE frame=30 replacement=live source_unchanged=1",
+        "# MANAGED_HARD_PURGE replaced=1 ingress=0",
+        "# MANAGED_HARD_DEPENDENCY attempts=2 bound=1 failed=1 waiting=1 retries=1 no_progress=0 stopped_target=1 survivor=1",
+    ):
+        if proofs.count(expected) != 1:
+            raise AssertionError("missing, duplicate or incorrect managed ownership/pressure proof")
+    rebinding = [line for line in proofs if line.startswith("# MANAGED_HARD_REBIND")]
+    drained = [line for line in proofs if line.startswith("# MANAGED_HARD_DRAINED")]
+    if drained != [f"# MANAGED_HARD_DRAINED seq=20 bytes=60 data={managed_hard_packet(20, True).hex()}"]:
+        raise AssertionError("pending original RX did not drain exact L2 bytes before purge")
+    match = re.fullmatch(r"# MANAGED_HARD_REBIND old=(\d+) new=(\d+) stale=1 workers=2", rebinding[0] if len(rebinding) == 1 else "")
+    if match is None or not int(match[1]) or not int(match[2]) or match[1] == match[2]:
+        raise AssertionError("replacement reused a live device generation")
+    sources = [line for line in proofs if line.startswith("# MANAGED_HARD_SOURCE")]
+    if len(sources) != 2:
+        raise AssertionError("original pending work/NAPI were not joined")
+    for line, kind, maps in zip(sources, ("napi", "work"), (256, 255)):
+        match = re.fullmatch(rf"# MANAGED_HARD_SOURCE kind={kind} joined=1 backing=live maps=(\d+) admission=closed free=-16", line)
+        if match is None or int(match[1]) != maps:
+            raise AssertionError("pending callback backing was released or premature ring free was accepted")
+    pending = [line for line in proofs if line.startswith("# MANAGED_HARD_PENDING")]
+    if pending != ["# MANAGED_HARD_PENDING irq=1 tx=1 maps=256 watchdog=queued"]:
+        raise AssertionError("actual pending IRQ/accepted TX ownership missing")
+    joins = [line for line in proofs if line.startswith("# MANAGED_HARD_JOIN")]
+    metadata = set()
+    for mode, line in enumerate(joins):
+        count = 6 if mode >= 2 else 4
+        match = re.fullmatch(rf"# MANAGED_HARD_JOIN mode={mode} finished={count} peak={count} balanced=1 workers=0 metadata=(\d+)", line)
+        if match is None or not 60377 < int(match[1]) <= 65536:
+            raise AssertionError("managed stacks/workers/metadata did not join within bounds")
+        metadata.add(int(match[1]))
+    if len(joins) != 4 or len(metadata) != 1:
+        raise AssertionError("incomplete or inconsistent managed resource epochs")
+    events = []
+    for line in lines:
+        if line.startswith("# LINUX_CALLBACK"):
+            match = re.fullmatch(r"# LINUX_CALLBACK event=(\d+) function=([0-9a-f]+) object=([0-9a-f]+) result=(-?\d+)", line)
+            if match is None:
+                raise AssertionError("malformed original managed hardening callback")
+            events.append(tuple(int(value, 16 if index in (1, 2) else 10) for index, value in enumerate(match.groups())))
+    validate_callback_lifetime(events, symbols)
+    counts = Counter(event for event, _, _, _ in events)
+    if counts[17] != 4 or counts[18] != 4 or counts[41] != 13 or counts[44] != 1 or counts[42] != 14:
+        raise AssertionError("source xmit/RX authority or exact hardening packet counts missing")
+    if any(result != 60 for event, _, _, result in events if event in (17, 19, 20, 22, 41)):
+        raise AssertionError("source hardening packet/map byte size mismatch")
+    if not counts[9] or counts[9] != counts[15] or counts[13] != counts[26]:
+        raise AssertionError("pending original IRQ/NAPI callbacks failed to return")
+    batches, batch = {}, []
+    for line in lines:
+        if match := re.fullmatch(r"ok \d+ (hardening\.[a-z]+)", line):
+            batches[match[1]], batch = batch, []
+        else:
+            batch.append(line)
+    lifecycle = {
+        "hardening.failures": {1: 8, 2: 5, 3: 8, 4: 8, 5: 5, 6: 5, 7: 2, 8: 2, 33: 5},
+        "hardening.fifo": {1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1, 7: 1, 8: 1, 33: 1},
+        "hardening.consumers": {1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 33: 2},
+        "hardening.pending": {1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 3, 8: 3, 33: 3},
+    }
+    for name, batch in batches.items():
+        observed = Counter(int(re.match(r"# LINUX_CALLBACK event=(\d+)", line)[1]) for line in batch if line.startswith("# LINUX_CALLBACK"))
+        if any(observed[event] != count for event, count in lifecycle.get(name, {}).items()):
+            raise AssertionError("original close/remove or replacement lifecycle ran the wrong number of times")
+        if name == "hardening.manager" and observed:
+            raise AssertionError("native synthetic drivers supplied Linux provenance")
+        runtime_errors = Counter(line for line in batch if line.startswith("# RUNTIME_ERROR"))
+        expected = Counter({"# RUNTIME_ERROR stage=runtime_startup_injected code=-210": 2}) if name == "hardening.failures" else Counter()
+        if runtime_errors != expected:
+            raise AssertionError("unexpected runtime failure or missing worker/admission injection")
+        native_errors = Counter(line for line in batch if line.startswith("# NATIVE_DRIVER_ERROR"))
+        expected_native = {
+            "hardening.manager": Counter({
+                "# NATIVE_DRIVER_ERROR operation=driver-discover code=-161": 1,
+                "# NATIVE_DRIVER_ERROR operation=driver-probe-reserve code=-170": 224,
+                "# NATIVE_DRIVER_ERROR operation=driver-operation code=-161": 1,
+                "# NATIVE_DRIVER_ERROR operation=driver-shutdown-complete code=-164": 1,
+                "# NATIVE_DRIVER_ERROR operation=driver-probe-callback code=-12": 1,
+            }),
+            "hardening.failures": Counter({
+                "# NATIVE_DRIVER_ERROR operation=driver-probe-callback code=-12": 5,
+                "# NATIVE_DRIVER_ERROR operation=driver-probe-callback code=-5": 1,
+            }),
+            "hardening.consumers": Counter({
+                "# NATIVE_DRIVER_ERROR operation=driver-stop-reserve code=-164": 1,
+                "# NATIVE_DRIVER_ERROR operation=driver-inspect code=-163": 2,
+            }),
+        }.get(name, Counter())
+        if native_errors != expected_native:
+            raise AssertionError("unclassified manager failure or concealed admission error")
+        net_errors = Counter(line for line in batch if line.startswith("# NET_ERROR"))
+        expected_net = {
+            "hardening.consumers": Counter({
+                "# NET_ERROR operation=submit error=Closed": 1, "# NET_ERROR operation=receive error=Closed": 1,
+                "# NET_ERROR operation=info error=Closed": 2, "# NET_ERROR operation=info error=Stale": 1,
+                "# NET_ERROR operation=submit error=Stale": 1,
+            }),
+            "hardening.pending": Counter({
+                "# NET_ERROR operation=progress error=Closed": 2, "# NET_ERROR operation=progress error=Stale": 2,
+                "# NET_ERROR operation=receive error=Closed": 2, "# NET_ERROR operation=info error=Closed": 1,
+            }),
+        }.get(name, Counter())
+        if net_errors != expected_net:
+            raise AssertionError("missing or unclassified native closed/stale consumer outcome")
+        driver_errors = Counter(line for line in batch if line.startswith("# driver operation=") or line.startswith("# driver pci_operation="))
+        if name == "hardening.failures":
+            maps = driver_errors.pop("# driver operation=map code=-12", 0)
+            if not 1 <= maps <= 256:
+                raise AssertionError("streaming-map failure was not reached or retry budget was exceeded")
+            if driver_errors != Counter({
+                "# driver pci_operation=2 code=-12": 1, "# driver pci_operation=6 code=-12": 1,
+                "# driver operation=pci_probe code=-12": 2, "# driver operation=pci_probe code=-5": 1,
+                "# driver operation=allocate code=-12": 3,
+            }):
+                raise AssertionError("probe/open allocation failure paths are incomplete")
+            for line in batch:
+                if line.startswith("# RUNTIME_PROBE") and re.fullmatch(r"# RUNTIME_PROBE Failed \{ device: DeviceHandle\(\d+\), error: Driver\(-(12|5)\) \}", line) is None:
+                    raise AssertionError("unclassified optional probe result")
+        elif driver_errors != (Counter({"# driver operation=ingress_capacity code=-12": 1}) if name == "hardening.fifo" else Counter()):
+            raise AssertionError("unexpected platform/packet error")
+        if name != "hardening.failures" and any(line.startswith("# RUNTIME_PROBE") for line in batch):
+            raise AssertionError("lifecycle concurrency was incorrectly treated as a probe failure")
+    consumers = batches["hardening.consumers"]
+    close = next(index for index, line in enumerate(consumers) if line.startswith("# LINUX_CALLBACK event=7 "))
+    for marker in ("# MANAGED_HARD_WAKE", "# MANAGED_HARD_VIEW"):
+        index = next(index for index, line in enumerate(consumers) if line.startswith(marker))
+        if index >= close:
+            raise AssertionError("native waiters/reserved views stayed open until source close")
+    pending = batches["hardening.pending"]
+    closes = [index for index, line in enumerate(pending) if line.startswith("# LINUX_CALLBACK event=7 ")]
+    removes = [index for index, line in enumerate(pending) if line.startswith("# LINUX_CALLBACK event=5 ")]
+    drained = next(index for index, line in enumerate(pending) if line.startswith("# MANAGED_HARD_DRAINED"))
+    source_rows = [index for index, line in enumerate(pending) if line.startswith("# MANAGED_HARD_SOURCE")]
+    offer = next(index for index, line in enumerate(pending) if line.startswith("# MANAGED_HARD_OFFER"))
+    purge = next(index for index, line in enumerate(pending) if line.startswith("# MANAGED_HARD_PURGE"))
+    if not removes[0] < offer < closes[1] < source_rows[0] < drained < removes[1] < purge < closes[2] < source_rows[1] < removes[2]:
+        raise AssertionError("source join, RX drain, purge and replacement backing order is unsafe")
+
+
 def execute_suite(args, case, capture):
     deadline = time.monotonic() + args.timeout
     output = bytearray()
@@ -1613,8 +1847,9 @@ def execute_suite(args, case, capture):
     network_pending = bytearray()
     transmitted = []
     network = case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES
+    hardening = case in HARDENING_CASES
     ambiguous = case.endswith("ambiguous")
-    expected = [] if network and ambiguous else [network_packet(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)] if network else expected_tx_packets()
+    expected = [managed_hard_packet(sequence) for sequence in range(1, 5)] if hardening else [] if network and ambiguous else [network_packet(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)] if network else expected_tx_packets()
     host, peer = socket.socketpair()
     with host, peer:
         command = qemu_command(args, case, capture, peer.fileno())
@@ -1624,7 +1859,7 @@ def execute_suite(args, case, capture):
         ) as process:
             peer.close()
             host.settimeout(min(args.timeout, 2))
-            protocols = (NetworkProtocol(host.sendall, ambiguous),) if network else (RXProtocol(host.sendall), HardProtocol(host.sendall))
+            protocols = (ManagedHardProtocol(host.sendall),) if hardening else (NetworkProtocol(host.sendall, ambiguous),) if network else (RXProtocol(host.sendall), HardProtocol(host.sendall))
             try:
                 with selectors.DefaultSelector() as selector:
                     selector.register(process.stdout, selectors.EVENT_READ, "serial")
@@ -1707,6 +1942,7 @@ def qemu_command(args, case, capture=None, net_fd=None):
             "guest-tests-disabled": "kernel-tests",
             "driver-runtime-tests-disabled": "driver-runtime-tests",
             "driver-network-tests-disabled": "driver-network-tests",
+            "driver-hardening-tests-disabled": "driver-hardening-tests",
             "heap-oom": "heap-oom",
             "thread-stack-guard": "thread-stack-guard",
             **{case: case for case in FAULT_RESULTS},
@@ -1714,11 +1950,12 @@ def qemu_command(args, case, capture=None, net_fd=None):
             **RUNTIME_SUITE_CASES,
             **NETWORK_SUITE_CASES,
             **RUNTIME_NETWORK_CASES,
+            **HARDENING_CASES,
             **{case: "driver-runtime-tests" for case in UNCLAIMED_CASES},
             **{case: mode for case, (mode, _) in LIVE_CASES.items() if mode is not None},
         }.get(case, "probe")
         command += ["-fw_cfg", f"name=opt/kutox/test-mode,string={mode}"]
-    if case not in ("missing", "smp-unsupported", "heap-oom", "thread-stack-guard", "guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled") and case not in FAULT_RESULTS and case not in KERNEL_SUITE_CASES and case not in RUNTIME_SUITE_CASES and case not in NETWORK_SUITE_CASES and case not in RUNTIME_NETWORK_CASES and case not in LIVE_CASES:
+    if case not in ("missing", "smp-unsupported", "heap-oom", "thread-stack-guard", "guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled") and case not in FAULT_RESULTS and case not in KERNEL_SUITE_CASES and case not in RUNTIME_SUITE_CASES and case not in NETWORK_SUITE_CASES and case not in RUNTIME_NETWORK_CASES and case not in LIVE_CASES and case not in HARDENING_CASES:
         model = "e1000e" if case == "unsupported" or case in UNCLAIMED_CASES else "e1000"
         mac = CASES[case][0] or "52:54:00:12:34:56"
         command += [
@@ -1730,7 +1967,7 @@ def qemu_command(args, case, capture=None, net_fd=None):
             "-netdev", "user,id=second,restrict=on",
             "-device", "e1000,netdev=second,mac=52:54:00:00:00:02",
         ]
-    if case in KERNEL_SUITE_CASES or case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES or case in LIVE_CASES and case != "driver-runtime-default-no-nic":
+    if case in KERNEL_SUITE_CASES or case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES or case in HARDENING_CASES or case in LIVE_CASES and case != "driver-runtime-default-no-nic":
         if net_fd is None or net_fd < 0:
             raise AssertionError("kernel suite requires an owned RX socket")
         root, leaf, parents = pci_layout(case)
@@ -1759,7 +1996,7 @@ def qemu_command(args, case, capture=None, net_fd=None):
 def run_case(args, case, index=0):
     log = args.build_dir / "test-logs" / f"{args.case}-{index}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
-    capture = log.with_suffix(".pcap") if case in KERNEL_SUITE_CASES or case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES else None
+    capture = log.with_suffix(".pcap") if case in KERNEL_SUITE_CASES or case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES or case in HARDENING_CASES else None
     if capture is not None:
         capture.unlink(missing_ok=True)
     command = qemu_command(args, case) if capture is None and case not in LIVE_CASES else None
@@ -1786,11 +2023,15 @@ def run_case(args, case, index=0):
                 raise AssertionError("QEMU did not produce the required TX capture")
             with capture.open("rb") as stream:
                 expected = None
+                if case in HARDENING_CASES:
+                    expected = [managed_hard_packet(sequence) for sequence in range(1, 5)]
                 if case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES:
                     expected = [] if case.endswith("ambiguous") else [network_packet(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)]
                 validate_tx_capture(stream.read(1024 * 1024 + 1), expected)
             symbols = runtime_symbols(getattr(args, "nm", "nm"))
-            if case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES:
+            if case in HARDENING_CASES:
+                validate_managed_hardening(case, completed.returncode, output, symbols)
+            elif case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES:
                 validate_network_suite(case, completed.returncode, output, symbols)
             else:
                 validate_linux_callbacks(output, symbols)
