@@ -21,6 +21,14 @@ uintptr_t kutox_driver_device(void);
 void kutox_driver_gate(void);
 int kutox_driver_retire(uintptr_t, size_t);
 void kutox_driver_diag(const char *, int);
+void kutox_c_tx_mapped(uintptr_t, u64, size_t, unsigned int);
+void kutox_c_tx_unmapped(u64, size_t, unsigned int);
+void kutox_c_tx_mmio(uintptr_t, u32, bool);
+int kutox_c_tx_begin(struct net_device *, uintptr_t, const void *, unsigned int);
+int kutox_c_tx_retry(struct net_device *);
+int kutox_c_tx_status(struct net_device *);
+void kutox_c_tx_release(struct net_device *);
+void kutox_c_tx_abort(struct net_device *);
 static inline void driver_check(int result, const char *operation)
 {
     if (result < 0) kutox_platform_fail(operation);

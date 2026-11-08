@@ -16,7 +16,7 @@ CALLBACK_SYMBOLS = {name: 0xffffffff80001000 + index * 16 for index, name in enu
 )}
 
 
-def callback_log(failures=False):
+def callback_log(failures=False, transmit=False):
     lines = []
     def event(kind, name=None, obj=0x1000, result=0):
         function = CALLBACK_SYMBOLS[name] if name else 0
@@ -29,6 +29,8 @@ def callback_log(failures=False):
             for name in qemu_test.DRIVER_WORK_CALLBACKS:
                 event(10, name)
         event(4, "e1000_probe", result=0 if success else -12)
+        if success:
+            event(33, "e1000_xmit_frame")
     def opened(ready=True):
         event(6, "e1000_open")
         if ready:
@@ -39,6 +41,7 @@ def callback_log(failures=False):
             event(11, "e1000_watchdog")
             event(14)
             event(13, "e1000_clean", result=64)
+            event(26, "e1000_clean")
     def removed():
         event(2, "e1000_exit_module", 0)
         event(5, "e1000_remove")
@@ -55,6 +58,33 @@ def callback_log(failures=False):
         opened()
         event(7, "e1000_close")
         removed()
+    elif transmit:
+        for session in range(2):
+            probe()
+            event(31, obj=0x2000, result=60)
+            event(32, obj=0x2000, result=16)
+            event(29, obj=0x2000)
+            event(28, obj=0x2000)
+            opened()
+            for index in range(session * 2, session * 2 + 2):
+                size = qemu_test.LINUX_TX_LENGTHS[index]
+                event(31, obj=0x2000, result=size)
+                event(17, "e1000_xmit_frame", obj=0x2000, result=size)
+                event(19, obj=0x2000, result=size)
+                event(20, obj=0x2000, result=size)
+                event(21, obj=0x2000, result=1 + index % 2)
+                event(18, "e1000_xmit_frame", obj=0x2000)
+                event(9, "e1000_intr")
+                event(27, obj=0x2000, result=1)
+                event(15, "e1000_intr", result=1)
+                event(13, "e1000_clean", result=64)
+                event(22, obj=0x2000, result=size)
+                event(23, obj=0x2000, result=64)
+                event(24, obj=0x2000, result=size)
+                event(26, "e1000_clean")
+                event(25, obj=0x2000, result=size)
+            event(7, "e1000_close")
+            removed()
     else:
         for _ in range(2):
             probe()
@@ -78,8 +108,8 @@ def suite_log(case="kernel-tests"):
         "# linux format=-7/0000002A/4294967296/12:34:56:78:9a:bc/end",
     ]
     for index, name in enumerate(names, 1):
-        if name in ("linux.e1000_lifecycle", "linux.e1000_failures"):
-            lines.extend(callback_log(name.endswith("failures")))
+        if name.startswith("linux.e1000_"):
+            lines.extend(callback_log(name.endswith("failures"), name.endswith("_tx")))
         status = "not ok" if name == "harness.intentional_failure" else "ok"
         lines.append(f"{status} {index} {name}")
     failures = int(case == "kernel-tests-fail")
@@ -89,7 +119,9 @@ def suite_log(case="kernel-tests"):
 
 class KernelSuiteTests(unittest.TestCase):
     def test_requires_original_driver_lifecycle_cases(self):
-        self.assertEqual(KERNEL_TEST_NAMES[51:], ("linux.e1000_lifecycle", "linux.e1000_failures"))
+        self.assertEqual(KERNEL_TEST_NAMES[51:], (
+            "linux.e1000_lifecycle", "linux.e1000_failures", "linux.e1000_tx",
+        ))
 
     def test_original_callback_addresses_match_actual_symbols(self):
         qemu_test.validate_linux_callbacks(suite_log(), CALLBACK_SYMBOLS)
@@ -111,6 +143,26 @@ class KernelSuiteTests(unittest.TestCase):
         ):
             with self.subTest(replacement=replacement[:100]), self.assertRaises(AssertionError):
                 qemu_test.validate_linux_callbacks(replacement, CALLBACK_SYMBOLS)
+    def test_rejects_incomplete_or_unrelated_linux_tx_cleanup(self):
+        output = suite_log()
+        for original, replacement in (
+            ("event=19 function=0 object=2000 result=60", "event=19 function=0 object=2000 result=61"),
+            ("event=27 function=0 object=2000 result=1", "event=27 function=0 object=2000 result=4"),
+            ("event=23 function=0 object=2000 result=64", "event=23 function=0 object=2000 result=0"),
+            ("event=24 function=0 object=2000 result=60", "event=24 function=0 object=2001 result=60"),
+            ("event=25 function=0 object=2000 result=60", "event=25 function=0 object=2000 result=128"),
+            ("event=32 function=0 object=2000 result=16", "event=32 function=0 object=2000 result=0"),
+            ("event=28 function=0 object=2000 result=0", "event=30 function=0 object=2000 result=0"),
+        ):
+            with self.subTest(original=original), self.assertRaises(AssertionError):
+                qemu_test.validate_linux_callbacks(output.replace(original, replacement, 1), CALLBACK_SYMBOLS)
+        # Moving the release ahead of the source poll return must not pass.
+        lines = callback_log(transmit=True)
+        release = next(index for index, line in enumerate(lines) if "event=25 " in line)
+        lines[release - 1], lines[release] = lines[release], lines[release - 1]
+        bad = output.replace("\n".join(callback_log(transmit=True)), "\n".join(lines))
+        with self.assertRaises(AssertionError):
+            qemu_test.validate_linux_callbacks(bad, CALLBACK_SYMBOLS)
     def test_checks_exact_driver_diagnostic_format(self):
         marker = "# linux format=-7/0000002A/4294967296/12:34:56:78:9a:bc/end"
         for replacement in ("", marker + "\n" + marker, marker.replace("0000002A", "2a")):
@@ -345,6 +397,8 @@ class KernelSuiteTests(unittest.TestCase):
 def tx_pcap(packets=None, endian="<"):
     if packets is None:
         packets = [qemu_test.tx_packet(sequence) for sequence in (1, 2, 3, 4)]
+        packets += [qemu_test.linux_tx_packet(sequence, size)
+                    for sequence, size in enumerate(qemu_test.LINUX_TX_LENGTHS, 1)]
     magic = b"\xd4\xc3\xb2\xa1" if endian == "<" else b"\xa1\xb2\xc3\xd4"
     data = magic + struct.pack(endian + "HHIIII", 2, 4, 0, 0, 65536, 1)
     for packet in packets:
@@ -364,12 +418,23 @@ class TxCaptureTests(unittest.TestCase):
         for endian in ("<", ">"):
             qemu_test.validate_tx_capture(tx_pcap(endian=endian))
 
+    def test_linux_frames_are_distinct_and_exact(self):
+        for sequence, size in enumerate(qemu_test.LINUX_TX_LENGTHS, 1):
+            packet = qemu_test.linux_tx_packet(sequence, size)
+            self.assertEqual(len(packet), size)
+            self.assertEqual(packet[:23], b"\xff" * 6 + bytes.fromhex("52540012345688b6")
+                             + b"KUTOX-LX" + bytes([sequence]))
+            self.assertEqual(packet[23:], bytes((sequence + index) & 255 for index in range(23, size)))
+
     def test_rejects_absent_extra_duplicate_reordered_or_wrong_packets(self):
         packets = [qemu_test.tx_packet(sequence) for sequence in (1, 2, 3, 4)]
+        native = packets[:]
+        packets += [qemu_test.linux_tx_packet(sequence, size)
+                    for sequence, size in enumerate(qemu_test.LINUX_TX_LENGTHS, 1)]
         wrong = bytearray(packets[0])
         wrong[-1] ^= 1
         for frames in (
-            [], packets[:3], packets + [packets[0]], [packets[0]] * 4,
+            [], packets[:3], native, packets[:-1], packets + [packets[0]], [packets[0]] * 8,
             packets[::-1], [bytes(wrong), *packets[1:]],
         ):
             with self.subTest(frames=frames), self.assertRaises(AssertionError):

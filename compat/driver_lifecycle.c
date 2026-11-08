@@ -33,6 +33,7 @@ int kutox_c_linux_bind(uint64_t *ticket)
     loaded = true;
     device = kutox_c_registered_netdev();
     if (!device || !device->ethtool_ops) kutox_platform_fail("linux_registered_device");
+    kutox_driver_trace(33,(uintptr_t)device->netdev_ops->ndo_start_xmit,(uintptr_t)device,0);
     *ticket = ++generation;
     return 0;
 }
@@ -62,8 +63,29 @@ int kutox_c_linux_close(uint64_t ticket)
 {
     if (!ticket || ticket != generation) return -ESTALE;
     if (!loaded || !device) return -ENODEV;
+    kutox_c_tx_abort(device);
     kutox_driver_trace(7,(uintptr_t)device->netdev_ops->ndo_stop,(uintptr_t)device,0);
     return kutox_c_netdev_close(device);
+}
+int kutox_c_linux_tx_begin(uint64_t ticket, const void *bytes, unsigned int size)
+{
+    if (!ticket || ticket != generation || !loaded) return -ESTALE;
+    if (!device) return -ENODEV;
+    struct e1000_adapter *adapter = netdev_priv(device);
+    return kutox_c_tx_begin(device,(uintptr_t)adapter->hw.hw_addr,bytes,size);
+}
+int kutox_c_linux_tx(uint64_t ticket, bool retry)
+{
+    if (!ticket || ticket != generation || !loaded) return -ESTALE;
+    if (!device) return -ENODEV;
+    return retry ? kutox_c_tx_retry(device) : kutox_c_tx_status(device);
+}
+int kutox_c_linux_tx_release(uint64_t ticket)
+{
+    if (!ticket || ticket != generation || !loaded) return -ESTALE;
+    if (!device) return -ENODEV;
+    kutox_c_tx_release(device);
+    return 0;
 }
 int kutox_c_linux_unbind(uint64_t ticket)
 {

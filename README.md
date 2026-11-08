@@ -88,9 +88,10 @@ objects are compiled separately against the same selected source profile.
 The [driver-reuse roadmap](docs/rust-kernel-linux-drivers.md#linux-e1000-driver-reuse-roadmap)
 now has tested execution/object, workqueue, NAPI/IRQ and PCI/skb/streaming-DMA
 services. Original module/probe/open/close, PHY/reset/options, IRQ, watchdog
-and NAPI callbacks now execute on real kernel stacks. Next is Linux-owned TX
-submission and completion. Linux must own probe/open, packet submission
-and cleanup; Rust supplies OS services. Native RX is not the next milestone.
+and NAPI callbacks now execute on real kernel stacks. Original Linux TX now
+submits and completes exact captured frames through those callbacks; Rust
+supplies OS services, not descriptor algorithms. Controlled original Linux RX
+delivery is next, not a native Rust RX driver.
 
 ## Requirements
 
@@ -213,7 +214,7 @@ hardware-configuration cases still use separate boots of the same ISO.
 
 ```text
 KTAP version 1
-1..53
+1..54
 ok 1 cpu.irq_lock_restore
 ok 2 cpu.breakpoint_return
 ok 3 memory.alignment_reservations
@@ -268,7 +269,8 @@ ok 50 linux.driver_capacity
 ok 51 linux.driver_failed_open
 ok 52 linux.e1000_lifecycle
 ok 53 linux.e1000_failures
-# Totals: pass:53 fail:0 skip:0 total:53
+ok 54 linux.e1000_tx
+# Totals: pass:54 fail:0 skip:0 total:54
 ```
 
 Tests run sequentially with interrupts disabled at case boundaries. After
@@ -832,8 +834,33 @@ controller remain unsupported.
 
 The one ISO now includes all four unchanged driver units. Guest suites have a
 40-second limit for the driver's real sleeping lifecycle calls; execution
-remains cooperative. Linux TX/RX packet acceptance and a native IP stack are
-subsequent phases, not claims made by successful open/close.
+remains cooperative. Successful open/close alone does not establish packet
+acceptance; the separate original TX case below does.
+
+### Original Linux TX acceptance
+
+The checked C/native boundary copies one owned linear skb and calls the
+registered original `e1000_xmit_frame`. Linux performs streaming mapping,
+descriptor construction and the TDT doorbell. `NETDEV_TX_BUSY` retains the skb;
+`NETDEV_TX_OK` transfers ownership but is not itself proof of transmission.
+Consumed drops report an error. A bounded wait observes original completion;
+timeout stops/closes the driver before releasing accepted packet ownership.
+
+`linux.e1000_tx` performs two probe/open/close/remove sessions, transmits four
+untagged no-offload Ethernet frames of **60, 128, 512 and 1514 bytes**, and
+checks BUSY retention/cancellation before each open. The host requires original
+xmit registration/invocation, a real TXDW read inside original IRQ handling,
+then original NAPI unmap, skb consumption, completed-queue accounting and poll
+return before native acceptance. Packet/byte statistics and exact allocation/
+mapping snapshots must recover after every completion.
+
+The fresh pcap must contain the existing four 60-byte native scaffold frames,
+unchanged and in order, followed by the four exact Linux frames (`KUTOX-LX`,
+EtherType `0x88b6`). Missing, reordered, duplicate or wrong bytes fail, including
+intentional-failure mode. Native TX/descriptor-helper entry is fatal while the
+Linux fixture runs; there is no fallback. RX setup remains original Linux, but
+controlled RX delivery, ring wrap/backpressure/fault hardening and an IP stack
+are later work.
 
 The build and provenance test require Linux `v7.3.1`, commit
 `79a907609d53d5cd645b42c11550d295d43abf99`, with no submodule modifications.

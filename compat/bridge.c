@@ -15,6 +15,10 @@ static u32 eeprom_reads;
 static bool probe_active;
 extern bool kutox_driver_mmio(uintptr_t, u32, bool);
 extern int kutox_vprint(const char *, va_list);
+#ifdef KUTOX_E1000_FULL_SOURCE
+extern void kutox_c_tx_mmio(uintptr_t, u32, bool);
+extern bool kutox_driver_tracing(void);
+#endif
 
 _Static_assert(sizeof(struct e1000_tx_desc) == 16, "TX descriptor size");
 _Static_assert(offsetof(struct e1000_tx_desc, upper) == 12, "TX status offset");
@@ -22,6 +26,9 @@ _Static_assert(offsetof(struct e1000_tx_desc, upper) == 12, "TX status offset");
 int kutox_e1000_tx_descriptor(void *ring, size_t ring_bytes,
                              uint64_t packet_dma, u16 packet_bytes)
 {
+#ifdef KUTOX_E1000_FULL_SOURCE
+    if (kutox_driver_tracing()) kutox_platform_fail("linux_tx_native_descriptor");
+#endif
     if (!ring || ((uintptr_t)ring & 15) || ring_bytes != 128 ||
         packet_bytes < 60 || packet_bytes > 1514 ||
         packet_dma > UINT32_MAX - packet_bytes + 1)
@@ -51,6 +58,9 @@ u32 readl(const volatile void *address)
     __asm__ volatile ("" ::: "memory");
     u32 value = *(const volatile u32 *)address;
     __asm__ volatile ("lfence" ::: "memory");
+#ifdef KUTOX_E1000_FULL_SOURCE
+    if (!probe_active) kutox_c_tx_mmio((uintptr_t)address,value,false);
+#endif
     if (probe_active && (uintptr_t)address == mmio_base + E1000_EECD) {
         eeprom_reads++;
         if (deny_eeprom_grant) {
@@ -67,6 +77,9 @@ void writel(u32 value, volatile void *address)
     __asm__ volatile ("" ::: "memory");
     *(volatile u32 *)address = value;
     __asm__ volatile ("" ::: "memory");
+#ifdef KUTOX_E1000_FULL_SOURCE
+    if (!probe_active) kutox_c_tx_mmio((uintptr_t)address,value,true);
+#endif
 }
 
 void udelay(unsigned long usec) { kutox_delay_us(usec); }

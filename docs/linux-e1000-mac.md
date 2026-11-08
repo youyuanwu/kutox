@@ -213,9 +213,10 @@ scaffolding rather than execution of Linux's packet driver.
 The isolated original-source compile/dependency check and synthetic
 execution/object/deferred and PCI/packet/DMA service contracts are now complete.
 Original module/probe/open/close, IRQ, watchdog and NAPI callbacks now execute
-in separate lifecycle cases. Next, packet acceptance must
-exercise Linux's xmit, IRQ/NAPI and RX
-cleanup paths. Upstream open requires RX setup and link work even for TX-first
+in separate lifecycle cases. Original xmit, TXDW IRQ and NAPI TX cleanup now
+have exact four-frame packet acceptance, separate from the native scaffold.
+Controlled original RX cleanup/delivery is next. Upstream open requires RX
+setup and link work even for TX-first
 testing; declarations or constant-success substitutes do not satisfy it.
 
 Do not follow the earlier transmit/receive sequence by writing another native

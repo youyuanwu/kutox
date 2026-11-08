@@ -66,6 +66,9 @@ unsafe extern "C" {
     fn kutox_c_linux_empty() -> bool;
     fn kutox_linux_workers_stop();
     fn kutox_c_linux_rx_failure_seen(ticket: u64) -> bool;
+    fn kutox_c_linux_tx_begin(ticket: u64, bytes: *const u8, size: u32) -> i32;
+    fn kutox_c_linux_tx(ticket: u64, retry: bool) -> i32;
+    fn kutox_c_linux_tx_release(ticket: u64) -> i32;
 }
 
 struct DriverHandle(u64);
@@ -94,6 +97,43 @@ impl DriverHandle {
     fn close(&self) -> i32 {
         unsafe { kutox_c_linux_close(self.0) }
     }
+    fn packet(&self, bytes: &[u8]) -> i32 {
+        let size = u32::try_from(bytes.len()).expect("packet exceeds C size range");
+        unsafe { kutox_c_linux_tx_begin(self.0, bytes.as_ptr(), size) }
+    }
+    fn transmit(&self) -> i32 {
+        unsafe { kutox_c_linux_tx(self.0, true) }
+    }
+    fn tx_status(&self) -> i32 {
+        unsafe { kutox_c_linux_tx(self.0, false) }
+    }
+    fn release_packet(&self) {
+        assert_eq!(unsafe { kutox_c_linux_tx_release(self.0) }, 0);
+    }
+    fn wait_ready(&self) {
+        for _ in 0..300 {
+            if self.ready() {
+                return;
+            }
+            assert_eq!(threads::sleep_us(10_000), Ok(threads::WakeReason::TimedOut));
+        }
+        panic!("original watchdog did not establish link readiness");
+    }
+    fn wait_transmitted(&self) -> Result<(), Failure> {
+        for _ in 0..300 {
+            match self.tx_status() {
+                0 => match self.transmit() {
+                    0 | 16 => {}
+                    error => return Err(Failure::new("linux_tx_submit", error)),
+                },
+                1 => {}
+                2 => return Ok(()),
+                error => return Err(Failure::new("linux_tx_completion", error)),
+            }
+            assert_eq!(threads::sleep_us(10_000), Ok(threads::WakeReason::TimedOut));
+        }
+        Err(Failure::new("linux_tx_timeout", -110))
+    }
     fn unbind(self) {
         assert_eq!(unsafe { kutox_c_linux_unbind(self.0) }, 0);
         assert_eq!(
@@ -101,6 +141,8 @@ impl DriverHandle {
             -116,
             "retired handle remained valid"
         );
+        assert_eq!(unsafe { kutox_c_linux_tx(self.0, false) }, -116);
+        assert_eq!(unsafe { kutox_c_linux_tx_release(self.0) }, -116);
     }
 }
 
@@ -112,19 +154,17 @@ fn worker(which: usize) {
         unsafe { kutox_linux_workers_stop() };
         return;
     }
+    if which == 2 {
+        tx_worker();
+        TRACING.store(false, Ordering::Release);
+        unsafe { kutox_linux_workers_stop() };
+        return;
+    }
     for _ in 0..2 {
         let handle = DriverHandle::bind().expect("original Linux probe failed");
         for _ in 0..2 {
             assert_eq!(handle.open(), 0, "original Linux open failed");
-            let mut ready = false;
-            for _ in 0..300 {
-                if handle.ready() {
-                    ready = true;
-                    break;
-                }
-                assert_eq!(threads::sleep_us(10_000), Ok(threads::WakeReason::TimedOut));
-            }
-            assert!(ready, "original watchdog did not establish link readiness");
+            handle.wait_ready();
             assert_eq!(handle.close(), 0, "original Linux close failed");
         }
         handle.unbind();
@@ -208,15 +248,7 @@ fn fault_worker() {
         );
     }
     assert_eq!(handle.open(), 0);
-    let mut ready = false;
-    for _ in 0..300 {
-        if handle.ready() {
-            ready = true;
-            break;
-        }
-        assert_eq!(threads::sleep_us(10_000), Ok(threads::WakeReason::TimedOut));
-    }
-    assert!(ready, "original driver did not recover after failed opens");
+    handle.wait_ready();
     assert_eq!(handle.close(), 0);
     handle.unbind();
 }
@@ -231,6 +263,67 @@ pub fn failures(
     frames: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
     run(boot, frames, 1)
+}
+pub fn transmit(
+    boot: &BootInfo,
+    frames: &'static memory::PhysicalFrames<'static>,
+) -> Result<(), Failure> {
+    run(boot, frames, 2)
+}
+
+fn tx_packet(sequence: u8, size: usize) -> [u8; 1514] {
+    let mut bytes = [0; 1514];
+    bytes[..6].fill(255);
+    bytes[6..14].copy_from_slice(&[0x52, 0x54, 0, 0x12, 0x34, 0x56, 0x88, 0xb6]);
+    for (index, byte) in bytes[14..size].iter_mut().enumerate() {
+        *byte = sequence.wrapping_add((index + 14) as u8);
+    }
+    bytes[14..22].copy_from_slice(b"KUTOX-LX");
+    bytes[22] = sequence;
+    bytes
+}
+
+fn tx_worker() {
+    const LENGTHS: [usize; 4] = [60, 128, 512, 1514];
+    for session in 0..2 {
+        let handle = DriverHandle::bind().expect("original TX probe failed");
+        let before = driver_memory::snapshot();
+        assert_eq!(handle.packet(&tx_packet(0, 60)[..60]), 0);
+        assert_eq!(handle.transmit(), 16, "down queue did not retain BUSY skb");
+        assert_eq!(handle.tx_status(), 0);
+        handle.release_packet();
+        assert_eq!(
+            driver_memory::snapshot(),
+            before,
+            "BUSY cancellation leaked"
+        );
+        assert_eq!(handle.open(), 0);
+        handle.wait_ready();
+        let baseline = driver_memory::snapshot();
+        for (index, &size) in LENGTHS.iter().enumerate().skip(session * 2).take(2) {
+            assert_eq!(handle.packet(&tx_packet(index as u8 + 1, size)[..size]), 0);
+            assert_eq!(handle.tx_status(), 0);
+            assert_eq!(handle.transmit(), 0, "original xmit did not accept skb");
+            assert_eq!(handle.tx_status(), 1, "completed before IRQ/NAPI ran");
+            let in_flight = driver_memory::snapshot();
+            assert_eq!(in_flight.0, baseline.0 + 2);
+            assert_eq!(in_flight.2, baseline.2 + 1);
+            if let Err(error) = handle.wait_transmitted() {
+                assert_eq!(handle.close(), 0);
+                handle.release_packet();
+                handle.unbind();
+                panic!("Linux TX failed: {} {}", error.stage, error.code);
+            }
+            handle.release_packet();
+            assert_eq!(
+                driver_memory::snapshot(),
+                baseline,
+                "Linux TX cleanup leaked"
+            );
+        }
+        assert_eq!(handle.close(), 0);
+        handle.unbind();
+    }
 }
 unsafe extern "C" {
     fn kutox_c_linux_bind_irq(irq: u32);

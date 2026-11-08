@@ -73,6 +73,10 @@ impl<'nic, 'controller, 'a, 'storage> Tx<'nic, 'controller, 'a, 'storage> {
         controller: &'controller IoApic<'a, 'storage>,
         sequence: u8,
     ) -> Result<Self, Failure> {
+        assert!(
+            !crate::linux_driver::tracing(),
+            "native TX in Linux fixture"
+        );
         // Only the validated QEMU 82540EM, already linked at 1 Gb/s full duplex.
         if read(nic.address(), 8) & 0xc3 != 0x83
             || read(nic.address(), TDH) != read(nic.address(), TDT)

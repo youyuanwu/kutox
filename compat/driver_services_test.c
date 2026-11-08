@@ -124,7 +124,13 @@ void kutox_c_services_dma(void)
     dma_free_coherent(&pdev->dev,4096,ring,address);
 }
 
-static netdev_tx_t synthetic_xmit(struct sk_buff *skb, struct net_device *device) { return NETDEV_TX_BUSY; }
+static bool consume_tx;
+static netdev_tx_t synthetic_xmit(struct sk_buff *skb, struct net_device *device)
+{
+    if (!consume_tx) return NETDEV_TX_BUSY;
+    dev_kfree_skb_any(skb);
+    return NETDEV_TX_OK;
+}
 static int synthetic_open(struct net_device *device) { netif_start_queue(device); return 0; }
 static int synthetic_stop(struct net_device *device) { netif_stop_queue(device); return 0; }
 static const struct net_device_ops operations = {
@@ -177,6 +183,18 @@ void kutox_c_services_packets(void)
     skb_shinfo(skb)->gso_size = 64;
     check(kutox_c_netdev_transmit(device,skb) == -EOPNOTSUPP && skb->len == 60, "p3_gso_rejected_retains_packet");
     skb_shinfo(skb)->gso_size = 0;
+    skb->no_fcs = true;
+    check(kutox_c_netdev_transmit(device,skb) == -EOPNOTSUPP, "p5_no_fcs_rejected");
+    skb->no_fcs = false;
+    check(kutox_c_tx_begin(device,(uintptr_t)mmio,skb->data,60) == 0, "p5_owned_packet");
+    check(kutox_c_tx_retry(device) == NETDEV_TX_BUSY &&
+          kutox_c_tx_status(device) == 0, "p5_busy_packet_owned");
+    kutox_c_tx_release(device);
+    check(kutox_c_tx_begin(device,(uintptr_t)mmio,skb->data,60) == 0, "p5_drop_packet");
+    consume_tx = true;
+    check(kutox_c_tx_retry(device) == NETDEV_TX_OK &&
+          kutox_c_tx_status(device) == -EIO, "p5_consumed_drop_is_not_completion");
+    consume_tx = false; kutox_c_tx_release(device);
     netdev_sent_queue(device,60); netdev_completed_queue(device,1,60);
     dev_kfree_skb_any(skb);
     struct napi_struct napi = {0}; netif_napi_add(device,&napi,unused_poll);

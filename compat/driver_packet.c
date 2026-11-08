@@ -5,6 +5,19 @@ static struct net_device *netdev;
 struct netdev_queue { struct net_device *device; };
 static struct netdev_queue tx_queue;
 static void *fragments[512];
+extern void kutox_driver_trace(unsigned int,uintptr_t,uintptr_t,int);
+static struct {
+    struct sk_buff *skb;
+    uintptr_t identity, data, mmio;
+    dma_addr_t dma;
+    unsigned int bytes;
+    unsigned long completed_before, completed_bytes_before, stats_before, stats_bytes_before;
+    bool live, accepted, mapped, sent, published, freed, completed, aborting;
+} tx;
+static void tx_event(unsigned int event, int result)
+{
+    kutox_driver_trace(event,0,tx.identity,result);
+}
 struct net_device *kutox_c_registered_netdev(void) { return netdev && netdev->registered ? netdev : NULL; }
 int kutox_c_netdev_close(struct net_device *device)
 {
@@ -39,7 +52,7 @@ struct net_device *alloc_etherdev(size_t private_size)
 void free_netdev(struct net_device *device)
 {
     netdev_check(device);
-    if (device->registered || device->running || device->sent_packets != device->completed_packets)
+    if (device->registered || device->running || device->sent_packets != device->completed_packets || tx.live)
         kutox_platform_fail("free_netdev_live");
     kutox_c_retire_napi_device(device);
     kutox_c_pci_clear_data(device);
@@ -110,6 +123,10 @@ void netdev_sent_queue(struct net_device *device, unsigned int bytes)
     if (!bytes || device->sent_packets == ~0UL || device->sent_bytes > ~0UL - bytes)
         kutox_platform_fail("netdev_sent_overflow");
     device->sent_packets++; device->sent_bytes += bytes;
+    if (tx.live && !tx.aborting) {
+        if (!tx.mapped || tx.sent || bytes != tx.bytes) kutox_platform_fail("tx_sent_order");
+        tx.sent = true; tx_event(20,bytes);
+    }
 }
 void netdev_completed_queue(struct net_device *device, unsigned int packets, unsigned int bytes)
 {
@@ -117,6 +134,11 @@ void netdev_completed_queue(struct net_device *device, unsigned int packets, uns
     if (packets > device->sent_packets - device->completed_packets ||
         bytes > device->sent_bytes - device->completed_bytes) kutox_platform_fail("netdev_completion_accounting");
     device->completed_packets += packets; device->completed_bytes += bytes;
+    if (tx.live && packets && !tx.aborting) {
+        if (!tx.accepted || !tx.published || tx.mapped || !tx.freed || tx.completed ||
+            packets != 1 || bytes != tx.bytes) kutox_platform_fail("tx_completed_order");
+        tx.completed = true; tx_event(24,bytes);
+    }
 }
 void netdev_reset_queue(struct net_device *device)
 {
@@ -232,16 +254,28 @@ void *skb_pull(struct sk_buff *skb, unsigned int size)
 static void free_skb(struct sk_buff *skb)
 {
     skb_check(skb);
+    bool tracked = tx.live && (uintptr_t)skb == tx.identity;
     if (skb->references != 1) kutox_platform_fail("skb_reference_profile");
     if (skb->backing_kind) skb_free_frag(skb->head); else kfree(skb->head);
     skb->references = 0; kfree(skb);
+    if (tracked) {
+        if (tx.mapped || tx.freed) kutox_platform_fail("tx_free_order");
+        tx.freed = true; tx.skb = NULL;
+        if (!tx.sent || tx.aborting) tx_event(28,0);
+    }
 }
 void dev_kfree_skb(struct sk_buff *skb) { if (skb) free_skb(skb); }
 void dev_kfree_skb_any(struct sk_buff *skb) { dev_kfree_skb(skb); }
 void napi_consume_skb(struct sk_buff *skb, int budget)
 {
     if (budget < 0 || budget > 64) kutox_platform_fail("skb_consume_budget");
+    bool tracked = tx.live && (uintptr_t)skb == tx.identity;
     dev_kfree_skb(skb);
+    if (tracked && !tx.aborting) {
+        if (!tx.accepted || !tx.published || !tx.freed || budget != 64)
+            kutox_platform_fail("tx_consume_order");
+        tx_event(23,budget);
+    }
 }
 int eth_skb_pad(struct sk_buff *skb)
 {
@@ -272,16 +306,112 @@ int kutox_c_netdev_transmit(struct net_device *device, struct sk_buff *skb)
     skb_check(skb);
     struct skb_shared_info *info = skb_shinfo(skb);
     driver_check(kutox_driver_range((uintptr_t)skb->data,skb->len,0), "transmit_device_owned");
-    if (skb->len < ETH_HLEN || skb->len > 1514 || info->gso_size || info->nr_frags ||
+    if (skb->len < ETH_HLEN || skb->len > 1514 || skb->no_fcs ||
+        info->gso_size || info->nr_frags ||
         skb->ip_summed != CHECKSUM_NONE || skb->vlan_present ||
         (skb->data[12] == 0x81 && skb->data[13] == 0) ||
         (skb->data[12] == 0x88 && skb->data[13] == 0xa8)) {
         kutox_driver_diag("transmit_profile",-EOPNOTSUPP);
         return -EOPNOTSUPP;
     }
+    bool tracked = tx.live && (uintptr_t)skb == tx.identity;
+    if (tracked)
+        kutox_driver_trace(17,(uintptr_t)device->netdev_ops->ndo_start_xmit,tx.identity,skb->len);
     int result = device->netdev_ops->ndo_start_xmit(skb,device);
     if (result != NETDEV_TX_OK && result != NETDEV_TX_BUSY) kutox_platform_fail("transmit_return");
+    if (tracked)
+        kutox_driver_trace(18,(uintptr_t)device->netdev_ops->ndo_start_xmit,tx.identity,result);
     return result;
+}
+
+/* One outstanding linear packet; Linux owns every descriptor and completion. */
+int kutox_c_tx_begin(struct net_device *device, uintptr_t mmio, const void *bytes, unsigned int size)
+{
+    netdev_check(device);
+    if (tx.live) return -EBUSY;
+    if (!bytes || !mmio || size < 60 || size > 1514) {
+        kutox_driver_diag("tx_packet_profile",-EINVAL); return -EINVAL;
+    }
+    struct sk_buff *skb = alloc_skb(size,GFP_KERNEL);
+    if (!skb) return -ENOMEM;
+    skb_put_data(skb,bytes,size);
+    skb->device = device;
+    skb->protocol = htons(((const u8 *)bytes)[12] << 8 | ((const u8 *)bytes)[13]);
+    tx = (typeof(tx)) {
+        .skb = skb, .identity = (uintptr_t)skb, .data = (uintptr_t)skb->data, .mmio = mmio, .bytes = size,
+        .completed_before = device->completed_packets, .completed_bytes_before = device->completed_bytes,
+        .stats_before = device->stats.tx_packets, .stats_bytes_before = device->stats.tx_bytes,
+        .live = true,
+    };
+    tx_event(31,size);
+    return 0;
+}
+int kutox_c_tx_retry(struct net_device *device)
+{
+    netdev_check(device);
+    if (!tx.live || tx.accepted || tx.freed || tx.aborting) return -EINVAL;
+    int result = kutox_c_netdev_transmit(device,tx.skb);
+    if (result == NETDEV_TX_OK) {
+        tx.accepted = true;
+        tx.skb = NULL;
+        if (!tx.freed && (!tx.mapped || !tx.sent || !tx.published))
+            kutox_platform_fail("tx_acceptance_order");
+    } else if (tx.mapped || tx.sent || tx.freed) kutox_platform_fail("tx_busy_ownership");
+    if (result == NETDEV_TX_BUSY) tx_event(32,result);
+    return result;
+}
+int kutox_c_tx_status(struct net_device *device)
+{
+    netdev_check(device);
+    if (!tx.live || tx.aborting) return -EINVAL;
+    if (!tx.accepted) return 0;
+    if (tx.completed) {
+        if (device->completed_packets != tx.completed_before + 1 ||
+            device->completed_bytes != tx.completed_bytes_before + tx.bytes ||
+            device->stats.tx_packets != tx.stats_before + 1 ||
+            device->stats.tx_bytes != tx.stats_bytes_before + tx.bytes) kutox_platform_fail("tx_source_stats");
+        return 2;
+    }
+    return tx.freed ? -EIO : 1;
+}
+void kutox_c_tx_release(struct net_device *device)
+{
+    netdev_check(device);
+    if (!tx.live || tx.mapped) kutox_platform_fail("tx_release_live_dma");
+    if (!tx.accepted) {
+        tx_event(29,0); dev_kfree_skb(tx.skb);
+    } else if (!tx.freed || (!tx.completed && !tx.aborting && tx.sent)) {
+        kutox_platform_fail("tx_release_inflight");
+    } else if (tx.completed && !tx.aborting) tx_event(25,tx.bytes);
+    tx = (typeof(tx)){0};
+}
+void kutox_c_tx_abort(struct net_device *device)
+{
+    netdev_check(device);
+    if (tx.live && tx.accepted && !tx.completed) {
+        tx.aborting = true; tx_event(30,0);
+    }
+}
+void kutox_c_tx_mapped(uintptr_t data, u64 dma, size_t size, unsigned int direction)
+{
+    if (!tx.live || data != tx.data || direction != DMA_TO_DEVICE || dma == UINT64_MAX) return;
+    if (tx.mapped || tx.freed || size != tx.bytes) kutox_platform_fail("tx_map_order");
+    tx.dma = dma; tx.mapped = true; tx_event(19,size);
+}
+void kutox_c_tx_unmapped(u64 dma, size_t size, unsigned int direction)
+{
+    if (!tx.live || dma != tx.dma || direction != DMA_TO_DEVICE) return;
+    if (!tx.mapped || size != tx.bytes || (!tx.published && tx.sent))
+        kutox_platform_fail("tx_unmap_order");
+    tx.mapped = false; tx_event(22,size);
+}
+void kutox_c_tx_mmio(uintptr_t address, u32 value, bool writing)
+{
+    if (!tx.live) return;
+    if (writing && address == tx.mmio + 0x3818 && tx.sent && !tx.aborting) {
+        if (!tx.mapped || tx.published || !value || value >= 256) kutox_platform_fail("tx_doorbell_order");
+        tx.published = true; tx_event(21,value);
+    } else if (!writing && address == tx.mmio + 0xc0) tx_event(27,value);
 }
 
 bool skb_vlan_tag_present(const struct sk_buff *skb) { skb_check(skb); return skb->vlan_present; }
@@ -366,5 +496,5 @@ int napi_gro_receive(struct napi_struct *napi, struct sk_buff *skb)
 bool kutox_c_packet_empty(void)
 {
     for (size_t slot = 0; slot < ARRAY_SIZE(fragments); slot++) if (fragments[slot]) return false;
-    return !netdev && !tx_queue.device;
+    return !netdev && !tx_queue.device && !tx.live;
 }

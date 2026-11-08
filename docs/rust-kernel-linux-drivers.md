@@ -633,8 +633,8 @@ or replace Linux cleanup with native descriptor observation.
 Phase 3 supplies [C providers](../compat/driver_services.h) using the same
 source-facing PCI/netdev/skb types as the compile check. Rust retains physical
 allocation/MMIO/PCI ownership; C owns its structs and original callback tables.
-The normal image now links all four original driver units for lifecycle
-acceptance; Linux packet submission/delivery acceptance follows separately.
+The normal image now links all four original driver units for lifecycle and
+linear TX acceptance; controlled original RX delivery follows separately.
 
 [Memory ownership](../src/driver_memory.rs) consists of 2048 registered
 buddy-backed allocations and 1024 streaming map slots. Original allocation
@@ -742,8 +742,44 @@ The OS then retires idle source-facing static synchronization registrations,
 clearing only shim generation metadata, not Linux private counters. Kernel test
 boundaries require exact allocator and registry recovery at 128/32 MiB.
 
-This is lifecycle/IRQ/deferred execution, not Linux TX/RX packet acceptance.
+Lifecycle execution alone is not packet acceptance; the separate TX gate below
+now establishes original Linux transmission and completion.
 No `.ko` loader, Kbuild, Linux kernel boot, PM/SMP or general Linux ABI is added.
+
+### Original Linux TX execution
+
+The generation-checked lifecycle boundary keeps Linux structs in C and admits
+one owned linear skb at a time. Packet bytes are copied before the caller sleeps.
+The registered original `e1000_xmit_frame` performs mapping, descriptor
+construction and the doorbell on its default 256-entry ring. The Rust fixture
+does not construct, read or reclaim descriptors; native TX/helper entry is
+fatal during original-driver tests.
+
+`NETDEV_TX_BUSY` leaves ownership with the adapter for bounded retry or
+cancellation. `NETDEV_TX_OK` transfers ownership even when Linux consumes a
+drop, so acceptance requires more than the return code. A consumed but unsent
+skb reports an error. Accepted in-flight buffers cannot be released: timeout/
+cancellation first marks an abort and invokes original close, which stops/
+drains hardware and callbacks before source cleanup. An unsubmitted BUSY skb
+can instead be freed directly. Normal TX unmap does not disable unrelated RX.
+
+The source-facing DMA, packet and queue services observe the same skb's map,
+sent bytes, actual TDT write, exact unmap, budget-64 consumption and completed
+bytes. Native completion waits for original packet/byte statistics too. The
+host matches registered xmit/IRQ/poll addresses to current original ELF symbols,
+requires TXDW from original ICR handling, then cleanup/accounting within the
+original poll and its return before acceptance. These service observations are
+acceptance evidence, not a new mandatory DMA completion API in vendor source.
+Standard DMA unmap still depends on Linux's audited completion/abort contract.
+
+The test transmits 60/128/512/1514-byte no-offload, untagged frames across two
+probe/open/close/remove sessions. It checks retained BUSY ownership/cancellation,
+no completion before deferred IRQ/NAPI progress, one live TX mapping and two
+packet allocations, and exact snapshot recovery per completion at 128/32 MiB.
+Fresh capture requires all four existing native frames followed by all four
+distinct exact Linux frames; intentional-failure mode cannot skip packet checks.
+Controlled original RX delivery and ring-wrap/backpressure/map-failure/pending
+teardown hardening remain subsequent phases.
 
 ### Source-facing dependency and lifetime requirements
 
@@ -756,10 +792,10 @@ Each retained API needs an explicit provider or an enforced unsupported contract
 | --- | --- |
 | Module/PCI/net-device registration and object lifetimes | Original module/probe/open/close/remove now execute with generation-checked handles. |
 | MMIO in driver threads and hardware IRQs | Owned source MMIO and the selected reset I/O BAR are integrated separately from boot MAC. |
-| Driver allocation and packet buffers | Synthetic linear/RX fragment/ingress services exist; no original packet-path acceptance yet. |
-| Coherent descriptor sharing and streaming map/sync/unmap | Standard per-region contracts and failed-open gate exist; original completion/abort/reopen paths need integration tests. |
+| Driver allocation and packet buffers | Original linear TX consumption is tested; controlled original RX/ingress acceptance follows. |
+| Coherent descriptor sharing and streaming map/sync/unmap | Original TX completion unmap is tested; mapping failures and pending abort/reopen hardening follow. |
 | Delayed work, jiffies, lifecycle locking and cancellation | Original watchdog and real lifecycle cancellation execute; packet-triggered reset hardening follows. |
-| IRQ registration and NAPI scheduling/budget/disable | Original e1000 IRQ and poll callbacks now execute; packet cleanup acceptance follows. |
+| IRQ registration and NAPI scheduling/budget/disable | Original IRQ/NAPI TX cleanup is tested; controlled RX cleanup follows. |
 | Probe/open/error/close/remove cleanup | Original repeated lifecycle/error unwind is tested; pending packet/injection/reopen hardening follows. |
 
 Three ordering constraints shape the environment:

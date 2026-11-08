@@ -410,6 +410,12 @@ fn worker(which: usize) {
                         BUDGET,
                     );
                     let done = unsafe { callback(invocation.address as *mut c_void, BUDGET) };
+                    crate::linux_driver::kutox_driver_trace(
+                        26,
+                        callback as usize,
+                        invocation.address,
+                        done,
+                    );
                     CURRENT_NAPI.store(0, Ordering::Release);
                     done
                 }

@@ -65,6 +65,7 @@ KERNEL_TEST_NAMES = (
     "linux.driver_failed_open",
     "linux.e1000_lifecycle",
     "linux.e1000_failures",
+    "linux.e1000_tx",
 )
 KERNEL_SUITE_CASES = {
     "kernel-tests": "kernel-tests",
@@ -180,6 +181,8 @@ DRIVER_CALLBACK_NAMES = {
     8: ("e1000_intr",), 9: ("e1000_intr",), 15: ("e1000_intr",),
     10: DRIVER_WORK_CALLBACKS, 11: DRIVER_WORK_CALLBACKS,
     12: ("e1000_clean",), 13: ("e1000_clean",),
+    17: ("e1000_xmit_frame",), 18: ("e1000_xmit_frame",),
+    26: ("e1000_clean",), 33: ("e1000_xmit_frame",),
 }
 
 
@@ -214,13 +217,16 @@ def validate_linux_callbacks(output, symbols=None):
             elif events or faults:
                 raise AssertionError("original driver ran in a native/synthetic case")
             events, faults = [], []
-    if events or faults or set(batches) != {"linux.e1000_lifecycle", "linux.e1000_failures"}:
+    if events or faults or set(batches) != {"linux.e1000_lifecycle", "linux.e1000_failures", "linux.e1000_tx"}:
         raise AssertionError("incomplete original-driver callback batches")
     for name, (events, faults) in batches.items():
-        counts = {event: sum(item[0] == event for item in events) for event in range(1, 17)}
-        expected = {1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 4, 7: 4} if name.endswith("lifecycle") else {
+        counts = {event: sum(item[0] == event for item in events) for event in range(1, 34)}
+        expected = {1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 4, 7: 4, 33: 2} if name.endswith("lifecycle") else {
             1: 4, 2: 1, 3: 4, 4: 4, 5: 1, 6: 5, 7: 2,
+            33: 1,
         }
+        if name.endswith("_tx"):
+            expected = {1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 2, 33: 2}
         if any(counts[event] != count for event, count in expected.items()):
             raise AssertionError("original lifecycle callbacks missing, duplicated, or bypassed")
         expected_faults = list(range(1, 8)) if name.endswith("failures") else []
@@ -236,14 +242,15 @@ def validate_linux_callbacks(output, symbols=None):
             raise AssertionError("original IRQ returns are missing or invalid")
         if not any(event == 16 and result == 4 for event, _, _, result in events):
             raise AssertionError("original open did not generate an LSC IRQ")
-        minimum_ready = 4 if name.endswith("lifecycle") else 1
+        minimum_ready = 4 if name.endswith("lifecycle") else 2 if name.endswith("_tx") else 1
         if counts[14] < minimum_ready:
             raise AssertionError("each successful lifecycle did not establish source-derived readiness")
-        work, napi, irq = set(), set(), set()
+        work, napi, irq, xmit = set(), set(), set(), set()
+        active_poll = active_irq = None
         last_work = None
         for event, function, obj, result in events:
             if event == 1:
-                work, napi, irq = set(), set(), set()
+                work, napi, irq, xmit = set(), set(), set(), set()
             if event in (1, 6):
                 last_work = None
             if event in DRIVER_CALLBACK_NAMES:
@@ -253,7 +260,7 @@ def validate_linux_callbacks(output, symbols=None):
                     symbols.get(symbol) for symbol in DRIVER_CALLBACK_NAMES[event]
                 }:
                     raise AssertionError("callback did not point to the linked original Linux function")
-            elif event not in (14, 16) or function != 0:
+            elif event not in (14, 16, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 32) or function != 0:
                 raise AssertionError("unknown original callback kind")
             if event not in (1, 2) and obj == 0:
                 raise AssertionError("callback backing identity is missing")
@@ -268,14 +275,104 @@ def validate_linux_callbacks(output, symbols=None):
                 napi.add(pair)
             elif event == 13 and (pair not in napi or result != 64):
                 raise AssertionError("unregistered or unbudgeted NAPI poll ran")
+            elif event == 13:
+                if active_poll is not None:
+                    raise AssertionError("nested source NAPI poll")
+                active_poll = pair
+            elif event == 26:
+                if active_poll != pair or not 0 <= result <= 64:
+                    raise AssertionError("unmatched source NAPI poll return")
+                active_poll = None
+            elif event == 33:
+                xmit.add(function)
+            elif event in (17, 18) and function not in xmit:
+                raise AssertionError("unregistered original xmit ran")
             elif event == 8:
                 irq.add(pair)
             elif event in (9, 15) and (pair not in irq or (event == 15 and result not in (0, 1))):
                 raise AssertionError("unregistered IRQ handler or invalid return")
+            elif event == 9:
+                if active_irq is not None or active_poll is not None:
+                    raise AssertionError("nested original IRQ or IRQ inside NAPI")
+                active_irq = pair
+            elif event == 15:
+                if active_irq != pair:
+                    raise AssertionError("unmatched original IRQ return")
+                active_irq = None
             elif event == 14 and (last_work is None or (
                 symbols is not None and last_work != symbols.get("e1000_watchdog")
             )):
                 raise AssertionError("link readiness did not come from original watchdog work")
+        if active_irq is not None or active_poll is not None or counts[13] != counts[26]:
+            raise AssertionError("incomplete original NAPI poll")
+        if name.endswith("_tx"):
+            validate_linux_tx_events(events)
+        elif any(17 <= event <= 32 and event != 26 for event, _, _, _ in events):
+            raise AssertionError("packet submission ran outside the Linux TX case")
+
+
+def validate_linux_tx_events(events):
+    transaction = []
+    packet = None
+    lengths = []
+    cancelled = 0
+    in_irq = False
+    tx_irq = False
+    tx_cause = False
+    in_poll = False
+    poll_returned = False
+    for event, function, obj, result in events:
+        if event == 31:
+            if packet is not None:
+                raise AssertionError("overlapping Linux packet ownership")
+            packet = obj
+            transaction = []
+            tx_irq = poll_returned = False
+        if event == 9:
+            in_irq = True
+            tx_cause = False
+        elif event == 15:
+            if tx_cause:
+                if result != 1:
+                    raise AssertionError("original TX IRQ did not return HANDLED")
+                tx_irq = True
+            in_irq = False
+        elif event == 27:
+            if not in_irq or obj != packet:
+                raise AssertionError("TX cause did not come from original IRQ read")
+            if transaction and transaction[-1][0] == 18 and result & 1:
+                tx_cause = True
+        elif event == 13:
+            in_poll = True
+        elif event == 26:
+            in_poll = False
+            if transaction and transaction[-1][0] == 24:
+                poll_returned = True
+        if event not in (17, 18, 19, 20, 21, 22, 23, 24, 25, 28, 29, 30, 31, 32):
+            continue
+        if packet is None or obj != packet or event == 30:
+            raise AssertionError("invalid, unowned, or aborted Linux TX evidence")
+        if event in (22, 23, 24) and (not tx_irq or not in_poll):
+            raise AssertionError("completion preceded original TX IRQ/NAPI cleanup")
+        if event == 25 and (not poll_returned or in_poll):
+            raise AssertionError("native acceptance preceded original poll return")
+        transaction.append((event, result))
+        if event == 28:
+            if transaction != [(31, 60), (32, 16), (29, 0), (28, 0)]:
+                raise AssertionError("BUSY cancellation lost skb ownership")
+            cancelled += 1
+            packet = None
+        elif event == 25:
+            size = LINUX_TX_LENGTHS[len(lengths)] if len(lengths) < 4 else 0
+            expected = [(31, size), (17, size), (19, size), (20, size),
+                        (21, 1 + len(lengths) % 2), (18, 0),
+                        (22, size), (23, 64), (24, size), (25, size)]
+            if transaction != expected:
+                raise AssertionError("Linux xmit/map/doorbell/unmap/free/accounting disagree")
+            lengths.append(size)
+            packet = None
+    if packet is not None or lengths != list(LINUX_TX_LENGTHS) or cancelled != 2:
+        raise AssertionError("incomplete Linux TX or BUSY ownership coverage")
 
 
 def validate_fault_result(case, returncode, output):
@@ -480,6 +577,19 @@ def tx_packet(sequence):
     return bytes(packet)
 
 
+LINUX_TX_LENGTHS = (60, 128, 512, 1514)
+
+
+def linux_tx_packet(sequence, size):
+    packet = bytearray(
+        b"\xff" * 6 + bytes.fromhex("52540012345688b6")
+        + bytes((sequence + index) & 255 for index in range(14, size))
+    )
+    packet[14:22] = b"KUTOX-LX"
+    packet[22] = sequence
+    return bytes(packet)
+
+
 def validate_tx_capture(data):
     if len(data) < 24 or len(data) > 1024 * 1024:
         raise AssertionError("missing, truncated, or oversized TX capture")
@@ -487,22 +597,25 @@ def validate_tx_capture(data):
     if endian is None:
         raise AssertionError("unsupported pcap format")
     major, minor, _, _, snaplen, link = struct.unpack_from(endian + "HHIIII", data, 4)
-    if (major, minor, link) != (2, 4, 1) or snaplen < 60:
+    if (major, minor, link) != (2, 4, 1) or snaplen < max(LINUX_TX_LENGTHS):
         raise AssertionError("invalid Ethernet pcap header")
     packets = []
+    expected = [tx_packet(sequence) for sequence in (1, 2, 3, 4)]
+    expected += [linux_tx_packet(sequence, size)
+                 for sequence, size in enumerate(LINUX_TX_LENGTHS, 1)]
     offset = 24
     while offset < len(data):
         if len(data) - offset < 16:
             raise AssertionError("truncated pcap record header")
         _, usec, captured, original = struct.unpack_from(endian + "IIII", data, offset)
         offset += 16
-        if usec >= 1_000_000 or captured != 60 or original != 60 or captured > len(data) - offset:
+        if (len(packets) >= len(expected) or usec >= 1_000_000
+                or captured != len(expected[len(packets)]) or original != captured
+                or captured > len(data) - offset):
             raise AssertionError("truncated or unexpected TX packet length")
         packets.append(data[offset:offset + captured])
         offset += captured
-        if len(packets) > 4:
-            raise AssertionError("unexpected extra TX packet")
-    if packets != [tx_packet(sequence) for sequence in (1, 2, 3, 4)]:
+    if packets != expected:
         raise AssertionError("TX capture has missing, reordered, duplicate, or incorrect packet bytes")
 
 
