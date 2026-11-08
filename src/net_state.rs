@@ -29,7 +29,7 @@ impl Error {
             -5 => Self::Dropped,
             -19 | -201 | -202 => Self::Closed,
             -22 | -95 => Self::Unsupported,
-            -53..=-50 | -57 | -58 | -106 | -166 => Self::Context,
+            -53..=-50 | -57 | -58 | -59 | -106 | -166 => Self::Context,
             code => Self::Driver(code),
         }
     }

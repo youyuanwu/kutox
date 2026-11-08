@@ -82,6 +82,12 @@ pub fn ticks_for_us(usec: u64) -> Result<u64, Failure> {
         .ok_or(Failure::new("tsc_duration_overflow", -1))
 }
 
+pub fn deadline_after_us(usec: u64) -> Result<u64, Failure> {
+    now_ticks()
+        .checked_add(ticks_for_us(usec)?)
+        .ok_or(Failure::new("tsc_deadline_overflow", -1))
+}
+
 pub fn delay_us(usec: u64) {
     assert!(usec <= 1_000_000, "unsupported delay duration");
     let duration = ticks_for_us(usec)

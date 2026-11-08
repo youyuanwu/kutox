@@ -117,7 +117,9 @@ Linux-private structs.
 
 The next [async-kernel and IPv4 design](docs/async-kernel-networking.md) keeps
 Linux workers and adds Moss-inspired futures plus a native packet bridge.
-It is planned, not implemented; current normal boot still has no IP service.
+The bounded executor and async event/timer/yield core are implemented and
+guest-tested through an explicit service path. The packet bridge and IPv4
+remain planned; current normal boot still has no IP service.
 
 ## Requirements
 

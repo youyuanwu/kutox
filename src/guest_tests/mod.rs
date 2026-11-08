@@ -1,5 +1,6 @@
 //! Guest-only acceptance fixtures; not production driver code.
 
+mod async_runtime;
 mod device_irq;
 mod driver_services;
 pub(crate) mod e1000_irq;
@@ -287,6 +288,7 @@ pub fn run(boot: &BootInfo) -> ! {
     if cpu::interrupts_enabled()
         || X86Cpu::irq_lock_depth() != 0
         || !threads::is_quiescent()
+        || !crate::async_runtime::quiescent()
         || !irq::is_quiescent()
         || !completion::tests::quiescent()
         || !threads::irq_tests::quiescent()
@@ -342,6 +344,8 @@ pub fn run(boot: &BootInfo) -> ! {
         crate::linux_driver::tests::TESTS
     } else if boot.mode == BootMode::DriverHardeningTests {
         crate::linux_driver::hardening::TESTS
+    } else if boot.mode == BootMode::AsyncCoreTests {
+        async_runtime::TESTS
     } else {
         TESTS
     };
@@ -379,6 +383,7 @@ pub fn run(boot: &BootInfo) -> ! {
             || heap_before != heap.stats()
             || X86Cpu::irq_lock_depth() != 0
             || !threads::is_quiescent()
+            || !crate::async_runtime::quiescent()
             || !irq::is_quiescent()
             || !completion::tests::quiescent()
             || !threads::irq_tests::quiescent()

@@ -97,6 +97,11 @@ RUNTIME_TEST_NAMES = (
     "runtime.startup_rollback", "runtime.admission_rollback",
     "runtime.no_nic_idle", "runtime.client_return", "runtime.shutdown_busy",
 )
+ASYNC_CORE_CASES = {
+    "async-core-tests": "async-core-tests",
+    "async-core-tests-low-memory": "async-core-tests",
+}
+ASYNC_CORE_NAMES = ("async.wake", "async.irq", "async.timer", "async.fairness", "async.cancel")
 NETWORK_SUITE_CASES = {
     "driver-network-tests": "driver-network-tests",
     "driver-network-tests-low-memory": "driver-network-tests",
@@ -139,6 +144,7 @@ CASES = {
     "driver-runtime-tests-disabled": (None, "boot_mode"),
     "driver-network-tests-disabled": (None, "boot_mode"),
     "driver-hardening-tests-disabled": (None, "boot_mode"),
+    "async-core-tests-disabled": (None, "boot_mode"),
     **{case: (None, None) for case in FAULT_RESULTS},
     "smp-unsupported": (None, "cpu_single_processor_required"),
     "heap-oom": (None, None),
@@ -150,6 +156,7 @@ CASES = {
     **{case: (None, None) for case in UNCLAIMED_CASES},
     **{case: (None, None) for case in LIVE_CASES},
     **{case: (None, None) for case in HARDENING_CASES},
+    **{case: (None, None) for case in ASYNC_CORE_CASES},
 }
 
 
@@ -283,6 +290,102 @@ def validate_ktap(lines, returncode, expected_names):
     if returncode != expected_exit:
         raise AssertionError(f"suite QEMU exit {returncode}, expected {expected_exit}")
     return failures
+
+
+def validate_async_core(case, returncode, output):
+    lines = output.splitlines()
+    validate_boot_preamble(lines, ASYNC_CORE_CASES[case])
+    if any(line.startswith((
+        "CPU_EXCEPTION", "CPU_TEST_", "E1000_", "BOOT_MEMORY", "FRAME_ALLOCATOR",
+        "HEAP_", "THREAD_", "Bail out!", "# LINUX_CALLBACK", "# NATIVE_",
+    )) for line in lines):
+        raise AssertionError("async suite aborted or used an unrelated driver proof")
+    failures = validate_ktap(lines, returncode, ASYNC_CORE_NAMES)
+    if failures:
+        raise KernelSuiteFailure(f"async suite failed: {', '.join(sorted(failures))}")
+    proofs = (
+        "# ASYNC_WAKE polls=5 self_wake=coalesced cloned=1 consumed=1 prepoll=1 blocking_rejected=2 c_calls=0",
+        "# ASYNC_IRQ deliveries=1 registered=1 polled=0 c_calls=0 allocations=0 destructions=0 context=irq",
+        "# ASYNC_TIMER expirations=1 early=0 deadline=oneshot empty_polls=0 pending_polls=0 observation_ticks=2 no_async_deadline=1",
+        "# ASYNC_FAIRNESS first_batch=16 ready_tasks=16 native_between=1 guard_stack=1",
+        "# ASYNC_CANCEL tasks=16 registrations=16 deadlines=16 capacity_rejected=1 oversized_rejected=1 dropped=16 retained=1",
+        "# ASYNC_REBIND changed_epoch=1 old_wake=ignored payload_retained=0 records=0",
+        "# ASYNC_FAILURE code=-224 task_failed=1 runtime_failed=1 payloads=0 records=0 joined=1 balanced=1",
+    )
+    for proof in proofs:
+        if lines.count(proof) != 1:
+            raise AssertionError(f"missing or duplicate async proof: {proof}")
+    errors = [line for line in lines if line.startswith("# ASYNC_ERROR")]
+    if errors != [
+        "# ASYNC_ERROR operation=task error=Service(-224) code=-224",
+        "# ASYNC_ERROR operation=spawn error=State(Capacity) code=-220",
+        "# ASYNC_ERROR operation=spawn error=State(PayloadTooLarge) code=-220",
+    ]:
+        raise AssertionError("unexpected or hidden async task/admission failure")
+    if [line for line in lines if line.startswith("# RUNTIME_ERROR")] != [
+        "# RUNTIME_ERROR stage=runtime_start code=-224",
+    ]:
+        raise AssertionError("async failed task did not fail the joined runtime")
+    rejects = [line for line in lines if line.startswith("# LINUX_CONTROL")]
+    if rejects != [
+        "# LINUX_CONTROL_REJECT op=async_poll errno=-59",
+        "# LINUX_CONTROL_REJECT op=async_irq errno=-57",
+        "# LINUX_CONTROL_REJECT op=async_poll errno=-59",
+    ]:
+        raise AssertionError("missing async/IRQ blocking-control rejection")
+    joins = [line for line in lines if line.startswith("# ASYNC_JOIN")]
+    expected = (
+        ("async.wake", 1, 5, 3, 0, 0),
+        ("async.irq", 1, 2, 1, 0, 0),
+        ("async.timer", 1, 3, 1, 1, 0),
+        ("async.fairness", 1, 48, 16, 0, 0),
+        ("async.cancel", 1, 16, 0, 16, 1),
+        ("async.cancel", 2, 2, 1, 0, 0),
+    )
+    if len(joins) != len(expected):
+        raise AssertionError("missing or duplicate async epoch join")
+    metadata_values = set()
+    for line, (name, epoch, polls, completed, cancelled, retained) in zip(joins, expected):
+        match = re.fullmatch(
+            rf"# ASYNC_JOIN test={name} epoch={epoch} finished=5 peak=5 blocks=(\d+) idle_sleeps=(\d+) "
+            rf"polls={polls} max_batch=(\d+) completed={completed} cancelled={cancelled} failed=0 "
+            rf"registrations=0 deadlines=0 retained={retained} payload_bytes=0 peak_payload_bytes=(\d+) "
+            r"metadata=(\d+) stack_bytes=16384 event_bytes=(\d+) service_bytes=(\d+) balanced=1",
+            line,
+        )
+        if match is None:
+            raise AssertionError("malformed async join or unbalanced payload/registration retirement")
+        blocks, idles, batch, payload, metadata, event, service = map(int, match.groups())
+        if blocks < 2 or not 1 <= batch <= 16 or (name == "async.fairness" or retained) and batch != 16:
+            raise AssertionError("async executor stack, fairness or batch limit violated")
+        if name in ("async.irq", "async.timer") and idles < 1:
+            raise AssertionError("async wait did not idle through real IRQ delivery")
+        if not 0 < payload <= 32768 or not 2488 < metadata <= 32768 or not 0 < event <= 256:
+            raise AssertionError("async payload/control storage bound violated")
+        if service != metadata + 16384 + payload + event or service > 131072:
+            raise AssertionError("async service storage accounting violated")
+        metadata_values.add(metadata)
+    if len(metadata_values) != 1:
+        raise AssertionError("async metadata changed between epochs")
+    known = set(proofs + tuple(errors) + tuple(joins))
+    if any(line.startswith("# ASYNC_") and line not in known for line in lines):
+        raise AssertionError("unexpected async acceptance evidence")
+    batches, events = {}, []
+    for line in lines:
+        if line.startswith(("# ASYNC_", "# LINUX_CONTROL", "# RUNTIME_ERROR")):
+            events.append(line)
+        elif re.fullmatch(r"ok \d+ async\.[a-z]+", line):
+            name = line.split()[2]
+            batches[name] = events
+            events = []
+    for name, proof in zip(ASYNC_CORE_NAMES, proofs):
+        if proof not in batches[name] or any(
+            line.startswith("# ASYNC_JOIN") and not line.startswith(f"# ASYNC_JOIN test={name} ")
+            for line in batches[name]
+        ):
+            raise AssertionError("async evidence belongs to the wrong guest case")
+    if proofs[-1] not in batches["async.wake"] or proofs[-2] not in batches["async.cancel"]:
+        raise AssertionError("async fault or epoch evidence belongs to the wrong case")
 
 
 def validate_runtime_suite(case, returncode, output):
@@ -733,7 +836,7 @@ def validate_thread_guard(returncode, output):
 def validate_result(case, returncode, output):
     if case in LIVE_CASES:
         raise AssertionError("persistent runtime requires measured live execution, not an exit code")
-    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled"):
+    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled"):
         lines = output.splitlines()
         expected = "E1000_MAC_FAIL stage=boot_mode code=-25"
         if returncode != 3 or not lines or lines[-1] != expected:
@@ -742,7 +845,7 @@ def validate_result(case, returncode, output):
             raise AssertionError("missing pinned-source feature-off boot marker")
         if [line for line in lines if line.startswith("E1000_")] != [expected] or any(
             line.startswith(("BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "THREAD_", "Bail out!",
-                             "# RUNTIME_", "# NATIVE_", "# LINUX_"))
+                             "# RUNTIME_", "# NATIVE_", "# LINUX_", "# ASYNC_"))
             for line in lines
         ):
             raise AssertionError("feature-off test mode reached initialization or guest fixtures")
@@ -755,6 +858,9 @@ def validate_result(case, returncode, output):
         return
     if case in RUNTIME_SUITE_CASES:
         validate_runtime_suite(case, returncode, output)
+        return
+    if case in ASYNC_CORE_CASES:
+        validate_async_core(case, returncode, output)
         return
     if case in UNCLAIMED_CASES:
         validate_unclaimed_suite(case, returncode, output)
@@ -1943,6 +2049,7 @@ def qemu_command(args, case, capture=None, net_fd=None):
             "driver-runtime-tests-disabled": "driver-runtime-tests",
             "driver-network-tests-disabled": "driver-network-tests",
             "driver-hardening-tests-disabled": "driver-hardening-tests",
+            "async-core-tests-disabled": "async-core-tests",
             "heap-oom": "heap-oom",
             "thread-stack-guard": "thread-stack-guard",
             **{case: case for case in FAULT_RESULTS},
@@ -1951,11 +2058,12 @@ def qemu_command(args, case, capture=None, net_fd=None):
             **NETWORK_SUITE_CASES,
             **RUNTIME_NETWORK_CASES,
             **HARDENING_CASES,
+            **ASYNC_CORE_CASES,
             **{case: "driver-runtime-tests" for case in UNCLAIMED_CASES},
             **{case: mode for case, (mode, _) in LIVE_CASES.items() if mode is not None},
         }.get(case, "probe")
         command += ["-fw_cfg", f"name=opt/kutox/test-mode,string={mode}"]
-    if case not in ("missing", "smp-unsupported", "heap-oom", "thread-stack-guard", "guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled") and case not in FAULT_RESULTS and case not in KERNEL_SUITE_CASES and case not in RUNTIME_SUITE_CASES and case not in NETWORK_SUITE_CASES and case not in RUNTIME_NETWORK_CASES and case not in LIVE_CASES and case not in HARDENING_CASES:
+    if case not in ("missing", "smp-unsupported", "heap-oom", "thread-stack-guard", "guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled") and case not in FAULT_RESULTS and case not in KERNEL_SUITE_CASES and case not in RUNTIME_SUITE_CASES and case not in NETWORK_SUITE_CASES and case not in RUNTIME_NETWORK_CASES and case not in LIVE_CASES and case not in HARDENING_CASES and case not in ASYNC_CORE_CASES:
         model = "e1000e" if case == "unsupported" or case in UNCLAIMED_CASES else "e1000"
         mac = CASES[case][0] or "52:54:00:12:34:56"
         command += [

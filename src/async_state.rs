@@ -100,6 +100,12 @@ pub struct EventToken {
     generation: u64,
 }
 
+impl EventToken {
+    pub fn epoch(self) -> Epoch {
+        self.epoch
+    }
+}
+
 pub struct Event {
     epoch: Epoch,
     id: u64,
@@ -107,6 +113,10 @@ pub struct Event {
 }
 
 impl Event {
+    pub fn epoch(&self) -> Epoch {
+        self.epoch
+    }
+
     pub fn prepare(&self) -> EventToken {
         EventToken {
             epoch: self.epoch,
@@ -179,6 +189,14 @@ impl AsyncState {
         self.records.iter().flatten().count()
     }
 
+    pub fn payload_count(&self) -> usize {
+        self.records
+            .iter()
+            .flatten()
+            .filter(|record| record.payload)
+            .count()
+    }
+
     pub fn ready_len(&self) -> usize {
         self.ready_len
     }
@@ -224,6 +242,10 @@ impl AsyncState {
 
     pub fn outcome(&self, task: TaskHandle) -> Result<Option<Outcome>, Error> {
         Ok(self.record(task)?.outcome)
+    }
+
+    pub fn payload_released(&self, task: TaskHandle) -> Result<bool, Error> {
+        Ok(!self.record(task)?.payload)
     }
 
     pub fn retain_waker(&mut self, task: TaskHandle) -> Result<WakerRecord, Error> {
@@ -421,6 +443,10 @@ impl AsyncState {
 
     pub fn unregister_event(&mut self, id: RegistrationId) -> bool {
         self.waits.remove(id).is_some()
+    }
+
+    pub fn registration_live(&self, id: RegistrationId) -> bool {
+        self.waits.contains(id)
     }
 
     pub fn signal(&mut self, event: &mut Event) -> Result<usize, Error> {

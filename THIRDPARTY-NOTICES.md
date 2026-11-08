@@ -150,9 +150,21 @@ The upstream `Arc`/`WaitUntil` future implementation is not copied.
 adaptations: checked epochs, sixteen live/retained task slots, FIFO admission,
 event generations, sixteen registrations/deadlines and explicit cancellation,
 failure and off-lock payload-release acknowledgement. Waker records retain
-metadata slots only, including across epoch reopen. This portable layer does
-not yet supply the future executor, hardware IRQ/timer integration or packet
-broker. Its host tests are not claims of guest execution or source DMA drain.
+metadata slots only, including across epoch reopen. This portable layer is
+separate from the native executor and hardware integration below; its host
+tests alone are not claims of guest execution or source DMA drain.
+
+[src/async_runtime.rs](src/async_runtime.rs) and
+[src/async_sync.rs](src/async_sync.rs) are native kutox code using these ports
+and the existing guarded dispatcher/one-shot timer. Fallible pinned payload
+ownership, permanent bounded RawWaker tags, checked lease accounting, sixteen
+poll batches, event generation snapshots, async deadline registration and
+joined cancellation/failure are not copies of Moss's process-oriented executor
+or `Arc<Work>` waker. Hardware guest tests prove IRQ notification without
+polling or payload destruction and retained-waker safety across scoped epochs.
+The production executor is retained in both feature profiles before default
+activation; fixtures remain guest-only. No networking dependency or Linux
+packet algorithm is introduced by this phase.
 
 Moss's reviewed run queue is deadline/virtual-clock based and its kernel work
 is future-based; it is not copied as a stackful scheduler. kutox's bounded FIFO

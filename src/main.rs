@@ -3,6 +3,16 @@
 
 extern crate alloc;
 
+#[allow(
+    dead_code,
+    reason = "Production async API awaits network boot integration"
+)]
+mod async_runtime;
+#[allow(
+    dead_code,
+    reason = "Production async API awaits network boot integration"
+)]
+mod async_sync;
 mod boot;
 mod completion;
 mod cpu;
@@ -240,6 +250,7 @@ fn probe() -> Result<BootOutcome, Failure> {
             | BootMode::DriverRuntimeTests
             | BootMode::DriverNetworkTests
             | BootMode::DriverHardeningTests
+            | BootMode::AsyncCoreTests
     ) {
         guest_tests::run(&boot);
     }

@@ -7,11 +7,12 @@ The baseline is merged driver integration at `ac637ab` (PR #7). Current normal
 boot retains Linux e1000 and kernel workers but starts no application clients
 or IP stack; see the [current architecture](rust-kernel-linux-drivers.md#moss-style-driver-infrastructure).
 
-Phase 1 implements the [portable async ownership policy](../src/async_state.rs)
-and bounded Moss task/registration adaptations, with host-tested wake races,
-sixteen-record capacity and retained-waker retirement. Future polling,
-IRQ/deadline integration, the broker and IPv4 service remain subsequent phases;
-normal boot is unchanged.
+Phases 1-2 implement the [portable async ownership policy](../src/async_state.rs),
+bounded Moss task/registration adaptations, a [guarded executor](../src/async_runtime.rs)
+and [async waits](../src/async_sync.rs). Real guest tests cover IRQ wakeups,
+one-shot deadlines, sixteen-poll fairness and joined cancellation/reopen.
+The packet broker and IPv4 service remain subsequent phases. Normal boot is
+unchanged: it does not yet activate the executor or an IP stack.
 
 The next milestone adds a bounded Moss-inspired Rust async runtime and
 ARP/static IPv4/ICMP echo over the existing unchanged Linux e1000. After explicit
@@ -150,6 +151,69 @@ source errors are typed and reported through repository-standard diagnostics.
 Do not disguise failed tasks as successful joins or turn required operations
 into defaults. Expected protocol/backpressure drops have explicit counters and
 reason summaries, not per-packet console flooding.
+
+### As-built Phase 2 kernel-client contract
+
+The explicit production `Resources::run_async(Clients)` path admits one
+executor inside the existing resource scope and allows one additional native
+client. `Clients::add` still takes `fn(usize)` and caller-owned argument state;
+runtime handles are not implicitly passed. Default `Resources::run` remains
+driver-only. Protocol work and the broker are not implemented yet.
+
+- In an admitted client, `async_runtime::spawn` accepts a `Send + 'static`
+  future returning `Result<(), TaskFailure>`. It rejects payloads larger than
+  2,048 bytes before allocation, uses fallible allocation and pins owned backing.
+  Future payloads are not stored in IRQ-locked metadata.
+- `async_sync::Event::wait` snapshots the generation at construction, not first
+  poll. Construct waits after executor admission; a pre-admission or old-epoch
+  wait returns a typed error when polled, not a successful replacement wake.
+  Completion/drop unregisters metadata. Signals can run in the supported IRQ
+  context without allocating, polling, switching stacks or freeing payloads.
+- `async_sync::sleep_us` returns a nonblocking future with a checked TSC
+  deadline; expiry feeds the existing one-shot dispatcher timer.
+  `async_sync::yield_now` yields future eligibility, not the kernel stack.
+  After at most sixteen polls, the executor yields its guarded thread.
+- A returned `Task` keeps its outcome record alive. `Task::cancel` closes
+  that task; `Task::outcome` may publish cancellation before payload retirement.
+  `Task::wait` is an explicitly **stackful client wait** and returns only after
+  payload destruction is acknowledged. Dropping a Task releases its metadata
+  lease but does not cancel accepted work.
+- Stackful yield/sleep/wait and Linux control reject future-poll context with
+  error -59. Futures must terminate each poll promptly and cannot retain
+  IRQ-saving or sleeping guards across Pending.
+- Failed tasks retain a failed outcome, emit `ASYNC_ERROR`, request coordinated
+  shutdown and make `run_async` return an error after joining. Closure cancels
+  remaining futures; their destructors run outside IRQ locks on the executor
+  stack. Scoped platform parents outlive all source/worker/executor joins.
+
+The native RawWaker adapter uses sixteen permanent slot tags and checked
+reference counts. An outstanding waker retains a metadata record, never its
+future allocation. The same table survives epoch reopen, so old wakers cannot
+reach new work or create unbounded tombstones. This is BSP/cooperative support,
+not an SMP/preemptive executor.
+
+Measured Phase 2 storage is 4,202 bytes of executor/control metadata, one
+16,384-byte added guarded stack, a 40-byte event and at most 1,408 bytes of
+simultaneously owned acceptance future payloads: **22,034 bytes**. These
+measurements do not claim the final combined broker/stack budget has passed.
+Admission still limits sixteen maximum-sized payloads to 32 KiB. Test actors
+use a fifth existing guarded-stack slot; the eight-slot limit is unchanged.
+
+With the shared image built using `KUTOX_GUEST_TESTS=ON`, run:
+
+```sh
+ctest --test-dir build --output-on-failure --parallel 1 \
+  -R '^(async-core-tests|async-core-tests-low-memory)$'
+```
+
+The separate five-case table proves real timer IRQ registration, zero IRQ
+polls/C invocations/heap changes, tickless empty/pending waits, FIFO fairness,
+16/17 admission, 2,049-byte rejection, off-lock cancellation and balanced
+second-epoch old-waker release. A zero-sized failed future separately proves
+failed-runtime shutdown; byte counts alone are not retirement evidence.
+Host deadlines are 25 seconds and CTest deadlines are 30 seconds. An OFF image
+retains the production executor but rejects `async-core-tests` before device
+admission; `async-core-tests-disabled` verifies that profile.
 
 ## Native asynchronous packet bridge
 

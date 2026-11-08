@@ -369,12 +369,33 @@ fn failures_remain_failures_and_finished_wakes_do_not_queue() {
         let waker = state.retain_waker(task).unwrap();
         assert_eq!(state.begin_poll(), Ok(Some(task)));
         state.complete_poll(task, Err(failure)).unwrap();
+        assert_eq!(state.payload_released(task), Ok(false));
+        assert_eq!(state.payload_count(), 1);
         assert_eq!(state.outcome(task), Ok(Some(Outcome::Failed(failure))));
         assert_eq!(state.wake(&waker), Ok(WakeAction::None));
         assert_eq!(state.ready_len(), 0);
         assert_eq!(state.release_payload(task), Ok(Outcome::Failed(failure)));
         state.release_waker(waker).unwrap();
     }
+}
+
+#[test]
+fn published_cancellation_does_not_acknowledge_payload_retirement() {
+    let mut state = AsyncState::new().unwrap();
+    let task = state.admit(0).unwrap();
+    let lease = state.retain_waker(task).unwrap();
+    state.cancel(task).unwrap();
+    assert_eq!(state.outcome(task), Ok(Some(Outcome::Cancelled)));
+    assert_eq!(state.payload_released(task), Ok(false));
+    state.release_payload(task).unwrap();
+    assert_eq!(state.payload_count(), 0);
+    assert_eq!(state.payload_released(task), Ok(true));
+    state.release_waker(lease).unwrap();
+    assert_eq!(state.payload_released(task), Err(Error::Stale));
+    assert_eq!(
+        crate::net_state::Error::from_code(-59),
+        crate::net_state::Error::Context
+    );
 }
 
 #[test]
