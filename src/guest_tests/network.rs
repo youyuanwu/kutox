@@ -269,6 +269,9 @@ fn integration(
     boot: &BootInfo,
     frames: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
+    if boot.mode == kutox::fw_cfg::BootMode::DriverRuntimeTests {
+        pci::tests::reject_bad_runtime_topology(boot, frames)?;
+    }
     let inventory = pci::enumerate()?;
     if inventory.e1000() == Err(kutox::pci_state::Error::Ambiguous) {
         let before = memory::allocation_snapshot(frames);

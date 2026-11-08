@@ -57,7 +57,7 @@ add_test(NAME linux-driver-compile-check
 )
 set_tests_properties(linux-driver-compile-check PROPERTIES TIMEOUT 65 RUN_SERIAL TRUE)
 
-set(MAC_CASES known alternate missing unsupported ambiguous low-memory default-mode invalid-mode smp-unsupported repeat provenance)
+set(MAC_CASES known alternate missing unsupported ambiguous low-memory invalid-mode smp-unsupported repeat provenance)
 if(KUTOX_GUEST_TESTS)
     list(APPEND MAC_CASES eeprom-timeout page-fault general-protection double-fault unexpected-page-fault)
 endif()
@@ -73,6 +73,14 @@ add_test(NAME kernel-build-profile
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/guest_build_check.py"
         --kernel "${KERNEL}" --nm "${NM}" --guest-tests "${GUEST_TEST_PROFILE}"
 )
+foreach(case IN ITEMS driver-runtime-default driver-runtime-run driver-runtime-default-no-nic driver-runtime-default-unsupported)
+    add_test(NAME "${case}"
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --case "${case}" --build-dir "${CMAKE_BINARY_DIR}"
+            --qemu "${QEMU}" --nm "${NM}" --timeout 20
+    )
+    set_tests_properties("${case}" PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
+endforeach()
 if(KUTOX_GUEST_TESTS)
 add_test(NAME kernel-suite
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
@@ -97,6 +105,14 @@ foreach(topology IN ITEMS bridge nested bridge-low-memory nested-low-memory)
             --qemu "${QEMU}" --timeout 80
     )
     set_tests_properties("kernel-suite-${topology}" PROPERTIES TIMEOUT 85 RUN_SERIAL TRUE)
+endforeach()
+foreach(case IN ITEMS driver-runtime-root driver-runtime-bridge driver-runtime-nested driver-runtime-low-memory driver-runtime-bridge-low-memory driver-runtime-nested-low-memory driver-runtime-no-nic driver-runtime-no-nic-low-memory driver-runtime-unsupported driver-runtime-unsupported-low-memory)
+    add_test(NAME "${case}"
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --case "${case}" --build-dir "${CMAKE_BINARY_DIR}"
+            --qemu "${QEMU}" --nm "${NM}" --timeout 25
+    )
+    set_tests_properties("${case}" PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 endforeach()
 add_test(NAME heap-oom-rejection
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"

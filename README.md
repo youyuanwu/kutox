@@ -4,6 +4,8 @@ A small x86_64 Rust kernel for reusing selected Linux device-driver implementati
 not building another native Rust NIC driver.
 The first milestone reads a QEMU Intel 82540EM NIC's permanent MAC address
 using **unchanged upstream Linux e1000 hardware code**.
+Normal boot now starts and retains the full unchanged e1000 driver in the
+kernel runtime. The finite MAC proof remains available as explicit `probe` mode.
 
 It uses a fixed-capacity port of Moss's `Smalloc` bootstrap allocator to
 reserve frame metadata, then hands physical RAM to an IRQ-locked adaptation
@@ -34,7 +36,7 @@ native manager, APIC/timer/controllers and shared Linux workers through client
 return and idle. Its persistent policy sleeps without inventing periodic work;
 finite scheduler calls still diagnose deadlock. Deliberate shutdown retires
 devices/source users, stops and joins workers, and reclaims stacks off-stack.
-The service scope is tested explicitly; normal boot migration is still pending.
+Normal boot uses this service scope in both guest-enabled and test-free builds.
 
 Native counting completions remember signals before a wait, support a persistent
 `complete_all` latch, and preserve credits across timeout/cancellation. Their
@@ -108,7 +110,8 @@ The production initializer registers one supported e1000 backend, with native
 [network handles](src/net_device.rs) for real MAC/link/MTU/statistics, owned
 Ethernet frames, checked TX receipts and FIFO RX. Linux remains the only packet
 driver. [Persistent boot integration](docs/rust-kernel-linux-drivers.md#planned-moss-style-driver-infrastructure)
-is still being implemented: normal boot remains the MAC proof until Phase 6.
+is implemented for the selected QEMU profile; failure/teardown hardening and
+final as-built documentation remain subsequent phases.
 
 ## Requirements
 
@@ -144,14 +147,15 @@ For a feature-off build of the same image:
 cmake -S . -B build -G Ninja -DKUTOX_GUEST_TESTS=OFF
 cmake --build build --target images --parallel 1
 ctest --test-dir build --output-on-failure --parallel 1 \
-  -R '^(kernel-build-profile|guest-tests-disabled|driver-runtime-tests-disabled|driver-network-tests-disabled|mac-known)$'
+  -R '^(kernel-build-profile|guest-tests-disabled|driver-runtime-tests-disabled|driver-network-tests-disabled|mac-known|driver-runtime-default|driver-runtime-run|driver-runtime-default-no-nic|driver-runtime-default-unsupported)$'
 ```
 
 This omits guest fixtures, C test objects, fault injection, checkpoints and
 test inspectors. Requested test modes fail before memory/device initialization.
-Real driver services, ownership checks and diagnostics remain. Normal boot is
-still the MAC proof; dormant kernel-service APIs have scoped feature-off
-dead-code allowances until boot integration, not missing-service fallbacks.
+Real driver services, ownership checks and diagnostics remain, and normal boot
+retains the real NIC/runtime without running guest checkpoints or clients.
+Additional native client APIs retain scoped feature-off dead-code allowances,
+not missing-service fallbacks.
 
 Restore `-DKUTOX_GUEST_TESTS=ON` before building/running the acceptance suite.
 This is one image per selected build profile, not separate images per test mode.
@@ -176,7 +180,7 @@ The build produces:
 The acceptance suite boots with the BIOS firmware supplied by QEMU. The ISO
 also includes UEFI boot files; the automated suite does not verify UEFI boot.
 Guests use TCG, one CPU and 128 MiB of RAM (32 MiB for the low-memory test).
-Kernel suites use an owned local socket pair for controlled Ethernet; MAC
+Kernel/runtime acceptance uses an owned local socket pair for controlled Ethernet; MAC
 cases use restricted user-mode networking. There is no port forwarding or host
 hardware passthrough. Tests run sequentially.
 
@@ -208,11 +212,12 @@ The runner selects a mode at launch through QEMU's `fw_cfg` file
 
 | Value | Behavior |
 |-------|----------|
-| `probe` | Normal MAC probe; also the default when the optional file is absent. |
+| `run` | Persistent driver runtime; also the default when the optional file is absent. Retain a supported e1000 and idle; no NIC is not a fatal boot condition. |
+| `probe` | Explicit finite MAC proof, ending with `E1000_MAC_OK`; no original module startup. |
 | `eeprom-timeout` | Withhold the EEPROM grant to exercise the upstream retry/error path. |
 | `kernel-tests` | Run all registered nonfatal kernel tests in one boot and emit KTAP results. |
 | `kernel-tests-fail` | Run the same suite with an additional intentionally failing case to test host rejection. |
-| `driver-runtime-tests` | Run five bounded no-NIC service-lifetime, idle/wake, startup/admission rollback and deliberate shutdown tests. |
+| `driver-runtime-tests` | Select acceptance from real PCI inventory: five no-NIC lifetime tests, managed packet clients for e1000, or unclaimed-runtime acceptance for an unsupported NIC. |
 | `driver-network-tests` | Exercise the managed e1000 runtime with exact packets, retained clients, typed errors and joined shutdown; reject two matching NICs before probing. |
 | `heap-oom` | Attempt an oversized `Vec` allocation and verify Rust's fatal allocation-failure panic. |
 | `thread-stack-guard` | Read a thread's unmapped lower guard and verify the hardware page fault came from its mapped stack. |
@@ -259,7 +264,7 @@ partial worker admission rollback, real one-shot IRQ wake/dependency publication
 worker callbacks after a client returns, and shutdown retry while a source work
 object is still live. Three service stacks plus up to three clients use at most
 six of eight guarded stack slots. The combined conservative infrastructure
-metadata bound is 60,376 bytes, below 64 KiB. These no-NIC cases do not bind
+metadata bound is 60,377 bytes, below 64 KiB. These no-NIC cases do not bind
 e1000 or claim network readiness. Feature-off
 builds omit these fixtures and reject `driver-runtime-tests` before allocation.
 
@@ -289,8 +294,62 @@ Native clients use `net_device::enumerate(runtime)` and `Handle::info`.
 `finish` releases only completed or consumed-drop receipts. Dropping the native
 frame/handle or timing out does **not** free an accepted skb. `receive`/
 `wait_receive` return owned FIFO frames; stop wakes waiters with `Closed`, and
-owner retirement makes later handles `Stale`. No IP stack or default boot
-migration is included in this phase.
+owner retirement makes later handles `Stale`. There is no IP stack yet.
+
+### Persistent normal boot
+
+Boot without a fw_cfg mode (or set it explicitly to `run`) to register built-ins,
+enumerate the firmware-configured PCI hierarchy, execute original module/probe/
+open callbacks and retain the device/services. Diagnostics distinguish
+`DRIVER_RUNTIME` initialization from `DRIVER_READY` real link readiness, and
+report the owned BDF/parent path, BAR spans and PIRQ/ELCR/swizzled IRQ route.
+A missing or unsupported NIC leaves unclaimed inventory and two shared workers
+alive, without fabricated NIC readiness. Invalid topology fails explicitly
+before partial driver admission. Only deliberate kernel shutdown ends the
+dispatcher; client return does not stop it. Native stop reports
+`KERNEL_RUNTIME_STOPPED`, not a MAC-proof success.
+
+```sh
+python3 scripts/qemu_test.py --case driver-runtime-default --build-dir build
+python3 scripts/qemu_test.py --case driver-runtime-run --build-dir build
+```
+
+These smoke checks use the normal boot path, no guest test clients, and require
+the actual linked Linux startup callbacks, source-derived readiness and at
+least **three seconds alive after readiness** before terminating only their
+owned QEMU child. The default check omits fw_cfg entirely; `default-mode` is a
+compatible runner alias. A watchdog timeout or premature exit is failure,
+not evidence of successful runtime operation. `mac-default-mode` is replaced
+by `driver-runtime-default`; all finite MAC cases explicitly select `probe`.
+
+Finite end-to-end checks select `driver-runtime-tests` with actual hardware:
+
+```sh
+ctest --test-dir build --output-on-failure --parallel 1 \
+  -R '^(driver-runtime-root|driver-runtime-bridge|driver-runtime-nested|driver-runtime-low-memory|driver-runtime-bridge-low-memory|driver-runtime-nested-low-memory|driver-runtime-no-nic|driver-runtime-no-nic-low-memory|driver-runtime-unsupported|driver-runtime-unsupported-low-memory)$'
+```
+
+Root/one/two-bridge clients reuse the same `Resources::start/run` path and managed
+packet API, exchange exact Ethernet bytes in two epochs, retain the NIC across
+client calls, and deliberately stop/join with balanced resources. Root/child
+slots vary across 128/32-MiB profiles; complete ancestry, per-hop swizzle, actual
+source callback identities, packet/byte accounting, socket and PCAP bytes are
+required. Bridged fixtures also corrupt and restore a real bridge bus register
+to prove malformed-topology rejection before backing or probes. Fault controls
+remain guest-only. The original 59-case kernel suite is unchanged.
+
+For a manual persistent QEMU session with restricted user networking:
+
+```sh
+qemu-system-x86_64 -machine pc -accel tcg -cpu qemu64 -smp 1 -m 128M \
+  -display none -monitor none -serial stdio -no-reboot -boot d \
+  -cdrom build/kutox.iso -nic none -netdev user,id=nic,restrict=on \
+  -device e1000,netdev=nic,mac=52:54:00:12:34:56 \
+  -device isa-debug-exit,iobase=0xf4,iosize=0x04
+```
+
+The runtime stays in the dispatcher; use Ctrl+C to end this owned manual session.
+Booting does not automatically generate application packets, DHCP or IP traffic.
 
 Run the same 59 registered cases with 32 MiB of guest RAM:
 

@@ -105,7 +105,7 @@ pub(crate) fn source_progress() {
     }
 }
 
-fn refresh_ready() -> Result<(), Failure> {
+fn refresh_ready(resources: &Resources<'_>, initial: bool) -> Result<(), Failure> {
     for index in 0..kutox::driver_registry::MAX_DEVICES {
         let Some((device, snapshot)) = MANAGER
             .device_at(index)
@@ -117,10 +117,48 @@ fn refresh_ready() -> Result<(), Failure> {
             snapshot.state,
             kutox::driver_registry::DeviceState::Bound { .. }
         ) {
-            MANAGER
+            let operation = MANAGER
                 .operation(device)
-                .and_then(|operation| operation.ready())
                 .map_err(|error| Failure::new("runtime_device_ready", error.code()))?;
+            let ready = operation
+                .ready()
+                .map_err(|error| Failure::new("runtime_device_ready", error.code()))?;
+            if resources.reporting()
+                && matches!(snapshot.state,
+                    kutox::driver_registry::DeviceState::Bound { driver, ready: previous }
+                        if driver == linux_driver::DRIVER_ID && (previous != ready || initial && ready)
+                )
+            {
+                let info = operation
+                    .network()
+                    .map_err(|error| Failure::new("runtime_network_info", error.code()))?
+                    .info()
+                    .map_err(|error| {
+                        serial::print(format_args!(
+                            "# NET_ERROR operation=runtime_info error={error:?}\n"
+                        ));
+                        Failure::new("runtime_network_info", -211)
+                    })?;
+                serial::print(format_args!(
+                    "# DRIVER_READY epoch={} identity={} bdf={:04x}:{:02x}:{:02x}.{} mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} mtu={} link={} ready={} workers={}\n",
+                    CONTROL.epoch.load(Ordering::Acquire),
+                    device.identity(),
+                    info.address.segment,
+                    info.address.bus,
+                    info.address.slot(),
+                    info.address.function(),
+                    info.mac[0],
+                    info.mac[1],
+                    info.mac[2],
+                    info.mac[3],
+                    info.mac[4],
+                    info.mac[5],
+                    info.mtu,
+                    u8::from(info.link),
+                    u8::from(ready),
+                    linux_deferred::worker_count(),
+                ));
+            }
         }
     }
     Ok(())
@@ -289,9 +327,11 @@ pub(crate) enum Stage {
     Manager,
 }
 
-fn checkpoint(_stage: Stage) -> Result<(), Failure> {
+fn checkpoint(_stage: Stage, _mode: kutox::fw_cfg::BootMode) -> Result<(), Failure> {
     #[cfg(feature = "guest-tests")]
-    tests::checkpoint(_stage)?;
+    if _mode.is_guest_test() {
+        tests::checkpoint(_stage)?;
+    }
     Ok(())
 }
 
@@ -323,6 +363,12 @@ const _: () =
     assert!(kutox::pci_state::INFRASTRUCTURE_METADATA_BYTES + METADATA_BYTES <= 64 * 1024);
 
 impl<'a> Resources<'a> {
+    fn reporting(&self) -> bool {
+        matches!(
+            self.boot.mode,
+            kutox::fw_cfg::BootMode::Run | kutox::fw_cfg::BootMode::DriverRuntimeTests
+        )
+    }
     pub fn start(
         boot: &BootInfo,
         frames: &'static memory::PhysicalFrames<'static>,
@@ -367,22 +413,22 @@ impl<'a> Resources<'a> {
         CONTROL.probe_pending.store(false, Ordering::Release);
         CONTROL.probe_running.store(false, Ordering::Release);
         CONTROL.probe_error.store(0, Ordering::Release);
-        checkpoint(Stage::Claim)?;
+        checkpoint(Stage::Claim, boot.mode)?;
         let topology = crate::platform::discover(boot, frames)?;
-        checkpoint(Stage::Platform)?;
+        checkpoint(Stage::Platform, boot.mode)?;
         let inventory = pci::enumerate()?;
         inventory
             .e1000()
             .map_err(|error| Failure::new("runtime_e1000_inventory", error as i32))?;
-        checkpoint(Stage::Inventory)?;
+        checkpoint(Stage::Inventory, boot.mode)?;
         let apic = LocalApic::start(boot, frames)?;
-        checkpoint(Stage::Apic)?;
+        checkpoint(Stage::Apic, boot.mode)?;
         let controller = IoApic::start(boot, frames, &apic, &topology)?;
-        checkpoint(Stage::Controller)?;
+        checkpoint(Stage::Controller, boot.mode)?;
         let timer = irq::Timer::attach(&apic)?;
-        checkpoint(Stage::Timer)?;
+        checkpoint(Stage::Timer, boot.mode)?;
         let space = memory::StackSpace::new(boot, frames)?;
-        checkpoint(Stage::StackSpace)?;
+        checkpoint(Stage::StackSpace, boot.mode)?;
         Ok(Self {
             space,
             timer,
@@ -430,13 +476,16 @@ impl<'a> Resources<'a> {
         } else {
             None
         };
-        let binding = if platform.is_some() {
+        let binding = if let Some(owner) = &platform {
             let address = self
                 .inventory
                 .e1000()
                 .map_err(|error| Failure::new("runtime_e1000_inventory", error as i32))?
                 .ok_or(Failure::new("runtime_e1000_selection", -19))?;
             let gsi = pci::selected(&self.inventory, address)?.interrupt_route(&self._topology)?;
+            if self.reporting() {
+                owner.report_path(&self._topology)?;
+            }
             let binding = linux_irq::BoundIrq::bind(&self._controller, gsi)?;
             unsafe { linux_driver::kutox_c_linux_bind_irq(gsi) };
             Some(binding)
@@ -446,14 +495,14 @@ impl<'a> Resources<'a> {
         let mut scheduler = threads::Scheduler::new(&self.space);
         let workers = linux_deferred::start_owned(&mut scheduler)?;
         let admission = (|| {
-            checkpoint(Stage::Workers)?;
+            checkpoint(Stage::Workers, self.boot.mode)?;
             // The shared owner and client entries stay in this scope until every stack joins.
             scheduler.spawn(coordinator, self as *const Self as usize)?;
-            checkpoint(Stage::Coordinator)?;
+            checkpoint(Stage::Coordinator, self.boot.mode)?;
             for entry in clients.entries.iter().flatten() {
                 scheduler.spawn(client_entry, entry as *const Client as usize)?;
             }
-            checkpoint(Stage::Clients)
+            checkpoint(Stage::Clients, self.boot.mode)
         })();
         if let Err(error) = admission {
             workers.rollback(&mut scheduler)?;
@@ -529,10 +578,28 @@ fn initialize(resources: &Resources<'_>) -> Result<(), Failure> {
             .publish_service(linux_driver::PLATFORM)
             .map_err(|error| Failure::new("runtime_platform_service", error.code()))?;
     }
-    MANAGER
+    let summary = MANAGER
         .coordinate_probes(|event| serial::print(format_args!("# RUNTIME_PROBE {event:?}\n")))
         .map_err(|error| Failure::new("runtime_probe", error.code()))?;
-    checkpoint(Stage::Manager)?;
+    if resources.reporting() {
+        serial::print(format_args!(
+            "# DRIVER_RUNTIME epoch={} drivers={} functions={} bound={} unclaimed={} failed={} deferred={} workers={} metadata={}\n",
+            CONTROL.epoch.load(Ordering::Acquire),
+            MANAGER
+                .snapshot()
+                .map_err(|error| Failure::new("runtime_manager", error.code()))?
+                .drivers,
+            resources.inventory.functions().len(),
+            summary.bound,
+            summary.unclaimed,
+            summary.failed,
+            summary.waiting + summary.unavailable + summary.cycles,
+            linux_deferred::worker_count(),
+            kutox::pci_state::INFRASTRUCTURE_METADATA_BYTES + METADATA_BYTES,
+        ));
+    }
+    refresh_ready(resources, true)?;
+    checkpoint(Stage::Manager, resources.boot.mode)?;
     Ok(())
 }
 
@@ -591,8 +658,10 @@ fn coordinator(address: usize) {
         {
             CONTROL.probe_running.store(true, Ordering::Release);
             #[cfg(feature = "guest-tests")]
-            tests::check_control_waits(true);
-            if let Err(error) = refresh_ready().and_then(|()| {
+            if resources.boot.mode.is_guest_test() {
+                tests::check_control_waits(true);
+            }
+            if let Err(error) = refresh_ready(resources, false).and_then(|()| {
                 MANAGER
                     .coordinate_probes(|event| {
                         serial::print(format_args!("# RUNTIME_PROBE {event:?}\n"))

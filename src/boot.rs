@@ -75,7 +75,7 @@ pub fn collect() -> Result<BootInfo, Failure> {
     let configured =
         fw_cfg::read_mode(|selector| io::write16(0x510, selector), || io::read8(0x511))
             .map_err(|error| Failure::new("boot_mode", error as i32))?;
-    let mode = configured.unwrap_or(BootMode::Probe);
+    let mode = BootMode::selected(configured);
     mode.validate_build()
         .map_err(|error| Failure::new("boot_mode", error as i32))?;
     unsafe extern "C" {

@@ -4,6 +4,7 @@ use crate::{linux_deferred, serial, threads};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 static TRACING: AtomicBool = AtomicBool::new(false);
+static BOOT_REPORTING: AtomicBool = AtomicBool::new(false);
 static CONTROL: crate::mutex::Mutex<()> = crate::mutex::Mutex::new(());
 
 pub(crate) fn control(operation: &str, call: impl FnOnce() -> i32) -> i32 {
@@ -48,6 +49,9 @@ pub(crate) fn control(operation: &str, call: impl FnOnce() -> i32) -> i32 {
 pub fn tracing() -> bool {
     TRACING.load(Ordering::Acquire)
 }
+pub fn report_boot_callbacks(enabled: bool) {
+    BOOT_REPORTING.store(enabled, Ordering::Release);
+}
 #[cfg(feature = "guest-tests")]
 pub(crate) fn set_tracing(enabled: bool) {
     TRACING.store(enabled, Ordering::Release);
@@ -65,6 +69,10 @@ pub extern "C" fn kutox_driver_trace(event: u32, function: usize, object: usize,
     if tracing() {
         serial::print(format_args!(
             "# LINUX_CALLBACK event={event} function={function:x} object={object:x} result={result}\n"
+        ));
+    } else if BOOT_REPORTING.load(Ordering::Acquire) && matches!(event, 1..=7 | 33) {
+        serial::print(format_args!(
+            "# DRIVER_CALLBACK event={event} function={function:x} object={object:x} result={result}\n"
         ));
     }
 }
@@ -173,7 +181,7 @@ static MANAGED_TICKET: AtomicU64 = AtomicU64::new(0);
 
 pub const METADATA_BYTES: usize = core::mem::size_of::<crate::mutex::Mutex<Option<ManagedState>>>()
     + core::mem::size_of::<ManagedDevice>()
-    + 16;
+    + 17;
 
 pub fn managed_quiescent() -> bool {
     MANAGED_TICKET.load(Ordering::Acquire) == 0

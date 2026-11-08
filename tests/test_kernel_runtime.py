@@ -15,6 +15,8 @@ def runtime_log():
         "KTAP version 1", "1..5",
     ]
     for stage in range(1, 12):
+        if stage == 11:
+            lines.append("# DRIVER_RUNTIME epoch=11 drivers=1 functions=5 bound=0 unclaimed=5 failed=0 deferred=0 workers=2 metadata=60377")
         lines.append("# RUNTIME_ERROR stage=runtime_startup_injected code=-210")
         if stage == 11:
             lines.extend(["# RUNTIME_ERROR stage=runtime_start code=-210"] * 4)
@@ -27,6 +29,7 @@ def runtime_log():
     ])
     for mode, name in enumerate(RUNTIME_TEST_NAMES[2:]):
         lines.extend([
+            f"# DRIVER_RUNTIME epoch={mode + 13} drivers=1 functions=5 bound=0 unclaimed=5 failed=0 deferred=0 workers=2 metadata=60377",
             f"# RUNTIME_IDLE mode={mode} clients_returned={int(mode == 1)} workers=2 deadline=none stopped=0",
             "# RUNTIME_WAKE irq=1 published=1 functions=5 bound=0 context=thread",
         ])
@@ -37,7 +40,7 @@ def runtime_log():
             ])
         lines.extend([
             f"# RUNTIME_WORK callbacks={2 if mode == 2 else 1} workers_retained=2 objects_retired=1",
-            f"# RUNTIME_JOIN mode={mode} finished={6 if mode == 1 else 4} peak={6 if mode == 1 else 4} persistent_idles=1 irq=1 workers=0 registry=retired stale=1 metadata=59960",
+            f"# RUNTIME_JOIN mode={mode} finished={6 if mode == 1 else 4} peak={6 if mode == 1 else 4} persistent_idles=1 irq=1 workers=0 registry=retired stale=1 metadata=60377",
             f"ok {mode + 3} {name}",
         ])
     lines.append("# Totals: pass:5 fail:0 skip:0 total:5")
@@ -85,7 +88,7 @@ class RuntimeTests(unittest.TestCase):
             ("deadline=none", "deadline=periodic"), ("clients_returned=1", "clients_returned=0"),
             ("persistent_idles=1", "persistent_idles=0"), ("peak=6", "peak=7"),
             ("finished=6", "finished=5"), ("irq=1 published=1", "irq=0 published=1"),
-            ("workers_retained=2", "workers_retained=0"), ("metadata=59960", "metadata=65537"),
+            ("workers_retained=2", "workers_retained=0"), ("metadata=60377", "metadata=65537"),
             ("balanced=1", "balanced=0"), ("stale=1", "stale=0"),
             ("bound=0", "bound=1"),
         ]:

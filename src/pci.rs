@@ -199,6 +199,48 @@ impl Device {
         irq_platform::piix_route(slot, pin, interrupt as u8, pirqs, elcr, topology)
             .map_err(|error| Failure::new("pci_irq_route", error as i32))
     }
+
+    pub fn report_runtime_path(&self, topology: &Topology, length: u64) -> Result<(), Failure> {
+        let (slot, pin, depth) = self.root_interrupt()?;
+        let gsi = self.interrupt_route(topology)?;
+        let memory = self.read(0x10) & !0xf;
+        let ports = self.read(0x14) & !3;
+        let pirqs = read(piix_bridge()?, 0x60).to_le_bytes();
+        let line = self.read(0x3c) as u8;
+        let elcr = u16::from_le_bytes([io::read8(0x4d0), io::read8(0x4d1)]);
+        serial::print(format_args!(
+            "# DRIVER_PATH bdf={:04x}:{:02x}:{:02x}.{} depth={depth} functions={} buses={} bridges={} root_slot={slot} root_pin={pin} gsi={gsi} pirqs={},{},{},{} line={line} elcr={elcr:04x} mem={memory:x}/{length} io={ports:x}/64\n",
+            self.address.segment,
+            self.address.bus,
+            self.address.slot(),
+            self.address.function(),
+            self.inventory.functions().len(),
+            self.inventory.bus_count(),
+            self.inventory.bridge_count(),
+            pirqs[0],
+            pirqs[1],
+            pirqs[2],
+            pirqs[3],
+        ));
+        let mut entry = self.inventory.find(self.address).map_err(policy_error)?;
+        while let Some(parent) = self.inventory.parent(entry).map_err(policy_error)? {
+            let buses = parent
+                .buses()
+                .ok_or_else(|| policy_error(pci_state::Error::Topology))?;
+            serial::print(format_args!(
+                "# DRIVER_PARENT bdf={:04x}:{:02x}:{:02x}.{} primary={} secondary={} subordinate={}\n",
+                parent.address.segment,
+                parent.address.bus,
+                parent.address.slot(),
+                parent.address.function(),
+                buses.primary,
+                buses.secondary,
+                buses.subordinate,
+            ));
+            entry = parent;
+        }
+        Ok(())
+    }
 }
 
 fn piix_bridge() -> Result<PciAddress, Failure> {

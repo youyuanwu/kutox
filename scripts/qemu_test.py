@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import selectors
+import signal
 import socket
 import struct
 import subprocess
@@ -89,6 +90,8 @@ KERNEL_SUITE_CASES = {
 RUNTIME_SUITE_CASES = {
     "driver-runtime-tests": "driver-runtime-tests",
     "driver-runtime-tests-low-memory": "driver-runtime-tests",
+    "driver-runtime-no-nic": "driver-runtime-tests",
+    "driver-runtime-no-nic-low-memory": "driver-runtime-tests",
 }
 RUNTIME_TEST_NAMES = (
     "runtime.startup_rollback", "runtime.admission_rollback",
@@ -98,6 +101,18 @@ NETWORK_SUITE_CASES = {
     "driver-network-tests": "driver-network-tests",
     "driver-network-tests-low-memory": "driver-network-tests",
     "driver-network-tests-ambiguous": "driver-network-tests",
+}
+RUNTIME_NETWORK_CASES = {
+    f"driver-runtime-{case}": "driver-runtime-tests"
+    for case in ("root", "bridge", "nested", "low-memory", "bridge-low-memory", "nested-low-memory")
+}
+UNCLAIMED_CASES = {"driver-runtime-unsupported", "driver-runtime-unsupported-low-memory"}
+LIVE_CASES = {
+    "driver-runtime-default": (None, True),
+    "default-mode": (None, True),
+    "driver-runtime-run": ("run", True),
+    "driver-runtime-default-no-nic": (None, False),
+    "driver-runtime-default-unsupported": (None, False),
 }
 FAULT_RESULTS = {
     "page-fault": "CPU_TEST_OK test=page-fault vector=14 address=0x600000000000 error=0x0",
@@ -113,7 +128,6 @@ CASES = {
     "ambiguous": (None, "ambiguous_device"),
     "eeprom-timeout": (None, "read_eeprom"),
     "low-memory": ("52:54:00:12:34:56", None),
-    "default-mode": ("52:54:00:12:34:56", None),
     "invalid-mode": (None, "boot_mode"),
     "guest-tests-disabled": (None, "boot_mode"),
     "driver-runtime-tests-disabled": (None, "boot_mode"),
@@ -125,6 +139,9 @@ CASES = {
     **{case: (None, None) for case in KERNEL_SUITE_CASES},
     **{case: (None, None) for case in RUNTIME_SUITE_CASES},
     **{case: (None, None) for case in NETWORK_SUITE_CASES},
+    **{case: (None, None) for case in RUNTIME_NETWORK_CASES},
+    **{case: (None, None) for case in UNCLAIMED_CASES},
+    **{case: (None, None) for case in LIVE_CASES},
 }
 
 
@@ -182,13 +199,13 @@ def validate_pci_hierarchy(lines, case):
         raise AssertionError("PCI hierarchy evidence is missing or follows acceptance")
 
 
-def validate_boot_preamble(lines, mode):
+def validate_boot_preamble(lines, mode, source="fw_cfg"):
     if [line for line in lines if line.startswith("KUTOX_BOOT")] != [
         f"KUTOX_BOOT linux={REVISION}"
     ]:
         raise AssertionError("missing or duplicate pinned-source boot marker")
     if [line for line in lines if line.startswith("BOOT_MODE")] != [
-        f"BOOT_MODE mode={mode} source=fw_cfg"
+        f"BOOT_MODE mode={mode} source={source}"
     ]:
         raise AssertionError("wrong guest test mode")
     if [line for line in lines if line.startswith("CPU_FOUNDATION")] != [
@@ -269,6 +286,7 @@ def validate_runtime_suite(case, returncode, output):
     failures = validate_ktap(lines, returncode, RUNTIME_TEST_NAMES)
     if failures:
         raise KernelSuiteFailure(f"runtime suite failed: {', '.join(sorted(failures))}")
+    validate_runtime_evidence(lines, case, 0, 4)
     batches, events = {}, []
     for line in lines:
         if line.startswith("# RUNTIME_"):
@@ -327,6 +345,8 @@ def validate_runtime_suite(case, returncode, output):
         metadata_values.add(metadata)
     if len(metadata_values) != 1:
         raise AssertionError("runtime metadata evidence changed between scopes")
+    if metadata_values != {int(line.rsplit("metadata=", 1)[1]) for line in lines if line.startswith("# DRIVER_RUNTIME ")}:
+        raise AssertionError("runtime initialization and joined metadata disagree")
 
 def validate_native_drivers(lines, case, symbols=None):
     batches, events = {}, []
@@ -703,6 +723,8 @@ def validate_thread_guard(returncode, output):
 
 
 def validate_result(case, returncode, output):
+    if case in LIVE_CASES:
+        raise AssertionError("persistent runtime requires measured live execution, not an exit code")
     if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled"):
         lines = output.splitlines()
         expected = "E1000_MAC_FAIL stage=boot_mode code=-25"
@@ -720,11 +742,14 @@ def validate_result(case, returncode, output):
     if case in KERNEL_SUITE_CASES:
         validate_kernel_suite(case, returncode, output)
         return
-    if case in NETWORK_SUITE_CASES:
+    if case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES:
         validate_network_suite(case, returncode, output)
         return
     if case in RUNTIME_SUITE_CASES:
         validate_runtime_suite(case, returncode, output)
+        return
+    if case in UNCLAIMED_CASES:
+        validate_unclaimed_suite(case, returncode, output)
         return
     if case in FAULT_RESULTS:
         validate_fault_result(case, returncode, output)
@@ -755,7 +780,7 @@ def validate_result(case, returncode, output):
         "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled"
     ]:
         raise AssertionError("missing CPU foundation result")
-    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "THREAD_", "KTAP", "HEAP_FAIL", "HEAP_OOM", "ok ", "not ok ", "# Totals")) for line in lines):
+    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "THREAD_", "KTAP", "HEAP_FAIL", "HEAP_OOM", "ok ", "not ok ", "# Totals", "DRIVER_", "# RUNTIME_", "# LINUX_CALLBACK")) for line in lines):
         raise AssertionError("unexpected exception or CPU test during MAC probe")
     if case == "invalid-mode":
         if results != ["E1000_MAC_FAIL stage=boot_mode code=-23"]:
@@ -764,38 +789,11 @@ def validate_result(case, returncode, output):
             raise AssertionError("invalid mode reached the probe or silently selected a default")
         return
     mode = "eeprom-timeout" if case == "eeprom-timeout" else "probe"
-    source = "default" if case == "default-mode" else "fw_cfg"
+    source = "fw_cfg"
     modes = [line for line in lines if line.startswith("BOOT_MODE")]
     if modes != [f"BOOT_MODE mode={mode} source={source}"]:
         raise AssertionError("unexpected runtime boot-mode selection")
-    memory = [line for line in lines if line.startswith("BOOT_MEMORY_OK")]
-    if len(memory) != 1:
-        raise AssertionError("missing or duplicate bootstrap allocator result")
-    match = re.fullmatch(
-        rf"BOOT_MEMORY_OK source=moss revision={MOSS_REVISION} managed_bytes=([0-9]+) regions=([0-9]+)",
-        memory[0],
-    )
-    if match is None:
-        raise AssertionError("unexpected bootstrap allocator provenance or result")
-    managed_bytes, regions = map(int, match.groups())
-    ram = 32 if case == "low-memory" else 128
-    if not 0 < managed_bytes <= ram * 1024 * 1024 or regions <= 0:
-        raise AssertionError("bootstrap allocator reported invalid usable memory")
-    frames = [line for line in lines if line.startswith("FRAME_ALLOCATOR")]
-    match = re.fullmatch(
-        rf"FRAME_ALLOCATOR_OK source=moss revision={MOSS_REVISION} total_pages=([0-9]+) reserved_pages=([0-9]+) free_pages=([0-9]+) metadata_bytes=([0-9]+)",
-        frames[0] if len(frames) == 1 else "",
-    )
-    if match is None:
-        raise AssertionError("missing, duplicate, or malformed buddy allocator result")
-    total, reserved, free, metadata = map(int, match.groups())
-    if (
-        total * 4096 != managed_bytes or reserved + free != total or free <= 0
-        or metadata % 4096 != 0 or not total <= metadata <= reserved * 4096
-    ):
-        raise AssertionError("buddy allocator reported inconsistent page or metadata counts")
-    if [line for line in lines if line.startswith("HEAP_")] != [HEAP_RESULT]:
-        raise AssertionError("missing, duplicate, or unexpected heap initialization result")
+    validate_allocator(lines, 32 if case == "low-memory" else 128)
     if mac:
         if results[0] != f"E1000_MAC_OK mac={mac}":
             raise AssertionError(f"unexpected MAC result: {results[0]}")
@@ -824,6 +822,36 @@ def validate_result(case, returncode, output):
         line.startswith(("E1000_MMIO", "BOOT_MEMORY_TABLES")) for line in lines
     ):
         raise AssertionError("discovery failure reached MMIO/EEPROM access")
+
+
+def validate_allocator(lines, ram):
+    memory = [line for line in lines if line.startswith("BOOT_MEMORY_OK")]
+    if len(memory) != 1:
+        raise AssertionError("missing or duplicate bootstrap allocator result")
+    match = re.fullmatch(
+        rf"BOOT_MEMORY_OK source=moss revision={MOSS_REVISION} managed_bytes=([0-9]+) regions=([0-9]+)",
+        memory[0],
+    )
+    if match is None:
+        raise AssertionError("unexpected bootstrap allocator provenance or result")
+    managed_bytes, regions = map(int, match.groups())
+    if not 0 < managed_bytes <= ram * 1024 * 1024 or regions <= 0:
+        raise AssertionError("bootstrap allocator reported invalid usable memory")
+    frames = [line for line in lines if line.startswith("FRAME_ALLOCATOR")]
+    match = re.fullmatch(
+        rf"FRAME_ALLOCATOR_OK source=moss revision={MOSS_REVISION} total_pages=([0-9]+) reserved_pages=([0-9]+) free_pages=([0-9]+) metadata_bytes=([0-9]+)",
+        frames[0] if len(frames) == 1 else "",
+    )
+    if match is None:
+        raise AssertionError("missing, duplicate, or malformed buddy allocator result")
+    total, reserved, free, metadata = map(int, match.groups())
+    if (
+        total * 4096 != managed_bytes or reserved + free != total or free <= 0
+        or metadata % 4096 != 0 or not total <= metadata <= reserved * 4096
+    ):
+        raise AssertionError("buddy allocator reported inconsistent page or metadata counts")
+    if [line for line in lines if line.startswith("HEAP_")] != [HEAP_RESULT]:
+        raise AssertionError("missing, duplicate, or unexpected heap initialization result")
 
 
 def check_provenance(nm):
@@ -1249,7 +1277,8 @@ class NetworkProtocol:
 
 def validate_network_suite(case, returncode, output, symbols=None):
     lines = output.splitlines()
-    validate_boot_preamble(lines, "driver-network-tests")
+    runtime = case in RUNTIME_NETWORK_CASES
+    validate_boot_preamble(lines, "driver-runtime-tests" if runtime else "driver-network-tests")
     failures = validate_ktap(lines, returncode, ("network.integration",))
     if failures:
         raise KernelSuiteFailure("managed network integration failed")
@@ -1270,6 +1299,13 @@ def validate_network_suite(case, returncode, output, symbols=None):
         ]:
             raise AssertionError("singleton rejection occurred after probing or leaked backing")
         return
+    if runtime and pci_layout(case)[2]:
+        if errors != ["# RUNTIME_ERROR stage=pci_hierarchy code=-183"] or network[:1] != [
+            "# NETWORK_TOPOLOGY_REJECT code=-183 probes=0 backing=0 balanced=1"
+        ]:
+            raise AssertionError("malformed hierarchy did not fail before driver admission")
+        network = network[1:]
+        errors = []
     if errors or any(line.startswith("# RUNTIME_PROBE") for line in lines):
         raise AssertionError("managed probe or shutdown failed")
     identities, metadata = [], set()
@@ -1278,10 +1314,10 @@ def validate_network_suite(case, returncode, output, symbols=None):
         if cursor >= len(network):
             raise AssertionError("missing managed device scope")
         match = re.fullmatch(
-            rf"# NETWORK_DEVICE epoch={epoch} identity=(\d+) bdf=0000:00:([0-9a-f]{{2}})\.0 mac=52:54:00:12:34:56 mtu=1500 link=1 registry_ready=1 workers=2",
+            rf"# NETWORK_DEVICE epoch={epoch} identity=(\d+) bdf=0000:([0-9a-f]{{2}}):([0-9a-f]{{2}})\.0 mac=52:54:00:12:34:56 mtu=1500 link=1 registry_ready=1 workers=2",
             network[cursor],
         )
-        if match is None or not int(match[1]) or int(match[2], 16) != pci_layout(case)[1]:
+        if match is None or not int(match[1]) or (int(match[2], 16), int(match[3], 16)) != (len(pci_layout(case)[2]), pci_layout(case)[1]):
             raise AssertionError("wrong managed identity, MAC, link or selected BDF")
         identity = int(match[1])
         identities.append(identity)
@@ -1322,6 +1358,10 @@ def validate_network_suite(case, returncode, output, symbols=None):
         cursor += 1
     if cursor != len(network) or identities[0] == identities[1] or len(metadata) != 1:
         raise AssertionError("unexpected evidence, reused lifecycle identity or inconsistent metadata")
+    if runtime:
+        validate_runtime_evidence(lines, case, 1, 2, identities)
+        if metadata != {int(line.rsplit("metadata=", 1)[1]) for line in lines if line.startswith("# DRIVER_RUNTIME ")}:
+            raise AssertionError("managed runtime initialization and joined metadata disagree")
     net_errors = Counter()
     for line in lines:
         if line.startswith("# NET_ERROR"):
@@ -1375,13 +1415,204 @@ def validate_network_suite(case, returncode, output, symbols=None):
                 raise AssertionError("original padding/copybreak/FCS/backing profile mismatch")
 
 
+def validate_runtime_evidence(lines, case, bound, scopes=1, identities=None):
+    lines = [line.removeprefix("# ") for line in lines]
+    summaries = [line for line in lines if line.startswith("DRIVER_RUNTIME")]
+    if len(summaries) != scopes:
+        raise AssertionError("missing or duplicate initialized runtime scopes")
+    functions = 5 if case.endswith("no-nic") or case in RUNTIME_SUITE_CASES else 6 + len(pci_layout(case)[2])
+    epochs, metadata = [], set()
+    for line in summaries:
+        match = re.fullmatch(
+            r"DRIVER_RUNTIME epoch=(\d+) drivers=1 functions=(\d+) bound=(\d+) unclaimed=(\d+) failed=0 deferred=0 workers=2 metadata=(\d+)", line,
+        )
+        if match is None:
+            raise AssertionError("runtime failed, deferred or used an invalid driver/service profile")
+        epoch, found, bindings, unclaimed, size = map(int, match.groups())
+        if not epoch or (found, bindings, unclaimed) != (functions, bound, functions - bound) or not 60376 < size <= 65536:
+            raise AssertionError("runtime admission, inventory or metadata bounds mismatch")
+        epochs.append(epoch)
+        metadata.add(size)
+    if epochs != sorted(set(epochs)) or len(metadata) != 1:
+        raise AssertionError("reused runtime epoch or inconsistent metadata")
+    paths = [line for line in lines if line.startswith("DRIVER_PATH")]
+    parents = [line for line in lines if line.startswith("DRIVER_PARENT")]
+    ready = [line for line in lines if line.startswith("DRIVER_READY")]
+    if not bound:
+        if paths or parents or ready:
+            raise AssertionError("unclaimed inventory fabricated NIC or readiness evidence")
+        return
+    if len(paths) != scopes or len(ready) != scopes:
+        raise AssertionError("missing, duplicate or withdrawn source-derived readiness")
+    root, leaf, ancestors = pci_layout(case)
+    for line in paths:
+        match = re.fullmatch(
+            r"DRIVER_PATH bdf=0000:([0-9a-f]{2}):([0-9a-f]{2})\.0 depth=(\d+) functions=(\d+) buses=(\d+) bridges=(\d+) root_slot=(\d+) root_pin=(\d+) gsi=(\d+) pirqs=(\d+),(\d+),(\d+),(\d+) line=(\d+) elcr=([0-9a-f]{4}) mem=([0-9a-f]+)/(\d+) io=([0-9a-f]+)/64", line,
+        )
+        if match is None:
+            raise AssertionError("invalid runtime hierarchy/IRQ path")
+        bus, slot, depth, found, buses, bridges, root_slot, root_pin, gsi = [int(value, 16 if index < 2 else 10) for index, value in enumerate(match.groups()[:9])]
+        pin, child = 1, leaf
+        for _, parent_slot in ancestors:
+            pin = (child + pin - 1) % 4 + 1
+            child = parent_slot
+        if (bus, slot, depth, found, buses, bridges, root_slot, root_pin) != (
+            len(ancestors), leaf, len(ancestors), functions, len(ancestors) + 1, len(ancestors), root, pin,
+        ):
+            raise AssertionError("selected BDF, hierarchy or per-bridge INTx swizzle mismatch")
+        pirqs = list(map(int, match.groups()[9:13]))
+        irq_line = int(match[14])
+        elcr, memory, length, ports = [int(value, 10 if index == 2 else 16) for index, value in enumerate(match.groups()[14:])]
+        expected = pirqs[(root - 1 + pin - 1) & 3]
+        if irq_line != expected or gsi != expected or gsi not in (10, 11) or not elcr & (1 << gsi):
+            raise AssertionError("runtime PIRQ/ELCR/INTx route mismatch")
+        if length != 0x20000 or not memory or memory % length or memory + length > 2**32 or ports % 64 or not 0x1000 <= ports <= 0xffc0:
+            raise AssertionError("invalid runtime BAR bounds")
+    expected_parents = [
+        f"DRIVER_PARENT bdf=0000:{bus:02x}:{slot:02x}.0 primary={bus} secondary={bus + 1} subordinate={len(ancestors)}"
+        for bus, slot in ancestors
+    ] * scopes
+    if parents != expected_parents:
+        raise AssertionError("missing or reordered retained PCI ancestry")
+    for index, line in enumerate(ready):
+        match = re.fullmatch(
+            rf"DRIVER_READY epoch={epochs[index]} identity=(\d+) bdf=0000:{len(ancestors):02x}:{leaf:02x}\.0 mac=52:54:00:12:34:56 mtu=1500 link=1 ready=1 workers=2", line,
+        )
+        if match is None or not int(match[1]) or identities is not None and int(match[1]) != identities[index]:
+            raise AssertionError("runtime readiness is not the retained source device")
+        if lines.index(paths[index]) >= lines.index(summaries[index]) or lines.index(summaries[index]) >= lines.index(line):
+            raise AssertionError("runtime readiness preceded actual admission")
+
+
+def validate_unclaimed_suite(case, returncode, output):
+    lines = output.splitlines()
+    validate_boot_preamble(lines, "driver-runtime-tests")
+    if validate_ktap(lines, returncode, ("runtime.unclaimed",)):
+        raise KernelSuiteFailure("unclaimed runtime failed")
+    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "BOOT_MEMORY", "FRAME_ALLOCATOR",
+                            "HEAP_", "THREAD_", "Bail out!", "# LINUX_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR")) for line in lines):
+        raise AssertionError("unsupported NIC was probed or runtime shutdown failed")
+    normalized = [line.removeprefix("# ") for line in lines]
+    validate_runtime_evidence(normalized, case, 0)
+    if [line for line in normalized if line.startswith("DRIVER_UNCLAIMED")] != [
+        "DRIVER_UNCLAIMED functions=6 drivers=1 bound=0 unclaimed=6 network=0 workers=2 client_returned=1",
+        "DRIVER_UNCLAIMED_JOIN finished=5 peak=5 workers=0 balanced=1 stale=1",
+    ]:
+        raise AssertionError("unclaimed runtime did not retain services and restore resources")
+
+
+def validate_live_boot(case, output, symbols):
+    lines = output.splitlines()
+    mode = LIVE_CASES[case][0]
+    validate_boot_preamble(lines, "run", "fw_cfg" if mode else "default")
+    validate_allocator(lines, 128)
+    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "KERNEL_RUNTIME_", "THREAD_", "KTAP", "ok ", "not ok ",
+                            "Bail out!", "# LINUX_CALLBACK", "# LINUX_FAULT", "# LINUX_RX_", "# LINUX_HARD_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR", "# HOST_")) for line in lines):
+        raise AssertionError("default runtime exited, failed, or entered a probe/fixture path")
+    bound = int(LIVE_CASES[case][1])
+    normalized = [line.removeprefix("# ") for line in lines]
+    if any(line.startswith("DRIVER_") and not line.startswith(("DRIVER_RUNTIME ", "DRIVER_PATH ", "DRIVER_PARENT ", "DRIVER_READY ", "DRIVER_CALLBACK ")) for line in normalized):
+        raise AssertionError("unexpected normal-runtime lifecycle evidence")
+    validate_runtime_evidence(normalized, case, bound)
+    callbacks = [line for line in normalized if line.startswith("DRIVER_CALLBACK")]
+    events = []
+    for line in callbacks:
+        match = re.fullmatch(r"DRIVER_CALLBACK event=(\d+) function=([0-9a-f]+) object=([0-9a-f]+) result=0", line)
+        if match is None:
+            raise AssertionError("original boot callback failed or produced invalid evidence")
+        event, function, obj = (int(value, 16 if index else 10) for index, value in enumerate(match.groups()))
+        validate_callback_symbol(event, function, obj, symbols)
+        events.append(event)
+    if events != ([1, 3, 4, 33, 6] if bound else []):
+        raise AssertionError("default runtime did not execute original module/probe/open")
+    if bound:
+        summary = next(line for line in normalized if line.startswith("DRIVER_RUNTIME"))
+        if normalized.index(callbacks[-1]) >= normalized.index(summary):
+            raise AssertionError("runtime reported initialization before original open")
+
+
+def execute_live(args, case):
+    deadline = time.monotonic() + args.timeout
+    ready_at = None
+    output, pending = bytearray(), bytearray()
+    symbols = runtime_symbols(getattr(args, "nm", "nm"))
+    host, peer = socket.socketpair()
+    with host, peer:
+        command = qemu_command(args, case, net_fd=peer.fileno())
+        with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              stdin=subprocess.DEVNULL, pass_fds=(peer.fileno(),)) as process:
+            peer.close()
+            try:
+                with selectors.DefaultSelector() as selector:
+                    selector.register(process.stdout, selectors.EVENT_READ, "serial")
+                    selector.register(host, selectors.EVENT_READ, "network")
+                    while True:
+                        now = time.monotonic()
+                        if process.poll() is not None:
+                            raise AssertionError("persistent runtime exited before intentional host termination")
+                        if now >= deadline:
+                            raise subprocess.TimeoutExpired(command, args.timeout, output=bytes(output))
+                        if ready_at is not None and now - ready_at >= 3:
+                            validate_live_boot(case, output.decode("utf-8", errors="replace"), symbols)
+                            elapsed = now - ready_at
+                            # Only this owned child is terminated after measured sustained readiness.
+                            process.terminate()
+                            remaining_output, _ = process.communicate(timeout=2)
+                            output.extend(remaining_output)
+                            qemu_terminated = process.returncode == 0 and re.search(
+                                rf"terminating on signal {signal.SIGTERM} from pid {os.getpid()}\b",
+                                remaining_output.decode("utf-8", errors="replace"),
+                            )
+                            if process.returncode != -signal.SIGTERM and not qemu_terminated:
+                                raise AssertionError("runtime exited independently of owned host termination")
+                            host.settimeout(0.5)
+                            if host.recv(1):
+                                raise AssertionError("default runtime emitted late unexpected packet bytes")
+                            break
+                        for key, _ in selector.select(min(deadline - now, 0.1)):
+                            chunk = os.read(key.fd, 4096)
+                            if not chunk:
+                                selector.unregister(key.fileobj)
+                                continue
+                            if key.data == "network":
+                                raise AssertionError("default runtime emitted unexpected packet bytes")
+                            output.extend(chunk)
+                            pending.extend(chunk)
+                            if len(output) > 1024 * 1024:
+                                raise AssertionError("oversized default runtime journal")
+                            while b"\n" in pending:
+                                line, _, rest = pending.partition(b"\n")
+                                pending = bytearray(rest)
+                                decoded = line.decode("utf-8", errors="replace").rstrip("\r")
+                                marker = "DRIVER_READY" if LIVE_CASES[case][1] else "DRIVER_RUNTIME"
+                                if ready_at is None and decoded.removeprefix("# ").startswith(marker):
+                                    validate_live_boot(case, output.decode("utf-8", errors="replace"), symbols)
+                                    ready_at = time.monotonic()
+                            if len(pending) > 8192:
+                                raise AssertionError("oversized unterminated runtime line")
+                if len(output) > 1024 * 1024 or not output.endswith(b"\n") or elapsed < 3:
+                    raise AssertionError("incomplete or insufficient measured runtime execution")
+                validate_live_boot(case, output.decode("utf-8", errors="replace"), symbols)
+            except AssertionError as error:
+                raise AssertionError(f"{error}\n{output.decode('utf-8', errors='replace')}") from error
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+        return subprocess.CompletedProcess(command, process.returncode, bytes(output)), elapsed
+
+
 def execute_suite(args, case, capture):
     deadline = time.monotonic() + args.timeout
     output = bytearray()
     serial_pending = bytearray()
     network_pending = bytearray()
     transmitted = []
-    network = case in NETWORK_SUITE_CASES
+    network = case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES
     ambiguous = case.endswith("ambiguous")
     expected = [] if network and ambiguous else [network_packet(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)] if network else expected_tx_packets()
     host, peer = socket.socketpair()
@@ -1469,7 +1700,7 @@ def qemu_command(args, case, capture=None, net_fd=None):
         "-cdrom", str(args.build_dir / "kutox.iso"), "-nic", "none",
         "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
     ]
-    if case != "default-mode":
+    if case not in LIVE_CASES or LIVE_CASES[case][0] is not None:
         mode = {
             "eeprom-timeout": "eeprom-timeout",
             "invalid-mode": "unsupported",
@@ -1482,10 +1713,13 @@ def qemu_command(args, case, capture=None, net_fd=None):
             **KERNEL_SUITE_CASES,
             **RUNTIME_SUITE_CASES,
             **NETWORK_SUITE_CASES,
+            **RUNTIME_NETWORK_CASES,
+            **{case: "driver-runtime-tests" for case in UNCLAIMED_CASES},
+            **{case: mode for case, (mode, _) in LIVE_CASES.items() if mode is not None},
         }.get(case, "probe")
         command += ["-fw_cfg", f"name=opt/kutox/test-mode,string={mode}"]
-    if case not in ("missing", "smp-unsupported", "heap-oom", "thread-stack-guard", "guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled") and case not in FAULT_RESULTS and case not in KERNEL_SUITE_CASES and case not in RUNTIME_SUITE_CASES and case not in NETWORK_SUITE_CASES:
-        model = "e1000e" if case == "unsupported" else "e1000"
+    if case not in ("missing", "smp-unsupported", "heap-oom", "thread-stack-guard", "guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled") and case not in FAULT_RESULTS and case not in KERNEL_SUITE_CASES and case not in RUNTIME_SUITE_CASES and case not in NETWORK_SUITE_CASES and case not in RUNTIME_NETWORK_CASES and case not in LIVE_CASES:
+        model = "e1000e" if case == "unsupported" or case in UNCLAIMED_CASES else "e1000"
         mac = CASES[case][0] or "52:54:00:12:34:56"
         command += [
             "-netdev", "user,id=macprobe,restrict=on",
@@ -1496,7 +1730,7 @@ def qemu_command(args, case, capture=None, net_fd=None):
             "-netdev", "user,id=second,restrict=on",
             "-device", "e1000,netdev=second,mac=52:54:00:00:00:02",
         ]
-    if case in KERNEL_SUITE_CASES or case in NETWORK_SUITE_CASES:
+    if case in KERNEL_SUITE_CASES or case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES or case in LIVE_CASES and case != "driver-runtime-default-no-nic":
         if net_fd is None or net_fd < 0:
             raise AssertionError("kernel suite requires an owned RX socket")
         root, leaf, parents = pci_layout(case)
@@ -1505,9 +1739,10 @@ def qemu_command(args, case, capture=None, net_fd=None):
             if len(parents) == 2:
                 command += ["-device", "pci-bridge,id=bridge1,chassis_nr=2,shpc=off,msi=off,bus=bridge0,addr=4"]
         bus = f",bus=bridge{len(parents) - 1}" if parents else ""
+        model = "e1000e" if case == "driver-runtime-default-unsupported" else "e1000"
         command += [
             "-netdev", f"socket,id=irqtest,fd={net_fd}",
-            "-device", f"e1000,netdev=irqtest{bus},addr={leaf:x},mac=52:54:00:12:34:56",
+            "-device", f"{model},netdev=irqtest{bus},addr={leaf:x},mac=52:54:00:12:34:56",
         ]
         if case == "driver-network-tests-ambiguous":
             command += ["-device", "e1000,addr=4,mac=52:54:00:00:00:02"]
@@ -1524,15 +1759,18 @@ def qemu_command(args, case, capture=None, net_fd=None):
 def run_case(args, case, index=0):
     log = args.build_dir / "test-logs" / f"{args.case}-{index}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
-    capture = log.with_suffix(".pcap") if case in KERNEL_SUITE_CASES or case in NETWORK_SUITE_CASES else None
+    capture = log.with_suffix(".pcap") if case in KERNEL_SUITE_CASES or case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES else None
     if capture is not None:
         capture.unlink(missing_ok=True)
-    command = qemu_command(args, case) if capture is None else None
+    command = qemu_command(args, case) if capture is None and case not in LIVE_CASES else None
     try:
-        completed = execute_suite(args, case, capture) if capture is not None else subprocess.run(
-            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=args.timeout, check=False,
-        )
+        if case in LIVE_CASES:
+            completed, elapsed = execute_live(args, case)
+        else:
+            completed = execute_suite(args, case, capture) if capture is not None else subprocess.run(
+                command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                timeout=args.timeout, check=False,
+            )
     except subprocess.TimeoutExpired as error:
         output = (error.output or b"").decode("utf-8", errors="replace")
         log.write_text(output, encoding="utf-8")
@@ -1548,21 +1786,23 @@ def run_case(args, case, index=0):
                 raise AssertionError("QEMU did not produce the required TX capture")
             with capture.open("rb") as stream:
                 expected = None
-                if case in NETWORK_SUITE_CASES:
+                if case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES:
                     expected = [] if case.endswith("ambiguous") else [network_packet(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)]
                 validate_tx_capture(stream.read(1024 * 1024 + 1), expected)
             symbols = runtime_symbols(getattr(args, "nm", "nm"))
-            if case in NETWORK_SUITE_CASES:
+            if case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES:
                 validate_network_suite(case, completed.returncode, output, symbols)
             else:
                 validate_linux_callbacks(output, symbols)
                 validate_native_drivers(output.splitlines(), case, symbols)
-        validate_result(case, completed.returncode, output)
+        if case not in LIVE_CASES:
+            validate_result(case, completed.returncode, output)
     except KernelSuiteFailure as error:
         raise KernelSuiteFailure(f"{error}\nlog: {log}\n{output}") from error
     except AssertionError as error:
         raise AssertionError(f"{error}\nlog: {log}\n{output}") from error
-    print(f"PASS {case}: {log}")
+    measured = f" (alive {elapsed:.3f}s after readiness, owned child terminated)" if case in LIVE_CASES else ""
+    print(f"PASS {case}: {log}{measured}")
 
 
 def main():

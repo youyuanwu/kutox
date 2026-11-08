@@ -8,6 +8,7 @@ const MODE_FILE: &[u8] = b"opt/kutox/test-mode";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BootMode {
+    Run,
     Probe,
     EepromTimeout,
     PageFault,
@@ -23,8 +24,16 @@ pub enum BootMode {
 }
 
 impl BootMode {
+    pub const fn selected(configured: Option<Self>) -> Self {
+        match configured {
+            Some(mode) => mode,
+            None => Self::Run,
+        }
+    }
+
     pub const fn name(self) -> &'static str {
         match self {
+            Self::Run => "run",
             Self::Probe => "probe",
             Self::EepromTimeout => "eeprom-timeout",
             Self::PageFault => "page-fault",
@@ -145,6 +154,7 @@ pub fn read_mode(
     }
     let value = bytes[..size].strip_suffix(&[0]).unwrap_or(&bytes[..size]);
     match value {
+        b"run" => Ok(Some(BootMode::Run)),
         b"probe" => Ok(Some(BootMode::Probe)),
         b"eeprom-timeout" => Ok(Some(BootMode::EepromTimeout)),
         b"page-fault" => Ok(Some(BootMode::PageFault)),
@@ -213,6 +223,7 @@ mod tests {
     #[test]
     fn selects_each_supported_mode() {
         for mode in [
+            BootMode::Run,
             BootMode::Probe,
             BootMode::EepromTimeout,
             BootMode::PageFault,
@@ -325,6 +336,10 @@ mod tests {
 }
 #[test]
 fn guest_modes_require_the_build_feature_without_changing_probe() {
+    assert_eq!(BootMode::selected(None), BootMode::Run);
+    assert_eq!(BootMode::selected(Some(BootMode::Probe)), BootMode::Probe);
+    assert_eq!(BootMode::Run.validate_build(), Ok(()));
+    assert!(!BootMode::Run.is_guest_test());
     assert_eq!(BootMode::Probe.validate_build(), Ok(()));
     for mode in [
         BootMode::KernelTests,

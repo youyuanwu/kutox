@@ -23,6 +23,9 @@ Controlled original RX and selected ring/backpressure/lifetime hardening are
 tested. All eight driver-reuse phases are complete for the
 [as-built support profile](#as-built-support-statement), not arbitrary Linux
 drivers or physical hardware.
+Normal boot now retains the managed e1000 in the persistent kernel runtime;
+explicit `probe` preserves the finite boot-time MAC proof. No IP stack or Linux
+application environment is implied.
 The [third-party notice](../THIRDPARTY-NOTICES.md) records the source revision,
 MIT license, and adaptation boundaries.
 
@@ -1045,13 +1048,13 @@ they do not replace this roadmap's driver-execution gates.
 
 ### Planned Moss-style driver infrastructure
 
-The next integration milestone has **Phases 1-5 implemented; the remaining phases
+The next integration milestone has **Phases 1-6 implemented; the remaining phases
 are planned**. The native [registry policy](../src/driver_registry.rs) and
 [owned manager boundary](../src/drivers.rs) have portable and guarded-thread
 guest tests, including retained built-in initializers and probe coordination.
 The e1000 backend now works behind retained native network handles in the
-managed runtime, but normal boot still reads the MAC and exits. Default
-persistent boot startup remains Phase 6.
+managed runtime, and normal boot now starts and retains this runtime.
+Explicit MAC/test modes retain their previous behavior.
 
 Follow pinned Moss's
 [built-in initialization](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/init.rs)
@@ -1072,7 +1075,7 @@ The planned phases are:
 
 1. **Native registry and ownership:** bounded driver/device registrations,
    generation-checked handles, matching, dependency/error state and retirement.
-   Implemented and portable-tested; kernel startup wiring is still subsequent.
+   Implemented, portable-tested and wired into normal kernel startup.
 2. **PCI hierarchy:** read-only assigned-bus discovery, parent/window validation
    and INTx swizzling through each bridge into the existing PIIX/APIC route.
    Implemented, with actual Linux packet/lifetime acceptance behind bridges.
@@ -1087,6 +1090,7 @@ The planned phases are:
    Implemented, including exact managed packets and retained-client lifetime.
 6. **Normal boot:** runtime default, explicit MAC/fault compatibility and exact
    root/one-bridge/nested-bridge packet acceptance at 128/32 MiB.
+   Implemented, including measured default liveness and no-NIC/unknown-NIC startup.
 7. **Hardening:** dependency progress, failures/capacity, consumer lifetime and
    pending source callback/packet teardown with complete resource recovery.
 8. **Documentation:** actual interfaces, default-mode migration, budgets,
@@ -1142,7 +1146,8 @@ config addresses, multifunction discovery, topology/window failures and routing.
 The `pci.hierarchy` guest case requires exact BDF, parent bus ranges, counts,
 swizzled pin, PIRQ/line/ELCR/GSI agreement, BAR spans and sizing recovery. Full
 Linux TX/RX acceptance runs at root and one/two bridge levels on the same ISO.
-Normal boot still performs the MAC proof; persistent boot startup is Phase 6.
+Phase 6 now uses this inventory/routing for persistent default startup; explicit
+`probe` keeps the earlier MAC proof.
 
 Phase 3's [native initializer records](../src/drivers.rs) use a versioned
 24-byte layout, stable priority/ID ordering and a bounded initializer table.
@@ -1235,9 +1240,9 @@ peak/lifetime/resource thresholds.
 The conservative service-resource/control/dispatcher/client allowance adds
 2,080 bytes to the phase-three bound, including owned APIC metadata. Combined
 Phase 4 infrastructure was **59,960 bytes**, below 64 KiB; the peak test/runtime task
-count is six of eight 16-KiB slots. Normal boot still reads the MAC and exits.
-The Phase 5 additions bring the combined bound to **60,376 bytes**. Default
-runtime boot remains Phase 6.
+count is six of eight 16-KiB slots. The Phase 5 additions brought the combined
+bound to **60,376 bytes**; Phase 6's bounded startup reporting flag adds one byte,
+for **60,377 bytes**. Normal boot now retains the runtime.
 
 #### Managed native network interface
 
@@ -1297,8 +1302,62 @@ eight guarded stacks. A two-NIC scenario proves pre-probe singleton rejection.
 [Host tests](../tests/test_network_runtime.py) reject incorrect bytes, source
 symbols, ready identities, error outcomes, task bounds or joins.
 The original 539-TX/304-hard-RX acceptance remains independent and unchanged.
-No new Linux algorithm, network stack, arbitrary hardware support or default
-boot migration is claimed.
+No new Linux algorithm, network stack or arbitrary hardware support is claimed.
+
+#### Default runtime boot and end-to-end acceptance
+
+[The boot selector](../src/fw_cfg.rs) chooses `run` when the optional fw_cfg
+mode is absent. Explicit `run` is valid in both build profiles; `probe`,
+EEPROM timeout, faults, heap/stack-guard and kernel-test modes keep their
+existing semantics. Configuration and build gating still fail before memory/
+device access. Isolated MAC proofs never invoke original module initialization.
+
+[Normal startup](../src/main.rs) initializes allocators/time and enters the
+same owned `Resources::start/run` service path used by finite acceptance.
+It supplies no guest/application clients: original driver work, watchdog, IRQ/
+NAPI and the control coordinator retain the NIC while the dispatcher idles.
+Only deliberately requested native shutdown can return, reported separately as
+`KERNEL_RUNTIME_STOPPED`. Empty or unsupported network inventory is valid
+kernel startup, with zero bound network devices and no fabricated link success.
+Unsafe/malformed topology remains a diagnosed admission failure.
+
+`DRIVER_RUNTIME` reports initialized driver/inventory/binding/error/deferred
+counts and metadata; `DRIVER_READY` reports an actual source readiness transition,
+owned identity, full BDF, MAC, MTU, link and live workers. `DRIVER_PATH`/
+`DRIVER_PARENT` describe the actual retained ancestry, sized BAR spans, swizzled
+pin and validated PIRQ/ELCR/GSI route. Normal boot emits bounded startup callback
+identities (`DRIVER_CALLBACK`) rather than enabling the full guest packet/
+callback journal. Guest checkpoints and control-test assertions run only in
+explicit guest modes even when the image includes test code.
+
+The [host boot validator](../tests/test_runtime_boot.py) verifies unconfigured
+default and explicit run using the actual linked original module/probe/open
+functions. It measures at least three seconds of continued execution **after**
+validated readiness (or initialized zero-NIC service state), then terminates
+only its owned child. Normal watchdog expiration, any premature exit, a MAC/
+test terminal, or a late error cannot become liveness success. This also passes
+with guest fixtures omitted. Restricted/isolated backends do not touch host
+hardware or unrelated services.
+
+Finite `driver-runtime-tests` chooses its table from real PCI inventory:
+the existing five no-NIC service-lifetime cases, managed packet acceptance for
+the supported e1000, or an unclaimed-runtime case for an unknown NIC. Root,
+one-bridge and nested-bridge clients at 128/32 MiB run the same startup path and
+native APIs through two balanced epochs. Exact socket/PCAP bytes, original
+callback identity/lifetime, source byte accounting, BDF/parent/swizzle and
+client/device/worker retention are all required. Bridged guest-only fixtures
+temporarily corrupt and restore a real type-1 bus register; startup must reject
+the malformed hierarchy before platform backing or driver callbacks. No
+synthetic driver can satisfy the network proof.
+
+CTest replaces `mac-default-mode` with `driver-runtime-default`, adds explicit
+run and default no-NIC/unsupported liveness checks, and provides
+`driver-runtime-root`, `driver-runtime-bridge`, `driver-runtime-nested`,
+`driver-runtime-low-memory`, `driver-runtime-no-nic` and
+`driver-runtime-unsupported`, plus bridged/nested/no-NIC/unknown low-memory
+variants. All use the selected `build/kutox.iso`; no per-mode images or module
+loader is introduced. Independent original packet/hardening acceptance remains
+unchanged. Expanded failure/teardown hardening and final docs are Phases 7-8.
 
 Bridge timing also exposed two fixture assumptions: an earlier link IRQ's
 queued NAPI may legitimately clean a new TX before its TXDW interrupt, and

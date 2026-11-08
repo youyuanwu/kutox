@@ -231,7 +231,9 @@ fn work(address: usize, key: Key, operation: u32, delay: u64) -> Result<bool, Er
                     return Err(Error::Context);
                 }
                 #[cfg(feature = "guest-tests")]
-                crate::guest_tests::linux_hardening::source_join(1);
+                if crate::linux_driver::tracing() {
+                    crate::guest_tests::linux_hardening::source_join(1);
+                }
             }
             let pending = { SERVICES.lock_save_irq().state.cancel_begin(key, address)? };
             notify(&WORK_READY);
@@ -317,7 +319,9 @@ fn napi(address: usize, key: Key, operation: u32, done: i32) -> Result<bool, Err
                     break;
                 }
                 #[cfg(feature = "guest-tests")]
-                crate::guest_tests::linux_hardening::source_join(2);
+                if crate::linux_driver::tracing() {
+                    crate::guest_tests::linux_hardening::source_join(2);
+                }
                 token.wait(None).map_err(|_| Error::Context)?;
             }
             SERVICES
@@ -464,17 +468,23 @@ fn worker(which: usize) {
                         0,
                     );
                     #[cfg(feature = "guest-tests")]
-                    crate::guest_tests::linux_hardening::pause_source(1);
+                    if crate::linux_driver::tracing() {
+                        crate::guest_tests::linux_hardening::pause_source(1);
+                    }
                     unsafe { callback(invocation.address as *mut c_void) };
                     CURRENT_WORK.store(0, Ordering::Release);
                     0
                 }
                 Callback::Napi(callback) => {
                     #[cfg(feature = "guest-tests")]
-                    crate::guest_tests::linux_hardening::pause_source(2);
+                    if crate::linux_driver::tracing() {
+                        crate::guest_tests::linux_hardening::pause_source(2);
+                    }
                     CURRENT_NAPI.store(invocation.key.raw(), Ordering::Release);
                     #[cfg(feature = "guest-tests")]
-                    crate::guest_tests::linux_hardening::atomic_reentry();
+                    if crate::linux_driver::tracing() {
+                        crate::guest_tests::linux_hardening::atomic_reentry();
+                    }
                     crate::linux_driver::kutox_driver_trace(
                         13,
                         callback as usize,

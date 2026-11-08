@@ -14,13 +14,6 @@ mod cpu;
     )
 )]
 mod dma;
-#[cfg_attr(
-    not(feature = "guest-tests"),
-    allow(
-        dead_code,
-        reason = "Native boot coordinator is wired in integration phase 6"
-    )
-)]
 mod driver_init;
 #[cfg_attr(
     not(feature = "guest-tests"),
@@ -55,7 +48,7 @@ mod irq;
     not(feature = "guest-tests"),
     allow(
         dead_code,
-        reason = "Persistent runtime boot is enabled in integration phase 6"
+        reason = "Additional native runtime APIs are available to kernel clients"
     )
 )]
 mod kernel_runtime;
@@ -119,7 +112,7 @@ mod mutex;
     not(feature = "guest-tests"),
     allow(
         dead_code,
-        reason = "Persistent runtime boot is enabled in integration phase 6"
+        reason = "Additional native packet APIs are available to kernel clients"
     )
 )]
 mod net_device;
@@ -151,7 +144,6 @@ mod threads;
 mod time;
 
 use core::{arch::asm, ffi::CStr, panic::PanicInfo};
-#[cfg(feature = "guest-tests")]
 use kutox::fw_cfg::BootMode;
 
 macro_rules! println {
@@ -201,11 +193,15 @@ pub extern "C" fn kmain() -> ! {
     serial::init();
     println!("KUTOX_BOOT linux={}", env!("KUTOX_LINUX_REVISION"));
     match probe() {
-        Ok(mac) => {
+        Ok(BootOutcome::Mac(mac)) => {
             println!(
                 "E1000_MAC_OK mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
             );
+            io::finish(true);
+        }
+        Ok(BootOutcome::RuntimeStopped) => {
+            println!("KERNEL_RUNTIME_STOPPED");
             io::finish(true);
         }
         Err(failure) => {
@@ -218,7 +214,12 @@ pub extern "C" fn kmain() -> ! {
     }
 }
 
-fn probe() -> Result<[u8; 6], Failure> {
+enum BootOutcome {
+    Mac([u8; 6]),
+    RuntimeStopped,
+}
+
+fn probe() -> Result<BootOutcome, Failure> {
     exceptions::initialize()?;
     let boot = boot::collect()?;
     driver_init::validate_boot_metadata()?;
@@ -285,6 +286,13 @@ fn probe() -> Result<[u8; 6], Failure> {
     );
     let ticks = time::calibrate()?;
     println!("TSC ticks_per_us={ticks}");
+    if boot.mode == BootMode::Run {
+        linux_driver::report_boot_callbacks(true);
+        let resources = kernel_runtime::Resources::start(&boot, allocator)?;
+        resources.run(kernel_runtime::Clients::new())?;
+        linux_driver::report_boot_callbacks(false);
+        return Ok(BootOutcome::RuntimeStopped);
+    }
     let device = pci::discover()?;
     let bar = device.enable_mmio()?;
     let mapping = memory::map_mmio(&boot, bar.base, allocator)?;
@@ -334,7 +342,7 @@ fn probe() -> Result<[u8; 6], Failure> {
         return Err(Failure::new("heap_cleanup", -1));
     }
     println!("BOOT_MEMORY_TABLES allocated={table_count} released={table_count}");
-    result.permanent_mac()
+    result.permanent_mac().map(BootOutcome::Mac)
 }
 
 impl ProbeResult {

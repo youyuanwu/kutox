@@ -29,6 +29,66 @@ pub(crate) static TESTS: &[TestCase] = &[
     },
 ];
 
+static UNCLAIMED_TESTS: &[TestCase] = &[TestCase {
+    name: "runtime.unclaimed",
+    run: unclaimed,
+}];
+
+pub(crate) fn suite() -> Result<&'static [TestCase], Failure> {
+    let inventory = pci::enumerate()?;
+    let matching = inventory
+        .e1000()
+        .map_err(|error| Failure::new("runtime_suite_inventory", error as i32))?
+        .is_some();
+    if matching {
+        Ok(crate::linux_driver::tests::TESTS)
+    } else if inventory
+        .functions()
+        .iter()
+        .any(|entry| entry.class() >> 16 == 2)
+    {
+        Ok(UNCLAIMED_TESTS)
+    } else {
+        Ok(TESTS)
+    }
+}
+
+fn unclaimed(
+    boot: &BootInfo,
+    frames: &'static memory::PhysicalFrames<'static>,
+) -> Result<(), Failure> {
+    let before = memory::allocation_snapshot(frames);
+    let heap_before = crate::heap::global().stats();
+    let resources = Resources::start(boot, frames)?;
+    EPOCH.store(resources.handle().epoch, Ordering::Release);
+    RETURNED.store(0, Ordering::Release);
+    let mut clients = Clients::new();
+    clients.add(early_return, 0)?;
+    clients.add(|_| {
+        threads::tests::check_current_stack().unwrap();
+        assert_eq!(RETURNED.load(Ordering::Acquire), 1);
+        let handle = current();
+        let snapshot = handle.manager().unwrap().snapshot().unwrap();
+        assert_eq!((snapshot.drivers, snapshot.bound, snapshot.discovered), (1, 0, 6));
+        assert!(crate::net_device::enumerate(handle).unwrap().is_empty());
+        assert_eq!(linux_deferred::worker_count(), 2);
+        serial::print(format_args!("# DRIVER_UNCLAIMED functions=6 drivers=1 bound=0 unclaimed=6 network=0 workers=2 client_returned=1\n"));
+        handle.request_shutdown().unwrap();
+        handle.wait_stopped().unwrap();
+    }, 0)?;
+    let stats = resources.run(clients)?;
+    drop(resources);
+    EPOCH.store(0, Ordering::Release);
+    assert_eq!(stats.finished, 5);
+    assert_eq!(stats.peak_tasks, 5);
+    assert_eq!(memory::allocation_snapshot(frames), before);
+    assert_eq!(crate::heap::global().stats(), heap_before);
+    serial::print(format_args!(
+        "# DRIVER_UNCLAIMED_JOIN finished=5 peak=5 workers=0 balanced=1 stale=1\n"
+    ));
+    Ok(())
+}
+
 static FAIL_STAGE: AtomicUsize = AtomicUsize::new(0);
 static JOBS: AtomicUsize = AtomicUsize::new(0);
 static RETURNED: AtomicUsize = AtomicUsize::new(0);

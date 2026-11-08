@@ -118,10 +118,11 @@ class ResultTests(unittest.TestCase):
             validate_result("known", 1, output)
 
     def test_default_mode_without_fw_cfg_file(self):
-        validate_result(
-            "default-mode", 1,
-            boot_log("E1000_MAC_OK mac=52:54:00:12:34:56", source="default"),
-        )
+        with self.assertRaises(AssertionError):
+            validate_result(
+                "default-mode", 1,
+                boot_log("E1000_MAC_OK mac=52:54:00:12:34:56", source="default"),
+            )
 
     def test_invalid_mode_is_rejected_before_memory_initialization(self):
         output = f"KUTOX_BOOT linux={REVISION}\n{FOUNDATION}E1000_MAC_FAIL stage=boot_mode code=-23\n"
@@ -174,7 +175,7 @@ class CommandTests(unittest.TestCase):
                 )
 
     def test_default_mode_omits_fw_cfg(self):
-        self.assertNotIn("-fw_cfg", qemu_command(self.args, "default-mode"))
+        self.assertNotIn("-fw_cfg", qemu_command(self.args, "default-mode", net_fd=17))
 
     def test_fault_cases_have_no_network_device(self):
         for case in (*FAULT_RESULTS, "heap-oom", "thread-stack-guard"):

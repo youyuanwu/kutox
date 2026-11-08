@@ -36,6 +36,16 @@ pub fn fail_operation(operation: u32) {
 
 pub struct Owner;
 impl Owner {
+    pub fn report_path(&self, topology: &kutox::irq_platform::Topology) -> Result<(), Failure> {
+        driver_memory::context(false)
+            .map_err(|error| Failure::new("driver_path_context", error))?;
+        let binding = unsafe { (&*BINDING.0.get()).as_ref() }
+            .ok_or(Failure::new("driver_path_owner", -19))?;
+        binding
+            .device
+            .report_runtime_path(topology, binding.bar.length)
+    }
+
     pub fn bind(
         boot: &BootInfo,
         frames: &'static memory::PhysicalFrames<'static>,

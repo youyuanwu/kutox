@@ -284,15 +284,6 @@ fn bail(stage: &str) -> ! {
 
 pub fn run(boot: &BootInfo) -> ! {
     let inject = boot.mode == BootMode::KernelTestsFail;
-    let tests = if boot.mode == BootMode::DriverRuntimeTests {
-        crate::kernel_runtime::tests::TESTS
-    } else if boot.mode == BootMode::DriverNetworkTests {
-        crate::linux_driver::tests::TESTS
-    } else {
-        TESTS
-    };
-    let total = tests.len() + usize::from(inject);
-    serial::print(format_args!("KTAP version 1\n1..{total}\n"));
     if cpu::interrupts_enabled()
         || X86Cpu::irq_lock_depth() != 0
         || !threads::is_quiescent()
@@ -336,6 +327,24 @@ pub fn run(boot: &BootInfo) -> ! {
             bail("heap_initialization");
         }
     };
+    let tests = if boot.mode == BootMode::DriverRuntimeTests {
+        match crate::kernel_runtime::tests::suite() {
+            Ok(tests) => tests,
+            Err(error) => {
+                serial::print(format_args!(
+                    "# stage={} code={}\n",
+                    error.stage, error.code
+                ));
+                bail("runtime_suite_selection");
+            }
+        }
+    } else if boot.mode == BootMode::DriverNetworkTests {
+        crate::linux_driver::tests::TESTS
+    } else {
+        TESTS
+    };
+    let total = tests.len() + usize::from(inject);
+    serial::print(format_args!("KTAP version 1\n1..{total}\n"));
     let cases = core::iter::once(&INTENTIONAL_FAILURE)
         .filter(|_| inject)
         .chain(tests);
