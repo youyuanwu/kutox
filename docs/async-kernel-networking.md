@@ -7,11 +7,14 @@ The baseline is merged driver integration at `ac637ab` (PR #7). Current normal
 boot retains Linux e1000 and kernel workers but starts no application clients
 or IP stack; see the [current architecture](rust-kernel-linux-drivers.md#moss-style-driver-infrastructure).
 
-Phases 1-2 implement the [portable async ownership policy](../src/async_state.rs),
+Phases 1-3 implement the [portable async ownership policy](../src/async_state.rs),
 bounded Moss task/registration adaptations, a [guarded executor](../src/async_runtime.rs)
 and [async waits](../src/async_sync.rs). Real guest tests cover IRQ wakeups,
 one-shot deadlines, sixteen-poll fairness and joined cancellation/reopen.
-The packet broker and IPv4 service remain subsequent phases. Normal boot is
+The [owned Ethernet broker](../src/net_async.rs) and its
+[portable policy](../src/net_async_state.rs) now pass real Linux-backed
+exchange, timeout/cancellation and rebind acceptance. IPv4 remains subsequent.
+Normal boot is
 unchanged: it does not yet activate the executor or an IP stack.
 
 The next milestone adds a bounded Moss-inspired Rust async runtime and
@@ -158,7 +161,7 @@ The explicit production `Resources::run_async(Clients)` path admits one
 executor inside the existing resource scope and allows one additional native
 client. `Clients::add` still takes `fn(usize)` and caller-owned argument state;
 runtime handles are not implicitly passed. Default `Resources::run` remains
-driver-only. Protocol work and the broker are not implemented yet.
+driver-only. Protocol work remains subsequent; Phase 3 adds the separate broker path below.
 
 - In an admitted client, `async_runtime::spawn` accepts a `Send + 'static`
   future returning `Result<(), TaskFailure>`. It rejects payloads larger than
@@ -254,6 +257,69 @@ While active, other raw packet consumers receive Busy; metadata remains
 available. Preserve existing raw native behavior when no session is held.
 This prevents the default IP service and raw clients stealing each other's RX.
 Raw async acceptance runs without the IP service.
+
+### As-built Phase 3 packet API and retirement
+
+`Resources::run_network(Clients)` adds the broker alongside the executor and
+three existing services. It accepts one additional native actor: six guarded
+stacks during acceptance, five service stacks without that actor. This explicit
+Ethernet path is available in both build profiles but is not selected by normal
+boot. It does not yet provide IPv4 or application sockets.
+
+- Await `net_async::session()` and `Session::ready()` for the actual source
+  binding/link. `Session::info()` reads broker-cached native metadata and
+  statistics; it never calls Linux from a future.
+- `Packet::from_bytes` obtains one of sixteen CPU-copy slots, validating the
+  same 14-1514-byte Ethernet II profile as the raw API. Packet guards are
+  non-cloneable and keep their copied data alive independently of source stop
+  or replacement. They must be constructed/manipulated/dropped outside IRQ
+  context. The arena is retained while any copied packet remains loaned, even
+  across service epochs; retained loans consume the same sixteen-slot budget.
+- `Session::submit(Packet)` reserves one of four request records and queues
+  the owned copy. Failed admission returns `(Error, Packet)` without losing
+  the caller's data. Await its `TxFuture` for original completion/drop and
+  broker-owned native finish. Completed-but-unconsumed records still consume
+  request capacity.
+- `Session::reserve_tx()` reserves both request credit and mutable preallocated
+  backing. `TxReservation::commit(length)` validates and stages it without
+  allocation, blocking or C. Unused reservations return their credit. These
+  are the prerequisites for the later synchronous smoltcp token adapter.
+- `TxFuture::timeout(usec)` returns an async timed wait. Timeout/drop detaches
+  the consumer, not accepted source skb/DMA. Before source admission, the
+  broker discards queued copies; afterward it retains the receipt through
+  normal finish or positively confirmed original removal.
+- `Session::receive()` returns the next staged owned copy from an eight-entry
+  FIFO. Exhausted backing/FIFO space preserves source ingress until credit
+  returns. `Session::changed()` supplies generation-safe packet/credit/link
+  notification for consumers; the broker adds no retry ticker.
+
+The session gate lives at the managed device boundary, so direct native
+packet calls cannot bypass it. Raw TX/RX/progress/finish receive Busy while
+another owner holds the session; raw info remains available. `begin_stop`
+revokes admission before final removal, without holding a manager operation
+across await. A Closed operation does not settle an accepted or finishing
+receipt. The broker waits for its captured managed source ticket to change;
+that publication occurs only after original unbind returns and source users
+are drained. Executor, broker and shared workers join before platform parents
+are released.
+
+The packet arena is one fallible 24,224-byte allocation, measured as eight
+physical pages (**32 KiB**), avoiding extra per-vector slab reservations.
+Acceptance measures broker metadata 1,697, executor metadata 4,202, two added
+stacks 32,768, packet arena 32,768 and peak future payloads 264:
+**71,699 bytes** charged new service storage. Driver metadata is separately
+60,473 bytes (88 bytes above the previous session-free baseline), below its
+64-KiB ceiling. Final IP-state/combined hardening budgets remain later gates.
+
+The separate `async-network-tests`, `async-network-tests-low-memory` and
+`async-network-tests-nested-low-memory` cases use the shared ON image and an
+owned Ethernet socket/PCAP peer. Their three-case table proves all six packet
+sizes, sixteen real source TX transactions/fourteen full-L2 RX receipts, queued
+and accepted cancellation, accepted-source timeout, busy removal, original
+IRQ/NAPI or stopped-source retirement, and late-copy safety through same-parent
+rebind. Host/CTest deadlines are 35/40 seconds. OFF
+`async-network-tests-disabled` rejects before device admission while retaining
+the production broker. No host TAP/passthrough or IP protocol is involved.
 
 ## smoltcp boundary
 

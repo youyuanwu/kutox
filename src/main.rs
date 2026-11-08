@@ -118,6 +118,11 @@ mod memory;
     )
 )]
 mod mutex;
+#[allow(
+    dead_code,
+    reason = "Production packet broker awaits IP boot integration"
+)]
+mod net_async;
 #[cfg_attr(
     not(feature = "guest-tests"),
     allow(
@@ -251,6 +256,7 @@ fn probe() -> Result<BootOutcome, Failure> {
             | BootMode::DriverNetworkTests
             | BootMode::DriverHardeningTests
             | BootMode::AsyncCoreTests
+            | BootMode::AsyncNetworkTests
     ) {
         guest_tests::run(&boot);
     }

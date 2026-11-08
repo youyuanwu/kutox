@@ -166,6 +166,19 @@ The production executor is retained in both feature profiles before default
 activation; fixtures remain guest-only. No networking dependency or Linux
 packet algorithm is introduced by this phase.
 
+[src/net_async.rs](src/net_async.rs) and
+[src/net_async_state.rs](src/net_async_state.rs) add native kutox owned request,
+packet-arena, session and broker policy. They use the existing Moss-derived
+heap/IRQ primitives and guarded async core, not Moss socket/syscall code.
+The single caller still executes unchanged Linux TX/RX/IRQ/NAPI/close/remove.
+Native `submit_bytes`/`receive_into` reuse the existing Ethernet admission and
+copied ingress implementation, avoiding packet allocation in future polling.
+The compatibility queue-wake shim now publishes an actual stopped-to-runnable
+transition; it does not replace any driver's queue/descriptor algorithm.
+Exclusive admission, CPU-copy loan lifetime and positive original source-ticket
+retirement are native kutox mechanisms. No smoltcp or other dependency is added
+in Phase 3; protocol integration remains subsequent.
+
 Moss's reviewed run queue is deadline/virtual-clock based and its kernel work
 is future-based; it is not copied as a stackful scheduler. kutox's bounded FIFO
 policy, owned guarded stacks, dispatcher, x86_64 switch/trampoline assembly, and

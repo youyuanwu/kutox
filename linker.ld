@@ -14,6 +14,7 @@ SECTIONS {
         _kernel_text_start = .;
         /* Production executor exists before default boot activation. */
         KEEP(*(.text.kutox_async_executor))
+        KEEP(*(.text.kutox_packet_broker))
         *(.text .text.*)
         _kernel_text_end = .;
     } :text

@@ -179,6 +179,10 @@ static MANAGED: crate::mutex::Mutex<Option<ManagedState>> = crate::mutex::Mutex:
 static NEXT_TX: AtomicU64 = AtomicU64::new(1);
 static MANAGED_TICKET: AtomicU64 = AtomicU64::new(0);
 
+pub(crate) fn source_ticket() -> u64 {
+    MANAGED_TICKET.load(Ordering::Acquire)
+}
+
 pub const METADATA_BYTES: usize = core::mem::size_of::<crate::mutex::Mutex<Option<ManagedState>>>()
     + core::mem::size_of::<ManagedDevice>()
     + 17;
@@ -257,6 +261,16 @@ struct ManagedDevice {
 }
 
 impl ManagedDevice {
+    fn packet_call<T>(
+        &self,
+        operation: &'static str,
+        call: impl FnOnce(&mut ManagedState) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        self.call(operation, |state| {
+            crate::net_device::packet_access(self.ticket)?;
+            call(state)
+        })
+    }
     fn call<T>(
         &self,
         operation: &'static str,
@@ -298,6 +312,7 @@ impl ManagedDevice {
 impl NativeDevice for ManagedDevice {
     fn begin_stop(&self) {
         if !self.stopping.swap(true, Ordering::AcqRel) {
+            crate::net_device::revoke_source(self.ticket);
             crate::net_device::wake();
         }
     }
@@ -349,6 +364,7 @@ impl NativeDevice for ManagedDevice {
         crate::driver_memory::discard_ingress();
         *owner = None;
         MANAGED_TICKET.store(0, Ordering::Release);
+        crate::net_device::wake();
         Ok(())
     }
 }
@@ -387,7 +403,12 @@ impl NetworkDevice for ManagedDevice {
     }
 
     fn submit(&self, frame: &Frame) -> Result<TxTicket, Error> {
-        self.call("submit", |state| {
+        self.submit_bytes(frame.bytes())
+    }
+
+    fn submit_bytes(&self, bytes: &[u8]) -> Result<TxTicket, Error> {
+        Frame::validate(bytes)?;
+        self.packet_call("submit", |state| {
             if state.receipt.is_some() {
                 return Err(Error::Busy);
             }
@@ -414,15 +435,15 @@ impl NetworkDevice for ManagedDevice {
                     value.checked_add(1)
                 })
                 .map_err(|_| Error::Driver(-165))?;
-            checked(state.driver.packet(frame.bytes())).map_err(Error::from_code)?;
+            checked(state.driver.packet(bytes)).map_err(Error::from_code)?;
             let ticket = TxTicket::new(self.ticket, sequence)?;
-            state.receipt = Some((ticket, frame.wire_bytes()));
+            state.receipt = Some((ticket, bytes.len().max(60)));
             Ok(ticket)
         })
     }
 
     fn progress(&self, ticket: TxTicket) -> Result<TxStatus, Error> {
-        self.call("progress", |state| {
+        self.packet_call("progress", |state| {
             let bytes = Self::receipt(state, ticket)?;
             let mut status = state.driver.tx_status();
             if status == 0 {
@@ -443,7 +464,7 @@ impl NetworkDevice for ManagedDevice {
     }
 
     fn finish(&self, ticket: TxTicket) -> Result<(), Error> {
-        self.call("finish", |state| {
+        self.packet_call("finish", |state| {
             Self::receipt(state, ticket)?;
             match state.driver.tx_status() {
                 2 | -5 => {}
@@ -460,7 +481,7 @@ impl NetworkDevice for ManagedDevice {
     }
 
     fn receive(&self) -> Result<Option<Frame>, Error> {
-        self.call("receive", |_| {
+        self.packet_call("receive", |_| {
             let mut bytes = alloc::vec::Vec::new();
             bytes.try_reserve_exact(1514).map_err(|_| Error::NoMemory)?;
             bytes.resize(1514, 0);
@@ -474,6 +495,12 @@ impl NetworkDevice for ManagedDevice {
             }
             bytes.truncate(size);
             Frame::from_owned(bytes).map(Some)
+        })
+    }
+
+    fn receive_into(&self, output: &mut [u8; 1514]) -> Result<usize, Error> {
+        self.packet_call("receive_into", |_| {
+            Ok(crate::driver_memory::receive(output))
         })
     }
 }

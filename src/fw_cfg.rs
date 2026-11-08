@@ -21,6 +21,7 @@ pub enum BootMode {
     DriverNetworkTests,
     DriverHardeningTests,
     AsyncCoreTests,
+    AsyncNetworkTests,
     HeapOom,
     ThreadStackGuard,
 }
@@ -48,6 +49,7 @@ impl BootMode {
             Self::DriverNetworkTests => "driver-network-tests",
             Self::DriverHardeningTests => "driver-hardening-tests",
             Self::AsyncCoreTests => "async-core-tests",
+            Self::AsyncNetworkTests => "async-network-tests",
             Self::HeapOom => "heap-oom",
             Self::ThreadStackGuard => "thread-stack-guard",
         }
@@ -84,6 +86,7 @@ impl BootMode {
                 | Self::DriverNetworkTests
                 | Self::DriverHardeningTests
                 | Self::AsyncCoreTests
+                | Self::AsyncNetworkTests
                 | Self::HeapOom
                 | Self::ThreadStackGuard
         )
@@ -173,6 +176,7 @@ pub fn read_mode(
         b"driver-network-tests" => Ok(Some(BootMode::DriverNetworkTests)),
         b"driver-hardening-tests" => Ok(Some(BootMode::DriverHardeningTests)),
         b"async-core-tests" => Ok(Some(BootMode::AsyncCoreTests)),
+        b"async-network-tests" => Ok(Some(BootMode::AsyncNetworkTests)),
         b"heap-oom" => Ok(Some(BootMode::HeapOom)),
         b"thread-stack-guard" => Ok(Some(BootMode::ThreadStackGuard)),
         _ => Err(Error::UnknownMode),
@@ -244,6 +248,7 @@ mod tests {
             BootMode::DriverNetworkTests,
             BootMode::DriverHardeningTests,
             BootMode::AsyncCoreTests,
+            BootMode::AsyncNetworkTests,
             BootMode::HeapOom,
             BootMode::ThreadStackGuard,
         ] {
@@ -358,6 +363,7 @@ fn guest_modes_require_the_build_feature_without_changing_probe() {
         BootMode::DriverNetworkTests,
         BootMode::DriverHardeningTests,
         BootMode::AsyncCoreTests,
+        BootMode::AsyncNetworkTests,
         BootMode::EepromTimeout,
         BootMode::PageFault,
         BootMode::GeneralProtection,

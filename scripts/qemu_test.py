@@ -102,6 +102,12 @@ ASYNC_CORE_CASES = {
     "async-core-tests-low-memory": "async-core-tests",
 }
 ASYNC_CORE_NAMES = ("async.wake", "async.irq", "async.timer", "async.fairness", "async.cancel")
+ASYNC_NETWORK_CASES = {
+    case: "async-network-tests" for case in (
+        "async-network-tests", "async-network-tests-low-memory", "async-network-tests-nested-low-memory",
+    )
+}
+ASYNC_NETWORK_NAMES = ("async.net.exchange", "async.net.cancel", "async.net.rebind")
 NETWORK_SUITE_CASES = {
     "driver-network-tests": "driver-network-tests",
     "driver-network-tests-low-memory": "driver-network-tests",
@@ -145,6 +151,7 @@ CASES = {
     "driver-network-tests-disabled": (None, "boot_mode"),
     "driver-hardening-tests-disabled": (None, "boot_mode"),
     "async-core-tests-disabled": (None, "boot_mode"),
+    "async-network-tests-disabled": (None, "boot_mode"),
     **{case: (None, None) for case in FAULT_RESULTS},
     "smp-unsupported": (None, "cpu_single_processor_required"),
     "heap-oom": (None, None),
@@ -157,6 +164,7 @@ CASES = {
     **{case: (None, None) for case in LIVE_CASES},
     **{case: (None, None) for case in HARDENING_CASES},
     **{case: (None, None) for case in ASYNC_CORE_CASES},
+    **{case: (None, None) for case in ASYNC_NETWORK_CASES},
 }
 
 
@@ -836,7 +844,7 @@ def validate_thread_guard(returncode, output):
 def validate_result(case, returncode, output):
     if case in LIVE_CASES:
         raise AssertionError("persistent runtime requires measured live execution, not an exit code")
-    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled"):
+    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled", "async-network-tests-disabled"):
         lines = output.splitlines()
         expected = "E1000_MAC_FAIL stage=boot_mode code=-25"
         if returncode != 3 or not lines or lines[-1] != expected:
@@ -861,6 +869,9 @@ def validate_result(case, returncode, output):
         return
     if case in ASYNC_CORE_CASES:
         validate_async_core(case, returncode, output)
+        return
+    if case in ASYNC_NETWORK_CASES:
+        validate_async_network(case, returncode, output)
         return
     if case in UNCLAIMED_CASES:
         validate_unclaimed_suite(case, returncode, output)
@@ -1390,6 +1401,224 @@ class NetworkProtocol:
         expected = [] if self.ambiguous else [(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)]
         if self.pending or self.frames != expected:
             raise AssertionError("missing managed full-frame receipts")
+
+
+def async_network_tx_packets():
+    return [network_packet(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)] + [
+        network_packet(epoch, 3) for epoch in (3, 3, 4, 5)
+    ]
+
+
+class AsyncNetworkProtocol:
+    def __init__(self, send=None):
+        self.send = send
+        self.expected = [(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)] + [(4, 3), (5, 3)]
+        self.frames, self.pending = [], None
+
+    def observe(self, line):
+        if line.startswith("# NETWORK_RX_READY"):
+            match = re.fullmatch(r"# NETWORK_RX_READY epoch=(\d+) seq=([1-6]) bytes=(\d+)", line)
+            if match is None or self.pending is not None or len(self.frames) >= len(self.expected):
+                raise AssertionError("invalid async RX offer")
+            epoch, sequence, length = map(int, match.groups())
+            if (epoch, sequence) != self.expected[len(self.frames)]:
+                raise AssertionError("reordered async RX offer")
+            packet = network_packet(epoch, sequence, True)
+            if length != len(packet):
+                raise AssertionError("async RX length mismatch")
+            self.pending = (epoch, sequence)
+            if self.send:
+                self.send(struct.pack("!I", length) + packet)
+        elif line.startswith("# NETWORK_RX "):
+            match = re.fullmatch(r"# NETWORK_RX epoch=(\d+) seq=([1-6]) bytes=(\d+) path=(copy|build) data=([0-9a-f]+)", line)
+            if match is None or self.pending is None:
+                raise AssertionError("async RX without host offer")
+            epoch, sequence, length = map(int, match.groups()[:3])
+            packet = network_packet(epoch, sequence, True)
+            if (epoch, sequence) != self.pending or (length, match[4], bytes.fromhex(match[5])) != (
+                len(packet), "copy" if len(packet) <= 252 else "build", packet,
+            ):
+                raise AssertionError("async RX data/FCS/source copybreak mismatch")
+            self.frames.append(self.pending)
+            self.pending = None
+
+    def finish(self):
+        if self.pending is not None or self.frames != self.expected:
+            raise AssertionError("missing async Ethernet receipts")
+
+
+def validate_async_network(case, returncode, output, symbols=None):
+    lines = output.splitlines()
+    validate_boot_preamble(lines, "async-network-tests")
+    failures = validate_ktap(lines, returncode, ASYNC_NETWORK_NAMES)
+    if failures:
+        raise KernelSuiteFailure("async packet broker acceptance failed")
+    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "THREAD_", "Bail out!",
+                            "# ASYNC_ERROR", "# ASYNC_NET_TEST_ERROR", "# RUNTIME_ERROR", "# RUNTIME_PROBE", "# driver operation=")) for line in lines):
+        raise AssertionError("async broker aborted or hid a service/source failure")
+    protocol = AsyncNetworkProtocol()
+    for line in lines:
+        protocol.observe(line)
+    protocol.finish()
+    devices = [line for line in lines if line.startswith("# ASYNC_NET_DEVICE")]
+    if len(devices) != 5:
+        raise AssertionError("missing async source lifetimes")
+    identities = []
+    for epoch, line in enumerate(devices, 1):
+        match = re.fullmatch(
+            rf"# ASYNC_NET_DEVICE epoch={epoch} identity=(\d+) bdf=0000:([0-9a-f]{{2}}):([0-9a-f]{{2}})\.0 mac=52:54:00:12:34:56 mtu=1500 link=1", line,
+        )
+        if match is None or int(match[1]) == 0 or (int(match[2], 16), int(match[3], 16)) != (
+            len(pci_layout(case)[2]), pci_layout(case)[1],
+        ):
+            raise AssertionError("wrong async source identity/topology/readiness")
+        identities.append(int(match[1]))
+    if len(set(identities)) != 5:
+        raise AssertionError("async device identity reused")
+    expected_tx = [(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)] + [(4, 3), (5, 3)]
+    if [line for line in lines if line.startswith("# ASYNC_NET_TX")] != [
+        f"# ASYNC_NET_TX epoch={epoch} seq={sequence} input={NETWORK_LENGTHS[sequence - 1]} wire={max(NETWORK_LENGTHS[sequence - 1], 60)} complete=1"
+        for epoch, sequence in expected_tx
+    ]:
+        raise AssertionError("async native TX completion shape mismatch")
+    proofs = [
+        f"# ASYNC_NET_EXCLUSIVE epoch={epoch} raw_rx=busy raw_tx=busy metadata=allowed reservations=0" for epoch in (1, 2, 3, 4)
+    ] + [
+        f"# ASYNC_NET_STATS epoch={epoch} tx=6/2199 rx=6/2199 requests=0" for epoch in (1, 2)
+    ] + [
+        "# ASYNC_NET_CANCEL reserved=1 queued=4 capacity=4 rejected=1 retained_copy=1 source=1 cancelled=1 busy_remove=1 maps_retained=1 original_retired=1 orphan_finished=1 requests=0",
+        "# ASYNC_NET_REBIND epochs=2 identity_changed=1 old_closed=1 parent=retained late_copy=1 source_unchanged=1 requests=0 staged_rx=0",
+        "# ASYNC_NET_TIMEOUT accepted=1 expired=1 orphan=1 source_live=1 completion_owner=broker requests=1",
+    ]
+    if any(lines.count(proof) != 1 for proof in proofs):
+        raise AssertionError("missing async capacity/cancellation/rebind/ownership proof")
+    pools = [line for line in lines if line.startswith("# ASYNC_NET_POOL")]
+    if pools != ["# ASYNC_NET_POOL slots=16 requested=24224 pages=8 reserved=32768 allocation=1"] * 4:
+        raise AssertionError("packet arena did not meet the physical allocation ceiling")
+    joins = [line for line in lines if line.startswith("# ASYNC_NET_JOIN")]
+    if len(joins) != 4:
+        raise AssertionError("missing or duplicate joined async scopes")
+    sizes = set()
+    for epoch, line in enumerate(joins, 1):
+        match = re.fullmatch(
+            rf"# ASYNC_NET_JOIN epoch={epoch} finished=6 peak=6 requests=0 packets=0 staged_rx=0 workers=0 balanced=1 "
+            r"metadata=(\d+) broker_metadata=(\d+) async_metadata=(\d+) packet_storage=32768 stack_storage=32768 future_peak=(\d+) service=(\d+)", line,
+        )
+        if match is None:
+            raise AssertionError("async source/packet/future scope not joined")
+        driver, broker, executor, future, service = map(int, match.groups())
+        if not 60385 <= driver <= 65536 or broker + executor > 32768 or not 0 < future <= 32768:
+            raise AssertionError("driver/async/payload storage bound exceeded")
+        if service != broker + executor + 65536 + future or service > 131072:
+            raise AssertionError("async storage accounting invalid")
+        sizes.add((driver, broker, executor))
+    if len(sizes) != 1:
+        raise AssertionError("async fixed metadata changed across scopes")
+    async_errors = [line for line in lines if line.startswith("# ASYNC_NET_ERROR")]
+    if async_errors != ["# ASYNC_NET_ERROR operation=admit error=Busy", "# ASYNC_NET_ERROR operation=admit error=Closed"]:
+        raise AssertionError("missing or unexpected async admission errors")
+    if [line for line in lines if line.startswith("# NATIVE_DRIVER_ERROR")] != [
+        "# NATIVE_DRIVER_ERROR operation=driver-stop-reserve code=-164",
+    ]:
+        raise AssertionError("missing or unexpected busy-removal diagnostics")
+    net_errors = Counter()
+    for line in lines:
+        if line.startswith("# NET_ERROR"):
+            match = re.fullmatch(r"# NET_ERROR operation=([a-z_]+) error=(Busy|Closed|Stale)", line)
+            if match is None:
+                raise AssertionError("unclassified async native error")
+            net_errors[(match[1], match[2])] += 1
+    if net_errors.pop(("receive", "Busy"), 0) != 8 or net_errors.pop(("submit", "Busy"), 0) != 8:
+        raise AssertionError("native packet operations bypassed exclusive admission")
+    if any(operation not in ("info", "receive_into", "progress", "finish") or reason not in ("Closed", "Stale")
+           for operation, reason in net_errors) or sum(net_errors.values()) > 8:
+        raise AssertionError("unexpected native source operation failure")
+    events = []
+    for line in lines:
+        if line.startswith("# LINUX_CALLBACK"):
+            match = re.fullmatch(r"# LINUX_CALLBACK event=(\d+) function=([0-9a-f]+) object=([0-9a-f]+) result=(-?\d+)", line)
+            if match is None:
+                raise AssertionError("malformed async source callback")
+            events.append(tuple(int(value, 16 if index in (1, 2) else 10) for index, value in enumerate(match.groups())))
+    validate_callback_lifetime(events, symbols)
+    counts = Counter(event for event, _, _, _ in events)
+    if any(counts[event] != 5 for event in (1, 2, 3, 4, 5, 6, 7, 8, 33, 34, 35)):
+        raise AssertionError("unchanged original source lifecycles missing")
+    tx_lengths = [len(packet) for packet in async_network_tx_packets()]
+    rx_lengths = [len(network_packet(epoch, sequence, True)) for epoch, sequence in expected_tx]
+    for event in (19, 20, 22):
+        if [result for observed, _, _, result in events if observed == event] != tx_lengths:
+            raise AssertionError("original mapping/publication/retirement bytes mismatch")
+    for event in (24, 25):
+        observed = [result for actual, _, _, result in events if actual == event]
+        completed_lengths = tx_lengths[:13] + tx_lengths[14:]
+        if observed not in (completed_lengths, tx_lengths):
+            raise AssertionError("original source completions/receipts missing")
+    for event in (41, 42):
+        if counts[event] != len(rx_lengths):
+            raise AssertionError("original RX delivery/destruction receipts missing")
+    if [result for event, _, _, result in events if event == 41] != rx_lengths:
+        raise AssertionError("original full-L2 RX accounting mismatch")
+    transactions, transaction, packet = [], [], None
+    napi = False
+    tx_irq = False
+    stopped = False
+    inputs = [NETWORK_LENGTHS[sequence - 1] for epoch, sequence in
+              [(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)] + [(3, 3), (3, 3), (4, 3), (5, 3)]]
+    for event, _, obj, result in events:
+        if event == 13:
+            napi = True
+        elif event == 26:
+            napi = False
+        elif event == 7 and packet is not None:
+            stopped = True
+        elif event == 27 and packet == obj and result & 1:
+            tx_irq = True
+        if event not in (17, 18, 19, 20, 21, 22, 23, 24, 25, 28, 30, 31, 32):
+            continue
+        if event == 31:
+            if packet is not None:
+                raise AssertionError("overlapping async source packet ownership")
+            packet, transaction, tx_irq, stopped = obj, [], False, False
+        if packet is None or obj != packet:
+            raise AssertionError("async source callback without packet ownership")
+        index = len(transactions)
+        if index >= 16:
+            raise AssertionError("unexpected source TX transaction")
+        if event in (22, 23, 24) and index != 13 and (not napi or not tx_irq):
+            raise AssertionError("async TX completion bypassed original IRQ/NAPI")
+        transaction.append((event, result))
+        if event in (25, 28):
+            wire = tx_lengths[index]
+            prefix = [(31, inputs[index]), (17, inputs[index]), (19, wire), (20, wire)]
+            if len(transaction) < 7 or transaction[:4] != prefix or transaction[4][0] != 21 or not 0 <= transaction[4][1] <= 255 or transaction[5] != (18, 0):
+                raise AssertionError("original async submission/map/publication mismatch")
+            if event == 28:
+                if index != 13 or not stopped or transaction[6:] != [(30, 0), (22, wire), (28, 0)]:
+                    raise AssertionError("orphan DMA was released without original stop")
+            elif transaction[6:] != [(22, wire), (23, 64), (24, wire), (25, wire)]:
+                raise AssertionError("original async completion/finish ownership mismatch")
+            transactions.append(transaction)
+            packet = None
+    if packet is not None or len(transactions) != 16:
+        raise AssertionError("incomplete async source transactions")
+    expected_proofs = set(proofs + pools + devices + joins + [line for line in lines if line.startswith("# ASYNC_NET_TX")])
+    if any(line.startswith("# ASYNC_NET_") and line not in expected_proofs and line not in async_errors for line in lines):
+        raise AssertionError("unexpected async broker evidence")
+    batches, pending = {}, []
+    for line in lines:
+        if line.startswith("# ASYNC_NET_"):
+            pending.append(line)
+        elif re.fullmatch(r"ok \d+ async\.net\.[a-z]+", line):
+            batches[line.split()[2]] = pending
+            pending = []
+    expected_scopes = {"async.net.exchange": (1, 2), "async.net.cancel": (3,), "async.net.rebind": (4,)}
+    for name, epochs in expected_scopes.items():
+        observed = [int(re.search(r"epoch=(\d+)", line)[1]) for line in batches[name] if line.startswith("# ASYNC_NET_JOIN")]
+        if observed != list(epochs):
+            raise AssertionError("async joined scope belongs to the wrong case")
+    if proofs[-1] not in batches["async.net.cancel"] or proofs[-3] not in batches["async.net.cancel"] or proofs[-2] not in batches["async.net.rebind"]:
+        raise AssertionError("async timeout/cancellation/rebind evidence misplaced")
 
 
 def validate_network_suite(case, returncode, output, symbols=None):
@@ -1954,8 +2183,9 @@ def execute_suite(args, case, capture):
     transmitted = []
     network = case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES
     hardening = case in HARDENING_CASES
+    asynchronous = case in ASYNC_NETWORK_CASES
     ambiguous = case.endswith("ambiguous")
-    expected = [managed_hard_packet(sequence) for sequence in range(1, 5)] if hardening else [] if network and ambiguous else [network_packet(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)] if network else expected_tx_packets()
+    expected = async_network_tx_packets() if asynchronous else [managed_hard_packet(sequence) for sequence in range(1, 5)] if hardening else [] if network and ambiguous else [network_packet(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)] if network else expected_tx_packets()
     host, peer = socket.socketpair()
     with host, peer:
         command = qemu_command(args, case, capture, peer.fileno())
@@ -1965,7 +2195,7 @@ def execute_suite(args, case, capture):
         ) as process:
             peer.close()
             host.settimeout(min(args.timeout, 2))
-            protocols = (ManagedHardProtocol(host.sendall),) if hardening else (NetworkProtocol(host.sendall, ambiguous),) if network else (RXProtocol(host.sendall), HardProtocol(host.sendall))
+            protocols = (AsyncNetworkProtocol(host.sendall),) if asynchronous else (ManagedHardProtocol(host.sendall),) if hardening else (NetworkProtocol(host.sendall, ambiguous),) if network else (RXProtocol(host.sendall), HardProtocol(host.sendall))
             try:
                 with selectors.DefaultSelector() as selector:
                     selector.register(process.stdout, selectors.EVENT_READ, "serial")
@@ -2050,6 +2280,7 @@ def qemu_command(args, case, capture=None, net_fd=None):
             "driver-network-tests-disabled": "driver-network-tests",
             "driver-hardening-tests-disabled": "driver-hardening-tests",
             "async-core-tests-disabled": "async-core-tests",
+            "async-network-tests-disabled": "async-network-tests",
             "heap-oom": "heap-oom",
             "thread-stack-guard": "thread-stack-guard",
             **{case: case for case in FAULT_RESULTS},
@@ -2059,11 +2290,12 @@ def qemu_command(args, case, capture=None, net_fd=None):
             **RUNTIME_NETWORK_CASES,
             **HARDENING_CASES,
             **ASYNC_CORE_CASES,
+            **ASYNC_NETWORK_CASES,
             **{case: "driver-runtime-tests" for case in UNCLAIMED_CASES},
             **{case: mode for case, (mode, _) in LIVE_CASES.items() if mode is not None},
         }.get(case, "probe")
         command += ["-fw_cfg", f"name=opt/kutox/test-mode,string={mode}"]
-    if case not in ("missing", "smp-unsupported", "heap-oom", "thread-stack-guard", "guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled") and case not in FAULT_RESULTS and case not in KERNEL_SUITE_CASES and case not in RUNTIME_SUITE_CASES and case not in NETWORK_SUITE_CASES and case not in RUNTIME_NETWORK_CASES and case not in LIVE_CASES and case not in HARDENING_CASES and case not in ASYNC_CORE_CASES:
+    if case not in ("missing", "smp-unsupported", "heap-oom", "thread-stack-guard", "guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled", "async-network-tests-disabled") and case not in FAULT_RESULTS and case not in KERNEL_SUITE_CASES and case not in RUNTIME_SUITE_CASES and case not in NETWORK_SUITE_CASES and case not in RUNTIME_NETWORK_CASES and case not in LIVE_CASES and case not in HARDENING_CASES and case not in ASYNC_CORE_CASES and case not in ASYNC_NETWORK_CASES:
         model = "e1000e" if case == "unsupported" or case in UNCLAIMED_CASES else "e1000"
         mac = CASES[case][0] or "52:54:00:12:34:56"
         command += [
@@ -2075,7 +2307,7 @@ def qemu_command(args, case, capture=None, net_fd=None):
             "-netdev", "user,id=second,restrict=on",
             "-device", "e1000,netdev=second,mac=52:54:00:00:00:02",
         ]
-    if case in KERNEL_SUITE_CASES or case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES or case in HARDENING_CASES or case in LIVE_CASES and case != "driver-runtime-default-no-nic":
+    if case in KERNEL_SUITE_CASES or case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES or case in HARDENING_CASES or case in ASYNC_NETWORK_CASES or case in LIVE_CASES and case != "driver-runtime-default-no-nic":
         if net_fd is None or net_fd < 0:
             raise AssertionError("kernel suite requires an owned RX socket")
         root, leaf, parents = pci_layout(case)
@@ -2104,7 +2336,7 @@ def qemu_command(args, case, capture=None, net_fd=None):
 def run_case(args, case, index=0):
     log = args.build_dir / "test-logs" / f"{args.case}-{index}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
-    capture = log.with_suffix(".pcap") if case in KERNEL_SUITE_CASES or case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES or case in HARDENING_CASES else None
+    capture = log.with_suffix(".pcap") if case in KERNEL_SUITE_CASES or case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES or case in HARDENING_CASES or case in ASYNC_NETWORK_CASES else None
     if capture is not None:
         capture.unlink(missing_ok=True)
     command = qemu_command(args, case) if capture is None and case not in LIVE_CASES else None
@@ -2135,12 +2367,16 @@ def run_case(args, case, index=0):
                     expected = [managed_hard_packet(sequence) for sequence in range(1, 5)]
                 if case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES:
                     expected = [] if case.endswith("ambiguous") else [network_packet(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)]
+                if case in ASYNC_NETWORK_CASES:
+                    expected = async_network_tx_packets()
                 validate_tx_capture(stream.read(1024 * 1024 + 1), expected)
             symbols = runtime_symbols(getattr(args, "nm", "nm"))
             if case in HARDENING_CASES:
                 validate_managed_hardening(case, completed.returncode, output, symbols)
             elif case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES:
                 validate_network_suite(case, completed.returncode, output, symbols)
+            elif case in ASYNC_NETWORK_CASES:
+                validate_async_network(case, completed.returncode, output, symbols)
             else:
                 validate_linux_callbacks(output, symbols)
                 validate_native_drivers(output.splitlines(), case, symbols)

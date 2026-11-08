@@ -1,11 +1,15 @@
 //! Kernel-facing handles reserve native ownership only during each operation.
 
+use crate::cpu::X86Cpu;
 use crate::{kernel_runtime, serial, threads, time};
 use alloc::vec::Vec;
 use kutox::driver_registry::{DeviceHandle, DeviceState, MAX_DEVICES};
+use kutox::net_async_state::{SessionGate, SessionKey};
 pub use kutox::net_state::{Error, Frame, Info, TxStatus, TxTicket};
+use moss_libkernel::sync::spinlock::SpinLockIrq;
 
 static EVENT: threads::WaitQueue = threads::WaitQueue::new();
+static SESSION: SpinLockIrq<SessionGate, X86Cpu> = SpinLockIrq::new(SessionGate::new());
 pub const METADATA_BYTES: usize = core::mem::size_of::<threads::WaitQueue>()
     + core::mem::size_of::<Handle>()
     + core::mem::size_of::<Vec<Handle>>()
@@ -13,6 +17,8 @@ pub const METADATA_BYTES: usize = core::mem::size_of::<threads::WaitQueue>()
     + core::mem::size_of::<TxTicket>()
     + core::mem::size_of::<TxStatus>()
     + core::mem::size_of::<Frame>();
+pub const SESSION_METADATA_BYTES: usize = core::mem::size_of::<SpinLockIrq<SessionGate, X86Cpu>>()
+    + core::mem::size_of::<PacketSession>();
 
 #[unsafe(no_mangle)]
 pub extern "C" fn kutox_net_wake() {
@@ -24,6 +30,44 @@ pub fn wake() {
         .notify_without_switch(true)
         .expect("native network notification");
     kernel_runtime::source_progress();
+}
+
+pub(crate) fn packet_access(source: u64) -> Result<(), Error> {
+    let owner = threads::current_task_handle().map_err(|error| Error::from_code(error as i32))?;
+    SESSION.lock_save_irq().access(source, owner.ticket())
+}
+
+pub(crate) fn revoke_source(source: u64) {
+    SESSION.lock_save_irq().close_source(source);
+}
+
+pub(crate) fn session_open(key: SessionKey) -> bool {
+    SESSION.lock_save_irq().is_open(key)
+}
+
+pub(crate) struct PacketSession {
+    key: SessionKey,
+    device: Handle,
+}
+impl PacketSession {
+    pub(crate) fn key(&self) -> SessionKey {
+        self.key
+    }
+    pub(crate) fn device(&self) -> Handle {
+        self.device
+    }
+    pub(crate) fn retired(&self) -> bool {
+        // MANAGED_TICKET changes only after original unbind has returned.
+        crate::linux_driver::source_ticket() != self.key.source()
+    }
+}
+impl Drop for PacketSession {
+    fn drop(&mut self) {
+        SESSION
+            .lock_save_irq()
+            .release(self.key)
+            .expect("exclusive packet session release");
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -72,6 +116,22 @@ impl Handle {
     }
     pub fn submit(self, frame: &Frame) -> Result<TxTicket, Error> {
         self.call("submit", |device| device.submit(frame))
+    }
+    pub(crate) fn submit_bytes(self, bytes: &[u8]) -> Result<TxTicket, Error> {
+        self.call("submit_bytes", |device| device.submit_bytes(bytes))
+    }
+    pub(crate) fn receive_into(self, output: &mut [u8; 1514]) -> Result<usize, Error> {
+        self.call("receive_into", |device| device.receive_into(output))
+    }
+    pub(crate) fn claim_session(self) -> Result<PacketSession, Error> {
+        self.info()?;
+        let source = crate::linux_driver::source_ticket();
+        let owner =
+            threads::current_task_handle().map_err(|error| Error::from_code(error as i32))?;
+        let key = SESSION
+            .lock_save_irq()
+            .claim(source, self.identity(), owner.ticket())?;
+        Ok(PacketSession { key, device: self })
     }
     pub fn progress(self, ticket: TxTicket) -> Result<TxStatus, Error> {
         self.call("progress", |device| device.progress(ticket))

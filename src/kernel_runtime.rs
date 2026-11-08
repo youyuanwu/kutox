@@ -103,6 +103,13 @@ pub(crate) fn source_progress() {
         CONTROL.probe_pending.store(true, Ordering::Release);
         notify(&CONTROL.event).expect("source readiness notification");
     }
+    crate::net_async::source_progress();
+}
+
+pub(crate) fn current_handle() -> Handle {
+    Handle {
+        epoch: CONTROL.epoch.load(Ordering::Acquire),
+    }
 }
 
 pub(crate) fn async_failed(code: i32) {
@@ -363,6 +370,7 @@ pub const METADATA_BYTES: usize = core::mem::size_of::<Resources<'static>>()
     + irq::APIC_METADATA_BYTES
     + linux_driver::METADATA_BYTES
     + crate::net_device::METADATA_BYTES
+    + crate::net_device::SESSION_METADATA_BYTES
     + core::mem::size_of::<crate::driver_platform::Owner>()
     + core::mem::size_of::<linux_irq::BoundIrq<'static, 'static, 'static>>();
 const _: () =
@@ -388,6 +396,7 @@ impl<'a> Resources<'a> {
     ) -> Result<Self, Failure> {
         if !threads::is_quiescent()
             || !crate::async_runtime::quiescent()
+            || !crate::net_async::quiescent()
             || !irq::is_quiescent()
             || !linux_deferred::quiescent()
             || !linux_irq::quiescent()
@@ -457,11 +466,15 @@ impl<'a> Resources<'a> {
     }
 
     pub fn run(&self, clients: Clients) -> Result<threads::RunStats, Failure> {
-        self.run_inner(clients, false).inspect_err(report)
+        self.run_inner(clients, false, false).inspect_err(report)
     }
 
     pub fn run_async(&self, clients: Clients) -> Result<threads::RunStats, Failure> {
-        self.run_inner(clients, true).inspect_err(report)
+        self.run_inner(clients, true, false).inspect_err(report)
+    }
+
+    pub fn run_network(&self, clients: Clients) -> Result<threads::RunStats, Failure> {
+        self.run_inner(clients, true, true).inspect_err(report)
     }
 
     #[cfg(feature = "guest-tests")]
@@ -477,6 +490,7 @@ impl<'a> Resources<'a> {
         &self,
         clients: Clients,
         asynchronous: bool,
+        network: bool,
     ) -> Result<threads::RunStats, Failure> {
         if asynchronous && clients.entries.iter().flatten().count() > 1 {
             return Err(Failure::new("runtime_async_client_capacity", -203));
@@ -522,6 +536,7 @@ impl<'a> Resources<'a> {
         let mut scheduler = threads::Scheduler::new(&self.space);
         let workers = linux_deferred::start_owned(&mut scheduler)?;
         let mut asynchronous_service = None;
+        let mut network_service = None;
         let admission = (|| {
             checkpoint(Stage::Workers, self.boot.mode)?;
             // The shared owner and client entries stay in this scope until every stack joins.
@@ -530,12 +545,18 @@ impl<'a> Resources<'a> {
             if asynchronous {
                 asynchronous_service = Some(crate::async_runtime::start_owned(&mut scheduler)?);
             }
+            if network {
+                network_service = Some(crate::net_async::start_owned(&mut scheduler)?);
+            }
             for entry in clients.entries.iter().flatten() {
                 scheduler.spawn(client_entry, entry as *const Client as usize)?;
             }
             checkpoint(Stage::Clients, self.boot.mode)
         })();
         if let Err(error) = admission {
+            if let Some(service) = &network_service {
+                service.rollback(&mut scheduler)?;
+            }
             if let Some(service) = &asynchronous_service {
                 service.rollback(&mut scheduler)?;
             }
@@ -639,6 +660,7 @@ fn initialize(resources: &Resources<'_>) -> Result<(), Failure> {
 }
 
 fn shutdown() -> Result<(), Failure> {
+    crate::net_async::begin_stop();
     crate::async_runtime::begin_stop()
         .map_err(|error| Failure::new("runtime_async_stop", error.code()))?;
     let phase = MANAGER
@@ -655,6 +677,7 @@ fn shutdown() -> Result<(), Failure> {
     }
     crate::async_runtime::join()
         .map_err(|error| Failure::new("runtime_async_join", error.code()))?;
+    crate::net_async::join()?;
     linux_deferred::stop_and_join()
 }
 

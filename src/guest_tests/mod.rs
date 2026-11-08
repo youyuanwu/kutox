@@ -1,5 +1,6 @@
 //! Guest-only acceptance fixtures; not production driver code.
 
+pub(crate) mod async_network;
 mod async_runtime;
 mod device_irq;
 mod driver_services;
@@ -289,6 +290,7 @@ pub fn run(boot: &BootInfo) -> ! {
         || X86Cpu::irq_lock_depth() != 0
         || !threads::is_quiescent()
         || !crate::async_runtime::quiescent()
+        || !crate::net_async::quiescent()
         || !irq::is_quiescent()
         || !completion::tests::quiescent()
         || !threads::irq_tests::quiescent()
@@ -346,6 +348,8 @@ pub fn run(boot: &BootInfo) -> ! {
         crate::linux_driver::hardening::TESTS
     } else if boot.mode == BootMode::AsyncCoreTests {
         async_runtime::TESTS
+    } else if boot.mode == BootMode::AsyncNetworkTests {
+        async_network::TESTS
     } else {
         TESTS
     };
@@ -384,6 +388,7 @@ pub fn run(boot: &BootInfo) -> ! {
             || X86Cpu::irq_lock_depth() != 0
             || !threads::is_quiescent()
             || !crate::async_runtime::quiescent()
+            || !crate::net_async::quiescent()
             || !irq::is_quiescent()
             || !completion::tests::quiescent()
             || !threads::irq_tests::quiescent()

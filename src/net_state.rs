@@ -59,7 +59,7 @@ impl Frame {
         Ok(Self { bytes })
     }
 
-    fn validate(bytes: &[u8]) -> Result<(), Error> {
+    pub fn validate(bytes: &[u8]) -> Result<(), Error> {
         if !(14..=MAX_FRAME).contains(&bytes.len()) {
             return Err(Error::Unsupported);
         }
@@ -141,10 +141,12 @@ pub trait NetworkDevice: Send + Sync {
     fn info(&self) -> Result<Info, Error>;
     /// Copies into a retained skb; the caller keeps its frame even on failure.
     fn submit(&self, frame: &Frame) -> Result<TxTicket, Error>;
+    fn submit_bytes(&self, bytes: &[u8]) -> Result<TxTicket, Error>;
     fn progress(&self, ticket: TxTicket) -> Result<TxStatus, Error>;
     /// Only a completed or consumed-drop receipt may be released by a client.
     fn finish(&self, ticket: TxTicket) -> Result<(), Error>;
     fn receive(&self) -> Result<Option<Frame>, Error>;
+    fn receive_into(&self, output: &mut [u8; MAX_FRAME]) -> Result<usize, Error>;
 }
 
 #[cfg(test)]
