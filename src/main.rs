@@ -131,6 +131,13 @@ mod net_async;
     )
 )]
 mod net_device;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Native stack diagnostics are available to kernel clients"
+    )
+)]
 mod net_stack;
 #[cfg_attr(
     not(feature = "guest-tests"),
@@ -258,6 +265,7 @@ fn probe() -> Result<BootOutcome, Failure> {
             | BootMode::DriverHardeningTests
             | BootMode::AsyncCoreTests
             | BootMode::AsyncNetworkTests
+            | BootMode::NetworkTests
     ) {
         guest_tests::run(&boot);
     }

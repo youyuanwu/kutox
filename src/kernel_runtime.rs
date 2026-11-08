@@ -383,6 +383,7 @@ impl<'a> Resources<'a> {
             kutox::fw_cfg::BootMode::Run
                 | kutox::fw_cfg::BootMode::DriverRun
                 | kutox::fw_cfg::BootMode::NetworkRun
+                | kutox::fw_cfg::BootMode::NetworkTests
                 | kutox::fw_cfg::BootMode::DriverRuntimeTests
         )
     }

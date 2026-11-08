@@ -17,6 +17,10 @@ and [static configuration](src/network_config.rs) are kutox code. smoltcp owns
 ARP/IP/ICMP packet processing; unchanged Linux e1000 still owns hardware TX/RX.
 This follows pinned Moss's declared stack baseline, not a copy of its complete
 socket, networking syscall or process-oriented service modules.
+The [stdlib packet peer](scripts/network_packets.py), bounded production
+callback/status records and directed guest acceptance are also kutox code.
+They observe unchanged Linux and smoltcp implementations; no packet algorithm
+or additional upstream networking/syscall source is copied.
 
 ## Moss kernel primitives
 

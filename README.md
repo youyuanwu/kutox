@@ -121,7 +121,10 @@ The bounded executor, async event/timer/yield core and owned Ethernet broker
 are implemented and guest-tested through explicit service paths, including
 Linux-backed timeout/cancellation and rebind. Explicit `network-run` now adds a
 bounded smoltcp ARP/static-IPv4/ICMP echo service in both build profiles. Current
-normal boot and explicit `driver-run` remain driver-only until full acceptance.
+normal boot and explicit `driver-run` remain driver-only until boot migration.
+The separate IP acceptance now passes exact ARP/16 echoes per epoch, seven
+directed protocol rejections and balanced shutdown across two source lifetimes.
+Normal network boot is the next phase.
 
 ## Requirements
 
@@ -230,6 +233,7 @@ The runner selects a mode at launch through QEMU's `fw_cfg` file
 | `driver-runtime-tests` | Select acceptance from real PCI inventory: five no-NIC lifetime tests, managed packet clients for e1000, or unclaimed-runtime acceptance for an unsupported NIC. |
 | `driver-network-tests` | Exercise the managed e1000 runtime with exact packets, retained clients, typed errors and joined shutdown; reject two matching NICs before probing. |
 | `driver-hardening-tests` | Run five bounded manager/failure/FIFO/concurrent-consumer/pending-source teardown cases through the managed runtime. |
+| `network-tests` | Run separate configuration, exact ARP/static IPv4/ICMP and joined shutdown acceptance through the production stack and Linux packet callbacks. |
 | `heap-oom` | Attempt an oversized `Vec` allocation and verify Rust's fatal allocation-failure panic. |
 | `thread-stack-guard` | Read a thread's unmapped lower guard and verify the hardware page fault came from its mapped stack. |
 | `page-fault` | Read a deliberately unmapped address and verify the fatal exception diagnostics. |
@@ -382,6 +386,25 @@ These smoke cases prove production mode selection, bounded storage and sustained
 readiness or unclaimed idle, not the later full ARP/ICMP guest acceptance.
 Restricted QEMU user networking does not make the guest directly host-pingable;
 packet acceptance uses an owned local Ethernet socket peer instead.
+
+### Exact IPv4 guest acceptance
+
+```sh
+ctest --test-dir build --output-on-failure --parallel 1 \
+  -R '^(network-tests|network-tests-low-memory|network-tests-bridge|network-tests-nested-low-memory)$'
+```
+
+The [stdlib peer](scripts/network_packets.py) sends ARP and ICMP over an owned
+local Ethernet socket; no TAP, host interface or external network is used.
+Each of two epochs returns an ARP reply and 16 exact echoes, with payload sizes
+0/32/64/512/1472 repeated three times and one final zero-payload echo.
+Seven rejected inputs per epoch cover wrong destination, checksum, malformed/
+truncated and fragmented IPv4. Exact bytes are checked on the socket and TX PCAP.
+Bounded production callback records prove original Linux IRQ/NAPI and packet
+ownership without guest-only source tracing. Retained CPU copies, stale handles
+and exact frame/heap/future/task cleanup are checked separately.
+The guest-free image rejects `network-tests` early; production `network-run`
+remains available. Normal `run`/absent boot is still driver-only.
 
 ### Managed failure and teardown hardening
 

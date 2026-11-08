@@ -2,15 +2,60 @@
 
 use crate::{Failure, async_runtime, async_sync, net_async, serial, time};
 use alloc::{alloc::alloc, boxed::Box};
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::{alloc::Layout, future::poll_fn, mem::size_of_val, pin::Pin, task::Poll};
 use kutox::{
     net_stack_state::{self, Adapter, Admission, TxBacking},
     network_config::Config,
 };
+use moss_libkernel::sync::spinlock::SpinLockIrq;
 use smoltcp::{
     iface::{Interface, PollIngressSingleResult, SocketSet, SocketStorage},
     time::Instant,
 };
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Snapshot {
+    pub identity: u64,
+    pub rx: u64,
+    pub arp: u64,
+    pub echo: u64,
+    pub rejected: u64,
+    pub tx: u64,
+    pub ready: bool,
+}
+static STATUS: SpinLockIrq<Snapshot, crate::cpu::X86Cpu> = SpinLockIrq::new(Snapshot {
+    identity: 0,
+    rx: 0,
+    arp: 0,
+    echo: 0,
+    rejected: 0,
+    tx: 0,
+    ready: false,
+});
+static ACTIVE: AtomicBool = AtomicBool::new(false);
+pub const METADATA_BYTES: usize = core::mem::size_of_val(&STATUS) + core::mem::size_of_val(&ACTIVE);
+
+pub fn snapshot() -> Snapshot {
+    *STATUS.lock_save_irq()
+}
+fn publish(state: &State, ready: bool) {
+    *STATUS.lock_save_irq() = Snapshot {
+        identity: state.identity,
+        rx: state.rx,
+        arp: state.arp,
+        echo: state.echo,
+        rejected: state.rejected,
+        tx: state.tx,
+        ready,
+    };
+}
+struct Claim;
+impl Drop for Claim {
+    fn drop(&mut self) {
+        ACTIVE.store(false, Ordering::Release);
+    }
+}
 
 impl net_stack_state::PacketBytes for net_async::Packet {
     fn bytes(&self) -> &[u8] {
@@ -29,6 +74,8 @@ impl TxBacking for net_async::TxReservation {
 }
 
 struct State {
+    _claim: Claim,
+    identity: u64,
     interface: Option<Interface>,
     config: Config,
     mac: [u8; 6],
@@ -47,6 +94,7 @@ const RX_PER_TURN: usize = 8;
 
 impl Drop for State {
     fn drop(&mut self) {
+        publish(self, false);
         serial::print(format_args!(
             "# NETWORK_STACK_STOP rx={} arp={} echo={} rejected={} tx={}\n",
             self.rx, self.arp, self.echo, self.rejected, self.tx,
@@ -75,6 +123,20 @@ fn now() -> Result<Instant, async_runtime::TaskFailure> {
 
 #[unsafe(no_mangle)]
 pub fn kutox_ipv4_service(config: Config) -> Result<(), Failure> {
+    start(config).map(drop)
+}
+
+pub(crate) fn start(config: Config) -> Result<async_runtime::Task, Failure> {
+    crate::threads::check_thread_context()
+        .map_err(|error| Failure::new("network_stack_context", error as i32))?;
+    if ACTIVE
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err(Failure::new("network_stack_busy", -16));
+    }
+    let claim = Claim;
+    *STATUS.lock_save_irq() = Snapshot::default();
     let before = crate::heap::global().stats();
     let pointer = unsafe { alloc(Layout::new::<State>()).cast::<State>() };
     if pointer.is_null() {
@@ -82,6 +144,8 @@ pub fn kutox_ipv4_service(config: Config) -> Result<(), Failure> {
     }
     let state = unsafe {
         pointer.write(State {
+            _claim: claim,
+            identity: 0,
             interface: None,
             config,
             mac: [0; 6],
@@ -104,6 +168,7 @@ pub fn kutox_ipv4_service(config: Config) -> Result<(), Failure> {
         + (admitted.large_pages - before.large_pages) * moss_libkernel::memory::PAGE_SIZE;
     let charged = async_runtime::METADATA_BYTES
         + net_async::METADATA_BYTES
+        + METADATA_BYTES
         + net_async::PACKET_STORAGE_BYTES
         + 2 * async_runtime::STACK_BYTES
         + heap_bytes;
@@ -117,11 +182,10 @@ pub fn kutox_ipv4_service(config: Config) -> Result<(), Failure> {
         admitted.large_pages - after.large_pages,
         charged,
     ));
-    drop(task);
     if charged > 128 * 1024 {
         return Err(Failure::new("network_stack_budget", -271));
     }
-    Ok(())
+    Ok(task)
 }
 
 async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
@@ -129,6 +193,7 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
     let session = net_async::session()
         .await
         .map_err(|error| failure("session", error))?;
+    state.identity = session.identity();
     let info = session.info().map_err(|error| failure("info", error))?;
     if info.mtu != 1500 {
         return Err(failure("mtu", net_async::Error::Unsupported));
@@ -175,6 +240,7 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
                 ));
                 reported_ready = false;
                 waiting_link = true;
+                publish(&state, false);
             }
             changed.await.map_err(async_runtime::Error::task_failure)?;
             continue;
@@ -193,6 +259,7 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
             ));
             reported_ready = true;
             waiting_link = false;
+            publish(&state, true);
         }
         if rx.is_none() {
             let timestamp = now()?;
@@ -267,6 +334,8 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
             state.config,
             state.mac,
         );
+        #[cfg(feature = "guest-tests")]
+        crate::guest_tests::network_stack::retain(rx.as_ref().expect("staged RX"));
         state.rx += 1;
         match admission {
             Admission::Arp => state.arp += 1,
@@ -307,6 +376,7 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
                 .map_err(|error| failure("transmit", error))?;
             state.tx += 1;
         }
+        publish(&state, true);
         processed += 1;
         if processed == RX_PER_TURN {
             processed = 0;

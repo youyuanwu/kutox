@@ -2,7 +2,7 @@
 
 ## Status, scope and outcome
 
-This is a **design with Phases 1-4 implemented; normal network boot is not enabled**.
+This is a **design with Phases 1-5 implemented; normal network boot is not enabled**.
 The baseline is merged driver integration at `ac637ab` (PR #7). Current normal
 boot retains Linux e1000 and kernel workers but starts no application clients
 or IP stack; see the [current architecture](rust-kernel-linux-drivers.md#moss-style-driver-infrastructure).
@@ -16,6 +16,9 @@ The [owned Ethernet broker](../src/net_async.rs) and its
 exchange, timeout/cancellation and rebind acceptance. Phase 4 adds a bounded
 [smoltcp token adapter](../src/net_stack_state.rs), [protocol future](../src/net_stack.rs)
 and [static CIDR configuration](../src/network_config.rs) in explicit `network-run`.
+Phase 5 proves exact ARP/ICMP, rejection and balanced epochs with a separate
+[guest fixture](../src/guest_tests/network_stack.rs) and
+[isolated stdlib peer](../scripts/network_packets.py).
 Normal boot is
 unchanged: it does not yet activate the executor or an IP stack.
 
@@ -375,12 +378,14 @@ packet/credit/link events and any necessary stack deadline, and does not empty-p
 The selected empty-socket/IPv4-only profile currently has no recurring stack
 deadline. Link loss pauses new offers without certifying source removal.
 
-Measured on the selected x86_64 profile: interface/counters state is 392 bytes,
+Measured on the selected x86_64 profile after Phase 5 diagnostics: interface/
+counters state is 400 bytes,
 the admitted protocol future is 608 bytes, and each causes one actual 16-KiB
-slab reservation. The new-service charge is **104,203 bytes**: executor/broker
-metadata 5,899 + packet arena 32,768 + two added guarded stacks 32,768 + those
+slab reservation. The new-service charge is **104,268 bytes**: executor/broker/
+stack-status metadata 5,964 + packet arena 32,768 + two added guarded stacks 32,768 + those
 two slabs 32,768. Admission checks the 128-KiB ceiling using real heap deltas,
-not just requested object sizes. Driver metadata remains 60,473 bytes.
+not just requested object sizes. Driver metadata is 62,489 bytes, including the
+2,016-byte bounded production callback table added for source proof.
 These measurements cover the built-in service, not arbitrary application
 captures or the final hardening workload.
 
@@ -397,7 +402,50 @@ Host tests validate actual smoltcp ARP and echo replies at payloads
 unused token release and callback-once/error propagation. Production smoke
 tests require sustained real readiness at 128/32 MiB, explicit no/unsupported
 NIC idle and both ELF profiles. Full isolated multi-epoch ARP/ICMP guest
-acceptance and migration of normal boot remain Phases 5-6.
+acceptance now passes; migration of normal boot remains Phase 6.
+
+### As-built Phase 5 acceptance and diagnostics
+
+The separate `network-tests` table contains `net.configuration`, `net.exchange`
+and `net.shutdown`. Root/128 MiB, root/32 MiB, one bridge/128 MiB and nested
+bridges/32 MiB all use the same ISO and an owned socket/PCAP peer, with host/CTest
+deadlines of 60/65 seconds.
+
+Each of two runtime epochs resolves ARP, then handles 16 serial echoes: payloads
+0/32/64/512/1472 repeated three times, followed by another zero-payload echo.
+Seven directed inputs per epoch test wrong IPv4 destination, bad IPv4/ICMP
+checksums, truncated total length, wrong version and both fragmentation forms.
+They are delivered by Linux and explicitly counted as protocol rejections,
+without any unexpected reply. Socket and TX PCAP validate exact addresses,
+IP/ICMP identifiers/sequence/length/checksums, payload, minimum padding and no FCS.
+Per epoch the original source accounts for 17 TX/7,044 bytes and 24 RX/7,464 bytes.
+
+The production callback table stores 50 checked counters and last invocation
+ordinals/function/object/result integers. It contains no owning driver pointers,
+does not reset/reuse ordinals, and updates only bounded metadata under an IRQ
+lock. The fixture reads deltas without enabling guest-only Linux tracing.
+Linked original callback identities and ordinals prove RX ingress/free,
+IRQ/NAPI, TX map/publish/unmap/consume/account/finish and original close/remove.
+The ELF profile also requires actual smoltcp Ethernet processing and the
+production callback table in both builds.
+
+The protocol publishes one copy-only status snapshot and rejects concurrent
+service admission. Joined cancellation acknowledges payload destruction.
+Each epoch retains a CPU-copied ARP frame through actual source removal, checks
+all 60 bytes, and releases it without changing source ownership. Old session/
+runtime handles are rejected during the next epoch. Frame/heap, copied packets,
+requests, futures, tasks and workers then return exactly to baseline.
+The original 59-case kernel and 539-TX/304-hard-RX ledgers remain separate and
+unchanged; this table neither replaces nor inflates them.
+
+```sh
+ctest --test-dir build --output-on-failure --parallel 1 \
+  -R '^(network-tests|network-tests-low-memory|network-tests-bridge|network-tests-nested-low-memory)$'
+```
+
+An OFF image rejects `network-tests` before admission while retaining the
+production stack. This is not direct host ping through restricted QEMU user
+networking; the stdlib peer is an isolated test endpoint, not guest protocol code.
 
 | Mode/configuration | Intended behavior |
 | --- | --- |

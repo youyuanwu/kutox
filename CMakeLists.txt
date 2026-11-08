@@ -151,6 +151,14 @@ foreach(case IN ITEMS async-network-tests async-network-tests-low-memory async-n
     )
     set_tests_properties("${case}" PROPERTIES TIMEOUT 40 RUN_SERIAL TRUE)
 endforeach()
+foreach(case IN ITEMS network-tests network-tests-low-memory network-tests-bridge network-tests-nested-low-memory)
+    add_test(NAME "${case}"
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --case "${case}" --build-dir "${CMAKE_BINARY_DIR}"
+            --qemu "${QEMU}" --nm "${NM}" --timeout 60
+    )
+    set_tests_properties("${case}" PROPERTIES TIMEOUT 65 RUN_SERIAL TRUE)
+endforeach()
 foreach(case IN ITEMS driver-network-tests driver-network-tests-low-memory driver-network-tests-ambiguous)
     add_test(NAME "${case}"
         COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
@@ -204,6 +212,12 @@ else()
             --qemu "${QEMU}" --timeout 35
     )
     set_tests_properties(async-network-tests-disabled PROPERTIES TIMEOUT 40 RUN_SERIAL TRUE)
+    add_test(NAME network-tests-disabled
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --case network-tests-disabled --build-dir "${CMAKE_BINARY_DIR}"
+            --qemu "${QEMU}" --timeout 20
+    )
+    set_tests_properties(network-tests-disabled PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
 endif()
 add_test(NAME harness-unit
     COMMAND ${Python3_EXECUTABLE} -m unittest discover -s tests -v

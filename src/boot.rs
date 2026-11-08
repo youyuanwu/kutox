@@ -79,7 +79,7 @@ pub fn collect() -> Result<BootInfo, Failure> {
     let mode = BootMode::selected(configured);
     mode.validate_build()
         .map_err(|error| Failure::new("boot_mode", error as i32))?;
-    let ipv4 = if mode == BootMode::NetworkRun {
+    let ipv4 = if matches!(mode, BootMode::NetworkRun | BootMode::NetworkTests) {
         fw_cfg::read_ipv4(|selector| io::write16(0x510, selector), || io::read8(0x511))
             .map_err(|error| Failure::new("boot_ipv4", error as i32))?
     } else {

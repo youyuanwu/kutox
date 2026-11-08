@@ -7,6 +7,48 @@ static TRACING: AtomicBool = AtomicBool::new(false);
 static BOOT_REPORTING: AtomicBool = AtomicBool::new(false);
 static CONTROL: crate::mutex::Mutex<()> = crate::mutex::Mutex::new(());
 
+#[derive(Clone, Copy, Default)]
+pub struct CallbackEntry {
+    pub count: u64,
+    pub ordinal: u64,
+    pub function: usize,
+    pub object: usize,
+    pub result: i32,
+}
+
+#[derive(Clone, Copy)]
+pub struct CallbackProof {
+    ordinal: u64,
+    entries: [CallbackEntry; 50],
+}
+const EMPTY_ENTRY: CallbackEntry = CallbackEntry {
+    count: 0,
+    ordinal: 0,
+    function: 0,
+    object: 0,
+    result: 0,
+};
+static CALLBACKS: moss_libkernel::sync::spinlock::SpinLockIrq<CallbackProof, crate::cpu::X86Cpu> =
+    moss_libkernel::sync::spinlock::SpinLockIrq::new(CallbackProof {
+        ordinal: 0,
+        entries: [EMPTY_ENTRY; 50],
+    });
+
+pub fn callback_proof() -> CallbackProof {
+    *CALLBACKS.lock_save_irq()
+}
+
+impl CallbackProof {
+    pub fn delta(&self, before: &Self, event: usize) -> Option<CallbackEntry> {
+        let entry = self.entries[event];
+        let count = entry
+            .count
+            .checked_sub(before.entries[event].count)
+            .expect("monotonic callback proof");
+        (count != 0).then_some(CallbackEntry { count, ..entry })
+    }
+}
+
 pub(crate) fn control(operation: &str, call: impl FnOnce() -> i32) -> i32 {
     if let Err(error) = threads::check_thread_context() {
         serial::print(format_args!(
@@ -66,6 +108,26 @@ extern "C" fn kutox_driver_tracing() -> bool {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn kutox_driver_trace(event: u32, function: usize, object: usize, result: i32) {
+    {
+        let mut proof = CALLBACKS.lock_save_irq();
+        proof.ordinal = proof
+            .ordinal
+            .checked_add(1)
+            .expect("callback ordinal exhausted");
+        let ordinal = proof.ordinal;
+        let entry = proof
+            .entries
+            .get_mut(event as usize)
+            .expect("known callback event");
+        entry.count = entry
+            .count
+            .checked_add(1)
+            .expect("callback count exhausted");
+        entry.ordinal = ordinal;
+        entry.function = function;
+        entry.object = object;
+        entry.result = result;
+    }
     if tracing() {
         serial::print(format_args!(
             "# LINUX_CALLBACK event={event} function={function:x} object={object:x} result={result}\n"
@@ -185,6 +247,7 @@ pub(crate) fn source_ticket() -> u64 {
 
 pub const METADATA_BYTES: usize = core::mem::size_of::<crate::mutex::Mutex<Option<ManagedState>>>()
     + core::mem::size_of::<ManagedDevice>()
+    + core::mem::size_of_val(&CALLBACKS)
     + 17;
 
 pub fn managed_quiescent() -> bool {

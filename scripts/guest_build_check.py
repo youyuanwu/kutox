@@ -23,6 +23,7 @@ GUEST_SYMBOLS = {
     "kutox_guest_managed_hardening",
     "kutox_guest_async_actor",
     "kutox_guest_async_network",
+    "kutox_guest_network_stack",
 } | NATIVE_INIT_SYMBOLS
 RUNTIME_SYMBOLS = {
     "e1000_probe", "e1000_open", "e1000_close", "e1000_xmit_frame",
@@ -33,6 +34,8 @@ RUNTIME_SYMBOLS = {
     "kutox_async_executor",
     "kutox_packet_broker",
     "kutox_ipv4_service",
+    "<smoltcp::iface::interface::InterfaceInner>::process_ethernet",
+    "kutox::linux_driver::CALLBACKS",
 }
 GUEST_ONLY_PATTERN = re.compile(
     r"::(?:guest_tests|tests|wait_tests|irq_tests)::|"
