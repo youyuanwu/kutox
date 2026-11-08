@@ -47,6 +47,7 @@ pub struct BootInfo {
     pub memory_map: &'static [&'static limine::memory_map::Entry],
     pub mode: BootMode,
     pub mode_configured: bool,
+    pub ipv4: kutox::network_config::Config,
     pub rsdp_physical: Option<u64>,
 }
 
@@ -78,6 +79,12 @@ pub fn collect() -> Result<BootInfo, Failure> {
     let mode = BootMode::selected(configured);
     mode.validate_build()
         .map_err(|error| Failure::new("boot_mode", error as i32))?;
+    let ipv4 = if mode == BootMode::NetworkRun {
+        fw_cfg::read_ipv4(|selector| io::write16(0x510, selector), || io::read8(0x511))
+            .map_err(|error| Failure::new("boot_ipv4", error as i32))?
+    } else {
+        Default::default()
+    };
     unsafe extern "C" {
         static _kernel_start: u8;
         static _kernel_end: u8;
@@ -100,6 +107,7 @@ pub fn collect() -> Result<BootInfo, Failure> {
             .entries(),
         mode,
         mode_configured: configured.is_some(),
+        ipv4,
         rsdp_physical: RSDP
             .get_response()
             .map(|response| response.address() as u64),

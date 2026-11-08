@@ -17,6 +17,15 @@ guest-tests = []
 [dependencies]
 limine = "0.5"
 moss-libkernel = { path = "third_party/moss-libkernel" }
+smoltcp = { version = "=0.13.0", default-features = false, features = [
+    "medium-ethernet",
+    "proto-ipv4",
+    "auto-icmp-echo-reply",
+    "socket-icmp",
+    "iface-max-addr-count-1",
+    "iface-neighbor-cache-count-8",
+    "iface-max-route-count-1",
+] }
 x86_64 = { version = "0.15", default-features = false, features = ["instructions"] }
 
 [build-dependencies]

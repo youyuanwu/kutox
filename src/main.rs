@@ -131,6 +131,7 @@ mod net_async;
     )
 )]
 mod net_device;
+mod net_stack;
 #[cfg_attr(
     not(feature = "guest-tests"),
     allow(
@@ -304,10 +305,17 @@ fn probe() -> Result<BootOutcome, Failure> {
     );
     let ticks = time::calibrate()?;
     println!("TSC ticks_per_us={ticks}");
-    if boot.mode == BootMode::Run {
+    if matches!(
+        boot.mode,
+        BootMode::Run | BootMode::DriverRun | BootMode::NetworkRun
+    ) {
         linux_driver::report_boot_callbacks(true);
         let resources = kernel_runtime::Resources::start(&boot, allocator)?;
-        resources.run(kernel_runtime::Clients::new())?;
+        if boot.mode == BootMode::NetworkRun {
+            resources.run_network(kernel_runtime::Clients::new())?;
+        } else {
+            resources.run(kernel_runtime::Clients::new())?;
+        }
         linux_driver::report_boot_callbacks(false);
         return Ok(BootOutcome::RuntimeStopped);
     }

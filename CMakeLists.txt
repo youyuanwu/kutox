@@ -73,7 +73,8 @@ add_test(NAME kernel-build-profile
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/guest_build_check.py"
         --kernel "${KERNEL}" --nm "${NM}" --guest-tests "${GUEST_TEST_PROFILE}"
 )
-foreach(case IN ITEMS driver-runtime-default driver-runtime-run driver-runtime-default-no-nic driver-runtime-default-unsupported)
+foreach(case IN ITEMS driver-runtime-default driver-runtime-run driver-runtime-driver-run driver-runtime-default-no-nic driver-runtime-default-unsupported
+        network-run network-run-low-memory network-run-no-nic network-run-unsupported)
     add_test(NAME "${case}"
         COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
             --case "${case}" --build-dir "${CMAKE_BINARY_DIR}"

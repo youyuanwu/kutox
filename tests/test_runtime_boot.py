@@ -40,7 +40,7 @@ def ready(epoch, identity, case):
 
 def live_log(case="driver-runtime-default"):
     configured, bound = runner.LIVE_CASES[case]
-    lines = boot_log("", evidence="", mode="run", source="fw_cfg" if configured else "default").splitlines()
+    lines = boot_log("", evidence="", mode=configured or "run", source="fw_cfg" if configured else "default").splitlines()
     if bound:
         lines += path_lines(case)
         lines += [
@@ -50,6 +50,17 @@ def live_log(case="driver-runtime-default"):
     lines.append(summary(1, 5 if case.endswith("no-nic") else 6, int(bound)))
     if bound:
         lines.append(ready(1, 6, case))
+    if configured == "network-run":
+        lines += [
+            "# NETWORK_STACK_STORAGE state=512 future=512 added_slabs=1 added_pages=0 future_slabs=1 future_pages=0 charged=104203 stack_limit=5 rx_budget=8",
+            "# NETWORK_STACK_WAIT state=source",
+        ]
+        if bound:
+            lines += [
+                "# NETWORK_STACK_CONFIGURED identity=6 cidr=10.0.2.15/24 mtu=1500",
+                "# NETWORK_STACK_WAIT state=link identity=6",
+                "# NETWORK_STACK_READY identity=6 mac=52:54:00:12:34:56 cidr=10.0.2.15/24 mtu=1500",
+            ]
     return "\n".join(lines) + "\n"
 
 
@@ -74,6 +85,23 @@ def runtime_network_log(case):
 
 
 class RuntimeBootTests(unittest.TestCase):
+    def test_network_mode_requires_configured_real_source_and_bounded_storage(self):
+        output = live_log("network-run")
+        for before, after in [
+            ("future=512", "future=2049"), ("state=512", "state=32769"),
+            ("added_slabs=1", "added_slabs=2"), ("added_pages=0", "added_pages=1"),
+            ("future_slabs=1", "future_slabs=2"), ("charged=104203", "charged=131073"),
+            ("stack_limit=5", "stack_limit=6"), ("rx_budget=8", "rx_budget=9"),
+            ("cidr=10.0.2.15/24", "cidr=10.0.2.16/24"),
+            ("NETWORK_STACK_READY identity=6", "NETWORK_STACK_READY identity=7"),
+            ("NETWORK_STACK_CONFIGURED", "NETWORK_STACK_FAKE"),
+        ]:
+            with self.subTest(before=before), self.assertRaises(AssertionError):
+                runner.validate_live_boot("network-run", output.replace(before, after, 1), SYMBOLS)
+        with self.assertRaises(AssertionError):
+            runner.validate_live_boot("network-run-no-nic", live_log("network-run-no-nic") +
+                "# NETWORK_STACK_READY identity=6 mac=52:54:00:12:34:56 cidr=10.0.2.15/24 mtu=1500\n", SYMBOLS)
+
     def test_default_and_explicit_run_require_real_lifecycle_and_source_readiness(self):
         for case in runner.LIVE_CASES:
             runner.validate_live_boot(case, live_log(case), SYMBOLS)
@@ -152,7 +180,7 @@ class RuntimeBootTests(unittest.TestCase):
             if case in runner.LIVE_CASES and runner.LIVE_CASES[case][0] is None:
                 self.assertNotIn("-fw_cfg", command)
             else:
-                mode = "run" if case == "driver-runtime-run" else "driver-runtime-tests"
+                mode = runner.LIVE_CASES[case][0] if case in runner.LIVE_CASES else "driver-runtime-tests"
                 self.assertIn(f"name=opt/kutox/test-mode,string={mode}", command)
             if case in runner.RUNTIME_NETWORK_CASES:
                 self.assertIn("socket,id=irqtest,fd=17", command)

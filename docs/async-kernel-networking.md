@@ -2,7 +2,7 @@
 
 ## Status, scope and outcome
 
-This is a **design and implementation plan, not yet network boot behavior**.
+This is a **design with Phases 1-4 implemented; normal network boot is not enabled**.
 The baseline is merged driver integration at `ac637ab` (PR #7). Current normal
 boot retains Linux e1000 and kernel workers but starts no application clients
 or IP stack; see the [current architecture](rust-kernel-linux-drivers.md#moss-style-driver-infrastructure).
@@ -13,7 +13,9 @@ and [async waits](../src/async_sync.rs). Real guest tests cover IRQ wakeups,
 one-shot deadlines, sixteen-poll fairness and joined cancellation/reopen.
 The [owned Ethernet broker](../src/net_async.rs) and its
 [portable policy](../src/net_async_state.rs) now pass real Linux-backed
-exchange, timeout/cancellation and rebind acceptance. IPv4 remains subsequent.
+exchange, timeout/cancellation and rebind acceptance. Phase 4 adds a bounded
+[smoltcp token adapter](../src/net_stack_state.rs), [protocol future](../src/net_stack.rs)
+and [static CIDR configuration](../src/network_config.rs) in explicit `network-run`.
 Normal boot is
 unchanged: it does not yet activate the executor or an IP stack.
 
@@ -354,6 +356,48 @@ its interface does not expose rejection reasons. That instrumentation must not
 become a separate ARP/IP/echo implementation.
 
 ## Configuration and boot migration
+
+### As-built Phase 4 integration
+
+The production `network-run` path is present with or without guest fixtures.
+The coordinator admits one protocol future after manager initialization, using
+the existing five service stacks; no stack is added for IP. The future owns one
+fallibly allocated bounded interface state and borrows empty socket storage.
+It sends one reply at a time, awaits the broker's real completion, and surfaces
+commit/native failures as service errors without rerunning a consumed callback.
+Unconsumed token pairs retain RX and release pre-reserved TX credit. Short replies
+are explicitly zero-padded to 60 bytes; the frame/IP MTUs remain 1514/1500.
+
+Only checked wire representations are used for admission summaries and malformed/
+wrong-destination/fragment rejection. smoltcp implements all ARP/IP/echo replies.
+The service handles at most eight input frames before yielding, waits on real
+packet/credit/link events and any necessary stack deadline, and does not empty-poll.
+The selected empty-socket/IPv4-only profile currently has no recurring stack
+deadline. Link loss pauses new offers without certifying source removal.
+
+Measured on the selected x86_64 profile: interface/counters state is 392 bytes,
+the admitted protocol future is 608 bytes, and each causes one actual 16-KiB
+slab reservation. The new-service charge is **104,203 bytes**: executor/broker
+metadata 5,899 + packet arena 32,768 + two added guarded stacks 32,768 + those
+two slabs 32,768. Admission checks the 128-KiB ceiling using real heap deltas,
+not just requested object sizes. Driver metadata remains 60,473 bytes.
+These measurements cover the built-in service, not arbitrary application
+captures or the final hardening workload.
+
+`NETWORK_STACK_WAIT`, `NETWORK_STACK_CONFIGURED` and `NETWORK_STACK_READY`
+distinguish missing source, configured subnet and actual source/link readiness.
+The shared fw_cfg parser reads a strict non-NUL ASCII host CIDR only for
+`network-run`; `driver-run`, `run`/absent and probe modes ignore that file.
+Loopback, current-network/unspecified, link-local, multicast/reserved and
+documentation/benchmark-only address ranges are excluded. No default route or
+application socket is created.
+
+Host tests validate actual smoltcp ARP and echo replies at payloads
+0/32/64/512/1472, padding/checksums, retained RX under credit/backing pressure,
+unused token release and callback-once/error propagation. Production smoke
+tests require sustained real readiness at 128/32 MiB, explicit no/unsupported
+NIC idle and both ELF profiles. Full isolated multi-epoch ARP/ICMP guest
+acceptance and migration of normal boot remain Phases 5-6.
 
 | Mode/configuration | Intended behavior |
 | --- | --- |

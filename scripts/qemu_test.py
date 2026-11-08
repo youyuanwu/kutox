@@ -122,8 +122,13 @@ LIVE_CASES = {
     "driver-runtime-default": (None, True),
     "default-mode": (None, True),
     "driver-runtime-run": ("run", True),
+    "driver-runtime-driver-run": ("driver-run", True),
     "driver-runtime-default-no-nic": (None, False),
     "driver-runtime-default-unsupported": (None, False),
+    "network-run": ("network-run", True),
+    "network-run-low-memory": ("network-run", True),
+    "network-run-no-nic": ("network-run", False),
+    "network-run-unsupported": ("network-run", False),
 }
 HARDENING_CASES = {
     case: "driver-hardening-tests" for case in (
@@ -1850,10 +1855,10 @@ def validate_unclaimed_suite(case, returncode, output):
 def validate_live_boot(case, output, symbols):
     lines = output.splitlines()
     mode = LIVE_CASES[case][0]
-    validate_boot_preamble(lines, "run", "fw_cfg" if mode else "default")
-    validate_allocator(lines, 128)
+    validate_boot_preamble(lines, mode or "run", "fw_cfg" if mode else "default")
+    validate_allocator(lines, 32 if case.endswith("low-memory") else 128)
     if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "KERNEL_RUNTIME_", "THREAD_", "KTAP", "ok ", "not ok ",
-                            "Bail out!", "# LINUX_CALLBACK", "# LINUX_FAULT", "# LINUX_RX_", "# LINUX_HARD_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR", "# HOST_")) for line in lines):
+                            "Bail out!", "# LINUX_CALLBACK", "# LINUX_FAULT", "# LINUX_RX_", "# LINUX_HARD_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR", "# ASYNC_ERROR", "# NETWORK_STACK_ERROR", "# NETWORK_STACK_STOP", "# HOST_")) for line in lines):
         raise AssertionError("default runtime exited, failed, or entered a probe/fixture path")
     bound = int(LIVE_CASES[case][1])
     normalized = [line.removeprefix("# ") for line in lines]
@@ -1875,6 +1880,34 @@ def validate_live_boot(case, output, symbols):
         summary = next(line for line in normalized if line.startswith("DRIVER_RUNTIME"))
         if normalized.index(callbacks[-1]) >= normalized.index(summary):
             raise AssertionError("runtime reported initialization before original open")
+    network = [line for line in normalized if line.startswith("NETWORK_STACK")]
+    if mode != "network-run":
+        if network:
+            raise AssertionError("driver-only boot activated the protocol stack")
+    else:
+        storage = [line for line in network if line.startswith("NETWORK_STACK_STORAGE")]
+        if len(storage) != 1:
+            raise AssertionError("missing bounded protocol storage")
+        match = re.fullmatch(
+            r"NETWORK_STACK_STORAGE state=(\d+) future=(\d+) added_slabs=(\d+) added_pages=(\d+) future_slabs=(\d+) future_pages=(\d+) charged=(\d+) stack_limit=5 rx_budget=8",
+            storage[0],
+        )
+        if (match is None or not all(0 < int(value) <= 2048 for value in match.groups()[:2])
+                or int(match[3]) > 1 or int(match[4]) != 0
+                or int(match[5]) > 1 or int(match[6]) != 0
+                or not 65536 < int(match[7]) <= 128 * 1024):
+            raise AssertionError("protocol storage exceeds admission limits")
+        expected = [storage[0], "NETWORK_STACK_WAIT state=source"]
+        if bound:
+            ready = next(line for line in normalized if line.startswith("DRIVER_READY "))
+            identity = re.search(r"identity=(\d+)", ready)[1]
+            expected += [
+                f"NETWORK_STACK_CONFIGURED identity={identity} cidr=10.0.2.15/24 mtu=1500",
+                f"NETWORK_STACK_WAIT state=link identity={identity}",
+                f"NETWORK_STACK_READY identity={identity} mac=52:54:00:12:34:56 cidr=10.0.2.15/24 mtu=1500",
+            ]
+        if network != expected:
+            raise AssertionError("network readiness does not match the real source")
 
 
 def execute_live(args, case):
@@ -1930,7 +1963,11 @@ def execute_live(args, case):
                                 line, _, rest = pending.partition(b"\n")
                                 pending = bytearray(rest)
                                 decoded = line.decode("utf-8", errors="replace").rstrip("\r")
-                                marker = "DRIVER_READY" if LIVE_CASES[case][1] else "DRIVER_RUNTIME"
+                                marker = (
+                                    "NETWORK_STACK_READY" if LIVE_CASES[case] == ("network-run", True)
+                                    else "NETWORK_STACK_WAIT state=source" if LIVE_CASES[case] == ("network-run", False)
+                                    else "DRIVER_READY" if LIVE_CASES[case][1] else "DRIVER_RUNTIME"
+                                )
                                 if ready_at is None and decoded.removeprefix("# ").startswith(marker):
                                     validate_live_boot(case, output.decode("utf-8", errors="replace"), symbols)
                                     ready_at = time.monotonic()
@@ -2307,7 +2344,7 @@ def qemu_command(args, case, capture=None, net_fd=None):
             "-netdev", "user,id=second,restrict=on",
             "-device", "e1000,netdev=second,mac=52:54:00:00:00:02",
         ]
-    if case in KERNEL_SUITE_CASES or case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES or case in HARDENING_CASES or case in ASYNC_NETWORK_CASES or case in LIVE_CASES and case != "driver-runtime-default-no-nic":
+    if case in KERNEL_SUITE_CASES or case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES or case in HARDENING_CASES or case in ASYNC_NETWORK_CASES or case in LIVE_CASES and not case.endswith("no-nic"):
         if net_fd is None or net_fd < 0:
             raise AssertionError("kernel suite requires an owned RX socket")
         root, leaf, parents = pci_layout(case)
@@ -2316,7 +2353,7 @@ def qemu_command(args, case, capture=None, net_fd=None):
             if len(parents) == 2:
                 command += ["-device", "pci-bridge,id=bridge1,chassis_nr=2,shpc=off,msi=off,bus=bridge0,addr=4"]
         bus = f",bus=bridge{len(parents) - 1}" if parents else ""
-        model = "e1000e" if case == "driver-runtime-default-unsupported" else "e1000"
+        model = "e1000e" if case.endswith("unsupported") else "e1000"
         command += [
             "-netdev", f"socket,id=irqtest,fd={net_fd}",
             "-device", f"{model},netdev=irqtest{bus},addr={leaf:x},mac=52:54:00:12:34:56",

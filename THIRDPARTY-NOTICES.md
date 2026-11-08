@@ -1,5 +1,23 @@
 # Third-party source notices
 
+## smoltcp IPv4 stack
+
+- Project: [smoltcp](https://github.com/smoltcp-rs/smoltcp).
+- Dependency: exact `0.13.0`, with its registry checksum pinned in
+  [Cargo.lock](Cargo.lock).
+- Copyright: Copyright (C) smoltcp contributors.
+- License: 0BSD; the original notice is retained in the dependency's
+  [LICENSE-0BSD.txt](https://github.com/smoltcp-rs/smoltcp/blob/v0.13.0/LICENSE-0BSD.txt).
+- Defaults are disabled. The seven selected features provide Ethernet, IPv4,
+  automatic ICMP echo replies, the required ICMP socket type, and fixed interface
+  address/neighbor/route capacities. No application sockets are instantiated.
+
+The [staged token adapter](src/net_stack_state.rs), [protocol service](src/net_stack.rs)
+and [static configuration](src/network_config.rs) are kutox code. smoltcp owns
+ARP/IP/ICMP packet processing; unchanged Linux e1000 still owns hardware TX/RX.
+This follows pinned Moss's declared stack baseline, not a copy of its complete
+socket, networking syscall or process-oriented service modules.
+
 ## Moss kernel primitives
 
 - Project: [Moss / libkernel](https://github.com/hexagonal-sun/moss-kernel).

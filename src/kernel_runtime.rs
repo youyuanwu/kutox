@@ -380,7 +380,10 @@ impl<'a> Resources<'a> {
     fn reporting(&self) -> bool {
         matches!(
             self.boot.mode,
-            kutox::fw_cfg::BootMode::Run | kutox::fw_cfg::BootMode::DriverRuntimeTests
+            kutox::fw_cfg::BootMode::Run
+                | kutox::fw_cfg::BootMode::DriverRun
+                | kutox::fw_cfg::BootMode::NetworkRun
+                | kutox::fw_cfg::BootMode::DriverRuntimeTests
         )
     }
     pub fn start(
@@ -656,6 +659,9 @@ fn initialize(resources: &Resources<'_>) -> Result<(), Failure> {
     }
     refresh_ready(resources, true)?;
     checkpoint(Stage::Manager, resources.boot.mode)?;
+    if resources.boot.mode == kutox::fw_cfg::BootMode::NetworkRun {
+        crate::net_stack::kutox_ipv4_service(resources.boot.ipv4)?;
+    }
     Ok(())
 }
 

@@ -12,7 +12,9 @@ pub mod fw_cfg;
 pub mod irq_platform;
 pub mod mutex_state;
 pub mod net_async_state;
+pub mod net_stack_state;
 pub mod net_state;
+pub mod network_config;
 pub mod pci_state;
 pub mod run_queue;
 

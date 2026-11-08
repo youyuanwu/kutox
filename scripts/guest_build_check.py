@@ -32,6 +32,7 @@ RUNTIME_SYMBOLS = {
     "kutox_e1000_init", "kutox_net_wake",
     "kutox_async_executor",
     "kutox_packet_broker",
+    "kutox_ipv4_service",
 }
 GUEST_ONLY_PATTERN = re.compile(
     r"::(?:guest_tests|tests|wait_tests|irq_tests)::|"

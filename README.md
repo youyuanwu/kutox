@@ -76,8 +76,8 @@ The earlier native Rust TX implementation and descriptor helper have been
 removed. The unchanged Linux e1000 implementation is the only packet driver:
 it owns descriptor programming, submission and IRQ/NAPI cleanup. Rust still
 provides PCI, MMIO, IRQ, DMA, scheduling and allocation services. Controlled
-original RX delivery and selected ring/lifetime hardening now pass; a networking
-stack remains subsequent work.
+original RX delivery and selected ring/lifetime hardening now pass. The explicit
+IPv4 service described below consumes this Linux-owned packet path.
 
 All four original driver units are linked for Linux lifecycle and TX/RX
 execution. See the
@@ -119,8 +119,9 @@ The next [async-kernel and IPv4 design](docs/async-kernel-networking.md) keeps
 Linux workers and adds Moss-inspired futures plus a native packet bridge.
 The bounded executor, async event/timer/yield core and owned Ethernet broker
 are implemented and guest-tested through explicit service paths, including
-Linux-backed timeout/cancellation and rebind. IPv4 remains planned; current
-normal boot still has no IP service.
+Linux-backed timeout/cancellation and rebind. Explicit `network-run` now adds a
+bounded smoltcp ARP/static-IPv4/ICMP echo service in both build profiles. Current
+normal boot and explicit `driver-run` remain driver-only until full acceptance.
 
 ## Requirements
 
@@ -360,6 +361,27 @@ qemu-system-x86_64 -machine pc -accel tcg -cpu qemu64 -smp 1 -m 128M \
 
 The runtime stays in the dispatcher; use Ctrl+C to end this owned manual session.
 Booting does not automatically generate application packets, DHCP or IP traffic.
+
+To enable the developing IPv4 service, add
+`-fw_cfg name=opt/kutox/test-mode,string=network-run` to the command above.
+The default address is `10.0.2.15/24`; override it with
+`-fw_cfg name=opt/kutox/ipv4,string=10.0.2.16/24`.
+Only one connected subnet is configured, with no gateway or DHCP.
+Malformed, reserved, network/broadcast, duplicate or overlength CIDRs fail before
+memory/device admission. Driver-only/probe modes ignore this network field.
+`NETWORK_STACK_CONFIGURED` and `NETWORK_STACK_READY` distinguish static
+configuration from real link readiness. No/unsupported NIC retains services
+without fabricating readiness.
+
+```sh
+ctest --test-dir build --output-on-failure --parallel 1 \
+  -R '^(network-run|network-run-low-memory|network-run-no-nic|network-run-unsupported|driver-runtime-driver-run)$'
+```
+
+These smoke cases prove production mode selection, bounded storage and sustained
+readiness or unclaimed idle, not the later full ARP/ICMP guest acceptance.
+Restricted QEMU user networking does not make the guest directly host-pingable;
+packet acceptance uses an owned local Ethernet socket peer instead.
 
 ### Managed failure and teardown hardening
 
