@@ -87,6 +87,17 @@ pub fn ticks() -> u64 {
     TICKS.load(Ordering::Acquire)
 }
 
+pub fn idle_persistent() -> Result<(), Failure> {
+    context()?;
+    if ADDRESS.load(Ordering::Acquire) == 0 || !CLAIMED.load(Ordering::Acquire) {
+        return Err(Failure::new("irq_idle_without_apic", -1));
+    }
+    if !threads::has_ready() {
+        unsafe { asm!("sti", "hlt", "cli", options(nostack)) };
+    }
+    Ok(())
+}
+
 pub fn is_quiescent() -> bool {
     !CLAIMED.load(Ordering::Acquire)
         && ADDRESS.load(Ordering::Acquire) == 0
@@ -113,6 +124,8 @@ struct ApicState<'a, 'storage> {
     _claim: Claim,
     _local: PhantomData<*mut ()>,
 }
+
+pub const APIC_METADATA_BYTES: usize = core::mem::size_of::<ApicState<'static, 'static>>() + 16;
 
 pub struct LocalApic<'a, 'storage> {
     inner: Rc<ApicState<'a, 'storage>>,

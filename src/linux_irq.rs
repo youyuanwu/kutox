@@ -38,6 +38,13 @@ pub struct BoundIrq<'controller, 'a, 'storage> {
     claim: ClaimedIrq<'controller, 'a, 'storage>,
 }
 
+pub fn callbacks_drained() -> bool {
+    BINDING
+        .lock_save_irq()
+        .as_ref()
+        .is_none_or(|binding| binding.handler.is_none() && !binding.running)
+}
+
 impl<'controller, 'a, 'storage> BoundIrq<'controller, 'a, 'storage> {
     pub fn bind(controller: &'controller IoApic<'a, 'storage>, gsi: u32) -> Result<Self, Failure> {
         if BINDING.lock_save_irq().is_some() {

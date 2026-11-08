@@ -55,6 +55,14 @@ mod irq;
     not(feature = "guest-tests"),
     allow(
         dead_code,
+        reason = "Persistent runtime boot is enabled in integration phase 6"
+    )
+)]
+mod kernel_runtime;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
         reason = "Kernel service API retained before boot integration"
     )
 )]
@@ -142,6 +150,7 @@ macro_rules! println {
     ($($arg:tt)*) => { serial::print(format_args!("{}\n", format_args!($($arg)*))) };
 }
 
+#[derive(Debug)]
 struct Failure {
     stage: &'static str,
     code: i32,
@@ -215,7 +224,10 @@ fn probe() -> Result<[u8; 6], Failure> {
         }
     );
     #[cfg(feature = "guest-tests")]
-    if matches!(boot.mode, BootMode::KernelTests | BootMode::KernelTestsFail) {
+    if matches!(
+        boot.mode,
+        BootMode::KernelTests | BootMode::KernelTestsFail | BootMode::DriverRuntimeTests
+    ) {
         guest_tests::run(&boot);
     }
     #[cfg(feature = "guest-tests")]

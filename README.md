@@ -29,6 +29,13 @@ reclamation after a thread returns. Native wait queues, cancellation, and timed
 sleep can now suspend these stacks. This is not timer preemption, SMP or a
 general Linux binary ABI.
 
+The scoped [kernel runtime](src/kernel_runtime.rs) now retains the dispatcher,
+native manager, APIC/timer/controllers and shared Linux workers through client
+return and idle. Its persistent policy sleeps without inventing periodic work;
+finite scheduler calls still diagnose deadlock. Deliberate shutdown retires
+devices/source users, stops and joins workers, and reclaims stacks off-stack.
+The service scope is tested explicitly; normal boot migration is still pending.
+
 Native counting completions remember signals before a wait, support a persistent
 `complete_all` latch, and preserve credits across timeout/cancellation. Their
 signalling and try-wait operations now also work in the supported hardware IRQ
@@ -96,7 +103,7 @@ this is not generic LinuxKPI, physical-hardware or network-stack support.
 
 Moss-style native registration, retained initializer records and kernel-thread
 probe coordination now have portable and real guest tests, including PCI
-hierarchy/routing. [Persistent boot integration](docs/rust-kernel-linux-drivers.md#planned-moss-style-driver-infrastructure)
+hierarchy/routing and persistent service lifetime. [Persistent boot integration](docs/rust-kernel-linux-drivers.md#planned-moss-style-driver-infrastructure)
 is still being implemented; the production initializer table is explicitly
 empty until managed e1000 integration, and the normal default remains the boot
 MAC proof.
@@ -135,7 +142,7 @@ For a feature-off build of the same image:
 cmake -S . -B build -G Ninja -DKUTOX_GUEST_TESTS=OFF
 cmake --build build --target images --parallel 1
 ctest --test-dir build --output-on-failure --parallel 1 \
-  -R '^(kernel-build-profile|guest-tests-disabled|mac-known)$'
+  -R '^(kernel-build-profile|guest-tests-disabled|driver-runtime-tests-disabled|mac-known)$'
 ```
 
 This omits guest fixtures, C test objects, fault injection, checkpoints and
@@ -203,6 +210,7 @@ The runner selects a mode at launch through QEMU's `fw_cfg` file
 | `eeprom-timeout` | Withhold the EEPROM grant to exercise the upstream retry/error path. |
 | `kernel-tests` | Run all registered nonfatal kernel tests in one boot and emit KTAP results. |
 | `kernel-tests-fail` | Run the same suite with an additional intentionally failing case to test host rejection. |
+| `driver-runtime-tests` | Run five bounded no-NIC service-lifetime, idle/wake, startup/admission rollback and deliberate shutdown tests. |
 | `heap-oom` | Attempt an oversized `Vec` allocation and verify Rust's fatal allocation-failure panic. |
 | `thread-stack-guard` | Read a thread's unmapped lower guard and verify the hardware page fault came from its mapped stack. |
 | `page-fault` | Read a deliberately unmapped address and verify the fatal exception diagnostics. |
@@ -234,6 +242,23 @@ fixture for its device-IRQ and packet-DMA cases:
 ```sh
 python3 scripts/qemu_test.py --case kernel-tests --build-dir build
 ```
+
+The separate runtime suite uses that same test-enabled image **without a NIC**
+at 128 or 32 MiB:
+
+```sh
+python3 scripts/qemu_test.py --case driver-runtime-tests --build-dir build
+python3 scripts/qemu_test.py --case driver-runtime-tests-low-memory --build-dir build
+```
+
+Its five cases prove balanced rollback after eleven acquired startup stages,
+partial worker admission rollback, real one-shot IRQ wake/dependency publication,
+worker callbacks after a client returns, and shutdown retry while a source work
+object is still live. Three service stacks plus up to three clients use at most
+six of eight guarded stack slots. The combined conservative infrastructure
+metadata bound is 59,960 bytes, below 64 KiB. This does not bind e1000 or claim
+network readiness; managed NIC integration remains subsequent work. Feature-off
+builds omit these fixtures and reject `driver-runtime-tests` before allocation.
 
 Run the same 59 registered cases with 32 MiB of guest RAM:
 

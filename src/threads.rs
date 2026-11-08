@@ -9,7 +9,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
 };
 pub use kutox::run_queue::WakeReason;
-use kutox::run_queue::{RunQueue, TaskHandle, WaitKey};
+use kutox::run_queue::{IdleAction, IdleMode, RunQueue, TaskHandle, WaitKey, idle_action};
 use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
 
 global_asm!(include_str!("context_switch.S"));
@@ -467,6 +467,8 @@ pub struct RunStats {
     pub wakes: usize,
     pub timeouts: usize,
     pub idle_sleeps: usize,
+    pub persistent_idles: usize,
+    pub peak_tasks: usize,
 }
 
 pub struct Scheduler<'space, 'a, 'storage> {
@@ -523,7 +525,7 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
     }
 
     pub fn run(&mut self) -> Result<RunStats, Failure> {
-        self.run_inner(None)
+        self.run_inner(None, IdleMode::Finite, None)
     }
 
     pub fn discard_unstarted(&mut self, handle: TaskHandle) -> Result<(), Failure> {
@@ -544,7 +546,31 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
     }
 
     pub fn run_with_timer(&mut self, timer: &irq::Timer<'_, '_>) -> Result<RunStats, Failure> {
-        self.run_inner(Some(timer))
+        self.run_inner(Some(timer), IdleMode::Finite, None)
+    }
+
+    pub fn run_persistent(
+        &mut self,
+        timer: &irq::Timer<'_, '_>,
+        stopped: &AtomicBool,
+    ) -> Result<RunStats, Failure> {
+        self.run_inner(Some(timer), IdleMode::Persistent, Some(stopped))
+    }
+
+    pub fn discard_all_unstarted(&mut self) -> Result<(), Failure> {
+        if self.tasks.iter().flatten().any(|task| task.started) {
+            return Err(Failure::new("thread_discard_started", -1));
+        }
+        for slot in 0..memory::MAX_STACKS {
+            if self.tasks[slot].is_some() {
+                let handle = self
+                    .queue
+                    .handle(kutox::run_queue::TaskId(slot))
+                    .map_err(|error| Failure::new("thread_discard_handle", error as i32))?;
+                self.discard_unstarted(handle)?;
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn next_deadline(&self) -> Option<u64> {
@@ -565,7 +591,12 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
             .map_err(|error| Failure::new("thread_cancel_wait", error as i32))
     }
 
-    fn run_inner(&mut self, timer: Option<&irq::Timer<'_, '_>>) -> Result<RunStats, Failure> {
+    fn run_inner(
+        &mut self,
+        timer: Option<&irq::Timer<'_, '_>>,
+        mode: IdleMode,
+        stopped: Option<&AtomicBool>,
+    ) -> Result<RunStats, Failure> {
         switch_allowed().map_err(|error| Failure::new("thread_run_context", error as i32))?;
         if RUNNING
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -602,7 +633,10 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
         // scheduler's exclusively borrowed task/context storage.
         running.queue = Some(&mut self.queue);
         let mut dispatcher = Context::default();
-        let mut stats = RunStats::default();
+        let mut stats = RunStats {
+            peak_tasks: self.tasks.iter().flatten().count(),
+            ..RunStats::default()
+        };
         loop {
             let (next, empty, deadline) = {
                 let mut dispatch = DISPATCH.lock_save_irq();
@@ -633,28 +667,44 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
                 )
             };
             let Some((id, reason, handle)) = next else {
-                if empty {
-                    OWNER
-                        .compare_exchange(self.owner, 0, Ordering::AcqRel, Ordering::Acquire)
-                        .expect("scheduler ownership changed");
-                    return Ok(stats);
-                }
                 let deadline = match (deadline, timer.and_then(irq::Timer::handler_deadline)) {
                     (Some(wait), Some(handler)) => Some(wait.min(handler)),
                     (wait, handler) => wait.or(handler),
                 };
-                let Some(deadline) = deadline else {
-                    if irq::external::is_armed() {
-                        irq::external::idle()?;
-                        stats.idle_sleeps += 1;
-                        continue;
+                match idle_action(
+                    mode,
+                    empty,
+                    deadline,
+                    irq::external::is_armed(),
+                    stopped.is_some_and(|stopped| stopped.load(Ordering::Acquire)),
+                ) {
+                    IdleAction::Complete => {
+                        OWNER
+                            .compare_exchange(self.owner, 0, Ordering::AcqRel, Ordering::Acquire)
+                            .expect("scheduler ownership changed");
+                        return Ok(stats);
                     }
-                    return Err(Failure::new("thread_wait_deadlock", -1));
-                };
-                let timer = timer.ok_or(Failure::new("thread_timer_required", -1))?;
-                if timer.arm_for_idle(deadline)? {
-                    timer.idle_until_tick()?;
-                    stats.idle_sleeps += 1;
+                    IdleAction::Interrupt => {
+                        if mode == IdleMode::Persistent {
+                            #[cfg(feature = "guest-tests")]
+                            tests::before_persistent_idle(
+                                timer.expect("persistent runtime timer"),
+                            )?;
+                            irq::idle_persistent()?;
+                            stats.persistent_idles += 1;
+                        } else {
+                            irq::external::idle()?;
+                        }
+                        stats.idle_sleeps += 1;
+                    }
+                    IdleAction::Deadlock => return Err(Failure::new("thread_wait_deadlock", -1)),
+                    IdleAction::Deadline(deadline) => {
+                        let timer = timer.ok_or(Failure::new("thread_timer_required", -1))?;
+                        if timer.arm_for_idle(deadline)? {
+                            timer.idle_until_tick()?;
+                            stats.idle_sleeps += 1;
+                        }
+                    }
                 }
                 continue;
             };

@@ -1081,6 +1081,7 @@ The planned phases are:
    Implemented and validated in release ELFs and actual guest threads.
 4. **Persistent kernel services:** boot-owned scheduler/controller/worker
    lifetimes and explicit kernel idle distinct from finite-test deadlock.
+   Implemented through the common service scope and explicit no-NIC tests.
 5. **Managed e1000:** original Linux lifecycle behind native network-device
    discovery, link/MAC/MTU, owned-byte TX/RX and diagnosed client errors.
 6. **Normal boot:** runtime default, explicit MAC/fault compatibility and exact
@@ -1179,10 +1180,61 @@ both build profiles; compile-only Linux source rejection and exact original
 callback evidence remain separate requirements.
 
 Initializer records, sorting workspace and coordinator results add a bounded
-608 bytes to the phase-two metadata allowance. The compiler-measured combined
-infrastructure bound is now **57,880 bytes**, including the 6,944-byte PCI
+608 bytes to the phase-two metadata allowance. The phase-three compiler-measured combined
+infrastructure bound is **57,880 bytes**, including the 6,944-byte PCI
 inventory/scan allowance, below 64 KiB. Synthetic guest-manager storage is
 test-only, not a second production manager.
+
+Phase 4's [kernel runtime](../src/kernel_runtime.rs) keeps the PCI inventory,
+native manager, APIC, I/O APIC, one-shot timer and stack space owned in a scoped
+boot lifetime. Controllers/timer share owned APIC references; the dispatcher
+borrows stack space only during execution. No movable self-referential resource
+structure or intentionally leaked allocation is used. Handles carry a checked
+runtime epoch and reject access after owner release.
+
+`Resources::start` acquires the platform resources; `Clients::add` admits up to
+three native client entries; `Resources::run` starts two shared Linux workers
+and a control/probe coordinator. Clients run on guarded stacks after actual
+manager initialization, and their return does not stop the services.
+`Handle::publish_service` wakes the coordinator for named dependency progress;
+`wait_probes` waits for the completed coordinator batch, not NIC readiness.
+Callback waits for their own control/coordinator completion are rejected,
+without preventing ordinary timed sleeping or unlocked metadata reentry.
+Production initializer records remain empty until Phase 5, so no-NIC startup
+retains a real unclaimed inventory rather than fabricating a bound device.
+
+The [scheduler idle policy](../src/run_queue.rs) is explicit: finite calls retain
+their previous completion/deadlock/deadline/armed-IRQ behavior; persistent calls
+cannot finish until deliberate shutdown has completed and every stack has
+returned. With no deadline or device IRQ, persistent idle uses the BSP's
+`sti; hlt; cli` boundary, not a periodic timer or polling worker.
+Real deadlines and IRQ notifications continue to wake suspended tasks.
+
+Shutdown reserves normal native retirement first, then verifies that source
+IRQ/synchronization users have drained before asking
+[the shared Linux workers](../src/linux_deferred.rs) to stop and join.
+Live source work objects produce an explicit busy error and retain the workers;
+the caller retires those objects and retries. Unstarted task admission failures
+roll back owned stacks; started Rust stacks must return normally and are
+reclaimed from the dispatcher stack. Controllers and timer remain owned until
+after those joins, with original Linux callback/backing contracts unchanged.
+
+[Five gated runtime cases](../src/guest_tests/kernel_runtime.rs) run through the
+same production service scope in explicit `driver-runtime-tests` mode.
+They check exact frame/heap/IRQ/registry restoration after eleven startup stages,
+partial worker/maximum-client admission rollback, no-NIC idle, a real one-shot
+test IRQ and later dependency publication, callbacks after client return, busy
+shutdown/retry and epoch retirement at 128/32 MiB. Only the fixture arms that
+one-shot idle wake; the runtime itself manufactures no periodic work.
+The [host validator](../tests/test_kernel_runtime.py) requires exact case order,
+diagnosed failures, zero fake NIC bindings, positive persistent-idle counts and
+peak/lifetime/resource thresholds.
+
+The conservative service-resource/control/dispatcher/client allowance adds
+2,080 bytes to the phase-three bound, including owned APIC metadata. Combined
+infrastructure is now **59,960 bytes**, below 64 KiB; the peak test/runtime task
+count is six of eight 16-KiB slots. Normal boot still reads the MAC and exits.
+Persistent e1000 binding and default runtime boot remain Phases 5 and 6.
 
 Bridge timing also exposed two fixture assumptions: an earlier link IRQ's
 queued NAPI may legitimately clean a new TX before its TXDW interrupt, and

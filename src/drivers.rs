@@ -430,6 +430,13 @@ impl<CPU: CpuOps> Manager<CPU> {
         self.update("driver-snapshot", |state| Ok(state.registry.snapshot()))
     }
 
+    pub fn quiescent(&self) -> bool {
+        let state = self.state.lock_save_irq();
+        matches!(state.registry.snapshot().phase, Phase::New | Phase::Retired)
+            && state.devices.iter().all(Option::is_none)
+            && state.drivers.iter().all(Option::is_none)
+    }
+
     pub fn reserve_probe(&self) -> Result<Option<Probe<'_, CPU>>, Error> {
         self.update("driver-probe-reserve", |state| {
             let Some(invocation) = state.registry.reserve_probe()? else {

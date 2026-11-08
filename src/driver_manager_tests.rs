@@ -559,6 +559,18 @@ fn kernel_manager_metadata_fits_the_explicit_budget() {
     );
 }
 
+#[test]
+fn quiescence_distinguishes_empty_ready_service_from_retired_storage() {
+    let manager = manager();
+    assert!(manager.quiescent());
+    manager.initialize(|_| Ok(())).unwrap();
+    assert!(!manager.quiescent());
+    manager.shutdown().unwrap();
+    assert!(manager.quiescent());
+    manager.restart().unwrap();
+    assert!(manager.quiescent());
+}
+
 fn init_first() -> Result<Arc<dyn NativeDriver>, Error> {
     STOP_ORDER.with(|order| order.borrow_mut().push(1));
     Ok(Driver::new(spec(1, 1), Behavior::Bind))

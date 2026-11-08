@@ -110,6 +110,14 @@ add_test(NAME thread-stack-guard
         --qemu "${QEMU}" --timeout 20
 )
 set_tests_properties(thread-stack-guard PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
+foreach(case IN ITEMS driver-runtime-tests driver-runtime-tests-low-memory)
+    add_test(NAME "${case}"
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --case "${case}" --build-dir "${CMAKE_BINARY_DIR}"
+            --qemu "${QEMU}" --timeout 20
+    )
+    set_tests_properties("${case}" PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
+endforeach()
 else()
     add_test(NAME guest-tests-disabled
         COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
@@ -117,6 +125,12 @@ else()
             --qemu "${QEMU}" --timeout 20
     )
     set_tests_properties(guest-tests-disabled PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
+    add_test(NAME driver-runtime-tests-disabled
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --case driver-runtime-tests-disabled --build-dir "${CMAKE_BINARY_DIR}"
+            --qemu "${QEMU}" --timeout 20
+    )
+    set_tests_properties(driver-runtime-tests-disabled PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
 endif()
 add_test(NAME harness-unit
     COMMAND ${Python3_EXECUTABLE} -m unittest discover -s tests -v

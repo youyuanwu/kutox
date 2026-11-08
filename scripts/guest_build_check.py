@@ -18,6 +18,7 @@ GUEST_SYMBOLS = {
     "kutox_c_services_allocations", "kutox_c_dma_worker",
     "kutox_thread_register_probe", "kutox_irq_register_probe",
     "kutox_guest_native_probe",
+    "kutox_guest_runtime_work",
 } | NATIVE_INIT_SYMBOLS
 RUNTIME_SYMBOLS = {
     "e1000_probe", "e1000_open", "e1000_close", "e1000_xmit_frame",

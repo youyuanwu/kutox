@@ -86,6 +86,14 @@ KERNEL_SUITE_CASES = {
     "kernel-tests-bridge-low-memory": "kernel-tests",
     "kernel-tests-nested-low-memory": "kernel-tests",
 }
+RUNTIME_SUITE_CASES = {
+    "driver-runtime-tests": "driver-runtime-tests",
+    "driver-runtime-tests-low-memory": "driver-runtime-tests",
+}
+RUNTIME_TEST_NAMES = (
+    "runtime.startup_rollback", "runtime.admission_rollback",
+    "runtime.no_nic_idle", "runtime.client_return", "runtime.shutdown_busy",
+)
 FAULT_RESULTS = {
     "page-fault": "CPU_TEST_OK test=page-fault vector=14 address=0x600000000000 error=0x0",
     "general-protection": "CPU_TEST_OK test=general-protection vector=13 error=0xfff8",
@@ -103,11 +111,13 @@ CASES = {
     "default-mode": ("52:54:00:12:34:56", None),
     "invalid-mode": (None, "boot_mode"),
     "guest-tests-disabled": (None, "boot_mode"),
+    "driver-runtime-tests-disabled": (None, "boot_mode"),
     **{case: (None, None) for case in FAULT_RESULTS},
     "smp-unsupported": (None, "cpu_single_processor_required"),
     "heap-oom": (None, None),
     "thread-stack-guard": (None, None),
     **{case: (None, None) for case in KERNEL_SUITE_CASES},
+    **{case: (None, None) for case in RUNTIME_SUITE_CASES},
 }
 
 
@@ -186,6 +196,21 @@ def validate_kernel_suite(case, returncode, output):
     validate_pci_hierarchy(lines, case)
     if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "THREAD_", "Bail out!")) for line in lines):
         raise AssertionError("suite aborted or reached an unexpected exception/device path")
+    expected_names = KERNEL_TEST_NAMES
+    if case == "kernel-tests-fail":
+        expected_names = ("harness.intentional_failure", *expected_names)
+    if lines.count("# linux format=-7/0000002A/4294967296/12:34:56:78:9a:bc/end") != 1:
+        raise AssertionError("missing, duplicate, or incorrect driver diagnostic formatting")
+    failures = validate_ktap(lines, returncode, expected_names)
+    validate_linux_callbacks(output)
+    validate_native_drivers(lines, case)
+    if case == "kernel-tests-fail" and failures != {"harness.intentional_failure"}:
+        raise AssertionError("intentional failure did not fire or another test failed")
+    if failures:
+        raise KernelSuiteFailure(f"kernel suite failed: {', '.join(sorted(failures))}")
+
+
+def validate_ktap(lines, returncode, expected_names):
     headers = [
         index for index, line in enumerate(lines)
         if line.startswith(("KTAP", "TAP version"))
@@ -195,9 +220,6 @@ def validate_kernel_suite(case, returncode, output):
     start = headers[0]
     if any(line.startswith(("ok ", "not ok ", "1..", "# Totals")) for line in lines[:start]):
         raise AssertionError("test results precede KTAP version")
-    expected_names = KERNEL_TEST_NAMES
-    if case == "kernel-tests-fail":
-        expected_names = ("harness.intentional_failure", *expected_names)
     protocol = lines[start + 1:]
     if len(protocol) < 2 or protocol[0] != f"1..{len(expected_names)}":
         raise AssertionError("missing or incorrect KTAP plan")
@@ -208,8 +230,6 @@ def validate_kernel_suite(case, returncode, output):
     if summary is None:
         raise AssertionError("missing or nonterminal KTAP summary")
     results = []
-    if protocol.count("# linux format=-7/0000002A/4294967296/12:34:56:78:9a:bc/end") != 1:
-        raise AssertionError("missing, duplicate, or incorrect driver diagnostic formatting")
     for line in protocol[1:-1]:
         if line.startswith("# ") and not line.startswith("# Totals"):
             continue
@@ -223,8 +243,6 @@ def validate_kernel_suite(case, returncode, output):
         results.append((name, status == "ok"))
     if len(results) != len(expected_names):
         raise AssertionError("kernel suite did not execute every expected test")
-    validate_linux_callbacks(output)
-    validate_native_drivers(lines, case)
     failures = {name for name, passed in results if not passed}
     passed, failed, total = map(int, summary.groups())
     if (passed, failed, total) != (len(results) - len(failures), len(failures), len(results)):
@@ -232,10 +250,76 @@ def validate_kernel_suite(case, returncode, output):
     expected_exit = 3 if failures else 1
     if returncode != expected_exit:
         raise AssertionError(f"suite QEMU exit {returncode}, expected {expected_exit}")
-    if case == "kernel-tests-fail" and failures != {"harness.intentional_failure"}:
-        raise AssertionError("intentional failure did not fire or another test failed")
+    return failures
+
+
+def validate_runtime_suite(case, returncode, output):
+    lines = output.splitlines()
+    validate_boot_preamble(lines, RUNTIME_SUITE_CASES[case])
+    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "BOOT_MEMORY", "FRAME_ALLOCATOR",
+                            "HEAP_", "THREAD_", "Bail out!", "# LINUX_", "# NATIVE_")) for line in lines):
+        raise AssertionError("runtime suite aborted or used NIC/original-driver evidence")
+    failures = validate_ktap(lines, returncode, RUNTIME_TEST_NAMES)
     if failures:
-        raise KernelSuiteFailure(f"kernel suite failed: {', '.join(sorted(failures))}")
+        raise KernelSuiteFailure(f"runtime suite failed: {', '.join(sorted(failures))}")
+    batches, events = {}, []
+    for line in lines:
+        if line.startswith("# RUNTIME_"):
+            events.append(line)
+        elif match := re.fullmatch(r"ok \d+ (runtime\.[a-z_]+)", line):
+            batches[match[1]] = events
+            events = []
+    if events or set(batches) != set(RUNTIME_TEST_NAMES):
+        raise AssertionError("incomplete runtime evidence")
+    for name, events in batches.items():
+        allowed_code = -210 if name.endswith(("startup_rollback", "admission_rollback")) else -103 if name.endswith("shutdown_busy") else None
+        errors = [line for line in events if line.startswith("# RUNTIME_ERROR")]
+        observed_errors = Counter()
+        for line in errors:
+            match = re.fullmatch(r"# RUNTIME_ERROR stage=([a-z_]+) code=(-?\d+)", line)
+            if match is None or int(match[2]) != allowed_code:
+                raise AssertionError("unexpected runtime error or concealed startup/stop failure")
+            observed_errors[(match[1], int(match[2]))] += 1
+        expected_errors = (
+            Counter({("runtime_startup_injected", -210): 11, ("runtime_start", -210): 4})
+            if name == "runtime.startup_rollback" else
+            Counter({("runtime_startup_injected", -210): 1})
+            if name == "runtime.admission_rollback" else
+            Counter({("linux_workers_stop", -103): 1}) if name == "runtime.shutdown_busy" else Counter()
+        )
+        if observed_errors != expected_errors:
+            raise AssertionError("missing, duplicate or misplaced runtime failure diagnostics")
+        batches[name] = [line for line in events if line not in errors]
+    if batches["runtime.startup_rollback"] != [
+        f"# RUNTIME_ROLLBACK stage={stage} jobs=0 joined=1 balanced=1" for stage in range(1, 12)
+    ] or batches["runtime.admission_rollback"] != [
+        "# RUNTIME_ADMISSION partial_workers=1 clients=3 peak_limit=6 rolled_back=1"
+    ]:
+        raise AssertionError("missing acquired-resource or partial-worker admission rollback proof")
+    metadata_values = set()
+    for mode, name in enumerate(("runtime.no_nic_idle", "runtime.client_return", "runtime.shutdown_busy")):
+        expected = [
+            f"# RUNTIME_IDLE mode={mode} clients_returned={int(mode == 1)} workers=2 deadline=none stopped=0",
+            "# RUNTIME_WAKE irq=1 published=1 functions=5 bound=0 context=thread",
+        ]
+        if mode == 2:
+            expected.append("# RUNTIME_STOP_BUSY code=-103 workers=2 source_objects=1 retry=1")
+        expected.append(f"# RUNTIME_WORK callbacks={2 if mode == 2 else 1} workers_retained=2 objects_retired=1")
+        events = batches[name]
+        if not events or events[:-1] != expected:
+            raise AssertionError("runtime did not retain services through real idle/IRQ/callback progress")
+        match = re.fullmatch(
+            rf"# RUNTIME_JOIN mode={mode} finished=(\d+) peak=(\d+) persistent_idles=(\d+) irq=1 workers=0 registry=retired stale=1 metadata=(\d+)",
+            events[-1] if events else "",
+        )
+        if match is None:
+            raise AssertionError("missing or malformed stopped/joined runtime proof")
+        finished, peak, idles, metadata = map(int, match.groups())
+        if (finished, peak) != ((6, 6) if mode == 1 else (4, 4)) or idles < 1 or not 57880 < metadata <= 65536:
+            raise AssertionError("runtime task, idle or metadata threshold violated")
+        metadata_values.add(metadata)
+    if len(metadata_values) != 1:
+        raise AssertionError("runtime metadata evidence changed between scopes")
 
 def validate_native_drivers(lines, case, symbols=None):
     batches, events = {}, []
@@ -608,7 +692,7 @@ def validate_thread_guard(returncode, output):
 
 
 def validate_result(case, returncode, output):
-    if case == "guest-tests-disabled":
+    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled"):
         lines = output.splitlines()
         expected = "E1000_MAC_FAIL stage=boot_mode code=-25"
         if returncode != 3 or not lines or lines[-1] != expected:
@@ -616,13 +700,17 @@ def validate_result(case, returncode, output):
         if [line for line in lines if line.startswith("KUTOX_BOOT")] != [f"KUTOX_BOOT linux={REVISION}"]:
             raise AssertionError("missing pinned-source feature-off boot marker")
         if [line for line in lines if line.startswith("E1000_")] != [expected] or any(
-            line.startswith(("BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "THREAD_", "Bail out!"))
+            line.startswith(("BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "THREAD_", "Bail out!",
+                             "# RUNTIME_", "# NATIVE_", "# LINUX_"))
             for line in lines
         ):
             raise AssertionError("feature-off test mode reached initialization or guest fixtures")
         return
     if case in KERNEL_SUITE_CASES:
         validate_kernel_suite(case, returncode, output)
+        return
+    if case in RUNTIME_SUITE_CASES:
+        validate_runtime_suite(case, returncode, output)
         return
     if case in FAULT_RESULTS:
         validate_fault_result(case, returncode, output)
@@ -1187,13 +1275,15 @@ def qemu_command(args, case, capture=None, net_fd=None):
             "eeprom-timeout": "eeprom-timeout",
             "invalid-mode": "unsupported",
             "guest-tests-disabled": "kernel-tests",
+            "driver-runtime-tests-disabled": "driver-runtime-tests",
             "heap-oom": "heap-oom",
             "thread-stack-guard": "thread-stack-guard",
             **{case: case for case in FAULT_RESULTS},
             **KERNEL_SUITE_CASES,
+            **RUNTIME_SUITE_CASES,
         }.get(case, "probe")
         command += ["-fw_cfg", f"name=opt/kutox/test-mode,string={mode}"]
-    if case not in ("missing", "smp-unsupported", "heap-oom", "thread-stack-guard", "guest-tests-disabled") and case not in FAULT_RESULTS and case not in KERNEL_SUITE_CASES:
+    if case not in ("missing", "smp-unsupported", "heap-oom", "thread-stack-guard", "guest-tests-disabled", "driver-runtime-tests-disabled") and case not in FAULT_RESULTS and case not in KERNEL_SUITE_CASES and case not in RUNTIME_SUITE_CASES:
         model = "e1000e" if case == "unsupported" else "e1000"
         mac = CASES[case][0] or "52:54:00:12:34:56"
         command += [

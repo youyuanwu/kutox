@@ -1,0 +1,531 @@
+use crate::{
+    Failure,
+    boot::BootInfo,
+    driver_init::{self, KernelManager},
+    irq::{self, LocalApic, external::IoApic},
+    linux_deferred, linux_irq, linux_runtime, memory, pci, serial, threads,
+};
+use alloc::sync::Arc;
+use core::{
+    cell::Cell,
+    sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering},
+};
+use kutox::{
+    driver_registry::{Phase, Scope, ServiceId},
+    irq_platform::Topology,
+    pci_state::Inventory,
+};
+
+pub const MAX_TASKS: usize = 6;
+const MAX_CLIENTS: usize = MAX_TASKS - 3;
+const _: () = assert!(MAX_TASKS <= memory::MAX_STACKS);
+
+static MANAGER: KernelManager = KernelManager::new(Scope::Production, driver_init::HOOKS);
+static CLAIMED: AtomicBool = AtomicBool::new(false);
+static NEXT_EPOCH: AtomicU64 = AtomicU64::new(1);
+static CONTROL: Control = Control::new();
+
+struct Control {
+    epoch: AtomicU64,
+    owner: AtomicU64,
+    running: AtomicBool,
+    ready: AtomicBool,
+    stopping: AtomicBool,
+    request: AtomicBool,
+    stopped: AtomicBool,
+    start_error: AtomicI32,
+    stop_error: AtomicI32,
+    probe_pending: AtomicBool,
+    probe_running: AtomicBool,
+    probe_error: AtomicI32,
+    event: threads::WaitQueue,
+    progress: threads::WaitQueue,
+}
+
+impl Control {
+    const fn new() -> Self {
+        Self {
+            epoch: AtomicU64::new(0),
+            owner: AtomicU64::new(0),
+            running: AtomicBool::new(false),
+            ready: AtomicBool::new(false),
+            stopping: AtomicBool::new(false),
+            request: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
+            start_error: AtomicI32::new(0),
+            stop_error: AtomicI32::new(0),
+            probe_pending: AtomicBool::new(false),
+            probe_running: AtomicBool::new(false),
+            probe_error: AtomicI32::new(0),
+            event: threads::WaitQueue::new(),
+            progress: threads::WaitQueue::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct Handle {
+    epoch: u64,
+}
+
+fn report(error: &Failure) {
+    serial::print(format_args!(
+        "# RUNTIME_ERROR stage={} code={}\n",
+        error.stage, error.code
+    ));
+}
+
+fn thread_context() -> Result<(), Failure> {
+    threads::check_thread_context().map_err(|error| Failure::new("runtime_context", error as i32))
+}
+
+fn can_wait_for_control() -> Result<(), Failure> {
+    let task = threads::current_task_handle()
+        .map_err(|error| Failure::new("runtime_context", error as i32))?;
+    if task.ticket() == CONTROL.owner.load(Ordering::Acquire) {
+        return Err(Failure::new("runtime_control_self_wait", -209));
+    }
+    Ok(())
+}
+
+fn notify(queue: &'static threads::WaitQueue) -> Result<(), Failure> {
+    queue
+        .notify_without_switch(true)
+        .map(|_| ())
+        .map_err(|error| Failure::new("runtime_notify", error as i32))
+}
+
+impl Handle {
+    fn valid(self) -> Result<(), Failure> {
+        if !CLAIMED.load(Ordering::Acquire)
+            || self.epoch == 0
+            || CONTROL.epoch.load(Ordering::Acquire) != self.epoch
+        {
+            return Err(Failure::new("runtime_stale", -200));
+        }
+        Ok(())
+    }
+
+    pub fn wait_ready(self) -> Result<(), Failure> {
+        self.valid()?;
+        thread_context()?;
+        loop {
+            let token = CONTROL.progress.prepare();
+            let error = CONTROL.start_error.load(Ordering::Acquire);
+            if error != 0 {
+                return Err(Failure::new("runtime_start", error));
+            }
+            if CONTROL.ready.load(Ordering::Acquire) {
+                if CONTROL.stopping.load(Ordering::Acquire) {
+                    return Err(Failure::new("runtime_stopping", -201));
+                }
+                return Ok(());
+            }
+            can_wait_for_control()?;
+            token
+                .wait(None)
+                .map_err(|error| Failure::new("runtime_ready_wait", error as i32))?;
+            self.valid()?;
+        }
+    }
+
+    pub fn manager(self) -> Result<&'static KernelManager, Failure> {
+        self.wait_ready()?;
+        Ok(&MANAGER)
+    }
+
+    pub fn publish_service(self, service: ServiceId) -> Result<bool, Failure> {
+        let changed = self
+            .manager()?
+            .publish_service(service)
+            .map_err(|error| Failure::new("runtime_service", error.code()))?;
+        if changed {
+            CONTROL.probe_error.store(0, Ordering::Release);
+            CONTROL.probe_pending.store(true, Ordering::Release);
+            notify(&CONTROL.event)?;
+        }
+        Ok(changed)
+    }
+
+    pub fn wait_probes(self) -> Result<(), Failure> {
+        self.wait_ready()?;
+        loop {
+            let token = CONTROL.progress.prepare();
+            if !CONTROL.probe_pending.load(Ordering::Acquire)
+                && !CONTROL.probe_running.load(Ordering::Acquire)
+            {
+                let error = CONTROL.probe_error.load(Ordering::Acquire);
+                return if error == 0 {
+                    Ok(())
+                } else {
+                    Err(Failure::new("runtime_probe", error))
+                };
+            }
+            can_wait_for_control()?;
+            token
+                .wait(None)
+                .map_err(|error| Failure::new("runtime_probe_wait", error as i32))?;
+            self.wait_ready()?;
+        }
+    }
+
+    pub fn request_shutdown(self) -> Result<(), Failure> {
+        self.valid()?;
+        threads::check_signal_context()
+            .map_err(|error| Failure::new("runtime_stop_context", error as i32))?;
+        if CONTROL.stopped.load(Ordering::Acquire) {
+            return Err(Failure::new("runtime_stopped", -202));
+        }
+        CONTROL.stop_error.store(0, Ordering::Release);
+        CONTROL.request.store(true, Ordering::Release);
+        notify(&CONTROL.event)
+    }
+
+    pub fn wait_stopped(self) -> Result<(), Failure> {
+        self.valid()?;
+        thread_context()?;
+        loop {
+            let token = CONTROL.progress.prepare();
+            let error = CONTROL.stop_error.load(Ordering::Acquire);
+            if error != 0 {
+                return Err(Failure::new("runtime_stop", error));
+            }
+            if CONTROL.stopped.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            can_wait_for_control()?;
+            token
+                .wait(None)
+                .map_err(|error| Failure::new("runtime_stop_wait", error as i32))?;
+            self.valid()?;
+        }
+    }
+}
+
+type Client = (fn(usize), usize);
+
+pub struct Clients {
+    entries: [Option<Client>; MAX_CLIENTS],
+}
+
+impl Clients {
+    pub const fn new() -> Self {
+        Self {
+            entries: [None; MAX_CLIENTS],
+        }
+    }
+    pub fn add(&mut self, entry: fn(usize), argument: usize) -> Result<(), Failure> {
+        let slot = self
+            .entries
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .ok_or(Failure::new("runtime_client_capacity", -203))?;
+        *slot = Some((entry, argument));
+        Ok(())
+    }
+}
+
+struct Claim;
+impl Drop for Claim {
+    fn drop(&mut self) {
+        assert!(
+            !CONTROL.running.load(Ordering::Acquire)
+                && CONTROL.owner.load(Ordering::Acquire) == 0
+                && MANAGER.quiescent()
+                && linux_deferred::quiescent()
+                && linux_irq::quiescent()
+                && linux_runtime::quiescent(),
+            "runtime owners must join before resource release"
+        );
+        CONTROL.epoch.store(0, Ordering::Release);
+        CLAIMED.store(false, Ordering::Release);
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum Stage {
+    Claim = 1,
+    Platform,
+    Inventory,
+    Apic,
+    Controller,
+    Timer,
+    StackSpace,
+    Workers,
+    Coordinator,
+    Clients,
+    Manager,
+}
+
+fn checkpoint(_stage: Stage) -> Result<(), Failure> {
+    #[cfg(feature = "guest-tests")]
+    tests::checkpoint(_stage)?;
+    Ok(())
+}
+
+pub struct Resources<'a, 'storage> {
+    space: memory::StackSpace<'a, 'storage>,
+    timer: irq::Timer<'a, 'storage>,
+    _controller: IoApic<'a, 'storage>,
+    _apic: LocalApic<'a, 'storage>,
+    inventory: Arc<Inventory>,
+    _topology: Topology,
+    ran: Cell<bool>,
+    _claim: Claim,
+}
+
+pub const METADATA_BYTES: usize = core::mem::size_of::<Resources<'static, 'static>>()
+    + core::mem::size_of::<Clients>()
+    + core::mem::size_of::<Control>()
+    + core::mem::size_of::<threads::Scheduler<'static, 'static, 'static>>()
+    + core::mem::size_of::<threads::RunStats>()
+    + core::mem::size_of::<linux_deferred::WorkerTasks>()
+    + irq::APIC_METADATA_BYTES;
+const _: () =
+    assert!(kutox::pci_state::INFRASTRUCTURE_METADATA_BYTES + METADATA_BYTES <= 64 * 1024);
+
+impl<'a, 'storage> Resources<'a, 'storage> {
+    pub fn start(
+        boot: &BootInfo,
+        frames: &'a memory::PhysicalFrames<'storage>,
+    ) -> Result<Self, Failure> {
+        Self::start_inner(boot, frames).inspect_err(report)
+    }
+
+    fn start_inner(
+        boot: &BootInfo,
+        frames: &'a memory::PhysicalFrames<'storage>,
+    ) -> Result<Self, Failure> {
+        if !threads::is_quiescent()
+            || !irq::is_quiescent()
+            || !linux_deferred::quiescent()
+            || !linux_irq::quiescent()
+            || !linux_runtime::quiescent()
+            || !MANAGER.quiescent()
+        {
+            return Err(Failure::new("runtime_services_live", -204));
+        }
+        if CLAIMED
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(Failure::new("runtime_claimed", -204));
+        }
+        let claim = Claim;
+        let epoch = NEXT_EPOCH
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
+                epoch.checked_add(1)
+            })
+            .map_err(|_| Failure::new("runtime_epoch_overflow", -205))?;
+        CONTROL.epoch.store(epoch, Ordering::Release);
+        CONTROL.owner.store(0, Ordering::Release);
+        CONTROL.ready.store(false, Ordering::Release);
+        CONTROL.stopping.store(false, Ordering::Release);
+        CONTROL.request.store(false, Ordering::Release);
+        CONTROL.stopped.store(false, Ordering::Release);
+        CONTROL.start_error.store(0, Ordering::Release);
+        CONTROL.stop_error.store(0, Ordering::Release);
+        CONTROL.probe_pending.store(false, Ordering::Release);
+        CONTROL.probe_running.store(false, Ordering::Release);
+        CONTROL.probe_error.store(0, Ordering::Release);
+        checkpoint(Stage::Claim)?;
+        let topology = crate::platform::discover(boot, frames)?;
+        checkpoint(Stage::Platform)?;
+        let inventory = pci::enumerate()?;
+        checkpoint(Stage::Inventory)?;
+        let apic = LocalApic::start(boot, frames)?;
+        checkpoint(Stage::Apic)?;
+        let controller = IoApic::start(boot, frames, &apic, &topology)?;
+        checkpoint(Stage::Controller)?;
+        let timer = irq::Timer::attach(&apic)?;
+        checkpoint(Stage::Timer)?;
+        let space = memory::StackSpace::new(boot, frames)?;
+        checkpoint(Stage::StackSpace)?;
+        Ok(Self {
+            space,
+            timer,
+            _controller: controller,
+            _apic: apic,
+            inventory,
+            _topology: topology,
+            ran: Cell::new(false),
+            _claim: claim,
+        })
+    }
+
+    pub fn handle(&self) -> Handle {
+        Handle {
+            epoch: CONTROL.epoch.load(Ordering::Acquire),
+        }
+    }
+
+    pub fn run(&self, clients: Clients) -> Result<threads::RunStats, Failure> {
+        self.run_inner(clients).inspect_err(report)
+    }
+
+    fn run_inner(&self, clients: Clients) -> Result<threads::RunStats, Failure> {
+        if !threads::is_quiescent() {
+            return Err(Failure::new("runtime_dispatcher_busy", -208));
+        }
+        if self.ran.replace(true) {
+            return Err(Failure::new("runtime_already_run", -206));
+        }
+        let mut scheduler = threads::Scheduler::new(&self.space);
+        let workers = linux_deferred::start_owned(&mut scheduler)?;
+        let admission = (|| {
+            checkpoint(Stage::Workers)?;
+            // The shared owner and client entries stay in this scope until every stack joins.
+            scheduler.spawn(coordinator, self as *const Self as usize)?;
+            checkpoint(Stage::Coordinator)?;
+            for entry in clients.entries.iter().flatten() {
+                scheduler.spawn(client_entry, entry as *const Client as usize)?;
+            }
+            checkpoint(Stage::Clients)
+        })();
+        if let Err(error) = admission {
+            workers.rollback(&mut scheduler)?;
+            scheduler.discard_all_unstarted()?;
+            return Err(error);
+        }
+        CONTROL.running.store(true, Ordering::Release);
+        let stats = scheduler
+            .run_persistent(&self.timer, &CONTROL.stopped)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "runtime dispatcher failed stage={} code={}; suspended owners retained",
+                    error.stage, error.code
+                )
+            });
+        CONTROL.running.store(false, Ordering::Release);
+        assert!(
+            CONTROL.stopped.load(Ordering::Acquire)
+                && linux_deferred::quiescent()
+                && MANAGER.quiescent()
+                && stats.peak_tasks <= MAX_TASKS,
+            "runtime join incomplete"
+        );
+        self.timer.stop()?;
+        self.timer.cancel_handler()?;
+        let error = CONTROL.start_error.load(Ordering::Acquire);
+        if error != 0 {
+            return Err(Failure::new("runtime_start", error));
+        }
+        Ok(stats)
+    }
+}
+
+fn client_entry(address: usize) {
+    let (entry, argument) = unsafe { (address as *const Client).read() };
+    let handle = Handle {
+        epoch: CONTROL.epoch.load(Ordering::Acquire),
+    };
+    match handle.wait_ready() {
+        Ok(()) => entry(argument),
+        Err(error) => report(&error),
+    }
+}
+
+fn initialize(resources: &Resources<'_, '_>) -> Result<(), Failure> {
+    if MANAGER
+        .snapshot()
+        .map_err(|error| Failure::new("runtime_manager", error.code()))?
+        .phase
+        == Phase::Retired
+    {
+        MANAGER
+            .restart()
+            .map_err(|error| Failure::new("runtime_manager_restart", error.code()))?;
+    }
+    driver_init::initialize(&MANAGER, Scope::Production)
+        .map_err(|error| Failure::new("runtime_driver_init", error.code()))?;
+    MANAGER
+        .discover_inventory(&resources.inventory)
+        .map_err(|error| Failure::new("runtime_inventory", error.code()))?;
+    MANAGER
+        .coordinate_probes(|event| serial::print(format_args!("# RUNTIME_PROBE {event:?}\n")))
+        .map_err(|error| Failure::new("runtime_probe", error.code()))?;
+    checkpoint(Stage::Manager)?;
+    Ok(())
+}
+
+fn shutdown() -> Result<(), Failure> {
+    let phase = MANAGER
+        .snapshot()
+        .map_err(|error| Failure::new("runtime_manager", error.code()))?
+        .phase;
+    if !matches!(phase, Phase::New | Phase::Retired) {
+        MANAGER
+            .shutdown()
+            .map_err(|error| Failure::new("runtime_driver_stop", error.code()))?;
+    }
+    if !linux_irq::callbacks_drained() || !linux_runtime::quiescent() {
+        return Err(Failure::new("runtime_source_users", -207));
+    }
+    linux_deferred::stop_and_join()
+}
+
+fn coordinator(address: usize) {
+    CONTROL.owner.store(
+        threads::current_task_handle()
+            .expect("runtime control task")
+            .ticket(),
+        Ordering::Release,
+    );
+    let resources = unsafe { &*(address as *const Resources<'_, '_>) };
+    if let Err(error) = initialize(resources) {
+        report(&error);
+        CONTROL.start_error.store(error.code, Ordering::Release);
+        CONTROL.request.store(true, Ordering::Release);
+    } else {
+        CONTROL.ready.store(true, Ordering::Release);
+    }
+    notify(&CONTROL.progress).expect("runtime readiness notification");
+    loop {
+        let token = CONTROL.event.prepare();
+        if CONTROL.request.swap(false, Ordering::AcqRel) {
+            CONTROL.stopping.store(true, Ordering::Release);
+            match shutdown() {
+                Ok(()) => {
+                    CONTROL.stopped.store(true, Ordering::Release);
+                    notify(&CONTROL.progress).expect("runtime join notification");
+                    CONTROL.owner.store(0, Ordering::Release);
+                    return;
+                }
+                Err(error) => {
+                    report(&error);
+                    CONTROL.stop_error.store(error.code, Ordering::Release);
+                    notify(&CONTROL.progress).expect("runtime stop error notification");
+                }
+            }
+        }
+        if !CONTROL.stopping.load(Ordering::Acquire)
+            && CONTROL.probe_pending.swap(false, Ordering::AcqRel)
+        {
+            CONTROL.probe_running.store(true, Ordering::Release);
+            #[cfg(feature = "guest-tests")]
+            tests::check_control_waits(true);
+            if let Err(error) = MANAGER.coordinate_probes(|event| {
+                serial::print(format_args!("# RUNTIME_PROBE {event:?}\n"))
+            }) {
+                let error = Failure::new("runtime_probe", error.code());
+                report(&error);
+                CONTROL.probe_error.store(error.code, Ordering::Release);
+            }
+            CONTROL.probe_running.store(false, Ordering::Release);
+            notify(&CONTROL.progress).expect("runtime probe notification");
+        }
+        token.wait(None).expect("runtime control wait");
+    }
+}
+
+pub fn quiescent() -> bool {
+    !CLAIMED.load(Ordering::Acquire)
+        && !CONTROL.running.load(Ordering::Acquire)
+        && CONTROL.owner.load(Ordering::Acquire) == 0
+        && CONTROL.epoch.load(Ordering::Acquire) == 0
+        && MANAGER.quiescent()
+}
+
+#[cfg(feature = "guest-tests")]
+#[path = "guest_tests/kernel_runtime.rs"]
+pub mod tests;

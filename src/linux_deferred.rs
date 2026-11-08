@@ -343,7 +343,27 @@ fn napi(address: usize, key: Key, operation: u32, done: i32) -> Result<bool, Err
     }
 }
 
+pub struct WorkerTasks {
+    handles: [kutox::run_queue::TaskHandle; 2],
+}
+
+impl WorkerTasks {
+    pub fn rollback(self, scheduler: &mut threads::Scheduler<'_, '_, '_>) -> Result<(), Failure> {
+        for handle in self.handles {
+            scheduler.discard_unstarted(handle)?;
+        }
+        WORKERS.store(0, Ordering::Release);
+        ACTIVE.store(false, Ordering::Release);
+        STOP.store(false, Ordering::Release);
+        Ok(())
+    }
+}
+
 pub fn start(scheduler: &mut threads::Scheduler<'_, '_, '_>) -> Result<(), Failure> {
+    start_owned(scheduler).map(|_| ())
+}
+
+pub fn start_owned(scheduler: &mut threads::Scheduler<'_, '_, '_>) -> Result<WorkerTasks, Failure> {
     if !quiescent() {
         return Err(Failure::new("linux_workers_live", -1));
     }
@@ -356,24 +376,60 @@ pub fn start(scheduler: &mut threads::Scheduler<'_, '_, '_>) -> Result<(), Failu
             return Err(error);
         }
     };
-    if let Err(error) = scheduler.spawn(worker, 1) {
-        scheduler.discard_unstarted(first)?;
-        ACTIVE.store(false, Ordering::Release);
-        return Err(error);
-    }
+    let second = match scheduler.spawn(worker, 1) {
+        Ok(handle) => handle,
+        Err(error) => {
+            scheduler.discard_unstarted(first)?;
+            ACTIVE.store(false, Ordering::Release);
+            return Err(error);
+        }
+    };
     WORKERS.store(2, Ordering::Release);
+    Ok(WorkerTasks {
+        handles: [first, second],
+    })
+}
+
+fn request_stop() -> Result<(), Error> {
+    sleepable()?;
+    if !SERVICES.lock_save_irq().state.is_empty() {
+        return Err(Error::Busy);
+    }
+    STOP.store(true, Ordering::Release);
+    notify(&WORK_READY);
+    notify(&NAPI_READY);
     Ok(())
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn kutox_linux_workers_stop() {
-    checked(sleepable(), "workers_stop_context");
-    if !SERVICES.lock_save_irq().state.is_empty() {
-        fail("workers_stop_live_objects", Error::Busy as i32);
+    checked(request_stop(), "workers_stop");
+}
+
+pub fn stop_and_join() -> Result<(), Failure> {
+    threads::check_thread_context()
+        .map_err(|error| Failure::new("linux_workers_join_context", error as i32))?;
+    if control_reentry() {
+        return Err(Failure::new(
+            "linux_workers_join_reentry",
+            Error::SelfWait as i32,
+        ));
     }
-    STOP.store(true, Ordering::Release);
-    notify(&WORK_READY);
-    notify(&NAPI_READY);
+    request_stop().map_err(|error| Failure::new("linux_workers_stop", error as i32))?;
+    loop {
+        let token = JOIN.prepare();
+        if WORKERS.load(Ordering::Acquire) == 0 {
+            break;
+        }
+        token
+            .wait(None)
+            .map_err(|error| Failure::new("linux_workers_join", error as i32))?;
+    }
+    Ok(())
+}
+
+pub fn worker_count() -> usize {
+    WORKERS.load(Ordering::Acquire)
 }
 
 fn worker(which: usize) {
@@ -460,6 +516,7 @@ fn worker(which: usize) {
     if WORKERS.fetch_sub(1, Ordering::AcqRel) == 1 {
         ACTIVE.store(false, Ordering::Release);
     }
+    notify(&JOIN);
 }
 
 pub fn quiescent() -> bool {

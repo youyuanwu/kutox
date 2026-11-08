@@ -24,9 +24,9 @@ use crate::{driver_memory, driver_platform};
 use kutox::fw_cfg::BootMode;
 use moss_libkernel::CpuOps;
 
-struct TestCase {
-    name: &'static str,
-    run: fn(&BootInfo, &'static memory::PhysicalFrames<'static>) -> Result<(), Failure>,
+pub(crate) struct TestCase {
+    pub(crate) name: &'static str,
+    pub(crate) run: fn(&BootInfo, &'static memory::PhysicalFrames<'static>) -> Result<(), Failure>,
 }
 
 static TESTS: &[TestCase] = &[
@@ -284,7 +284,12 @@ fn bail(stage: &str) -> ! {
 
 pub fn run(boot: &BootInfo) -> ! {
     let inject = boot.mode == BootMode::KernelTestsFail;
-    let total = TESTS.len() + usize::from(inject);
+    let tests = if boot.mode == BootMode::DriverRuntimeTests {
+        crate::kernel_runtime::tests::TESTS
+    } else {
+        TESTS
+    };
+    let total = tests.len() + usize::from(inject);
     serial::print(format_args!("KTAP version 1\n1..{total}\n"));
     if cpu::interrupts_enabled()
         || X86Cpu::irq_lock_depth() != 0
@@ -294,6 +299,8 @@ pub fn run(boot: &BootInfo) -> ! {
         || !threads::irq_tests::quiescent()
         || !mutex::tests::quiescent()
         || !linux_runtime::quiescent()
+        || !crate::kernel_runtime::quiescent()
+        || !crate::kernel_runtime::tests::quiescent()
         || !linux_deferred::quiescent()
         || !linux_irq::quiescent()
         || !driver_memory::quiescent()
@@ -329,7 +336,7 @@ pub fn run(boot: &BootInfo) -> ! {
     };
     let cases = core::iter::once(&INTENTIONAL_FAILURE)
         .filter(|_| inject)
-        .chain(TESTS);
+        .chain(tests);
     let mut failed = 0;
     for (index, test) in cases.enumerate() {
         let before = memory::allocation_snapshot(allocator);
@@ -364,6 +371,8 @@ pub fn run(boot: &BootInfo) -> ! {
             || !threads::irq_tests::quiescent()
             || !mutex::tests::quiescent()
             || !linux_runtime::quiescent()
+            || !crate::kernel_runtime::quiescent()
+            || !crate::kernel_runtime::tests::quiescent()
             || !linux_deferred::quiescent()
             || !linux_irq::quiescent()
             || !driver_memory::quiescent()

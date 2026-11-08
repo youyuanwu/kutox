@@ -4,6 +4,30 @@ use super::*;
 use crate::boot::BootInfo;
 use core::arch::asm;
 
+pub type IdleHook = fn(&irq::Timer<'_, '_>) -> Result<(), Failure>;
+static IDLE_HOOK: moss_libkernel::sync::spinlock::SpinLockIrq<Option<IdleHook>, X86Cpu> =
+    moss_libkernel::sync::spinlock::SpinLockIrq::new(None);
+
+pub struct IdleHookGuard;
+impl Drop for IdleHookGuard {
+    fn drop(&mut self) {
+        *IDLE_HOOK.lock_save_irq() = None;
+    }
+}
+
+pub fn install_idle_hook(hook: IdleHook) -> IdleHookGuard {
+    assert!(IDLE_HOOK.lock_save_irq().replace(hook).is_none());
+    IdleHookGuard
+}
+
+pub fn before_persistent_idle(timer: &irq::Timer<'_, '_>) -> Result<(), Failure> {
+    let hook = *IDLE_HOOK.lock_save_irq();
+    if let Some(hook) = hook {
+        hook(timer)?;
+    }
+    Ok(())
+}
+
 pub fn guarded_stack_valid(scheduler: &Scheduler<'_, '_, '_>, handle: TaskHandle) -> bool {
     scheduler.tasks[handle.slot()]
         .as_ref()
@@ -159,6 +183,7 @@ mod cases {
                     dispatches: 27,
                     yields: 24,
                     finished: 3,
+                    peak_tasks: 3,
                     ..RunStats::default()
                 })
                 || STEP.load(Ordering::Relaxed) != 24
@@ -176,6 +201,7 @@ mod cases {
                     dispatches: 1,
                     yields: 0,
                     finished: 1,
+                    peak_tasks: 1,
                     ..RunStats::default()
                 })
             {
@@ -249,6 +275,7 @@ mod cases {
                     dispatches: 2,
                     yields: 1,
                     finished: 1,
+                    peak_tasks: 1,
                     ..RunStats::default()
                 })
         {

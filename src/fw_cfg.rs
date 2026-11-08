@@ -16,6 +16,7 @@ pub enum BootMode {
     UnexpectedPageFault,
     KernelTests,
     KernelTestsFail,
+    DriverRuntimeTests,
     HeapOom,
     ThreadStackGuard,
 }
@@ -31,6 +32,7 @@ impl BootMode {
             Self::UnexpectedPageFault => "unexpected-page-fault",
             Self::KernelTests => "kernel-tests",
             Self::KernelTestsFail => "kernel-tests-fail",
+            Self::DriverRuntimeTests => "driver-runtime-tests",
             Self::HeapOom => "heap-oom",
             Self::ThreadStackGuard => "thread-stack-guard",
         }
@@ -63,6 +65,7 @@ impl BootMode {
                 | Self::UnexpectedPageFault
                 | Self::KernelTests
                 | Self::KernelTestsFail
+                | Self::DriverRuntimeTests
                 | Self::HeapOom
                 | Self::ThreadStackGuard
         )
@@ -147,6 +150,7 @@ pub fn read_mode(
         b"unexpected-page-fault" => Ok(Some(BootMode::UnexpectedPageFault)),
         b"kernel-tests" => Ok(Some(BootMode::KernelTests)),
         b"kernel-tests-fail" => Ok(Some(BootMode::KernelTestsFail)),
+        b"driver-runtime-tests" => Ok(Some(BootMode::DriverRuntimeTests)),
         b"heap-oom" => Ok(Some(BootMode::HeapOom)),
         b"thread-stack-guard" => Ok(Some(BootMode::ThreadStackGuard)),
         _ => Err(Error::UnknownMode),
@@ -213,6 +217,7 @@ mod tests {
             BootMode::UnexpectedPageFault,
             BootMode::KernelTests,
             BootMode::KernelTestsFail,
+            BootMode::DriverRuntimeTests,
             BootMode::HeapOom,
             BootMode::ThreadStackGuard,
         ] {
@@ -319,6 +324,7 @@ fn guest_modes_require_the_build_feature_without_changing_probe() {
     for mode in [
         BootMode::KernelTests,
         BootMode::KernelTestsFail,
+        BootMode::DriverRuntimeTests,
         BootMode::EepromTimeout,
         BootMode::PageFault,
         BootMode::GeneralProtection,

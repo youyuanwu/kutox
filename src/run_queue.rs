@@ -34,6 +34,38 @@ pub enum WakeReason {
     Cancelled,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IdleMode {
+    Finite,
+    Persistent,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IdleAction {
+    Complete,
+    Deadline(u64),
+    Interrupt,
+    Deadlock,
+}
+
+pub fn idle_action(
+    mode: IdleMode,
+    empty: bool,
+    deadline: Option<u64>,
+    irq_armed: bool,
+    stopped: bool,
+) -> IdleAction {
+    if empty && (mode == IdleMode::Finite || stopped) {
+        IdleAction::Complete
+    } else if let Some(deadline) = deadline {
+        IdleAction::Deadline(deadline)
+    } else if mode == IdleMode::Persistent || irq_armed {
+        IdleAction::Interrupt
+    } else {
+        IdleAction::Deadlock
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Wait {
     key: Option<WaitKey>,
@@ -356,6 +388,48 @@ impl<const N: usize> RunQueue<N> {
 mod tests {
     use super::*;
     use std::{collections::VecDeque, vec::Vec};
+
+    #[test]
+    fn finite_idle_preserves_completion_deadlock_deadlines_and_real_irq_waits() {
+        assert_eq!(
+            idle_action(IdleMode::Finite, true, Some(10), true, false),
+            IdleAction::Complete
+        );
+        assert_eq!(
+            idle_action(IdleMode::Finite, false, None, false, false),
+            IdleAction::Deadlock
+        );
+        assert_eq!(
+            idle_action(IdleMode::Finite, false, Some(10), false, false),
+            IdleAction::Deadline(10)
+        );
+        assert_eq!(
+            idle_action(IdleMode::Finite, false, None, true, false),
+            IdleAction::Interrupt
+        );
+    }
+
+    #[test]
+    fn persistent_idle_never_returns_before_shutdown_and_join_or_manufactures_deadlines() {
+        for empty in [false, true] {
+            assert_eq!(
+                idle_action(IdleMode::Persistent, empty, None, false, false),
+                IdleAction::Interrupt
+            );
+            assert_eq!(
+                idle_action(IdleMode::Persistent, empty, Some(10), false, false),
+                IdleAction::Deadline(10)
+            );
+        }
+        assert_eq!(
+            idle_action(IdleMode::Persistent, true, None, false, true),
+            IdleAction::Complete
+        );
+        assert_eq!(
+            idle_action(IdleMode::Persistent, false, None, false, true),
+            IdleAction::Interrupt
+        );
+    }
 
     #[test]
     fn rollback_preserves_fifo_and_rejects_stale_handles() {
