@@ -109,9 +109,11 @@ hierarchy/routing, persistent service lifetime and managed Linux e1000.
 The production initializer registers one supported e1000 backend, with native
 [network handles](src/net_device.rs) for real MAC/link/MTU/statistics, owned
 Ethernet frames, checked TX receipts and FIFO RX. Linux remains the only packet
-driver. [Persistent boot integration](docs/rust-kernel-linux-drivers.md#planned-moss-style-driver-infrastructure)
-and managed failure/teardown hardening are implemented for the selected QEMU
-profile; final as-built documentation remains the next phase.
+driver. All eight [Moss-style integration phases](docs/rust-kernel-linux-drivers.md#moss-style-driver-infrastructure)
+are complete for the selected QEMU profile, including persistent boot and managed
+failure/teardown hardening. The [kernel-client guide](docs/rust-kernel-linux-drivers.md#kernel-client-lifecycle)
+describes service admission, packet receipts and deliberate shutdown without
+Linux-private structs.
 
 ## Requirements
 

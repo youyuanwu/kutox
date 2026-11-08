@@ -26,6 +26,9 @@ drivers or physical hardware.
 Normal boot now retains the managed e1000 in the persistent kernel runtime;
 explicit `probe` preserves the finite boot-time MAC proof. No IP stack or Linux
 application environment is implied.
+All eight [Moss-style integration phases](#moss-style-driver-infrastructure) are
+complete. The [kernel-client lifecycle](#kernel-client-lifecycle) describes how
+to admit native consumers and retain/retire their packet ownership.
 The [third-party notice](../THIRDPARTY-NOTICES.md) records the source revision,
 MIT license, and adaptation boundaries.
 
@@ -460,7 +463,12 @@ GPL-2.0-only Linux code in a combined distributed work. See the
 [Apache Software Foundation's compatibility explanation](https://www.apache.org/licenses/GPL-compatibility.html).
 Changing kutox's own license would not relicense its Linux driver source.
 
-## Proposed architecture
+## Architecture and future OS boundary
+
+The diagram includes a future OS/userspace track. Processes, VFS, a network
+stack and a Linux-compatible userspace ABI are not implemented here. The current
+runtime implements the native device boundary, selected Linux driver environment
+and Rust platform services below those layers.
 
 ```text
 Linux application binaries
@@ -945,11 +953,19 @@ one pinned configuration, not support for every retained optional callback.
 
 The independent audit records 209 source-only APIs and 52 explicit platform
 symbols, while current-ELF callback identity, exact packets and source cleanup
-establish execution. Ten targeted CTest entries passed at the final code
-milestone: 55 normal cases at 128/32 MiB, deliberate-failure rejection, 539 exact
+establish execution. At the earlier standalone driver milestone, ten targeted
+CTest entries passed: 55 normal cases at 128/32 MiB, deliberate-failure rejection, 539 exact
 TX frames, 304 hardening RX receipts plus 12 baseline deliveries/four drops,
 120 Python tests and 58 portable root Rust tests. This does not claim that all
-25 CTest entries or Moss tests were rerun.
+25 CTest entries at that milestone or Moss tests were rerun.
+
+The completed managed-runtime integration preserves that independent packet
+ledger and now has 59 normal guest cases, with runtime/network/hardening tables
+selected separately. Final code-phase validation passed 133 portable root tests
+per feature profile, 157 Python tests, 30 targeted feature-on and ten feature-off
+CTest checks, source/provider and actual-ELF audits, and strict kernel/host lint.
+This was targeted validation, not a full CTest or Moss-suite rerun. Documentation
+finalization checks contracts and links without rebuilding or rerunning guests.
 
 The original stop/drain and unsafe DMA contracts above remain essential:
 disabled QEMU RX rejects later receive callbacks, original callback users join
@@ -1046,17 +1062,19 @@ ring/lifetime hardening and as-built documentation. Integration with a native
 network stack and extraction for a second Linux driver are subsequent work;
 they do not replace this roadmap's driver-execution gates.
 
-### Planned Moss-style driver infrastructure
+<a id="planned-moss-style-driver-infrastructure"></a>
 
-The next integration milestone has **Phases 1-7 implemented; the remaining phase
-is planned**. The native [registry policy](../src/driver_registry.rs) and
+### Moss-style driver infrastructure
+
+The integration milestone has **all eight phases complete**. The native
+[registry policy](../src/driver_registry.rs) and
 [owned manager boundary](../src/drivers.rs) have portable and guarded-thread
 guest tests, including retained built-in initializers and probe coordination.
 The e1000 backend now works behind retained native network handles in the
 managed runtime, and normal boot now starts and retains this runtime.
 Explicit MAC/test modes retain their previous behavior.
 
-Follow pinned Moss's
+The implementation follows pinned Moss's
 [built-in initialization](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/init.rs)
 and [retained driver manager](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/mod.rs)
 model: register compiled-in drivers, discover devices, match/probe candidates,
@@ -1064,14 +1082,14 @@ retry dependency-deferred probes while progress occurs, and retain successful
 instances. Moss currently discovers FDT-compatible devices; kutox's implemented
 bus is x86 PCI, not an imported ARM/device-tree implementation or `.ko` loader.
 
-The selected integration scope includes persistent e1000 use, changing the
+The completed integration includes persistent e1000 use, changing the
 unconfigured normal boot to the driver runtime while preserving explicit
 MAC/test modes, and PCI hierarchy discovery through conventional firmware-
 configured bridges. This is more than scanning extra buses: complete BDF and
-parent identity must reach config access, target BAR/ancestor-window checks,
+parent identity reaches config access, target BAR/ancestor-window checks,
 C/native diagnostics, IRQ swizzling and the retained resource owner.
 
-The planned phases are:
+The completed phases are:
 
 1. **Native registry and ownership:** bounded driver/device registrations,
    generation-checked handles, matching, dependency/error state and retirement.
@@ -1096,6 +1114,8 @@ The planned phases are:
    Implemented and verified in portable and managed root/low-memory/nested tests.
 8. **Documentation:** actual interfaces, default-mode migration, budgets,
    provenance, commands and supported/unsupported profile.
+   Consolidated here, with native client usage and the historical MAC proof
+   explicitly distinguished from persistent boot.
 
 Do not copy Moss's global IRQ-lock callback boundary for Linux's sleepable
 probe/open/remove: reserve identity, release locks/borrows, execute on a kernel
@@ -1111,9 +1131,12 @@ Reverse dependency teardown retains backing until consumers/callbacks retire.
 Production registries reject synthetic/test fallback drivers.
 
 The manager has 16 driver slots, 256 discovery slots, 32 active bindings,
-32 consumer operations and four dependencies per driver/device. Its measured
-x86_64 size is 50,096 bytes, below the 64-KiB infrastructure budget; later PCI
-inventory storage must fit the remaining budget too. Use boot-owned/static
+32 consumer operations, 16 named services and four dependencies per driver/device.
+The Phase 1 measured x86_64 manager size was 50,096 bytes. The final conservative
+combined infrastructure bound is **60,385 bytes**, including PCI inventory,
+initializers and runtime/native-network metadata, below 64 KiB. This excludes
+packet/DMA backing, physical-frame metadata, heap storage and guarded-stack pages.
+Use boot-owned/static
 storage rather than constructing it on a 16-KiB worker stack. Thirty-seven portable
 policy/manager tests cover ownership, matching, failures, capacity, generation
 exhaustion, dependency progress/cycles and unlocked callback reentry. These
@@ -1128,7 +1151,8 @@ BAR registers or assigning resources. It rejects malformed headers, primary/
 secondary/subordinate conflicts, sibling overlap, stale identity/parent paths
 and capacity overflow; ordinary nested subordinate ranges remain valid.
 Unconfigured bridges stay recorded without traversing or assigning a child bus.
-Selection remains a separate one-e1000 fixture policy.
+Selection remains separate from enumeration; production admits at most one
+matching e1000 before acquiring its backing.
 
 [Native PCI owners](../src/pci.rs) retain an immutable inventory through device/
 BAR/DMA lifetimes and bind the selected full BDF without rediscovery. Source C
@@ -1287,7 +1311,7 @@ fabricated polling worker.
   Destination storage is allocated before consuming a FIFO entry. The existing
   eight RX slots and one outstanding production TX remain unchanged.
 - Errors distinguish not-ready, stale, BUSY, timeout, allocation, consumed drop,
-  closed, unsupported and context failures. `begin_stop` closes native admission
+  closed, unsupported, context and explicit driver-code failures. `begin_stop` closes native admission
   and wakes waiters without sleeping or freeing backing, even when consumer
   reservations prevent `stop` from running. Stop waits for reservations,
   stops observation before source RX teardown, invokes original close/
@@ -1306,6 +1330,63 @@ eight guarded stacks. A two-NIC scenario proves pre-probe singleton rejection.
 symbols, ready identities, error outcomes, task bounds or joins.
 The original 539-TX/304-hard-RX acceptance remains independent and unchanged.
 No new Linux algorithm, network stack or arbitrary hardware support is claimed.
+
+#### Kernel-client lifecycle
+
+These APIs are kernel-internal, not userspace sockets or a binary driver ABI.
+Use [kernel_runtime.rs](../src/kernel_runtime.rs) and
+[net_device.rs](../src/net_device.rs) from guarded cooperative client threads,
+with no outer IRQ-saving guard. The normal boot path supplies an empty
+`Clients` list and generates no application traffic.
+
+1. After allocator/time initialization, keep `Resources::start(&boot, frames)`
+   alive in the boot scope; `frames` is the kernel's static physical allocator.
+   Obtain `Resources::handle()` and store that checked handle in client-owned
+   state that outlives the client. `Clients::add(entry, argument)` accepts
+   `fn(usize)` callbacks, not closures or a runtime handle implicitly passed to
+   each callback. Admit at most three clients before `Resources::run(clients)`.
+2. In a client, `runtime.wait_ready()` means manager initialization, **not link
+   readiness**. `wait_probes()` means a completed coordinator batch, not a bound
+   NIC. `net_device::enumerate(runtime)` can return an empty list or a bound
+   device whose `info().ready` is false. Handle missing devices and link changes
+   explicitly; neither initial wait guarantees packets can be sent.
+3. Construct a `Frame` from 14-1514 Ethernet II bytes, including the L2 header
+   but no FCS. `Frame::from_owned` also rejects a Vec capacity above 1514.
+   `submit(&frame)` copies into source-owned skb backing and returns a
+   `TxTicket`; the caller may then drop its original frame.
+4. A `submit` error gives no new ticket. `NotReady` means link is unavailable;
+   `Busy` means an existing receipt or source queue prevents a new offer.
+   After a ticket is returned, use `progress(ticket)` to drive BUSY retry or
+   `wait(ticket, timeout_us)` to wait for completion. Completion reports padded
+   wire bytes, at least 60. `Dropped` is consumed source ownership, not permission
+   to resubmit the same ticket.
+5. Call `finish(ticket)` after completion or consumed drop. Pending finish is
+   `Busy`; a finished ticket is stale. Timeout does not cancel an accepted TX:
+   retain the ticket and observe/finish it later, or deliberately stop the
+   device/runtime. Dropping a handle is not cancellation or source teardown.
+6. `receive()` returns `Ok(None)` for an empty FIFO, or a copied owned frame.
+   `wait_receive(timeout_us)` suspends until data, timeout or closure. Allocation
+   failure leaves the FIFO entry intact. Owned RX bytes remain valid after
+   device removal; source counters can exceed delivered frames because
+   `info().statistics.rx_dropped` includes FIFO/unsupported ingress drops.
+7. To stop one device, use `runtime.manager()?.stop(...)` with its native
+   `DeviceHandle` obtained from manager enumeration; the network handle's
+   numeric identity is diagnostic, not a constructor for a registry handle.
+   To stop all services, call `runtime.request_shutdown()` and, from a
+   non-control client, `wait_stopped()`. Release any explicit manager operations
+   or live source objects before retrying a busy stop. Admission closes and
+   waiters wake before source close, but backing stays live until reservations
+   and callbacks drain.
+
+After shutdown, clients must return before `Resources::run` can finish.
+Only then can the boot scope release timer/controllers/stack space. Do not wait
+for control-task completion from that control task; it fails with
+`runtime_control_self_wait` (`-209`). Closed views cannot submit to a stopped
+device; forgotten/rebound device identities and released runtime epochs reject
+old handles/receipts as stale. Device generations never reuse a global identity.
+The [managed guest clients](../src/guest_tests/network.rs) demonstrate this
+startup/packet/stop flow; their injection, journals and assertions are test-only,
+not APIs required by production consumers.
 
 #### Default runtime boot and end-to-end acceptance
 
@@ -1360,8 +1441,8 @@ run and default no-NIC/unsupported liveness checks, and provides
 `driver-runtime-unsupported`, plus bridged/nested/no-NIC/unknown low-memory
 variants. All use the selected `build/kutox.iso`; no per-mode images or module
 loader is introduced. Independent original packet/hardening acceptance remains
-unchanged. Expanded failure/teardown hardening is implemented; final docs are
-Phase 8.
+unchanged. Expanded failure/teardown hardening and as-built documentation are
+complete for this profile.
 
 #### Managed failure, concurrency and callback lifetime
 
@@ -1439,7 +1520,7 @@ Initial infrastructure is bounded; the actual Linux backend retains its
 one-e1000-instance limit while native synthetic drivers prove generic registry
 behavior. PCI bridges are firmware-configured on the selected QEMU i440FX/PIIX
 machine; bus/window assignment, general AML routing, PCIe/MSI, physical hardware,
-SMP, module loading and an IP stack remain outside this plan. Bridge support
+SMP, module loading and an IP stack remain outside this profile. Bridge support
 is limited to the validated QEMU firmware-configured profile, not arbitrary
 PCI topology or hardware.
 

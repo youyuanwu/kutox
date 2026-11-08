@@ -204,6 +204,30 @@ and all four selected upstream units remain unchanged. These services now back
 original driver execution for the selected profile, not general Linux
 synchronization or binary ABI compatibility.
 
+## Native driver infrastructure and persistent integration
+
+The native [registry policy](src/driver_registry.rs),
+[retained manager](src/drivers.rs), [initializer validation](src/driver_init.rs),
+[PCI hierarchy](src/pci_state.rs), [runtime](src/kernel_runtime.rs) and
+[Ethernet handle/value boundary](src/net_device.rs) are kutox implementations.
+They follow pinned Moss's
+[built-in initialization](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/init.rs)
+and [retained driver model](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/mod.rs)
+as architectural references, reusing the existing attributed allocator/lock/task
+ports. No Moss FDT/VFS driver subsystem, ARM bus/controller code or dynamic module
+loader is copied. The native x86 PCI inventory, swizzle/window validation and
+unlocked callback/lifecycle policy are not imported Moss implementations.
+
+The managed [e1000 control adapter](src/linux_driver.rs) and
+[C lifecycle boundary](compat/driver_lifecycle.c) invoke the same four unchanged
+GPL-2.0-only Linux units described above. Linux retains its packet/descriptor,
+PHY, IRQ/NAPI and cleanup algorithms. Native frame/receipt ownership, source
+statistics snapshots, persistent service admission and managed guest hardening
+are kutox code; no Linux device core, IP stack or vendor-private algorithms
+are copied into Rust. Default boot and feature-off builds do not change those
+source/license boundaries. The earlier finite MAC helper remains a distinct
+explicit boot mode, not the current default or a fallback packet driver.
+
 ## Other dependencies and references
 
 Guest-test fixtures, build-profile gating and symbol/KTAP acceptance are kutox
