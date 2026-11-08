@@ -1,5 +1,7 @@
 import struct
+import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -7,8 +9,9 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import network_packets as p
 import qemu_test as q
+from unittest.mock import patch
 from test_network_runtime import SYMBOLS
-from test_runtime_boot import path_lines, ready, summary
+from test_runtime_boot import live_log, path_lines, ready, summary
 
 
 def source(epoch, step, event, count=1, ordinal=1, obj=0x9000, result=0):
@@ -76,6 +79,85 @@ def fixture(case="network-tests"):
 
 
 class NetworkStackTests(unittest.TestCase):
+    def test_live_peer_requires_exact_exchange_and_rejects_unsolicited_output(self):
+        sent = []
+        protocol = q.LiveIPProtocol(sent.append)
+        self.assertFalse(protocol.complete)
+        with self.assertRaises(AssertionError):
+            protocol.transmit(p.arp(True))
+        protocol.start()
+        for packet in p.live_requests(reply=True):
+            protocol.transmit(packet)
+        self.assertTrue(protocol.complete)
+        self.assertEqual(sent, [struct.pack("!I", len(packet)) + packet for packet in p.live_requests()])
+        with self.assertRaises(AssertionError):
+            protocol.transmit(p.arp(True))
+        with self.assertRaises(AssertionError):
+            protocol.start()
+
+    def test_default_live_clock_starts_after_wire_not_just_readiness(self):
+        args = SimpleNamespace(qemu="unused", build_dir=Path("build"), timeout=6)
+
+        def command(args, case, capture=None, net_fd=None):
+            script = f"""
+import socket, struct, time
+peer = socket.socket(fileno={net_fd})
+print({live_log('network-default')!r}, end='', flush=True)
+def receive(length):
+    data = bytearray()
+    while len(data) < length:
+        chunk = peer.recv(length - len(data))
+        assert chunk
+        data.extend(chunk)
+    return bytes(data)
+for request, reply in zip({p.live_requests()!r}, {p.live_requests(reply=True)!r}):
+    length = struct.unpack('!I', receive(4))[0]
+    assert receive(length) == request
+    time.sleep(0.15)
+    peer.sendall(struct.pack('!I', len(reply)) + reply)
+time.sleep(10)
+"""
+            return [sys.executable, "-u", "-c", script]
+
+        started = time.monotonic()
+        with patch.object(q, "qemu_command", side_effect=command), patch.object(q, "runtime_symbols", return_value=SYMBOLS):
+            completed, elapsed = q.execute_live(args, "network-default")
+        self.assertEqual(completed.returncode, -15)
+        self.assertGreaterEqual(elapsed, 3)
+        self.assertGreaterEqual(time.monotonic() - started, 3.45)
+        self.assertLess(time.monotonic() - started, 6)
+
+    def test_readiness_alone_and_late_service_errors_are_not_network_success(self):
+        args = SimpleNamespace(qemu="unused", build_dir=Path("build"), timeout=0.3)
+        command = [sys.executable, "-u", "-c", f"import time; print({live_log('network-default')!r}, end='', flush=True); time.sleep(5)"]
+        with patch.object(q, "qemu_command", return_value=command), patch.object(q, "runtime_symbols", return_value=SYMBOLS):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                q.execute_live(args, "network-default")
+        for extra in ("# NETWORK_STACK_ERROR operation=transmit error=Dropped",
+                      "# KERNEL_SERVICES_CLOSED epoch=1 tasks=0", "# NET_IP_OFFER epoch=1 step=0 kind=arp bytes=60"):
+            with self.assertRaises(AssertionError):
+                q.validate_live_boot("network-default", live_log("network-default") + extra + "\n", SYMBOLS)
+
+    def test_all_mode_configurations_reject_before_any_admission(self):
+        args = SimpleNamespace(qemu="unused", build_dir=Path("build"))
+        for case, (mode, cidr, code) in q.CONFIG_FAILURES.items():
+            command = q.qemu_command(args, case)
+            self.assertIn(f"name=opt/kutox/ipv4,string={cidr}", command)
+            if mode is None:
+                self.assertFalse(any("name=opt/kutox/test-mode" in value for value in command))
+            output = f"KUTOX_BOOT linux={q.REVISION}\nE1000_MAC_FAIL stage=boot_ipv4 code={code}\n"
+            q.validate_result(case, 3, output)
+            with self.assertRaises(AssertionError):
+                q.validate_result(case, 3, "BOOT_MEMORY_OK fake=1\n" + output)
+        q.validate_result("async-hardening-tests-disabled", 3, f"KUTOX_BOOT linux={q.REVISION}\nE1000_MAC_FAIL stage=boot_mode code=-25\n")
+        command = q.qemu_command(args, "network-default-ambiguous")
+        self.assertFalse(any("name=opt/kutox/test-mode" in value for value in command))
+        self.assertEqual(sum(value.startswith("e1000,netdev=") for value in command), 2)
+        output = f"KUTOX_BOOT linux={q.REVISION}\nE1000_MAC_FAIL stage=runtime_e1000_inventory code=-188\n"
+        q.validate_result("network-default-ambiguous", 3, output)
+        with self.assertRaises(AssertionError):
+            q.validate_result("network-default-ambiguous", 3, "# DRIVER_CALLBACK event=3\n" + output)
+
     def test_actual_shapes_and_bounded_production_source_proof(self):
         for case in q.IP_SUITE_CASES:
             q.validate_network_stack(case, 1, fixture(case), SYMBOLS)

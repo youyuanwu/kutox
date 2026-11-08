@@ -358,6 +358,7 @@ pub struct Resources<'a> {
     boot: BootInfo,
     frames: &'static memory::PhysicalFrames<'static>,
     ran: Cell<bool>,
+    network: Cell<bool>,
     _claim: Claim,
 }
 
@@ -459,6 +460,7 @@ impl<'a> Resources<'a> {
             boot: boot.clone(),
             frames,
             ran: Cell::new(false),
+            network: Cell::new(false),
             _claim: claim,
         })
     }
@@ -568,6 +570,23 @@ impl<'a> Resources<'a> {
             scheduler.discard_all_unstarted()?;
             return Err(error);
         }
+        self.network.set(network);
+        if matches!(
+            self.boot.mode,
+            kutox::fw_cfg::BootMode::Run
+                | kutox::fw_cfg::BootMode::NetworkRun
+                | kutox::fw_cfg::BootMode::DriverRun
+        ) {
+            serial::print(format_args!(
+                "# KERNEL_SERVICES epoch={} mode={} tasks={} clients={} async={} network={}\n",
+                CONTROL.epoch.load(Ordering::Acquire),
+                self.boot.mode.name(),
+                scheduler.task_count(),
+                clients.entries.iter().flatten().count(),
+                u8::from(asynchronous),
+                u8::from(network),
+            ));
+        }
         CONTROL.running.store(true, Ordering::Release);
         let stats = scheduler
             .run_persistent(&self.timer, &CONTROL.stopped)
@@ -594,6 +613,15 @@ impl<'a> Resources<'a> {
         }
         drop(binding);
         drop(platform);
+        if self.boot.mode.is_network_runtime()
+            || self.boot.mode == kutox::fw_cfg::BootMode::DriverRun
+        {
+            serial::print(format_args!(
+                "# KERNEL_SERVICES_CLOSED epoch={} tasks={}\n",
+                CONTROL.epoch.load(Ordering::Acquire),
+                scheduler.task_count(),
+            ));
+        }
         Ok(stats)
     }
 }
@@ -660,7 +688,7 @@ fn initialize(resources: &Resources<'_>) -> Result<(), Failure> {
     }
     refresh_ready(resources, true)?;
     checkpoint(Stage::Manager, resources.boot.mode)?;
-    if resources.boot.mode == kutox::fw_cfg::BootMode::NetworkRun {
+    if resources.boot.mode.is_network_runtime() && resources.network.get() {
         crate::net_stack::kutox_ipv4_service(resources.boot.ipv4)?;
     }
     Ok(())

@@ -79,6 +79,9 @@ def replies():
     return [packet for epoch in (1, 2)
             for packet in [arp(True), *[echo(epoch, seq, length, True) for seq, length in enumerate(PAYLOADS, 1)]]]
 
+def live_requests(reply=False):
+    return [arp(reply), echo(1, 1, 0, reply), echo(1, 5, 1472, reply)]
+
 
 def validate_reply(packet, epoch, step):
     expected = arp(True) if step == 0 else echo(epoch, step, PAYLOADS[step - 1], True)

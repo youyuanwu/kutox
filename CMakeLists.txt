@@ -74,11 +74,20 @@ add_test(NAME kernel-build-profile
         --kernel "${KERNEL}" --nm "${NM}" --guest-tests "${GUEST_TEST_PROFILE}"
 )
 foreach(case IN ITEMS driver-runtime-default driver-runtime-run driver-runtime-driver-run driver-runtime-default-no-nic driver-runtime-default-unsupported
-        network-run network-run-low-memory network-run-no-nic network-run-unsupported)
+        network-run network-run-low-memory network-run-no-nic network-run-unsupported
+        network-default network-default-low-memory network-default-no-nic network-default-unsupported driver-runtime-driver-only)
     add_test(NAME "${case}"
         COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
             --case "${case}" --build-dir "${CMAKE_BINARY_DIR}"
-            --qemu "${QEMU}" --nm "${NM}" --timeout 20
+            --qemu "${QEMU}" --nm "${NM}" --timeout 30
+    )
+    set_tests_properties("${case}" PROPERTIES TIMEOUT 35 RUN_SERIAL TRUE)
+endforeach()
+foreach(case IN ITEMS network-invalid-default network-invalid-run network-invalid-explicit network-default-ambiguous)
+    add_test(NAME "${case}"
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --case "${case}" --build-dir "${CMAKE_BINARY_DIR}"
+            --qemu "${QEMU}" --timeout 20
     )
     set_tests_properties("${case}" PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
 endforeach()
@@ -218,6 +227,12 @@ else()
             --qemu "${QEMU}" --timeout 20
     )
     set_tests_properties(network-tests-disabled PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
+    add_test(NAME async-hardening-tests-disabled
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --case async-hardening-tests-disabled --build-dir "${CMAKE_BINARY_DIR}"
+            --qemu "${QEMU}" --timeout 20
+    )
+    set_tests_properties(async-hardening-tests-disabled PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
 endif()
 add_test(NAME harness-unit
     COMMAND ${Python3_EXECUTABLE} -m unittest discover -s tests -v

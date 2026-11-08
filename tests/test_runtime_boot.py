@@ -41,6 +41,10 @@ def ready(epoch, identity, case):
 def live_log(case="driver-runtime-default"):
     configured, bound = runner.LIVE_CASES[case]
     lines = boot_log("", evidence="", mode=configured or "run", source="fw_cfg" if configured else "default").splitlines()
+    network = runner.live_network(case)
+    lines.append(
+        f"# KERNEL_SERVICES epoch=1 mode={configured or 'run'} tasks={5 if network else 3} clients=0 async={int(network)} network={int(network)}"
+    )
     if bound:
         lines += path_lines(case)
         lines += [
@@ -50,7 +54,7 @@ def live_log(case="driver-runtime-default"):
     lines.append(summary(1, 5 if case.endswith("no-nic") else 6, int(bound)))
     if bound:
         lines.append(ready(1, 6, case))
-    if configured == "network-run":
+    if network:
         lines += [
             "# NETWORK_STACK_STORAGE state=512 future=512 added_slabs=1 added_pages=0 future_slabs=1 future_pages=0 charged=104203 stack_limit=5 rx_budget=8",
             "# NETWORK_STACK_WAIT state=source",
@@ -190,10 +194,10 @@ class RuntimeBootTests(unittest.TestCase):
 
     def test_owned_child_must_remain_live_three_seconds_after_validated_readiness(self):
         args = SimpleNamespace(qemu="unused", build_dir=Path("build"), timeout=6)
-        command = [sys.executable, "-u", "-c", f"import time; print({live_log()!r}, end='', flush=True); time.sleep(10)"]
         started = time.monotonic()
+        command = [sys.executable, "-u", "-c", f"import time; print({live_log('driver-runtime-driver-only')!r}, end='', flush=True); time.sleep(10)"]
         with patch.object(runner, "qemu_command", return_value=command), patch.object(runner, "runtime_symbols", return_value=SYMBOLS):
-            completed, elapsed = runner.execute_live(args, "driver-runtime-default")
+            completed, elapsed = runner.execute_live(args, "driver-runtime-driver-only")
         self.assertGreaterEqual(elapsed, 3)
         self.assertGreaterEqual(time.monotonic() - started, 3)
         self.assertLess(time.monotonic() - started, 6)

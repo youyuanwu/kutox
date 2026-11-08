@@ -145,9 +145,11 @@ fn prime_buffers() -> Result<(), Failure> {
             "packet arena physical storage ceiling"
         );
         #[cfg(feature = "guest-tests")]
-        serial::print(format_args!(
-            "# ASYNC_NET_POOL slots=16 requested=24224 pages={pages} reserved=32768 allocation=1\n"
-        ));
+        if crate::linux_driver::tracing() {
+            serial::print(format_args!(
+                "# ASYNC_NET_POOL slots=16 requested=24224 pages={pages} reserved=32768 allocation=1\n"
+            ));
+        }
     }
     for slot in 0..MAX_PACKETS {
         if CONTROL.lock_save_irq().pool.loaned(slot) {

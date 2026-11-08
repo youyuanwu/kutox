@@ -128,13 +128,29 @@ LIVE_CASES = {
     "default-mode": (None, True),
     "driver-runtime-run": ("run", True),
     "driver-runtime-driver-run": ("driver-run", True),
+    "driver-runtime-driver-only": ("driver-run", True),
     "driver-runtime-default-no-nic": (None, False),
     "driver-runtime-default-unsupported": (None, False),
     "network-run": ("network-run", True),
     "network-run-low-memory": ("network-run", True),
     "network-run-no-nic": ("network-run", False),
     "network-run-unsupported": ("network-run", False),
+    "network-default": (None, True),
+    "network-default-low-memory": (None, True),
+    "network-default-no-nic": (None, False),
+    "network-default-unsupported": (None, False),
 }
+CONFIG_FAILURES = {
+    "network-invalid-default": (None, "10.0.2.0/24", -28),
+    "network-invalid-run": ("run", "x" * 33, -27),
+    "network-invalid-explicit": ("network-run", "127.0.0.1/8", -28),
+}
+
+
+def live_network(case):
+    return LIVE_CASES[case][0] != "driver-run"
+
+
 HARDENING_CASES = {
     case: "driver-hardening-tests" for case in (
         "driver-hardening-tests", "driver-hardening-tests-low-memory", "driver-hardening-tests-nested-low-memory",
@@ -163,6 +179,9 @@ CASES = {
     "async-core-tests-disabled": (None, "boot_mode"),
     "async-network-tests-disabled": (None, "boot_mode"),
     "network-tests-disabled": (None, "boot_mode"),
+    "async-hardening-tests-disabled": (None, "boot_mode"),
+    "network-default-ambiguous": (None, "runtime_e1000_inventory"),
+    **{case: (None, "boot_ipv4") for case in CONFIG_FAILURES},
     **{case: (None, None) for case in FAULT_RESULTS},
     "smp-unsupported": (None, "cpu_single_processor_required"),
     "heap-oom": (None, None),
@@ -856,7 +875,25 @@ def validate_thread_guard(returncode, output):
 def validate_result(case, returncode, output):
     if case in LIVE_CASES:
         raise AssertionError("persistent runtime requires measured live execution, not an exit code")
-    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled", "async-network-tests-disabled", "network-tests-disabled"):
+    if case == "network-default-ambiguous":
+        lines = output.splitlines()
+        expected = "E1000_MAC_FAIL stage=runtime_e1000_inventory code=-188"
+        if returncode != 3 or not lines or lines[-1] != expected:
+            raise AssertionError("ambiguous default topology was not rejected explicitly")
+        if any(line.startswith(("# DRIVER_CALLBACK", "# DRIVER_READY", "# KERNEL_SERVICES", "# NETWORK_STACK")) for line in lines):
+            raise AssertionError("ambiguous topology partially admitted a source/service")
+        return
+    if case in CONFIG_FAILURES:
+        lines = output.splitlines()
+        expected = f"E1000_MAC_FAIL stage=boot_ipv4 code={CONFIG_FAILURES[case][2]}"
+        if returncode != 3 or not lines or lines[-1] != expected:
+            raise AssertionError("network configuration did not fail explicitly before boot admission")
+        if [line for line in lines if line.startswith("KUTOX_BOOT")] != [f"KUTOX_BOOT linux={REVISION}"]:
+            raise AssertionError("configuration rejection lacks pinned boot provenance")
+        if any(line.startswith(("BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "# DRIVER_", "# KERNEL_SERVICES", "# NETWORK_STACK")) for line in lines):
+            raise AssertionError("invalid CIDR reached allocation or source admission")
+        return
+    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled", "async-network-tests-disabled", "network-tests-disabled", "async-hardening-tests-disabled"):
         lines = output.splitlines()
         expected = "E1000_MAC_FAIL stage=boot_mode code=-25"
         if returncode != 3 or not lines or lines[-1] != expected:
@@ -1868,7 +1905,7 @@ def validate_live_boot(case, output, symbols):
     validate_boot_preamble(lines, mode or "run", "fw_cfg" if mode else "default")
     validate_allocator(lines, 32 if case.endswith("low-memory") else 128)
     if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "KERNEL_RUNTIME_", "THREAD_", "KTAP", "ok ", "not ok ",
-                            "Bail out!", "# LINUX_CALLBACK", "# LINUX_FAULT", "# LINUX_RX_", "# LINUX_HARD_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR", "# ASYNC_ERROR", "# NETWORK_STACK_ERROR", "# NETWORK_STACK_STOP", "# HOST_")) for line in lines):
+                            "Bail out!", "KERNEL_PANIC", "# LINUX_CALLBACK", "# LINUX_FAULT", "# LINUX_RX_", "# LINUX_HARD_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR", "# NET_IP_", "# ASYNC_NET_", "# ASYNC_ERROR", "# NETWORK_STACK_ERROR", "# NETWORK_STACK_STOP", "# HOST_")) for line in lines):
         raise AssertionError("default runtime exited, failed, or entered a probe/fixture path")
     bound = int(LIVE_CASES[case][1])
     normalized = [line.removeprefix("# ") for line in lines]
@@ -1891,7 +1928,16 @@ def validate_live_boot(case, output, symbols):
         if normalized.index(callbacks[-1]) >= normalized.index(summary):
             raise AssertionError("runtime reported initialization before original open")
     network = [line for line in normalized if line.startswith("NETWORK_STACK")]
-    if mode != "network-run":
+    service = [line for line in normalized if line.startswith("KERNEL_SERVICES")]
+    initialized = next(line for line in normalized if line.startswith("DRIVER_RUNTIME "))
+    epoch = re.search(r"epoch=(\d+)", initialized)[1]
+    enabled = live_network(case)
+    expected_service = (
+        f"KERNEL_SERVICES epoch={epoch} mode={mode or 'run'} tasks={5 if enabled else 3} clients=0 async={int(enabled)} network={int(enabled)}"
+    )
+    if service != [expected_service] or normalized.index(service[0]) >= normalized.index(initialized):
+        raise AssertionError("normal services were not admitted with the expected real task count")
+    if not enabled:
         if network:
             raise AssertionError("driver-only boot activated the protocol stack")
     else:
@@ -1920,17 +1966,50 @@ def validate_live_boot(case, output, symbols):
             raise AssertionError("network readiness does not match the real source")
 
 
-def execute_live(args, case):
+class LiveIPProtocol:
+    def __init__(self, send):
+        self.send = send
+        self.started = False
+        self.frames = []
+
+    @property
+    def complete(self):
+        return len(self.frames) == 3
+
+    def start(self):
+        if self.started:
+            raise AssertionError("duplicate live protocol readiness")
+        self.started = True
+        self._send(0)
+
+    def _send(self, index):
+        packet = ip_packets.live_requests()[index]
+        self.send(struct.pack("!I", len(packet)) + packet)
+
+    def transmit(self, packet):
+        index = len(self.frames)
+        if not self.started or index >= 3:
+            raise AssertionError("unrequested live packet")
+        ip_packets.validate_reply(packet, 1, (0, 1, 5)[index])
+        self.frames.append(packet)
+        if not self.complete:
+            self._send(index + 1)
+
+
+def execute_live(args, case, capture=None):
     deadline = time.monotonic() + args.timeout
     ready_at = None
     output, pending = bytearray(), bytearray()
+    network_pending = bytearray()
     symbols = runtime_symbols(getattr(args, "nm", "nm"))
     host, peer = socket.socketpair()
     with host, peer:
-        command = qemu_command(args, case, net_fd=peer.fileno())
+        command = qemu_command(args, case, capture=capture, net_fd=peer.fileno())
         with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                               stdin=subprocess.DEVNULL, pass_fds=(peer.fileno(),)) as process:
             peer.close()
+            host.settimeout(min(args.timeout, 2))
+            protocol = LiveIPProtocol(host.sendall) if live_network(case) and LIVE_CASES[case][1] else None
             try:
                 with selectors.DefaultSelector() as selector:
                     selector.register(process.stdout, selectors.EVENT_READ, "serial")
@@ -1957,6 +2036,8 @@ def execute_live(args, case):
                             host.settimeout(0.5)
                             if host.recv(1):
                                 raise AssertionError("default runtime emitted late unexpected packet bytes")
+                            if network_pending or protocol is not None and not protocol.complete:
+                                raise AssertionError("incomplete live packet exchange")
                             break
                         for key, _ in selector.select(min(deadline - now, 0.1)):
                             chunk = os.read(key.fd, 4096)
@@ -1964,7 +2045,20 @@ def execute_live(args, case):
                                 selector.unregister(key.fileobj)
                                 continue
                             if key.data == "network":
-                                raise AssertionError("default runtime emitted unexpected packet bytes")
+                                if protocol is None:
+                                    raise AssertionError("driver-only/unclaimed runtime emitted unexpected packet bytes")
+                                network_pending.extend(chunk)
+                                while len(network_pending) >= 4:
+                                    length = struct.unpack_from("!I", network_pending)[0]
+                                    if not 60 <= length <= 1514:
+                                        raise AssertionError("invalid live Ethernet record")
+                                    if len(network_pending) < 4 + length:
+                                        break
+                                    protocol.transmit(bytes(network_pending[4:4 + length]))
+                                    del network_pending[:4 + length]
+                                    if protocol.complete:
+                                        ready_at = time.monotonic()
+                                continue
                             output.extend(chunk)
                             pending.extend(chunk)
                             if len(output) > 1024 * 1024:
@@ -1974,13 +2068,16 @@ def execute_live(args, case):
                                 pending = bytearray(rest)
                                 decoded = line.decode("utf-8", errors="replace").rstrip("\r")
                                 marker = (
-                                    "NETWORK_STACK_READY" if LIVE_CASES[case] == ("network-run", True)
-                                    else "NETWORK_STACK_WAIT state=source" if LIVE_CASES[case] == ("network-run", False)
+                                    "NETWORK_STACK_READY" if protocol is not None
+                                    else "NETWORK_STACK_WAIT state=source" if live_network(case)
                                     else "DRIVER_READY" if LIVE_CASES[case][1] else "DRIVER_RUNTIME"
                                 )
-                                if ready_at is None and decoded.removeprefix("# ").startswith(marker):
+                                if ready_at is None and (protocol is None or not protocol.started) and decoded.removeprefix("# ").startswith(marker):
                                     validate_live_boot(case, output.decode("utf-8", errors="replace"), symbols)
-                                    ready_at = time.monotonic()
+                                    if protocol is not None:
+                                        protocol.start()
+                                    else:
+                                        ready_at = time.monotonic()
                             if len(pending) > 8192:
                                 raise AssertionError("oversized unterminated runtime line")
                 if len(output) > 1024 * 1024 or not output.endswith(b"\n") or elapsed < 3:
@@ -1988,6 +2085,8 @@ def execute_live(args, case):
                 validate_live_boot(case, output.decode("utf-8", errors="replace"), symbols)
             except AssertionError as error:
                 raise AssertionError(f"{error}\n{output.decode('utf-8', errors='replace')}") from error
+            except OSError as error:
+                raise AssertionError(f"live peer I/O failed: {error}\n{output.decode('utf-8', errors='replace')}") from error
             finally:
                 if process.poll() is None:
                     process.terminate()
@@ -2494,7 +2593,20 @@ def qemu_command(args, case, capture=None, net_fd=None):
         "-cdrom", str(args.build_dir / "kutox.iso"), "-nic", "none",
         "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
     ]
-    if case not in LIVE_CASES or LIVE_CASES[case][0] is not None:
+    if case == "network-default-ambiguous":
+        command += [
+            "-netdev", "user,id=first,restrict=on",
+            "-device", "e1000,netdev=first,mac=52:54:00:12:34:56",
+            "-netdev", "user,id=second,restrict=on",
+            "-device", "e1000,netdev=second,mac=52:54:00:00:00:02",
+        ]
+        return command
+    if case in CONFIG_FAILURES:
+        mode, cidr, _ = CONFIG_FAILURES[case]
+        if mode is not None:
+            command += ["-fw_cfg", f"name=opt/kutox/test-mode,string={mode}"]
+        command += ["-fw_cfg", f"name=opt/kutox/ipv4,string={cidr}"]
+    elif case not in LIVE_CASES or LIVE_CASES[case][0] is not None:
         mode = {
             "eeprom-timeout": "eeprom-timeout",
             "invalid-mode": "unsupported",
@@ -2505,6 +2617,7 @@ def qemu_command(args, case, capture=None, net_fd=None):
             "async-core-tests-disabled": "async-core-tests",
             "async-network-tests-disabled": "async-network-tests",
             "network-tests-disabled": "network-tests",
+            "async-hardening-tests-disabled": "async-hardening-tests",
             "heap-oom": "heap-oom",
             "thread-stack-guard": "thread-stack-guard",
             **{case: case for case in FAULT_RESULTS},
@@ -2520,7 +2633,7 @@ def qemu_command(args, case, capture=None, net_fd=None):
             **{case: mode for case, (mode, _) in LIVE_CASES.items() if mode is not None},
         }.get(case, "probe")
         command += ["-fw_cfg", f"name=opt/kutox/test-mode,string={mode}"]
-    if case not in ("missing", "smp-unsupported", "heap-oom", "thread-stack-guard", "guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled", "async-network-tests-disabled", "network-tests-disabled") and case not in FAULT_RESULTS and case not in KERNEL_SUITE_CASES and case not in RUNTIME_SUITE_CASES and case not in NETWORK_SUITE_CASES and case not in RUNTIME_NETWORK_CASES and case not in LIVE_CASES and case not in HARDENING_CASES and case not in ASYNC_CORE_CASES and case not in ASYNC_NETWORK_CASES and case not in IP_SUITE_CASES:
+    if case not in ("missing", "smp-unsupported", "heap-oom", "thread-stack-guard", "guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled", "async-network-tests-disabled", "network-tests-disabled", "async-hardening-tests-disabled") and case not in CONFIG_FAILURES and case not in FAULT_RESULTS and case not in KERNEL_SUITE_CASES and case not in RUNTIME_SUITE_CASES and case not in NETWORK_SUITE_CASES and case not in RUNTIME_NETWORK_CASES and case not in LIVE_CASES and case not in HARDENING_CASES and case not in ASYNC_CORE_CASES and case not in ASYNC_NETWORK_CASES and case not in IP_SUITE_CASES:
         model = "e1000e" if case == "unsupported" or case in UNCLAIMED_CASES else "e1000"
         mac = CASES[case][0] or "52:54:00:12:34:56"
         command += [
@@ -2561,13 +2674,13 @@ def qemu_command(args, case, capture=None, net_fd=None):
 def run_case(args, case, index=0):
     log = args.build_dir / "test-logs" / f"{args.case}-{index}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
-    capture = log.with_suffix(".pcap") if case in KERNEL_SUITE_CASES or case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES or case in HARDENING_CASES or case in ASYNC_NETWORK_CASES or case in IP_SUITE_CASES else None
+    capture = log.with_suffix(".pcap") if case in KERNEL_SUITE_CASES or case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES or case in HARDENING_CASES or case in ASYNC_NETWORK_CASES or case in IP_SUITE_CASES or case in LIVE_CASES and live_network(case) and LIVE_CASES[case][1] else None
     if capture is not None:
         capture.unlink(missing_ok=True)
     command = qemu_command(args, case) if capture is None and case not in LIVE_CASES else None
     try:
         if case in LIVE_CASES:
-            completed, elapsed = execute_live(args, case)
+            completed, elapsed = execute_live(args, case, capture)
         else:
             completed = execute_suite(args, case, capture) if capture is not None else subprocess.run(
                 command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -2596,9 +2709,13 @@ def run_case(args, case, index=0):
                     expected = async_network_tx_packets()
                 if case in IP_SUITE_CASES:
                     expected = ip_packets.replies()
+                if case in LIVE_CASES:
+                    expected = ip_packets.live_requests(reply=True)
                 validate_tx_capture(stream.read(1024 * 1024 + 1), expected)
             symbols = runtime_symbols(getattr(args, "nm", "nm"))
-            if case in HARDENING_CASES:
+            if case in LIVE_CASES:
+                validate_live_boot(case, output, symbols)
+            elif case in HARDENING_CASES:
                 validate_managed_hardening(case, completed.returncode, output, symbols)
             elif case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES:
                 validate_network_suite(case, completed.returncode, output, symbols)
@@ -2615,7 +2732,10 @@ def run_case(args, case, index=0):
         raise KernelSuiteFailure(f"{error}\nlog: {log}\n{output}") from error
     except AssertionError as error:
         raise AssertionError(f"{error}\nlog: {log}\n{output}") from error
-    measured = f" (alive {elapsed:.3f}s after readiness, owned child terminated)" if case in LIVE_CASES else ""
+    measured = (
+        f" (alive {elapsed:.3f}s after {'exact exchange' if live_network(case) and LIVE_CASES[case][1] else 'initialization/readiness'}, owned child terminated)"
+        if case in LIVE_CASES else ""
+    )
     print(f"PASS {case}: {log}{measured}")
 
 

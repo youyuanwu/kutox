@@ -31,6 +31,14 @@ pub enum BootMode {
 }
 
 impl BootMode {
+    pub const fn is_network_runtime(self) -> bool {
+        matches!(self, Self::Run | Self::NetworkRun)
+    }
+
+    pub const fn uses_ipv4(self) -> bool {
+        self.is_network_runtime() || matches!(self, Self::NetworkTests)
+    }
+
     pub const fn selected(configured: Option<Self>) -> Self {
         match configured {
             Some(mode) => mode,
@@ -157,6 +165,7 @@ pub fn read_mode(
         b"async-core-tests" => Ok(Some(BootMode::AsyncCoreTests)),
         b"async-network-tests" => Ok(Some(BootMode::AsyncNetworkTests)),
         b"network-tests" => Ok(Some(BootMode::NetworkTests)),
+        b"async-hardening-tests" if !cfg!(feature = "guest-tests") => Err(Error::TestsDisabled),
         b"heap-oom" => Ok(Some(BootMode::HeapOom)),
         b"thread-stack-guard" => Ok(Some(BootMode::ThreadStackGuard)),
         _ => Err(Error::UnknownMode),
@@ -453,6 +462,35 @@ mod tests {
             assert_eq!(mode.validate_build(), Ok(()));
         }
         assert_eq!(BootMode::NetworkRun.validate_build(), Ok(()));
+    }
+
+    #[test]
+    fn default_network_policy_and_reserved_hardening_rejection() {
+        assert!(BootMode::selected(None).is_network_runtime());
+        for mode in [BootMode::Run, BootMode::NetworkRun] {
+            assert!(mode.uses_ipv4());
+            assert_eq!(mode.validate_build(), Ok(()));
+        }
+        for mode in [
+            BootMode::DriverRun,
+            BootMode::Probe,
+            BootMode::DriverRuntimeTests,
+        ] {
+            assert!(!mode.is_network_runtime());
+            assert!(!mode.uses_ipv4());
+        }
+        assert!(BootMode::NetworkTests.uses_ipv4());
+        assert_eq!(
+            run(&fixture(&[(
+                "opt/kutox/test-mode",
+                b"async-hardening-tests"
+            )])),
+            Err(if cfg!(feature = "guest-tests") {
+                Error::UnknownMode
+            } else {
+                Error::TestsDisabled
+            }),
+        );
     }
 }
 #[test]

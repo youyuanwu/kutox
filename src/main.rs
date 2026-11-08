@@ -319,7 +319,7 @@ fn probe() -> Result<BootOutcome, Failure> {
     ) {
         linux_driver::report_boot_callbacks(true);
         let resources = kernel_runtime::Resources::start(&boot, allocator)?;
-        if boot.mode == BootMode::NetworkRun {
+        if boot.mode.is_network_runtime() {
             resources.run_network(kernel_runtime::Clients::new())?;
         } else {
             resources.run(kernel_runtime::Clients::new())?;

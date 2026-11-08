@@ -5,7 +5,8 @@ not building another native Rust NIC driver.
 The first milestone reads a QEMU Intel 82540EM NIC's permanent MAC address
 using **unchanged upstream Linux e1000 hardware code**.
 Normal boot now starts and retains the full unchanged e1000 driver in the
-kernel runtime. The finite MAC proof remains available as explicit `probe` mode.
+kernel runtime and answers ARP/static IPv4/ICMP through smoltcp. The finite MAC
+proof remains available as explicit `probe` mode.
 
 It uses a fixed-capacity port of Moss's `Smalloc` bootstrap allocator to
 reserve frame metadata, then hands physical RAM to an IRQ-locked adaptation
@@ -120,11 +121,13 @@ Linux workers and adds Moss-inspired futures plus a native packet bridge.
 The bounded executor, async event/timer/yield core and owned Ethernet broker
 are implemented and guest-tested through explicit service paths, including
 Linux-backed timeout/cancellation and rebind. Explicit `network-run` now adds a
-bounded smoltcp ARP/static-IPv4/ICMP echo service in both build profiles. Current
-normal boot and explicit `driver-run` remain driver-only until boot migration.
+bounded smoltcp ARP/static-IPv4/ICMP echo service in both build profiles.
+Normal `run`/absent boot now uses the same network-enabled path; explicit
+`driver-run` retains the driver-only service.
 The separate IP acceptance now passes exact ARP/16 echoes per epoch, seven
 directed protocol rejections and balanced shutdown across two source lifetimes.
-Normal network boot is the next phase.
+Normal network boot also passes real exchange followed by sustained uptime in
+both guest-enabled and test-free images.
 
 ## Requirements
 
@@ -309,15 +312,20 @@ Native clients use `net_device::enumerate(runtime)` and `Handle::info`.
 `finish` releases only completed or consumed-drop receipts. Dropping the native
 frame/handle or timing out does **not** free an accepted skb. `receive`/
 `wait_receive` return owned FIFO frames; stop wakes waiters with `Closed`, and
-owner retirement makes later handles `Stale`. There is no IP stack yet.
+owner retirement makes later handles `Stale`. The native async broker connects
+this packet API to the separate smoltcp service; no Linux IP stack is imported.
 
 ### Persistent normal boot
 
 Boot without a fw_cfg mode (or set it explicitly to `run`) to register built-ins,
 enumerate the firmware-configured PCI hierarchy, execute original module/probe/
-open callbacks and retain the device/services. Diagnostics distinguish
+open callbacks and retain the device/services plus executor, packet broker and
+one protocol future. Diagnostics distinguish
 `DRIVER_RUNTIME` initialization from `DRIVER_READY` real link readiness, and
 report the owned BDF/parent path, BAR spans and PIRQ/ELCR/swizzled IRQ route.
+`KERNEL_SERVICES` reports the checked runtime epoch and actual five admitted
+service stacks with zero native clients. `NETWORK_STACK_CONFIGURED` and
+`NETWORK_STACK_READY` distinguish the static subnet from actual link readiness.
 A missing or unsupported NIC leaves unclaimed inventory and two shared workers
 alive, without fabricated NIC readiness. Invalid topology fails explicitly
 before partial driver admission. Only deliberate kernel shutdown ends the
@@ -331,7 +339,7 @@ python3 scripts/qemu_test.py --case driver-runtime-run --build-dir build
 
 These smoke checks use the normal boot path, no guest test clients, and require
 the actual linked Linux startup callbacks, source-derived readiness and at
-least **three seconds alive after readiness** before terminating only their
+least **three seconds alive after exact ARP and ICMP exchange** before terminating only their
 owned QEMU child. The default check omits fw_cfg entirely; `default-mode` is a
 compatible runner alias. A watchdog timeout or premature exit is failure,
 not evidence of successful runtime operation. `mac-default-mode` is replaced
@@ -364,10 +372,12 @@ qemu-system-x86_64 -machine pc -accel tcg -cpu qemu64 -smp 1 -m 128M \
 ```
 
 The runtime stays in the dispatcher; use Ctrl+C to end this owned manual session.
-Booting does not automatically generate application packets, DHCP or IP traffic.
+It passively answers ARP/ICMP. There is no shell, userspace/socket application,
+DHCP, gateway or TCP service.
 
-To enable the developing IPv4 service, add
-`-fw_cfg name=opt/kutox/test-mode,string=network-run` to the command above.
+No mode flag is needed for IPv4. Explicit
+`-fw_cfg name=opt/kutox/test-mode,string=network-run` uses the same service;
+`-fw_cfg name=opt/kutox/test-mode,string=driver-run` retains driver-only behavior.
 The default address is `10.0.2.15/24`; override it with
 `-fw_cfg name=opt/kutox/ipv4,string=10.0.2.16/24`.
 Only one connected subnet is configured, with no gateway or DHCP.
@@ -379,11 +389,12 @@ without fabricating readiness.
 
 ```sh
 ctest --test-dir build --output-on-failure --parallel 1 \
-  -R '^(network-run|network-run-low-memory|network-run-no-nic|network-run-unsupported|driver-runtime-driver-run)$'
+  -R '^(network-default|network-default-low-memory|network-default-no-nic|network-default-unsupported|network-run|driver-runtime-driver-only)$'
 ```
 
-These smoke cases prove production mode selection, bounded storage and sustained
-readiness or unclaimed idle, not the later full ARP/ICMP guest acceptance.
+These production smoke cases validate exact ARP, zero/1472-byte ICMP echo replies
+on the socket and TX PCAP, then at least three seconds alive. No/unsupported NIC
+instead proves initialized unclaimed idle; driver-only mode emits no packets.
 Restricted QEMU user networking does not make the guest directly host-pingable;
 packet acceptance uses an owned local Ethernet socket peer instead.
 
@@ -404,7 +415,7 @@ Bounded production callback records prove original Linux IRQ/NAPI and packet
 ownership without guest-only source tracing. Retained CPU copies, stale handles
 and exact frame/heap/future/task cleanup are checked separately.
 The guest-free image rejects `network-tests` early; production `network-run`
-remains available. Normal `run`/absent boot is still driver-only.
+is also the normal `run`/absent boot path.
 
 ### Managed failure and teardown hardening
 

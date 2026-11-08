@@ -2,10 +2,11 @@
 
 ## Status, scope and outcome
 
-This is a **design with Phases 1-5 implemented; normal network boot is not enabled**.
+This is a **design with Phases 1-6 implemented and network-enabled normal boot**.
 The baseline is merged driver integration at `ac637ab` (PR #7). Current normal
-boot retains Linux e1000 and kernel workers but starts no application clients
-or IP stack; see the [current architecture](rust-kernel-linux-drivers.md#moss-style-driver-infrastructure).
+boot retains Linux e1000, kernel workers, executor, packet broker and a smoltcp
+ARP/static IPv4/ICMP future, without application sockets or native clients;
+see the [current architecture](rust-kernel-linux-drivers.md#moss-style-driver-infrastructure).
 
 Phases 1-3 implement the [portable async ownership policy](../src/async_state.rs),
 bounded Moss task/registration adaptations, a [guarded executor](../src/async_runtime.rs)
@@ -19,13 +20,13 @@ and [static CIDR configuration](../src/network_config.rs) in explicit `network-r
 Phase 5 proves exact ARP/ICMP, rejection and balanced epochs with a separate
 [guest fixture](../src/guest_tests/network_stack.rs) and
 [isolated stdlib peer](../scripts/network_packets.py).
-Normal boot is
-unchanged: it does not yet activate the executor or an IP stack.
+Normal `run`/absent boot now selects this same network-enabled service in both
+build profiles; `driver-run` preserves the previous driver-only path.
 
-The next milestone adds a bounded Moss-inspired Rust async runtime and
-ARP/static IPv4/ICMP echo over the existing unchanged Linux e1000. After explicit
-network-mode acceptance, normal boot enables this service. An explicit
-driver-only mode preserves the current behavior.
+The milestone adds a bounded Moss-inspired Rust async runtime and
+ARP/static IPv4/ICMP echo over the existing unchanged Linux e1000. Explicit-mode
+acceptance and normal boot migration are complete. Hardening and final as-built
+documentation remain subsequent phases.
 
 The observable outcome is an isolated host peer resolving the kernel's MAC
 through ARP and receiving exact ICMP echo replies from a normal, persistent
@@ -392,7 +393,8 @@ captures or the final hardening workload.
 `NETWORK_STACK_WAIT`, `NETWORK_STACK_CONFIGURED` and `NETWORK_STACK_READY`
 distinguish missing source, configured subnet and actual source/link readiness.
 The shared fw_cfg parser reads a strict non-NUL ASCII host CIDR only for
-`network-run`; `driver-run`, `run`/absent and probe modes ignore that file.
+`run`/absent, `network-run` and explicit IP acceptance; `driver-run` and probe
+modes ignore that file.
 Loopback, current-network/unspecified, link-local, multicast/reserved and
 documentation/benchmark-only address ranges are excluded. No default route or
 application socket is created.
@@ -402,7 +404,7 @@ Host tests validate actual smoltcp ARP and echo replies at payloads
 unused token release and callback-once/error propagation. Production smoke
 tests require sustained real readiness at 128/32 MiB, explicit no/unsupported
 NIC idle and both ELF profiles. Full isolated multi-epoch ARP/ICMP guest
-acceptance now passes; migration of normal boot remains Phase 6.
+acceptance and normal boot migration now pass.
 
 ### As-built Phase 5 acceptance and diagnostics
 
@@ -449,9 +451,9 @@ networking; the stdlib peer is an isolated test endpoint, not guest protocol cod
 
 | Mode/configuration | Intended behavior |
 | --- | --- |
-| `network-run` | Explicit persistent async/network service; available during development before changing the default. |
-| `driver-run` | Persistent driver/services only, preserving today's normal boot. |
-| `run` or absent mode | Driver-only until the migration phase; then the same network-enabled path as network-run. |
+| `network-run` | Explicit persistent async/network service, identical to normal boot. |
+| `driver-run` | Persistent driver/services only, preserving the previous driver-only boot. |
+| `run` or absent mode | Network-enabled boot with five guarded service stacks and one protocol future. |
 | `probe` / existing guest modes | Preserve explicit finite MAC and existing source/native test semantics. |
 | `opt/kutox/ipv4` | Optional ASCII host CIDR, default `10.0.2.15/24`, read only for network modes. |
 
@@ -473,10 +475,40 @@ Malformed configuration/topology fails explicitly. Link loss stops new network
 offers without pretending to remove the source; readiness recovery reuses the
 same instance unless native removal actually occurred.
 
-After migration, publish distinct initialized/configured/link-ready diagnostics
+The runtime publishes distinct initialized/configured/link-ready diagnostics
 with actual MAC/BDF/CIDR and checked epochs. Preserve source-derived readiness
 and bounded callback identity reporting. Client/future return does not stop
 normal services; only deliberate shutdown returns `KERNEL_RUNTIME_STOPPED`.
+
+### As-built Phase 6 normal boot
+
+`BootMode` owns the shared network/IPv4 selection policy; `run` and absent mode
+have identical behavior to `network-run`. The coordinator admits the protocol
+only after the actual network service has been admitted. Explicit native
+`Resources::run`/`run_async` client APIs retain their driver-only/async-only
+semantics; normal boot calls `run_network` with no native clients.
+
+`KERNEL_SERVICES` records the checked epoch, mode, actual scheduler task count
+and service/client admission flags. It reports five stacks for normal networking
+or three for `driver-run`, with zero native clients. Source `DRIVER_READY` reports
+real BDF/MAC/link state; matching protocol identity/CIDR markers cannot invent
+NIC readiness. Joined shutdown reports `KERNEL_SERVICES_CLOSED`.
+
+The live owned socket peer waits for actual readiness, then validates ARP,
+zero-payload echo and maximum 1472-byte echo. TX PCAP must contain those exact
+three replies. The three-second live clock begins only after the final validated
+reply, not after a serial readiness line. Premature exit, timeout, late error,
+unexpected/truncated packets or terminal probe/KTAP output fails. Host termination
+must positively identify the owned child; no-NIC/unsupported-NIC cases instead
+measure initialized unclaimed idle, and driver-only cases expect no packets.
+
+Production host/CTest deadlines are 30/35 seconds. ON and OFF profiles test normal,
+explicit run/network-run, 32-MiB, no/unsupported-NIC and driver-only behavior.
+Malformed default/explicit CIDRs fail before allocation; an ambiguous two-NIC
+default rejects before source/service admission. OFF rejects async core/broker/IP/
+hardening test selectors before initialization. The future hardening selector is
+reserved for OFF rejection only; ON still rejects it as unknown until Phase 7
+provides the fixture. No placeholder test or fallback probe is registered.
 
 ## Shutdown, cancellation and replacement
 

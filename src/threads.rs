@@ -483,6 +483,10 @@ pub struct Scheduler<'space, 'a, 'storage> {
 }
 
 impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
+    pub fn task_count(&self) -> usize {
+        self.tasks.iter().filter(|task| task.is_some()).count()
+    }
+
     pub fn new(space: &'space memory::StackSpace<'a, 'storage>) -> Self {
         Self {
             tasks: core::array::from_fn(|_| None),

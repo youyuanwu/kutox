@@ -894,7 +894,9 @@ authoritative even on one cooperative CPU.
 
 The [next milestone design](async-kernel-networking.md) applies this separation
 to a bounded executor and Linux-backed ARP/static IPv4/ICMP service. Its
-network-enabled default boot is planned; the current default remains driver-only.
+network-enabled default boot now retains five service stacks and one protocol
+future over unchanged Linux e1000. Explicit `driver-run` remains driver-only;
+no userspace/socket application environment or Linux IP stack is imported.
 
 The main execution-model mismatch is sleeping C code. A Linux driver can
 call a wait or mutex operation deep within an ordinary C call stack. It
@@ -1341,7 +1343,10 @@ These APIs are kernel-internal, not userspace sockets or a binary driver ABI.
 Use [kernel_runtime.rs](../src/kernel_runtime.rs) and
 [net_device.rs](../src/net_device.rs) from guarded cooperative client threads,
 with no outer IRQ-saving guard. The normal boot path supplies an empty
-`Clients` list and generates no application traffic.
+`Clients` list and admits the separate ARP/static IPv4/ICMP protocol future.
+It answers network requests but starts no userspace/socket application.
+Explicit scoped `Resources::run` client APIs remain driver-only; normal boot
+uses `run_network` with the selected network mode.
 
 1. After allocator/time initialization, keep `Resources::start(&boot, frames)`
    alive in the boot scope; `frames` is the kernel's static physical allocator.
