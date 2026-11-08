@@ -1040,6 +1040,58 @@ ring/lifetime hardening and as-built documentation. Integration with a native
 network stack and extraction for a second Linux driver are subsequent work;
 they do not replace this roadmap's driver-execution gates.
 
+### Planned Moss-style driver infrastructure
+
+The next integration milestone is **planned, not implemented**. The existing
+e1000 backend works in kernel fixtures, but normal boot still reads the MAC
+and exits; it does not retain a network device or run a general driver manager.
+
+Follow pinned Moss's
+[built-in initialization](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/init.rs)
+and [retained driver manager](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/mod.rs)
+model: register compiled-in drivers, discover devices, match/probe candidates,
+retry dependency-deferred probes while progress occurs, and retain successful
+instances. Moss currently discovers FDT-compatible devices; kutox's planned
+bus is x86 PCI, not an imported ARM/device-tree implementation or `.ko` loader.
+
+The selected integration scope includes persistent e1000 use, changing the
+unconfigured normal boot to the driver runtime while preserving explicit
+MAC/test modes, and PCI hierarchy discovery through conventional firmware-
+configured bridges. This is more than scanning extra buses: complete BDF and
+parent identity must reach config access, target BAR/ancestor-window checks,
+C/native diagnostics, IRQ swizzling and the retained resource owner.
+
+The planned phases are:
+
+1. **Native registry and ownership:** bounded driver/device registrations,
+   generation-checked handles, matching, dependency/error state and retirement.
+2. **PCI hierarchy:** read-only assigned-bus discovery, parent/window validation
+   and INTx swizzling through each bridge into the existing PIIX/APIC route.
+3. **Built-in startup:** retained linker initializer records and deterministic
+   kernel-thread probe coordination, with synthetic multi-driver tests.
+4. **Persistent kernel services:** boot-owned scheduler/controller/worker
+   lifetimes and explicit kernel idle distinct from finite-test deadlock.
+5. **Managed e1000:** original Linux lifecycle behind native network-device
+   discovery, link/MAC/MTU, owned-byte TX/RX and diagnosed client errors.
+6. **Normal boot:** runtime default, explicit MAC/fault compatibility and exact
+   root/one-bridge/nested-bridge packet acceptance at 128/32 MiB.
+7. **Hardening:** dependency progress, failures/capacity, consumer lifetime and
+   pending source callback/packet teardown with complete resource recovery.
+8. **Documentation:** actual interfaces, default-mode migration, budgets,
+   provenance, commands and supported/unsupported profile.
+
+Do not copy Moss's global IRQ-lock callback boundary for Linux's sleepable
+probe/open/remove: reserve identity, release locks/borrows, execute on a kernel
+thread, then commit or unwind. Shared workers and parent resources outlive
+dependent bindings. Linux still owns all e1000 packet/descriptor algorithms.
+
+Initial infrastructure is bounded; the actual Linux backend retains its
+one-e1000-instance limit while native synthetic drivers prove generic registry
+behavior. PCI bridges are firmware-configured on the selected QEMU i440FX/PIIX
+machine; bus/window assignment, general AML routing, PCIe/MSI, physical hardware,
+SMP, module loading and an IP stack remain outside this plan. The current
+as-built support statement above is unchanged until new acceptance passes.
+
 ### Rust OS and userspace track
 
 Develop process isolation, user mappings, ELF loading, scheduling, VFS, and a
