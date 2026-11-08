@@ -115,6 +115,10 @@ failure/teardown hardening. The [kernel-client guide](docs/rust-kernel-linux-dri
 describes service admission, packet receipts and deliberate shutdown without
 Linux-private structs.
 
+The next [async-kernel and IPv4 design](docs/async-kernel-networking.md) keeps
+Linux workers and adds Moss-inspired futures plus a native packet bridge.
+It is planned, not implemented; current normal boot still has no IP service.
+
 ## Requirements
 
 - Linux host with rustup; the repository pins Rust `1.99.1` and the

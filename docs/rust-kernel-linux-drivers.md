@@ -892,6 +892,10 @@ authoritative even on one cooperative CPU.
 
 ## Async Rust and synchronous Linux drivers
 
+The [next milestone design](async-kernel-networking.md) applies this separation
+to a bounded executor and Linux-backed ARP/static IPv4/ICMP service. Its
+network-enabled default boot is planned; the current default remains driver-only.
+
 The main execution-model mismatch is sleeping C code. A Linux driver can
 call a wait or mutex operation deep within an ordinary C call stack. It
 cannot directly suspend that stack by invoking Rust `.await`.
