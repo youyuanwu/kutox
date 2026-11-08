@@ -70,7 +70,7 @@ provides PCI, MMIO, IRQ, DMA, scheduling and allocation services. Controlled
 original RX delivery and selected ring/lifetime hardening now pass; a networking
 stack remains subsequent work.
 
-All four original driver units are linked for Linux lifecycle and TX
+All four original driver units are linked for Linux lifecycle and TX/RX
 execution. See the
 [milestone design](docs/linux-e1000-mac.md) for its scope and acceptance goals.
 
@@ -90,7 +90,9 @@ services. Original module/probe/open/close, PHY/reset/options, IRQ, watchdog
 and NAPI callbacks now execute on real kernel stacks. Original Linux TX/RX
 transmits and delivers exact frames through those callbacks; Rust supplies OS
 services, not descriptor algorithms. Ring wrap, backpressure and pending
-teardown are tested; the final as-built support statement is next.
+teardown are tested. All eight driver-reuse phases are complete for the
+[selected QEMU/BSP profile](docs/rust-kernel-linux-drivers.md#as-built-support-statement);
+this is not generic LinuxKPI, physical-hardware or network-stack support.
 
 ## Requirements
 
@@ -123,8 +125,10 @@ The build produces:
 
 The acceptance suite boots with the BIOS firmware supplied by QEMU. The ISO
 also includes UEFI boot files; the automated suite does not verify UEFI boot.
-Guests use TCG, one CPU, 128 MiB of RAM (32 MiB for the low-memory test), restricted user-mode networking,
-no port forwarding, and no host hardware passthrough. Tests run sequentially.
+Guests use TCG, one CPU and 128 MiB of RAM (32 MiB for the low-memory test).
+Kernel suites use an owned local socket pair for controlled Ethernet; MAC
+cases use restricted user-mode networking. There is no port forwarding or host
+hardware passthrough. Tests run sequentially.
 
 Compile/audit all four original e1000 units without building or changing the ISO:
 
@@ -190,7 +194,7 @@ fixture for its device-IRQ and packet-DMA cases:
 python3 scripts/qemu_test.py --case kernel-tests --build-dir build
 ```
 
-Run the same forty registered cases with 32 MiB of guest RAM:
+Run the same 55 registered cases with 32 MiB of guest RAM:
 
 ```sh
 python3 scripts/qemu_test.py --case kernel-tests-low-memory --build-dir build

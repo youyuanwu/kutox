@@ -9,9 +9,9 @@ Rebuilding embclox's native Rust NIC driver is not this project's objective.
 Linux application compatibility is a separate possible OS track, not a
 prerequisite or substitute for driver reuse.
 
-The current implementation is the boot-time e1000 MAC-reading proof described
-in the [README](../README.md) and its [original design](linux-e1000-mac.md).
-It executes upstream hardware helpers and now includes a fixed-capacity port
+The original boot-time e1000 MAC-reading proof described in the
+[README](../README.md) and its [historical design](linux-e1000-mac.md)
+executes upstream hardware helpers. The kernel now includes a fixed-capacity port
 of Moss's `Smalloc` to bootstrap metadata for its adapted buddy/frame allocator.
 The buddy allocator now owns usable RAM and MMIO page-table frames and backs
 an adapted Moss slab heap for Rust allocations. The kernel still has no
@@ -20,7 +20,9 @@ e1000 units now execute original lifecycle and TX/RX/IRQ/NAPI cleanup through th
 source-facing environment. The earlier native Rust TX scaffold has been removed:
 Linux is the only packet driver, while Rust supplies kernel/platform services.
 Controlled original RX and selected ring/backpressure/lifetime hardening are
-tested; the final as-built support statement is next.
+tested. All eight driver-reuse phases are complete for the
+[as-built support profile](#as-built-support-statement), not arbitrary Linux
+drivers or physical hardware.
 The [third-party notice](../THIRDPARTY-NOTICES.md) records the source revision,
 MIT license, and adaptation boundaries.
 
@@ -30,8 +32,8 @@ Shared-image tests cover lock nesting, returning breakpoints, fatal fault
 diagnostics, and double-fault emergency-stack delivery. An owned xAPIC one-shot
 timer now delivers returning hardware interrupts, while the PIC and other local
 interrupt sources remain masked. A bounded external PCI INTx route now connects
-the QEMU `pc` e1000 to an owned I/O APIC claim. This is still not a complete
-interrupt-driven Linux driver runtime.
+the QEMU `pc` e1000 to an owned I/O APIC claim. Original Linux IRQ callbacks
+use that route; it is not a general interrupt-controller/shared-IRQ runtime.
 
 The timer follows the reference kernels' one-shot model: pinned Moss uses the
 [ARM architectural timer](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/timer/armv8_arch.rs)
@@ -317,7 +319,8 @@ for this adapter; timed waits return zero on expiry or positive remaining ticks
 (at least one) on success. The C path rechecks credits at timeout resumption
 and can consume a late credit, returning one as the pinned Linux implementation
 does; native Rust timeouts keep their existing credit-preserving behavior.
-There is no global Linux jiffies/ABI service.
+Elapsed jiffies are now supplied for the selected source-facing runtime;
+there is no general Linux timekeeping/binary ABI service.
 Linux void-API errors and cancellation of uninterruptible waits are explicit
 fatal platform errors. Boot operations cannot sleep; thread operations cannot
 run while IRQ guards are held. Only the selected non-sleeping completion operations
@@ -334,8 +337,9 @@ stored credits, broadcast, no stack switching inside handlers, active-thread
 preservation, wake-before-registration, full-capacity FIFO/duplicate wakes,
 generation exhaustion, timeout/cancellation races, paused-owner rejection, and
 handler teardown/reuse.
-Broader external interrupt routing, actual packet/streaming DMA, general timer
-callbacks, broader Linux execution APIs, and preemption remain future work.
+The selected external IRQ route, packet/streaming DMA and deferred driver
+callbacks are now implemented below. Broader routing, general timer callbacks,
+broader Linux execution APIs and preemption remain future work.
 
 Nonfatal CPU, frame, heap, and thread tests run through a stable-Rust registry in one
 guest boot, with KTAP results and exact host-side plan/name/summary validation.
@@ -635,9 +639,9 @@ model, TX DMA completes synchronously and receive callbacks reject disabled RX.
 The grace interval supplements those conditions; CTRL.RST, BME alone and time
 alone are not witnesses. RX remains disabled until newly owned rings are
 configured. A later source IMS enable restores the retained route after reset.
-Controlled host injection/stop/reopen epochs are now tested with original RX.
-Adversarial late injection and pending asynchronous teardown remain hardening
-work, not claims made by the synthetic tests.
+Controlled host injection/stop/reopen epochs and queued-packet/pending-callback
+teardown are now tested with original RX. Arbitrary external late injection
+is not covered by the owned host protocol or synthetic tests.
 
 #### Packets and dependency evidence
 
@@ -826,20 +830,20 @@ or offload support.
 
 ### Source-facing dependency and lifetime requirements
 
-The next dependency audit must distinguish compile/link closure from the
+The dependency audit distinguishes compile/link closure from the
 supported runtime path. Ops tables retain optional callbacks too; linker
 garbage collection does not automatically make their dependencies disappear.
 Each retained API needs an explicit provider or an enforced unsupported contract.
 
-| Required surface | Gap in the current implementation |
+| Required surface | As-built selected support |
 | --- | --- |
 | Module/PCI/net-device registration and object lifetimes | Original module/probe/open/close/remove now execute with generation-checked handles. |
 | MMIO in driver threads and hardware IRQs | Owned source MMIO and the selected reset I/O BAR are integrated separately from boot MAC. |
 | Driver allocation and packet buffers | Original TX/RX, admission/map failure and retained BUSY recovery are tested; broader hardware/feature profiles remain unsupported. |
-| Coherent descriptor sharing and streaming map/sync/unmap | Original TX completion unmap is tested; mapping failures and pending abort/reopen hardening follow. |
-| Delayed work, jiffies, lifecycle locking and cancellation | Original watchdog and real lifecycle cancellation execute; packet-triggered reset hardening follows. |
+| Coherent descriptor sharing and streaming map/sync/unmap | Original TX/RX completion, mapping failures, CPU-grant republish and pending abort/reopen are tested under the QEMU stop/drain contract. |
+| Delayed work, jiffies, lifecycle locking and cancellation | Original watchdog, elapsed jiffies, running-callback joins and queued reset-work cancellation execute; general watchdog-triggered recovery is not claimed. |
 | IRQ registration and NAPI scheduling/budget/disable | Original IRQ/NAPI cleanup and reserved-running callback joins are tested; C-code preemption/SMP remain unsupported. |
-| Probe/open/error/close/remove cleanup | Original repeated lifecycle/error unwind is tested; pending packet/injection/reopen hardening follows. |
+| Probe/open/error/close/remove cleanup | Original repeated lifecycle/error unwind, queued RX, pending TX/IRQ/callback teardown and serialized reopen are tested. |
 
 Three ordering constraints shape the environment:
 
@@ -860,9 +864,9 @@ Three ordering constraints shape the environment:
 
 All C-visible objects must retain stable backing and checked lifecycle identity.
 No mutable registry borrow survives a switch or callback, and stale work/IRQ/
-mapping keys must not target a replacement object. Resolve the existing bridge's
-`e1000_get_hw_dev` provider collision when linking `e1000_main.c`, which defines
-the real helper; maintain one coherent C type environment and the boot MAC proof.
+mapping keys must not target a replacement object. The bridge uses the original
+`e1000_main.c` provider of `e1000_get_hw_dev`, resolving the former duplicate
+helper while retaining one coherent C type environment and the boot MAC proof.
 
 For NAPI, a bounded native executor may invoke the original poll callback in a
 non-sleeping deferred context. It must honor schedule-prep/deduplication, budget,
@@ -918,10 +922,41 @@ execution of the original full driver.
 
 ## Driver compatibility scope
 
+### As-built support statement
+
+The selected Linux e1000 packet driver is operational on kutox's independent
+Rust kernel for the following tested profile. This is source compatibility for
+one pinned configuration, not support for every retained optional callback.
+
+| Boundary | Supported / excluded |
+| --- | --- |
+| Source | Four unchanged e1000 units from Linux `v7.3.1`, commit `79a907609d53d5cd645b42c11550d295d43abf99`; original UAPI/GFP/net-feature definitions, separate audited runtime objects. |
+| Platform | QEMU 82540EM `8086:100e`, BIOS `pc`/i440FX/PIIX, one BSP, owned INTx route, validated RAM/identity DMA and BARs; tested with 128/32 MiB, NIC slots 3/5. |
+| Driver | Original module/probe/open/close/remove, reset/PHY/options, xmit, IRQ, watchdog and NAPI TX/RX cleanup; 256-entry rings, one queue each, MTU 1500, zero offloads. |
+| Native boundary | Owned linear TX packets and eight-packet full-L2 ingress FIFO; Linux owns descriptors and packet algorithms. No native Rust e1000 driver remains. |
+| Lifecycle evidence | Ring wrap, BUSY/stop/wake/retry, allocation/map failures, repeated lifecycle and cooperative pending IRQ/work/NAPI/TX/RX teardown with callback joins and serialized reopen. |
+| Excluded | Generic LinuxKPI or internal/module binary ABI, `.ko` loading, Kbuild/Linux boot, all ethtool controls, Linux applications, IP/GRO stack, offloads/fragments/jumbo/VLAN, PM/hotplug, SMP/preemption/NMI, general shared IRQs, physical NICs, IOMMU/bounce buffers and hardware performance guarantees. |
+
+The independent audit records 209 source-only APIs and 51 explicit platform
+symbols, while current-ELF callback identity, exact packets and source cleanup
+establish execution. Ten targeted CTest entries passed at the final code
+milestone: 55 normal cases at 128/32 MiB, deliberate-failure rejection, 539 exact
+TX frames, 304 hardening RX receipts plus 12 baseline deliveries/four drops,
+120 Python tests and 58 portable root Rust tests. This does not claim that all
+25 CTest entries or Moss tests were rerun.
+
+The original stop/drain and unsafe DMA contracts above remain essential:
+disabled QEMU RX rejects later receive callbacks, original callback users join
+before backing release, and matching unmap arguments, CTRL.RST, BME or time alone
+never prove completion. Hardening checkpoints reserve users before C invocation;
+they do not pause inside atomic C NAPI code. UEFI is packaged but only BIOS boot
+is tested. Documentation finalization changes no runtime behavior.
+
 Grow the runtime from the dependency closure of one selected driver rather
 than attempting to implement every Linux kernel API.
 
-The first full NIC target will need an inventory covering at least:
+The first full NIC target's inventory covers these surfaces for its selected
+profile; another driver or expanded configuration must audit them again:
 
 - PCI configuration, MMIO mappings, and interrupt registration/routing.
 - Coherent DMA allocation and streaming map/unmap semantics, device address
@@ -991,7 +1026,8 @@ phases replace a native-RX-first roadmap:
    This phase is complete for the selected QEMU/BSP profile.
 8. **As-built documentation.** Record executed original units/callbacks,
    source/configuration/provider inventory, verification and limitations.
-   Only then describe the selected Linux packet driver as operational.
+   This phase is complete; the support statement above describes the selected
+   Linux packet driver as operational without widening its tested profile.
 
 Every hardware acceptance case must combine source/build provenance, observed
 original callback execution, packet bytes and Linux completion/cleanup. Linked
@@ -999,11 +1035,10 @@ symbols or native DD/IRQ success alone are not sufficient. Retain isolated
 kernel/platform tests and exact KTAP/pcap validation, one ISO, fw_cfg selectors,
 and sequential low-memory regression runs.
 
-Phases 1-7 are complete, including original lifecycle, packet paths and selected
-ring/lifetime hardening. The next item is **phase 8: as-built documentation and
-support statement**. Integration with a native network
-stack and extraction for a second Linux driver follow this roadmap; they do not
-replace its driver-execution gates.
+Phases 1-8 are complete, including original lifecycle, packet paths, selected
+ring/lifetime hardening and as-built documentation. Integration with a native
+network stack and extraction for a second Linux driver are subsequent work;
+they do not replace this roadmap's driver-execution gates.
 
 ### Rust OS and userspace track
 

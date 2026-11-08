@@ -184,16 +184,25 @@ bounded sleeping-mutex API; the adapted file itself is not Linux C code.
 
 The [Linux submodule](linux/) retains its upstream copyright notices,
 per-file SPDX identifiers, and [license rules](linux/Documentation/process/license-rules.rst).
-The selected e1000 hardware source is GPL-2.0-only. It is not relicensed by the
-Moss port.
+The source baseline is release `v7.3.1`, commit
+`79a907609d53d5cd645b42c11550d295d43abf99`. All four selected e1000 units
+([main](linux/drivers/net/ethernet/intel/e1000/e1000_main.c),
+[hardware](linux/drivers/net/ethernet/intel/e1000/e1000_hw.c),
+[parameters](linux/drivers/net/ethernet/intel/e1000/e1000_param.c) and
+[ethtool](linux/drivers/net/ethernet/intel/e1000/e1000_ethtool.c)) retain their
+upstream `GPL-2.0` SPDX identifiers (GPL-2.0-only). Original UAPI, GFP and
+net-feature definitions are also used unchanged. Linux source is not relicensed
+by the MIT Moss port; its redistribution obligations remain applicable when
+linked into the kernel.
 
 The native [C execution adapter](compat/runtime.c),
 [Rust registry/backend](src/linux_runtime.rs), and
 [C acceptance test](compat/execution_test.c) are kutox code. They expose a
 tested static-object subset of Linux-facing mutex, spinlock, sleep, and completion
 APIs without copying a Linux synchronization implementation. The Linux submodule
-and selected upstream e1000 translation unit remain unchanged; this addition
-does not claim full driver or Linux binary ABI compatibility.
+and all four selected upstream units remain unchanged. These services now back
+original driver execution for the selected profile, not general Linux
+synchronization or binary ABI compatibility.
 
 ## Other dependencies and references
 
@@ -223,27 +232,32 @@ is architectural prior art, not an imported GIC implementation. QEMU's
 [PIIX routing](https://github.com/qemu/qemu/blob/v10.2.1/hw/isa/piix.c), and
 [e1000 interrupt behavior](https://github.com/qemu/qemu/blob/v10.2.1/hw/net/e1000.c)
 were verified as platform documentation; no QEMU implementation source is copied.
-The selected Linux hardware translation unit remains unchanged, and the new
-native IRQ proof does not claim Linux driver-IRQ API compatibility.
+The selected Linux units remain unchanged. The isolated native IRQ proof is
+platform acceptance, separate from the later original-driver IRQ binding.
 
 The native DMA layout/ownership policy, frame-guard-backed coherent buffers,
 registered-device C adapter, and acceptance tests are kutox code. They reuse
 the existing adapted Moss frame allocator and IRQ lock without copying a Moss
 or Linux DMA implementation. The selected upstream e1000 source remains
-unchanged. Coherent allocation/mask/barrier API names do not imply a Linux
-binary device ABI, streaming DMA, or IOMMU translation.
+unchanged. The isolated coherent fixture does not imply a Linux binary device
+ABI or streaming DMA. Original driver streaming map/sync/unmap now uses separate
+source-facing providers; neither path implements IOMMU translation.
 
-The native one-packet TX owner, register/IRQ lifecycle, status observation and
-pcap acceptance harness are kutox code, reusing the adapted Moss frame guards.
+The former native one-packet TX owner, register/IRQ lifecycle, status observation
+and C descriptor helper were kutox scaffolding, reusing the adapted Moss frame
+guards. That packet implementation and helper have been removed; the owned
+pcap acceptance harness remains kutox code.
 Pinned Moss's
 [VirtioHal](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/virtio_hal.rs)
-is DMA-allocation/coherent-QEMU prior art only. The C descriptor helper includes
-the unchanged Linux `e1000_hw.h` descriptor and command definitions;
-`e1000_main.c` TX configuration/cleanup was researched, not compiled or copied.
+is DMA-allocation/coherent-QEMU prior art only. The removed descriptor helper
+used unchanged Linux `e1000_hw.h` definitions. At that historical milestone,
+`e1000_main.c` TX configuration/cleanup was researched but not compiled; the
+current runtime instead executes that original source without copying its
+private algorithms into native code.
 QEMU 10.2.1 TX writeback, synchronous processing and filter direction were
 verified as platform documentation; no QEMU source is imported. Real packet
-DMA acceptance is restricted to the selected QEMU 82540EM model, not hardware or
-the complete Linux driver runtime.
+DMA acceptance remains restricted to the selected QEMU 82540EM model, not
+physical hardware or all configurations of the Linux driver.
 
 The isolated source-closure check compiles all four original Linux e1000 units
 and includes unchanged Linux UAPI, GFP and net-feature headers. Original notices
@@ -259,3 +273,9 @@ IRQ/watchdog/NAPI callbacks execute through kutox's native source-facing service
 no Linux kernel image, Kbuild or copied vendor-private algorithms are added.
 The lifecycle adapter, owned I/O BAR reset gate and callback-address acceptance
 are kutox implementations. The original compile-only objects remain excluded.
+Original TX/RX ring algorithms, copybreak/build-skb, IRQ/NAPI cleanup and queue
+stop/wake execute in Linux. The owned skb/ingress boundary, streaming-DMA
+provenance, deferred executors, native control serialization and hardening
+fixtures are kutox code; no second native packet driver or Linux IP/GRO stack
+is imported. Support is limited to the documented QEMU/BSP/MTU-1500/no-offload
+[as-built profile](docs/rust-kernel-linux-drivers.md#as-built-support-statement).

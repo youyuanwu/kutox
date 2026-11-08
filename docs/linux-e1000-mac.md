@@ -218,9 +218,12 @@ have exact four-frame packet acceptance with no native TX implementation.
 Controlled original RX now verifies copybreak/build-skb delivery, FCS handling,
 replacement-buffer pressure/recovery and explicit unsupported-packet drops.
 Ring/backpressure/pending-teardown hardening now passes for the selected QEMU/
-BSP profile. Final as-built documentation is next. Upstream open requires RX
-setup and link work even for TX-first
-testing; declarations or constant-success substitutes do not satisfy it.
+BSP profile. All eight phases are complete, with an explicit
+[as-built support statement](rust-kernel-linux-drivers.md#as-built-support-statement).
+The selected packet driver is operational, but general LinuxKPI, physical NICs,
+offloads and a native network stack remain outside that profile. Upstream open
+requires RX setup and link work even for TX-first testing; declarations or
+constant-success substitutes do not satisfy it.
 
 Do not follow the earlier transmit/receive sequence by writing another native
 Rust NIC driver. The [current roadmap](rust-kernel-linux-drivers.md#linux-e1000-driver-reuse-roadmap)
