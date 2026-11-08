@@ -99,6 +99,13 @@ class InputTests(unittest.TestCase):
                 path.write_bytes(data)
                 with self.assertRaises(ValueError):
                     check.Elf(path)
+            executable = bytearray(64)
+            executable[:7] = b"\x7fELF\x02\x01\x01"
+            struct.pack_into("<HH", executable, 16, 2, 62)
+            struct.pack_into("<HHH", executable, 58, 64, 1, 0)
+            path.write_bytes(executable)
+            with self.assertRaises(ValueError):
+                check.Elf(path)
 
 
 class ManifestTests(unittest.TestCase):

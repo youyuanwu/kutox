@@ -2,12 +2,133 @@
 
 use crate::driver_registry::{
     Dependency, DependencyStatus, DeviceHandle, DeviceInfo, DeviceSnapshot, DeviceState, DriverId,
-    DriverSpec, Error, Invocation, MAX_BOUND, MAX_DRIVERS, METADATA_BUDGET,
+    DriverSpec, Error, Invocation, MAX_BOUND, MAX_DEVICES, MAX_DRIVERS, METADATA_BUDGET,
     Operation as OperationKey, Phase, ProbeOutcome, Registry, Scope, ServiceId, Snapshot,
 };
 use alloc::sync::Arc;
 use core::marker::PhantomData;
 use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
+
+pub const INIT_MAGIC: u32 = 0x4b44494e;
+pub const INIT_ABI: u16 = 1;
+pub const INIT_RECORD_BYTES: usize = core::mem::size_of::<InitRecord>();
+pub type InitFactory = fn() -> Result<Arc<dyn NativeDriver>, Error>;
+
+/// Stable-Rust records retained by the kernel linker; order is priority then ID.
+#[repr(C)]
+pub struct InitRecord {
+    magic: u32,
+    abi: u16,
+    priority: u16,
+    id: u32,
+    scope: u8,
+    reserved: [u8; 3],
+    factory: InitFactory,
+}
+
+const _: () = assert!(
+    INIT_RECORD_BYTES == 24
+        && core::mem::align_of::<InitRecord>() == 8
+        && core::mem::offset_of!(InitRecord, factory) == 16
+);
+
+impl InitRecord {
+    pub const fn new(id: DriverId, priority: u16, scope: Scope, factory: InitFactory) -> Self {
+        Self {
+            magic: INIT_MAGIC,
+            abi: INIT_ABI,
+            priority,
+            id: id.value(),
+            scope: match scope {
+                Scope::Production => 0,
+                Scope::Test => 1,
+            },
+            reserved: [0; 3],
+            factory,
+        }
+    }
+
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+}
+
+pub struct InitTable<'a> {
+    records: &'a [InitRecord],
+    order: [usize; MAX_DRIVERS],
+}
+
+impl<'a> InitTable<'a> {
+    pub fn validate(records: &'a [InitRecord], scope: Scope) -> Result<Self, Error> {
+        if records.len() > MAX_DRIVERS {
+            return Err(Error::Capacity);
+        }
+        let mut table = Self {
+            records,
+            order: [0; MAX_DRIVERS],
+        };
+        for (index, record) in records.iter().enumerate() {
+            if record.magic != INIT_MAGIC
+                || record.abi != INIT_ABI
+                || record.reserved != [0; 3]
+                || record.id == 0
+                || record.scope > 1
+            {
+                return Err(Error::Invalid);
+            }
+            if record.scope != u8::from(scope == Scope::Test) {
+                return Err(Error::Profile);
+            }
+            if records[..index]
+                .iter()
+                .any(|previous| previous.id == record.id)
+            {
+                return Err(Error::Duplicate);
+            }
+            table.order[index] = index;
+        }
+        table.order[..records.len()].sort_unstable_by_key(|&index| {
+            let record = &records[index];
+            (record.priority, record.id)
+        });
+        Ok(table)
+    }
+
+    pub fn records(&self) -> impl Iterator<Item = &InitRecord> {
+        self.order[..self.records.len()]
+            .iter()
+            .map(|&index| &self.records[index])
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProbeDiagnostic {
+    Unresolved {
+        device: DeviceHandle,
+        status: DependencyStatus,
+    },
+    Failed {
+        device: DeviceHandle,
+        error: Error,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ProbeSummary {
+    pub attempts: usize,
+    pub bound: usize,
+    pub failed: usize,
+    pub unclaimed: usize,
+    pub waiting: usize,
+    pub unavailable: usize,
+    pub cycles: usize,
+    pub readiness_failures: usize,
+}
+
+pub const INIT_METADATA_BYTES: usize = 16
+    + MAX_DRIVERS * INIT_RECORD_BYTES
+    + core::mem::size_of::<InitTable<'static>>()
+    + core::mem::size_of::<ProbeSummary>();
 
 pub trait NativeDevice: Send + Sync {
     fn ready(&self) -> Result<bool, i32>;
@@ -117,12 +238,37 @@ impl<CPU: CpuOps> Manager<CPU> {
         })
     }
 
+    pub fn initialize_builtins(&self, records: &[InitRecord]) -> Result<(), Error> {
+        let scope = self.update("driver-init-scope", |state| Ok(state.registry.scope()))?;
+        let table = InitTable::validate(records, scope).inspect_err(|&error| {
+            (self.hooks.report_error)("driver-init-metadata", error);
+        })?;
+        self.initialize(|manager| {
+            for record in table.records() {
+                let driver = (record.factory)()?;
+                let spec = driver.spec();
+                if spec.id.value() != record.id
+                    || spec.priority != record.priority
+                    || spec.scope != scope
+                {
+                    return Err(Error::Profile);
+                }
+                manager.register_spec(driver, spec)?;
+            }
+            Ok(())
+        })
+    }
+
     pub fn register(&self, driver: Arc<dyn NativeDriver>) -> Result<(), Error> {
         if let Err(error) = self.context() {
             (self.hooks.report_error)("driver-register", error);
             return Err(error);
         }
         let spec = driver.spec();
+        self.register_spec(driver, spec)
+    }
+
+    fn register_spec(&self, driver: Arc<dyn NativeDriver>, spec: DriverSpec) -> Result<(), Error> {
         let mut pending = Some(driver);
         self.metadata("driver-register", |state| {
             let slot = state.registry.register(spec)?;
@@ -137,6 +283,125 @@ impl<CPU: CpuOps> Manager<CPU> {
 
     pub fn discover(&self, device: DeviceInfo) -> Result<DeviceHandle, Error> {
         self.update("driver-discover", |state| state.registry.discover(device))
+    }
+
+    pub fn discover_inventory(&self, inventory: &crate::pci_state::Inventory) -> Result<(), Error> {
+        self.update("driver-inventory", |state| {
+            if state.registry.snapshot().discovered != 0 {
+                return Err(Error::Duplicate);
+            }
+            if inventory.functions().len() > MAX_DEVICES {
+                return Err(Error::Capacity);
+            }
+            Ok(())
+        })?;
+        for function in inventory.functions() {
+            self.discover(DeviceInfo::Pci {
+                address: function.address,
+                vendor: function.vendor,
+                device: function.device,
+                class: function.class(),
+            })?;
+        }
+        Ok(())
+    }
+
+    pub fn device_at(&self, index: usize) -> Result<Option<(DeviceHandle, DeviceSnapshot)>, Error> {
+        self.update("driver-enumerate", |state| {
+            Ok(state.registry.device_at(index))
+        })
+    }
+
+    /// Run on the caller's guarded thread; named readiness is the only retry trigger.
+    pub fn coordinate_probes(
+        &self,
+        mut diagnose: impl FnMut(ProbeDiagnostic),
+    ) -> Result<ProbeSummary, Error> {
+        let mut summary = ProbeSummary::default();
+        loop {
+            let probe = match self.reserve_probe() {
+                Ok(Some(probe)) => probe,
+                Ok(None) => break,
+                Err(Error::InstanceLimit) => continue,
+                Err(error) => return Err(error),
+            };
+            let handle = probe.device();
+            if summary.attempts
+                == MAX_DEVICES * (MAX_DRIVERS + crate::driver_registry::MAX_DEPENDENCIES + 1)
+            {
+                drop(probe);
+                (self.hooks.report_error)("driver-probe-budget", Error::Capacity);
+                return Err(Error::Capacity);
+            }
+            summary.attempts += 1;
+            match probe.run() {
+                Ok(DeviceState::Bound { .. }) => {
+                    if let Err(error) = self.operation(handle)?.ready() {
+                        summary.readiness_failures += 1;
+                        diagnose(ProbeDiagnostic::Failed {
+                            device: handle,
+                            error,
+                        });
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    if error == Error::Context
+                        || !matches!(self.inspect(handle)?.state, DeviceState::Failed { .. })
+                    {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        for index in 0..MAX_DEVICES {
+            let Some((device, snapshot)) = self.device_at(index)? else {
+                continue;
+            };
+            match snapshot.state {
+                DeviceState::Bound { .. } => summary.bound += 1,
+                DeviceState::Failed { code, .. } => {
+                    summary.failed += 1;
+                    diagnose(ProbeDiagnostic::Failed {
+                        device,
+                        error: Error::Driver(code),
+                    });
+                }
+                DeviceState::Unclaimed => summary.unclaimed += 1,
+                DeviceState::Deferred { .. } => {
+                    let status = self.dependency_status(device)?;
+                    match status {
+                        DependencyStatus::Waiting(_) => summary.waiting += 1,
+                        DependencyStatus::Unavailable(_) => summary.unavailable += 1,
+                        DependencyStatus::Cycle => summary.cycles += 1,
+                        DependencyStatus::Ready => {
+                            (self.hooks.report_error)("driver-probe-progress", Error::Busy);
+                            return Err(Error::Busy);
+                        }
+                    }
+                    diagnose(ProbeDiagnostic::Unresolved { device, status });
+                }
+                DeviceState::Probing(_) | DeviceState::Stopping { .. } => {
+                    (self.hooks.report_error)("driver-probe-inflight", Error::Busy);
+                    return Err(Error::Busy);
+                }
+                DeviceState::Retired => {}
+            }
+        }
+        Ok(summary)
+    }
+
+    pub fn restart(&self) -> Result<(), Error> {
+        self.update("driver-restart", |state| {
+            if state.registry.snapshot().phase != Phase::Retired {
+                return Err(Error::Busy);
+            }
+            assert!(
+                state.devices.iter().all(Option::is_none),
+                "restart retains native devices"
+            );
+            state.registry.restart()
+        })
     }
 
     pub fn publish_service(&self, service: ServiceId) -> Result<bool, Error> {

@@ -57,9 +57,9 @@ def lines(path):
 
 
 class Elf:
-    """Bounded ELF64 relocatable inspection, without executing input objects."""
+    """Bounded ELF64 inspection, defaulting to relocatable driver objects."""
 
-    def __init__(self, path):
+    def __init__(self, path, *, expected_kind=1):
         if path.stat().st_size > 16 * 1024 * 1024:
             raise ValueError(f"oversized driver object: {path}")
         self.data = path.read_bytes()
@@ -68,8 +68,8 @@ class Elf:
         kind, machine = struct.unpack_from("<HH", self.data, 16)
         offset = struct.unpack_from("<Q", self.data, 40)[0]
         entry, count, names = struct.unpack_from("<HHH", self.data, 58)
-        if (kind, machine, entry) != (1, 62, 64) or not 0 < count <= 4096 or names >= count:
-            raise ValueError(f"unsupported relocatable ELF shape: {path}")
+        if (kind, machine, entry) != (expected_kind, 62, 64) or not 0 < count <= 4096 or names >= count:
+            raise ValueError(f"unsupported ELF shape: {path}")
         table = self.slice(offset, count * entry)
         raw = [struct.unpack_from("<IIQQQQIIQQ", table, i * entry) for i in range(count)]
         strings = self.slice(raw[names][4], raw[names][5])
@@ -78,6 +78,7 @@ class Elf:
             name = self.string(strings, record[0])
             data = b"" if record[1] == 8 else self.slice(record[4], record[5])
             self.sections.append({"name": name, "type": record[1], "data": data,
+                                  "flags": record[2], "address": record[3], "alignment": record[8],
                                   "link": record[6], "info": record[7], "entry": record[9]})
         self.by_name = {section["name"]: section for section in self.sections}
         if len(self.by_name) != len(self.sections):

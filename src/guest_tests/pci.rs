@@ -33,7 +33,7 @@ pub fn test_hierarchy(
         bar.base,
         bar.length,
         bar.io_port,
-        pci_state::INVENTORY_METADATA_BYTES + kutox::drivers::MANAGER_METADATA_BYTES + 256,
+        pci_state::INFRASTRUCTURE_METADATA_BYTES,
     ));
     let mut entry = device.inventory.find(address).map_err(policy_error)?;
     while let Some(parent) = device.inventory.parent(entry).map_err(policy_error)? {

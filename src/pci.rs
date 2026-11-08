@@ -248,8 +248,14 @@ impl Drop for Bar {
     }
 }
 
+pub fn enumerate() -> Result<Arc<Inventory>, Failure> {
+    Ok(Arc::new(
+        Inventory::scan(policy_read).map_err(policy_error)?,
+    ))
+}
+
 pub fn discover() -> Result<Device, Failure> {
-    let inventory = Arc::new(Inventory::scan(policy_read).map_err(policy_error)?);
+    let inventory = enumerate()?;
     let mut found = None;
     let mut network_present = false;
     for entry in inventory.functions() {

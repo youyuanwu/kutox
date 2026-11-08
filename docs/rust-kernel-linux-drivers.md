@@ -1047,9 +1047,11 @@ they do not replace this roadmap's driver-execution gates.
 
 The next integration milestone has **Phases 1-2 implemented; the remaining phases
 are planned**. The native [registry policy](../src/driver_registry.rs) and
-[owned manager boundary](../src/drivers.rs) are portable-tested foundations.
+[owned manager boundary](../src/drivers.rs) have portable and guarded-thread
+guest tests, including retained built-in initializers and probe coordination.
 The existing e1000 backend works in kernel fixtures, but normal boot still
-reads the MAC and exits; the manager is not yet wired into driver startup.
+reads the MAC and exits; production e1000 registration and persistent boot
+startup are subsequent phases.
 
 Follow pinned Moss's
 [built-in initialization](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/init.rs)
@@ -1076,6 +1078,7 @@ The planned phases are:
    Implemented, with actual Linux packet/lifetime acceptance behind bridges.
 3. **Built-in startup:** retained linker initializer records and deterministic
    kernel-thread probe coordination, with synthetic multi-driver tests.
+   Implemented and validated in release ELFs and actual guest threads.
 4. **Persistent kernel services:** boot-owned scheduler/controller/worker
    lifetimes and explicit kernel idle distinct from finite-test deadlock.
 5. **Managed e1000:** original Linux lifecycle behind native network-device
@@ -1107,7 +1110,8 @@ inventory storage must fit the remaining budget too. Use boot-owned/static
 storage rather than constructing it on a 16-KiB worker stack. Thirty-seven portable
 policy/manager tests cover ownership, matching, failures, capacity, generation
 exhaustion, dependency progress/cycles and unlocked callback reentry. These
-tests do not claim real kernel-thread startup or PCI hierarchy support.
+phase-one portable tests alone do not claim real kernel-thread startup or PCI
+hierarchy support; subsequent phases supply the guest proofs below.
 The new registry/manager is kutox code following Moss's model, not a wholesale
 copy of Moss's FDT/VFS driver subsystem.
 
@@ -1136,7 +1140,49 @@ config addresses, multifunction discovery, topology/window failures and routing.
 The `pci.hierarchy` guest case requires exact BDF, parent bus ranges, counts,
 swizzled pin, PIRQ/line/ELCR/GSI agreement, BAR spans and sizing recovery. Full
 Linux TX/RX acceptance runs at root and one/two bridge levels on the same ISO.
-Normal boot still performs the MAC proof; built-in driver startup is Phase 3.
+Normal boot still performs the MAC proof; persistent boot startup is Phase 6.
+
+Phase 3's [native initializer records](../src/drivers.rs) use a versioned
+24-byte layout, stable priority/ID ordering and a bounded initializer table.
+[The linker](../linker.ld) retains separate production/test tables and a
+16-byte read-only header, with exact bounds and layout assertions.
+[The kernel boundary](../src/driver_init.rs) rejects bad headers, bounds,
+duplicate identities, wrong scope and callbacks outside linked kernel text.
+Raw callback addresses are checked before constructing typed Rust records.
+Registration creates immutable descriptors once per manager epoch, separate
+from hardware probing and original Linux module startup; failed initialization
+unwinds registrations outside locks.
+
+The coordinator admits a completed PCI inventory, reserves identities, probes
+on the caller's guarded thread, retains owned results and publishes actual
+readiness. Named dependency publication permits retries; unavailable providers,
+cycles and no-progress dependencies are diagnosed and retained, not polled.
+A failed probe does not retire another driver's successful bindings. Shutdown
+and explicit restart clear retired identities without reusing global handles
+or constructing the large manager on a worker stack.
+
+[Three guest cases](../src/guest_tests/native_drivers.rs) use actual release-linked
+initializers, deliberately reverse physical record order and verify sorted
+execution. They check production admission rejection, read-only real PCI
+inventory with unclaimed functions, unlocked callback reentry, timed sleeping
+and resumption, exactly one successful deferred retry, partial failure,
+cycles/unavailable providers and two balanced manager epochs. Seven additional
+portable manager tests cover metadata, initialization rollback, coordination,
+readiness failures, instance limits and stale identities.
+
+The production table is explicitly empty in this phase: no synthetic
+initializer runs at normal boot, and no no-op/fallback e1000 driver is
+registered. Managed original-Linux e1000 registration remains Phase 5.
+The [ELF profile check](../scripts/guest_build_check.py) verifies actual
+read-only section contents, scopes, ordering keys and callback symbols in
+both build profiles; compile-only Linux source rejection and exact original
+callback evidence remain separate requirements.
+
+Initializer records, sorting workspace and coordinator results add a bounded
+608 bytes to the phase-two metadata allowance. The compiler-measured combined
+infrastructure bound is now **57,880 bytes**, including the 6,944-byte PCI
+inventory/scan allowance, below 64 KiB. Synthetic guest-manager storage is
+test-only, not a second production manager.
 
 Bridge timing also exposed two fixture assumptions: an earlier link IRQ's
 queued NAPI may legitimately clean a new TX before its TXDW interrupt, and
@@ -1185,8 +1231,8 @@ ELF profile checks positively require real driver/service symbols and require
 or reject test symbols according to the selected build. Test-disabled boot and
 test-enabled guest regressions use the same image location sequentially.
 
-Normal boot remains the MAC helper while driver-init/runtime integration is
-pending. Feature-off dormant-service dead-code allowances are scoped to those
+Normal boot remains the MAC helper while persistent service/managed-e1000
+integration is pending. Feature-off dormant-service dead-code allowances are scoped to those
 kernel modules only; strict type/lint checks and test-enabled warnings remain.
 No KUnit runtime, Linux module loader or additional kernel dependency is imported.
 

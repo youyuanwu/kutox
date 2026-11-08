@@ -4,6 +4,25 @@ use super::*;
 use crate::boot::BootInfo;
 use core::arch::asm;
 
+pub fn guarded_stack_valid(scheduler: &Scheduler<'_, '_, '_>, handle: TaskHandle) -> bool {
+    scheduler.tasks[handle.slot()]
+        .as_ref()
+        .is_some_and(|task| task.stack.mapping_valid())
+}
+
+pub fn check_current_stack() -> Result<(), SwitchError> {
+    check_thread_context()?;
+    let active = active()?;
+    let rsp: usize;
+    unsafe { asm!("mov {}, rsp", out(reg) rsp, options(nomem, nostack)) };
+    if active.top - active.bottom != memory::STACK_SIZE
+        || !(active.bottom..active.top).contains(&rsp)
+    {
+        return Err(SwitchError::NotRunning);
+    }
+    Ok(())
+}
+
 pub fn test_switching(
     boot: &BootInfo,
     frames: &memory::PhysicalFrames<'static>,

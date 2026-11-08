@@ -94,10 +94,12 @@ teardown are tested. All eight driver-reuse phases are complete for the
 [selected QEMU/BSP profile](docs/rust-kernel-linux-drivers.md#as-built-support-statement);
 this is not generic LinuxKPI, physical-hardware or network-stack support.
 
-Moss-style native driver registration and owned-device policy foundations now
-have portable tests. [Persistent boot integration](docs/rust-kernel-linux-drivers.md#planned-moss-style-driver-infrastructure)
-is still being implemented; PCI hierarchy/routing now also passes real guest
-tests, but the normal default remains the boot MAC proof.
+Moss-style native registration, retained initializer records and kernel-thread
+probe coordination now have portable and real guest tests, including PCI
+hierarchy/routing. [Persistent boot integration](docs/rust-kernel-linux-drivers.md#planned-moss-style-driver-infrastructure)
+is still being implemented; the production initializer table is explicitly
+empty until managed e1000 integration, and the normal default remains the boot
+MAC proof.
 
 ## Requirements
 
@@ -233,7 +235,7 @@ fixture for its device-IRQ and packet-DMA cases:
 python3 scripts/qemu_test.py --case kernel-tests --build-dir build
 ```
 
-Run the same 56 registered cases with 32 MiB of guest RAM:
+Run the same 59 registered cases with 32 MiB of guest RAM:
 
 ```sh
 python3 scripts/qemu_test.py --case kernel-tests-low-memory --build-dir build
@@ -268,7 +270,7 @@ hardware-configuration cases still use separate boots of the same ISO.
 
 ```text
 KTAP version 1
-1..56
+1..59
 ok 1 cpu.irq_lock_restore
 ok 2 cpu.breakpoint_return
 ok 3 memory.alignment_reservations
@@ -326,7 +328,10 @@ ok 53 linux.e1000_rx
 ok 54 linux.e1000_wrap
 ok 55 linux.e1000_backpressure
 ok 56 linux.e1000_teardown
-# Totals: pass:56 fail:0 skip:0 total:56
+ok 57 native.initializers
+ok 58 native.probes
+ok 59 native.dependencies
+# Totals: pass:59 fail:0 skip:0 total:59
 ```
 
 Tests run sequentially with interrupts disabled at case boundaries. After

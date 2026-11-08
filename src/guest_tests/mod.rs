@@ -6,6 +6,7 @@ pub(crate) mod e1000_irq;
 pub(crate) mod linux_e1000;
 mod linux_execution;
 pub(crate) mod linux_hardening;
+mod native_drivers;
 
 use self::{
     driver_services as driver_service_tests, linux_e1000 as linux_driver,
@@ -256,6 +257,18 @@ static TESTS: &[TestCase] = &[
     TestCase {
         name: "linux.e1000_teardown",
         run: linux_driver::teardown,
+    },
+    TestCase {
+        name: "native.initializers",
+        run: native_drivers::initializers,
+    },
+    TestCase {
+        name: "native.probes",
+        run: native_drivers::probes,
+    },
+    TestCase {
+        name: "native.dependencies",
+        run: native_drivers::dependencies,
     },
 ];
 

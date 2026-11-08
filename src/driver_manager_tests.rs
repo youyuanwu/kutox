@@ -558,3 +558,205 @@ fn kernel_manager_metadata_fits_the_explicit_budget() {
         core::mem::size_of::<Manager<Cpu>>(),
     );
 }
+
+fn init_first() -> Result<Arc<dyn NativeDriver>, Error> {
+    STOP_ORDER.with(|order| order.borrow_mut().push(1));
+    Ok(Driver::new(spec(1, 1), Behavior::Bind))
+}
+
+fn init_second() -> Result<Arc<dyn NativeDriver>, Error> {
+    STOP_ORDER.with(|order| order.borrow_mut().push(2));
+    Ok(Driver::new(spec(2, 2), Behavior::Bind))
+}
+
+fn record(id: u32, factory: InitFactory) -> InitRecord {
+    InitRecord::new(DriverId::new(id).unwrap(), 10, Scope::Test, factory)
+}
+
+#[test]
+fn builtins_are_sorted_and_execute_once_per_epoch() {
+    let manager = manager();
+    let records = [record(2, init_second), record(1, init_first)];
+    STOP_ORDER.with(|order| order.borrow_mut().clear());
+    for _ in 0..2 {
+        manager.initialize_builtins(&records).unwrap();
+        assert_eq!(
+            manager.initialize_builtins(&records),
+            Err(Error::AlreadyInitialized)
+        );
+        assert_eq!(manager.restart(), Err(Error::Busy));
+        manager.shutdown().unwrap();
+        manager.restart().unwrap();
+    }
+    STOP_ORDER.with(|order| assert_eq!(*order.borrow(), [1, 2, 1, 2]));
+}
+
+#[test]
+fn builtin_metadata_rejects_duplicates_profiles_and_malformed_fields_before_callbacks() {
+    let manager = manager();
+    let before = manager.snapshot().unwrap();
+    for (records, error) in [
+        (
+            std::vec![record(1, init_first), record(1, init_first)],
+            Error::Duplicate,
+        ),
+        (
+            std::vec![InitRecord::new(
+                DriverId::new(1).unwrap(),
+                10,
+                Scope::Production,
+                init_first
+            )],
+            Error::Profile,
+        ),
+    ] {
+        assert_eq!(manager.initialize_builtins(&records), Err(error));
+        assert_eq!(manager.snapshot().unwrap(), before);
+    }
+    for field in 0..5 {
+        let mut invalid = record(1, init_first);
+        match field {
+            0 => invalid.magic = 0,
+            1 => invalid.abi += 1,
+            2 => invalid.id = 0,
+            3 => invalid.scope = 2,
+            _ => invalid.reserved[0] = 1,
+        }
+        assert_eq!(manager.initialize_builtins(&[invalid]), Err(Error::Invalid));
+        assert_eq!(manager.snapshot().unwrap(), before);
+    }
+    let records: Vec<_> = (1..=MAX_DRIVERS + 1)
+        .map(|id| record(id as u32, init_first))
+        .collect();
+    assert_eq!(manager.initialize_builtins(&records), Err(Error::Capacity));
+}
+
+#[test]
+fn builtin_factory_error_and_identity_mismatch_unwind_registration() {
+    for (factory, error) in [
+        (
+            (|| Err(Error::Driver(-12))) as InitFactory,
+            Error::Driver(-12),
+        ),
+        (init_second as InitFactory, Error::Profile),
+    ] {
+        let manager = manager();
+        let records = [
+            record(1, init_first),
+            InitRecord::new(DriverId::new(3).unwrap(), 20, Scope::Test, factory),
+        ];
+        assert_eq!(manager.initialize_builtins(&records), Err(error));
+        let snapshot = manager.snapshot().unwrap();
+        assert_eq!(snapshot.phase, Phase::Retired);
+        assert_eq!(snapshot.drivers, 0);
+    }
+}
+
+#[test]
+fn coordinator_preserves_partial_failure_and_reports_no_progress_without_retries() {
+    let manager = manager();
+    let good = Driver::new(spec(1, 1), Behavior::Bind);
+    let failed = Driver::new(spec(2, 2), Behavior::Fail(-12));
+    let dependency = Dependency::Service(ServiceId::new(0).unwrap());
+    let deferred = Driver::new(spec(3, 3), Behavior::Defer(dependency));
+    manager
+        .initialize(|manager| {
+            manager.register(good.clone())?;
+            manager.register(failed.clone())?;
+            manager.register(deferred.clone())
+        })
+        .unwrap();
+    for (id, kind) in [(1, 1), (2, 2), (3, 3)] {
+        manager.discover(info(id, kind)).unwrap();
+    }
+    let mut diagnostics = Vec::new();
+    let summary = manager
+        .coordinate_probes(|event| diagnostics.push(event))
+        .unwrap();
+    assert_eq!(
+        (
+            summary.attempts,
+            summary.bound,
+            summary.failed,
+            summary.waiting
+        ),
+        (3, 1, 1, 1)
+    );
+    assert_eq!(diagnostics.len(), 2);
+    assert_eq!(manager.coordinate_probes(|_| ()).unwrap().attempts, 0);
+    assert_eq!(deferred.counts.probes.load(Ordering::Relaxed), 1);
+    manager.shutdown().unwrap();
+}
+
+#[test]
+fn coordinator_reprobes_readiness_published_during_an_unlocked_callback() {
+    let manager = Arc::new(manager());
+    let driver = Arc::new(Driver {
+        spec: spec(1, 1),
+        behavior: Behavior::PublishThenDefer(ServiceId::new(0).unwrap()),
+        counts: Arc::new(Counts::default()),
+        manager: Some(Arc::downgrade(&manager)),
+    });
+    manager
+        .initialize(|manager| manager.register(driver.clone()))
+        .unwrap();
+    let old = manager.discover(info(1, 1)).unwrap();
+    let summary = manager
+        .coordinate_probes(|_| panic!("unexpected diagnostic"))
+        .unwrap();
+    assert_eq!((summary.attempts, summary.bound), (2, 1));
+    manager.shutdown().unwrap();
+    manager.restart().unwrap();
+    manager.initialize(|_| Ok(())).unwrap();
+    let new = manager.discover(info(1, 1)).unwrap();
+    assert_ne!(old, new);
+    assert_eq!(manager.inspect(old), Err(Error::Stale));
+    manager.shutdown().unwrap();
+}
+
+#[test]
+fn coordinator_reports_failed_readiness_without_publishing_success() {
+    let manager = manager();
+    let driver = Driver::new(spec(1, 1), Behavior::Bind);
+    driver.counts.ready_error.store(-5, Ordering::Relaxed);
+    manager
+        .initialize(|manager| manager.register(driver))
+        .unwrap();
+    let handle = manager.discover(info(1, 1)).unwrap();
+    let mut diagnostics = Vec::new();
+    let summary = manager
+        .coordinate_probes(|event| diagnostics.push(event))
+        .unwrap();
+    assert_eq!((summary.bound, summary.readiness_failures), (1, 1));
+    assert_eq!(
+        diagnostics,
+        [ProbeDiagnostic::Failed {
+            device: handle,
+            error: Error::Driver(-5)
+        }]
+    );
+    assert!(matches!(
+        manager.inspect(handle).unwrap().state,
+        DeviceState::Bound { ready: false, .. }
+    ));
+    manager.shutdown().unwrap();
+}
+
+#[test]
+fn coordinator_diagnoses_instance_limit_and_advances_to_another_driver() {
+    let manager = manager();
+    let mut limited = spec(1, 1);
+    limited.max_instances = 1;
+    manager
+        .initialize(|manager| {
+            manager.register(Driver::new(limited, Behavior::Bind))?;
+            manager.register(Driver::new(spec(2, 2), Behavior::Bind))
+        })
+        .unwrap();
+    for (id, kind) in [(1, 1), (2, 1), (3, 2)] {
+        manager.discover(info(id, kind)).unwrap();
+    }
+    let summary = manager.coordinate_probes(|_| ()).unwrap();
+    assert_eq!((summary.attempts, summary.bound, summary.failed), (2, 2, 1));
+    manager.shutdown().unwrap();
+}

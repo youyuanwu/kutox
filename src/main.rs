@@ -18,6 +18,14 @@ mod dma;
     not(feature = "guest-tests"),
     allow(
         dead_code,
+        reason = "Native boot coordinator is wired in integration phase 6"
+    )
+)]
+mod driver_init;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
         reason = "Kernel service API retained before boot integration"
     )
 )]
@@ -196,6 +204,7 @@ pub extern "C" fn kmain() -> ! {
 fn probe() -> Result<[u8; 6], Failure> {
     exceptions::initialize()?;
     let boot = boot::collect()?;
+    driver_init::validate_boot_metadata()?;
     println!(
         "BOOT_MODE mode={} source={}",
         boot.mode.name(),

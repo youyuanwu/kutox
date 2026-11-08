@@ -1,6 +1,10 @@
 //! Read-only, bounded discovery of firmware-configured conventional PCI bridges.
 
-use crate::{driver_registry::PciAddress, drivers::MANAGER_METADATA_BYTES, irq_platform};
+use crate::{
+    driver_registry::PciAddress,
+    drivers::{INIT_METADATA_BYTES, MANAGER_METADATA_BYTES},
+    irq_platform,
+};
 use alloc::vec::Vec;
 
 pub const MAX_FUNCTIONS: usize = 256;
@@ -68,7 +72,9 @@ pub struct Inventory {
 
 pub const INVENTORY_METADATA_BYTES: usize =
     core::mem::size_of::<Inventory>() + MAX_FUNCTIONS * core::mem::size_of::<Function>() + 768;
-const _: () = assert!(MANAGER_METADATA_BYTES + 256 + INVENTORY_METADATA_BYTES <= 64 * 1024);
+pub const INFRASTRUCTURE_METADATA_BYTES: usize =
+    MANAGER_METADATA_BYTES + 256 + INVENTORY_METADATA_BYTES + INIT_METADATA_BYTES;
+const _: () = assert!(INFRASTRUCTURE_METADATA_BYTES <= 64 * 1024);
 
 impl Inventory {
     pub fn scan(mut read: impl FnMut(PciAddress, u8) -> Result<u32, Error>) -> Result<Self, Error> {

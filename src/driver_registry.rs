@@ -367,11 +367,34 @@ impl Registry {
         Ok(())
     }
 
+    pub fn scope(&self) -> Scope {
+        self.scope
+    }
+
+    pub fn device_at(&self, index: usize) -> Option<(DeviceHandle, DeviceSnapshot)> {
+        let device = self.devices.get(index)?.as_ref()?;
+        Some((
+            device.handle,
+            self.inspect(device.handle).expect("live registry identity"),
+        ))
+    }
+
     pub fn finish_initialization(&mut self) -> Result<(), Error> {
         if self.phase != Phase::Initializing {
             return Err(Error::NotInitialized);
         }
         self.phase = Phase::Ready;
+        Ok(())
+    }
+
+    pub fn restart(&mut self) -> Result<(), Error> {
+        if self.phase != Phase::Retired {
+            return Err(Error::Busy);
+        }
+        self.devices.fill(None);
+        self.progress = 0;
+        self.service_versions = [0; MAX_SERVICES as usize];
+        self.phase = Phase::New;
         Ok(())
     }
 

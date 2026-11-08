@@ -12,8 +12,42 @@ from qemu_test import KERNEL_SUITE_CASES, KERNEL_TEST_NAMES, KernelSuiteFailure,
 
 FOUNDATION = "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled"
 CALLBACK_SYMBOLS = {name: 0xffffffff80001000 + index * 16 for index, name in enumerate(
-    sorted({name for names in qemu_test.DRIVER_CALLBACK_NAMES.values() for name in names})
+    sorted({name for names in qemu_test.DRIVER_CALLBACK_NAMES.values() for name in names}
+           | {f"kutox_guest_native_init_{identity}" for identity in (10, 20, 30, 40)}
+           | {"kutox_guest_native_probe"})
 )}
+
+def native_log(name, case):
+    def inits(epoch):
+        return [
+            f"# NATIVE_INIT epoch={epoch} id={identity} function={CALLBACK_SYMBOLS[f'kutox_guest_native_init_{identity}']:x} task={1 if epoch == 0 else 2 if epoch in (1, 2) else 3} locks=0"
+            for identity in (10, 20, 30, 40)
+        ]
+    if name == "native.initializers":
+        functions = 6 + len(pci_layout(case)[2])
+        return [
+            f"# NATIVE_TABLE production=0 test=4 record_bytes=24 functions={functions}",
+            *inits(0),
+            f"# NATIVE_INITIALIZERS initialized=4 production_attempts=0 unclaimed={functions} profile_rejected=2 duplicate_rejected=1",
+        ]
+    lines = []
+    for epoch in (3,) if name == "native.dependencies" else (1, 2):
+        lines.extend(inits(epoch))
+        task = 3 if epoch == 3 else 2
+        sequence = (
+            [(20, 1, 1), (10, 2, 1), (40, 3, 1), (30, 4, 1), (40, 5, 2)]
+            if epoch == 3 else
+            [(10, 1, 1), (20, 2, 1), (10, 1, 2), (20, 3, 2), (30, 4, 1), (40, 5, 1)]
+        )
+        for identity, device, attempt in sequence:
+            lines.extend([
+                f"# NATIVE_PROBE epoch={epoch} id={identity} identity={device} attempt={attempt} function={CALLBACK_SYMBOLS['kutox_guest_native_probe']:x} task={task} locks=0",
+                f"# NATIVE_RESUME epoch={epoch} id={identity} identity={device} task={task} locks=0",
+            ])
+        counts = ("attempts=5 bound=0 failed=1 waiting=1 unavailable=1 cycles=2 stopped=0 dropped=0" if epoch == 3
+                  else "attempts=6 bound=3 failed=1 waiting=1 unavailable=0 cycles=0 stopped=3 dropped=3")
+        lines.append(f"# NATIVE_COORDINATOR epoch={epoch} {counts} live=0 retry_idle=0 stale=1")
+    return lines
 
 
 def callback_log(failures=False, transmit=False, receive=False):
@@ -288,7 +322,7 @@ def pci_log(case):
     irq = pirqs[(root - 1 + pin - 1) & 3]
     depth = len(parents)
     lines = [
-        f"# PCI_HIERARCHY bdf=0000:{depth:02x}:{leaf:02x}.0 depth={depth} functions={6 + depth} buses={depth + 1} bridges={depth} root_slot={root} root_pin={pin} gsi={irq} pirqs=10,11,10,11 line={irq} elcr=0c00 mem=80020000/131072 io=3000/64 metadata=57272"
+        f"# PCI_HIERARCHY bdf=0000:{depth:02x}:{leaf:02x}.0 depth={depth} functions={6 + depth} buses={depth + 1} bridges={depth} root_slot={root} root_pin={pin} gsi={irq} pirqs=10,11,10,11 line={irq} elcr=0c00 mem=80020000/131072 io=3000/64 metadata=57880"
     ]
     lines.extend(
         f"# PCI_PARENT bdf=0000:{bus:02x}:{slot:02x}.0 primary={bus} secondary={bus + 1} subordinate={depth}"
@@ -312,6 +346,8 @@ def suite_log(case="kernel-tests"):
     for index, name in enumerate(names, 1):
         if name == "pci.hierarchy":
             lines.extend(pci_log(case))
+        if name.startswith("native."):
+            lines.extend(native_log(name, case))
         if name.startswith("linux.e1000_"):
             if name.endswith(("_wrap","_backpressure","_teardown")):
                 lines.extend(hard_log(name.rsplit("_",1)[1]))
@@ -333,7 +369,7 @@ class KernelSuiteTests(unittest.TestCase):
             output.replace(pci_log(case)[0], pci_log(case)[0] + "\n" + pci_log(case)[0]),
             output.replace("bdf=0000:02:05.0", "bdf=0000:00:05.0"),
             output.replace("root_pin=2", "root_pin=1"),
-            output.replace("metadata=57272", "metadata=65537"),
+            output.replace("metadata=57880", "metadata=65537"),
             output.replace(pci_log(case)[1] + "\n", ""),
             output.replace("primary=1 secondary=2 subordinate=2", "primary=1 secondary=3 subordinate=3"),
         ]:
@@ -354,10 +390,33 @@ class KernelSuiteTests(unittest.TestCase):
                 validate_result(case, 1, changed)
 
     def test_requires_original_driver_lifecycle_cases(self):
-        self.assertEqual(KERNEL_TEST_NAMES[49:], (
+        self.assertEqual(KERNEL_TEST_NAMES[49:56], (
             "linux.e1000_lifecycle", "linux.e1000_failures", "linux.e1000_tx", "linux.e1000_rx",
             "linux.e1000_wrap", "linux.e1000_backpressure", "linux.e1000_teardown",
         ))
+
+    def test_native_driver_evidence_rejects_missing_wrong_order_context_and_resource_counts(self):
+        output = suite_log()
+        qemu_test.validate_native_drivers(output.splitlines(), "kernel-tests", CALLBACK_SYMBOLS)
+        lines = native_log("native.probes", "kernel-tests")
+        for changed in [
+            output.replace(lines[0] + "\n", "", 1),
+            output.replace(lines[0] + "\n" + lines[1], lines[1] + "\n" + lines[0], 1),
+            output.replace("locks=0", "locks=1", 1),
+            output.replace("attempts=6", "attempts=7", 1),
+            output.replace("stopped=3", "stopped=2", 1),
+            output.replace("dropped=3", "dropped=4", 1),
+            output.replace("live=0 retry_idle=0", "live=1 retry_idle=0", 1),
+            output.replace("cycles=2", "cycles=0", 1),
+            output.replace("production_attempts=0", "production_attempts=1", 1),
+            output.replace(lines[5] + "\n", "", 1),
+        ]:
+            with self.subTest(changed=changed[:100]), self.assertRaises(AssertionError):
+                qemu_test.validate_native_drivers(changed.splitlines(), "kernel-tests", CALLBACK_SYMBOLS)
+        wrong = dict(CALLBACK_SYMBOLS)
+        wrong["kutox_guest_native_probe"] += 1
+        with self.assertRaises(AssertionError):
+            qemu_test.validate_native_drivers(output.splitlines(), "kernel-tests", wrong)
 
     def test_original_callback_addresses_match_actual_symbols(self):
         qemu_test.validate_linux_callbacks(suite_log(), CALLBACK_SYMBOLS)

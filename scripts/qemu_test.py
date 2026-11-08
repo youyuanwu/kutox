@@ -73,6 +73,9 @@ KERNEL_TEST_NAMES = (
     "linux.e1000_wrap",
     "linux.e1000_backpressure",
     "linux.e1000_teardown",
+    "native.initializers",
+    "native.probes",
+    "native.dependencies",
 )
 KERNEL_SUITE_CASES = {
     "kernel-tests": "kernel-tests",
@@ -221,6 +224,7 @@ def validate_kernel_suite(case, returncode, output):
     if len(results) != len(expected_names):
         raise AssertionError("kernel suite did not execute every expected test")
     validate_linux_callbacks(output)
+    validate_native_drivers(lines, case)
     failures = {name for name, passed in results if not passed}
     passed, failed, total = map(int, summary.groups())
     if (passed, failed, total) != (len(results) - len(failures), len(failures), len(results)):
@@ -232,6 +236,91 @@ def validate_kernel_suite(case, returncode, output):
         raise AssertionError("intentional failure did not fire or another test failed")
     if failures:
         raise KernelSuiteFailure(f"kernel suite failed: {', '.join(sorted(failures))}")
+
+def validate_native_drivers(lines, case, symbols=None):
+    batches, events = {}, []
+    for line in lines:
+        if line.startswith("# NATIVE_") and not line.startswith("# NATIVE_DRIVER_ERROR "):
+            events.append(line)
+        elif match := re.fullmatch(r"(?:ok|not ok) [0-9]+ ([a-z0-9_.]+)", line):
+            name = match[1]
+            if name.startswith("native."):
+                if name in batches:
+                    raise AssertionError("duplicate native driver batch")
+                batches[name] = events
+            elif events:
+                raise AssertionError("native callbacks ran outside native tests")
+            events = []
+    if events or set(batches) != {"native.initializers", "native.probes", "native.dependencies"}:
+        raise AssertionError("incomplete native driver evidence")
+    tasks = {}
+    normalized = {}
+    for name, events in batches.items():
+        normalized[name] = []
+        for line in events:
+            match = re.fullmatch(
+                r"# NATIVE_(INIT|PROBE|RESUME) epoch=(\d+) id=(\d+)"
+                r"(?: identity=(\d+))?(?: attempt=(\d+))?(?: function=([0-9a-f]+))? task=(\d+) locks=0",
+                line,
+            )
+            if match:
+                kind, epoch, identity, device, attempt, function, task = match.groups()
+                epoch, identity, task = int(epoch), int(identity), int(task)
+                if not task or (epoch in tasks and tasks[epoch] != task):
+                    raise AssertionError("native callback changed thread or held an IRQ guard")
+                tasks[epoch] = task
+                if kind == "INIT":
+                    if device is not None or attempt is not None:
+                        raise AssertionError("malformed native initializer evidence")
+                    symbol = f"kutox_guest_native_init_{identity}"
+                else:
+                    if device is None or (kind == "PROBE") != (attempt is not None):
+                        raise AssertionError("malformed native probe/resume evidence")
+                    symbol = "kutox_guest_native_probe"
+                if kind != "RESUME":
+                    if function is None or not int(function, 16) or (
+                        symbols is not None and int(function, 16) != symbols.get(symbol)
+                    ):
+                        raise AssertionError("native callback did not point to actual linked code")
+                elif function is not None:
+                    raise AssertionError("malformed native resume evidence")
+                suffix = f" identity={device}" if device is not None else ""
+                suffix += f" attempt={attempt}" if attempt is not None else ""
+                normalized[name].append(f"# NATIVE_{kind} epoch={epoch} id={identity}{suffix}")
+            else:
+                normalized[name].append(line)
+    def inits(epoch):
+        return [f"# NATIVE_INIT epoch={epoch} id={identity}" for identity in (10, 20, 30, 40)]
+    functions = 6 + len(pci_layout(case)[2])
+    expected = {
+        "native.initializers": [
+            f"# NATIVE_TABLE production=0 test=4 record_bytes=24 functions={functions}",
+            *inits(0),
+            f"# NATIVE_INITIALIZERS initialized=4 production_attempts=0 unclaimed={functions} profile_rejected=2 duplicate_rejected=1",
+        ],
+        "native.probes": [],
+        "native.dependencies": [],
+    }
+    for epoch in (1, 2, 3):
+        name = "native.dependencies" if epoch == 3 else "native.probes"
+        expected[name].extend(inits(epoch))
+        sequence = (
+            [(20, 1, 1), (10, 2, 1), (40, 3, 1), (30, 4, 1), (40, 5, 2)]
+            if epoch == 3 else
+            [(10, 1, 1), (20, 2, 1), (10, 1, 2), (20, 3, 2), (30, 4, 1), (40, 5, 1)]
+        )
+        for identity, device, attempt in sequence:
+            expected[name].extend([
+                f"# NATIVE_PROBE epoch={epoch} id={identity} identity={device} attempt={attempt}",
+                f"# NATIVE_RESUME epoch={epoch} id={identity} identity={device}",
+            ])
+        counts = ("attempts=5 bound=0 failed=1 waiting=1 unavailable=1 cycles=2 stopped=0 dropped=0" if epoch == 3
+                  else "attempts=6 bound=3 failed=1 waiting=1 unavailable=0 cycles=0 stopped=3 dropped=3")
+        expected[name].append(f"# NATIVE_COORDINATOR epoch={epoch} {counts} live=0 retry_idle=0 stale=1")
+    if normalized != expected:
+        raise AssertionError("missing, reordered or incorrect native initialization/probe/lifetime evidence")
+    if tasks[0] in (tasks[1], tasks[3]) or tasks[1] != tasks[2] or tasks[1] == tasks[3]:
+        raise AssertionError("native initializer/probe worker lifetime mismatch")
 
 DRIVER_WORK_CALLBACKS = (
     "e1000_watchdog", "e1000_update_phy_info_task",
@@ -1166,7 +1255,9 @@ def run_case(args, case, index=0):
                 raise AssertionError("QEMU did not produce the required TX capture")
             with capture.open("rb") as stream:
                 validate_tx_capture(stream.read(1024 * 1024 + 1))
-            validate_linux_callbacks(output, runtime_symbols(getattr(args, "nm", "nm")))
+            symbols = runtime_symbols(getattr(args, "nm", "nm"))
+            validate_linux_callbacks(output, symbols)
+            validate_native_drivers(output.splitlines(), case, symbols)
         validate_result(case, completed.returncode, output)
     except KernelSuiteFailure as error:
         raise KernelSuiteFailure(f"{error}\nlog: {log}\n{output}") from error
