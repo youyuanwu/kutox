@@ -1,3 +1,5 @@
+//! Guest-only acceptance fixtures; not production driver code.
+
 use super::*;
 use crate::{Failure, boot::BootInfo, cpu, irq, memory, threads::Scheduler, time};
 use alloc::boxed::Box;
@@ -56,7 +58,7 @@ fn stored_signals(_: usize) {
     X86Cpu::enable_interrupts();
     context_errors(SwitchError::InterruptsEnabled);
     X86Cpu::disable_interrupts();
-    crate::exceptions::test_thread_context(|| {
+    crate::exceptions::tests::test_thread_context(|| {
         context_errors(SwitchError::InterruptContext);
     })
     .unwrap_or_else(|error| {

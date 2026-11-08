@@ -6,29 +6,140 @@ extern crate alloc;
 mod boot;
 mod completion;
 mod cpu;
-mod device_irq;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod dma;
+mod driver_init;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod driver_memory;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod driver_platform;
-mod driver_service_tests;
-mod e1000;
 mod exceptions;
+#[cfg(feature = "guest-tests")]
+mod guest_tests;
 mod heap;
 mod io;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod irq;
-mod kernel_tests;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Additional native runtime APIs are available to kernel clients"
+    )
+)]
+mod kernel_runtime;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod linux_deferred;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod linux_dma;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod linux_driver;
-mod linux_driver_tests;
-mod linux_hardening;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod linux_irq;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod linux_runtime;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod memory;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod mutex;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Additional native packet APIs are available to kernel clients"
+    )
+)]
+mod net_device;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod pci;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod platform;
 mod serial;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod threads;
 mod time;
 
@@ -39,6 +150,7 @@ macro_rules! println {
     ($($arg:tt)*) => { serial::print(format_args!("{}\n", format_args!($($arg)*))) };
 }
 
+#[derive(Debug)]
 struct Failure {
     stage: &'static str,
     code: i32,
@@ -81,11 +193,15 @@ pub extern "C" fn kmain() -> ! {
     serial::init();
     println!("KUTOX_BOOT linux={}", env!("KUTOX_LINUX_REVISION"));
     match probe() {
-        Ok(mac) => {
+        Ok(BootOutcome::Mac(mac)) => {
             println!(
                 "E1000_MAC_OK mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
             );
+            io::finish(true);
+        }
+        Ok(BootOutcome::RuntimeStopped) => {
+            println!("KERNEL_RUNTIME_STOPPED");
             io::finish(true);
         }
         Err(failure) => {
@@ -98,9 +214,15 @@ pub extern "C" fn kmain() -> ! {
     }
 }
 
-fn probe() -> Result<[u8; 6], Failure> {
+enum BootOutcome {
+    Mac([u8; 6]),
+    RuntimeStopped,
+}
+
+fn probe() -> Result<BootOutcome, Failure> {
     exceptions::initialize()?;
     let boot = boot::collect()?;
+    driver_init::validate_boot_metadata()?;
     println!(
         "BOOT_MODE mode={} source={}",
         boot.mode.name(),
@@ -110,20 +232,31 @@ fn probe() -> Result<[u8; 6], Failure> {
             "default"
         }
     );
-    if matches!(boot.mode, BootMode::KernelTests | BootMode::KernelTestsFail) {
-        kernel_tests::run(&boot);
+    #[cfg(feature = "guest-tests")]
+    if matches!(
+        boot.mode,
+        BootMode::KernelTests
+            | BootMode::KernelTestsFail
+            | BootMode::DriverRuntimeTests
+            | BootMode::DriverNetworkTests
+            | BootMode::DriverHardeningTests
+    ) {
+        guest_tests::run(&boot);
     }
+    #[cfg(feature = "guest-tests")]
     if boot.mode.is_fault_test() {
-        match exceptions::run_fault_test(boot.mode)? {}
+        match exceptions::tests::run_fault_test(boot.mode)? {}
     }
     let mut memory_storage = memory::MemoryStorage::new();
     let allocator = memory::initialize(&boot, &mut memory_storage)?;
     let heap = heap::initialize(&boot, allocator)?;
+    #[cfg(feature = "guest-tests")]
     if boot.mode == BootMode::HeapOom {
-        heap::fatal_oom();
+        heap::tests::fatal_oom();
     }
+    #[cfg(feature = "guest-tests")]
     if boot.mode == BootMode::ThreadStackGuard {
-        match threads::run_guard_test(&boot, allocator)? {}
+        match threads::tests::run_guard_test(&boot, allocator)? {}
     }
     let stats = allocator.stats();
     let managed_bytes = stats.total_pages * moss_libkernel::memory::PAGE_SIZE;
@@ -154,6 +287,13 @@ fn probe() -> Result<[u8; 6], Failure> {
     );
     let ticks = time::calibrate()?;
     println!("TSC ticks_per_us={ticks}");
+    if boot.mode == BootMode::Run {
+        linux_driver::report_boot_callbacks(true);
+        let resources = kernel_runtime::Resources::start(&boot, allocator)?;
+        resources.run(kernel_runtime::Clients::new())?;
+        linux_driver::report_boot_callbacks(false);
+        return Ok(BootOutcome::RuntimeStopped);
+    }
     let device = pci::discover()?;
     let bar = device.enable_mmio()?;
     let mapping = memory::map_mmio(&boot, bar.base, allocator)?;
@@ -170,7 +310,16 @@ fn probe() -> Result<[u8; 6], Failure> {
             device.vendor,
             device.device,
             device.revision,
-            u8::from(boot.mode == BootMode::EepromTimeout),
+            {
+                #[cfg(feature = "guest-tests")]
+                {
+                    u8::from(boot.mode == BootMode::EepromTimeout)
+                }
+                #[cfg(not(feature = "guest-tests"))]
+                {
+                    0
+                }
+            },
             &mut result,
         );
     }
@@ -180,6 +329,8 @@ fn probe() -> Result<[u8; 6], Failure> {
     );
     let table_count = mapping.table_frame_count();
     drop(mapping);
+    drop(bar);
+    drop(device);
     if allocator.stats() != stats {
         return Err(Failure::new("frame_allocator_cleanup", -1));
     }
@@ -192,7 +343,7 @@ fn probe() -> Result<[u8; 6], Failure> {
         return Err(Failure::new("heap_cleanup", -1));
     }
     println!("BOOT_MEMORY_TABLES allocated={table_count} released={table_count}");
-    result.permanent_mac()
+    result.permanent_mac().map(BootOutcome::Mac)
 }
 
 impl ProbeResult {

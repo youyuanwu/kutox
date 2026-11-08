@@ -4,6 +4,8 @@ A small x86_64 Rust kernel for reusing selected Linux device-driver implementati
 not building another native Rust NIC driver.
 The first milestone reads a QEMU Intel 82540EM NIC's permanent MAC address
 using **unchanged upstream Linux e1000 hardware code**.
+Normal boot now starts and retains the full unchanged e1000 driver in the
+kernel runtime. The finite MAC proof remains available as explicit `probe` mode.
 
 It uses a fixed-capacity port of Moss's `Smalloc` bootstrap allocator to
 reserve frame metadata, then hands physical RAM to an IRQ-locked adaptation
@@ -28,6 +30,13 @@ guarded stacks, native x86_64 context switching, FIFO yields, and off-stack
 reclamation after a thread returns. Native wait queues, cancellation, and timed
 sleep can now suspend these stacks. This is not timer preemption, SMP or a
 general Linux binary ABI.
+
+The scoped [kernel runtime](src/kernel_runtime.rs) now retains the dispatcher,
+native manager, APIC/timer/controllers and shared Linux workers through client
+return and idle. Its persistent policy sleeps without inventing periodic work;
+finite scheduler calls still diagnose deadlock. Deliberate shutdown retires
+devices/source users, stops and joins workers, and reclaims stacks off-stack.
+Normal boot uses this service scope in both guest-enabled and test-free builds.
 
 Native counting completions remember signals before a wait, support a persistent
 `complete_all` latch, and preserve credits across timeout/cancellation. Their
@@ -79,7 +88,7 @@ hardware, parameter and ethtool units. It records original registration/callback
 parameter arrays, layouts, headers and **209 unresolved runtime dependencies**.
 These objects are explicitly rejected by the runtime linker. A second
 source-plus-services relocatable closure now checks every driver API has a
-C provider or an explicitly listed Rust primitive; its remaining 51 platform
+C provider or an explicitly listed Rust primitive; its remaining 52 platform
 symbols are recorded, not hidden by success stubs.
 The marked check objects remain excluded from the runtime image. Runtime
 objects are compiled separately against the same selected source profile.
@@ -94,6 +103,18 @@ teardown are tested. All eight driver-reuse phases are complete for the
 [selected QEMU/BSP profile](docs/rust-kernel-linux-drivers.md#as-built-support-statement);
 this is not generic LinuxKPI, physical-hardware or network-stack support.
 
+Moss-style native registration, retained initializer records and kernel-thread
+probe coordination now have portable and real guest tests, including PCI
+hierarchy/routing, persistent service lifetime and managed Linux e1000.
+The production initializer registers one supported e1000 backend, with native
+[network handles](src/net_device.rs) for real MAC/link/MTU/statistics, owned
+Ethernet frames, checked TX receipts and FIFO RX. Linux remains the only packet
+driver. All eight [Moss-style integration phases](docs/rust-kernel-linux-drivers.md#moss-style-driver-infrastructure)
+are complete for the selected QEMU profile, including persistent boot and managed
+failure/teardown hardening. The [kernel-client guide](docs/rust-kernel-linux-drivers.md#kernel-client-lifecycle)
+describes service admission, packet receipts and deliberate shutdown without
+Linux-private structs.
+
 ## Requirements
 
 - Linux host with rustup; the repository pins Rust `1.99.1` and the
@@ -106,6 +127,41 @@ this is not generic LinuxKPI, physical-hardware or network-stack support.
 
 No full Linux kernel configuration or build is needed. No sibling repository
 is needed at build or run time.
+
+### Test code and build profiles
+
+The default `guest-tests` Cargo feature includes the unified guest acceptance
+suite. Guest fixtures live in [src/guest_tests/](src/guest_tests/); synthetic C
+tests live in [compat/guest_tests/](compat/guest_tests/) and separate test archives.
+The IRQ-only helper is explicitly named
+[E1000IrqFixture](src/guest_tests/e1000_irq.rs), not a production NIC driver.
+[linux_driver.rs](src/linux_driver.rs) retains the real Linux control boundary;
+packet fixtures, fault controls and stale-handle assertions are separate.
+
+Portable Rust unit tests use `#[cfg(test)]`. Guest tests instead use
+`#[cfg(feature = "guest-tests")]`, because ordinary freestanding builds do not
+set Rust's `cfg(test)`. The existing fw_cfg modes select execution within one
+test-enabled ISO; the feature controls whether fixture code is included at all.
+
+For a feature-off build of the same image:
+
+```sh
+cmake -S . -B build -G Ninja -DKUTOX_GUEST_TESTS=OFF
+cmake --build build --target images --parallel 1
+ctest --test-dir build --output-on-failure --parallel 1 \
+  -R '^(kernel-build-profile|guest-tests-disabled|driver-runtime-tests-disabled|driver-network-tests-disabled|driver-hardening-tests-disabled|mac-known|driver-runtime-default|driver-runtime-run|driver-runtime-default-no-nic|driver-runtime-default-unsupported)$'
+```
+
+This omits guest fixtures, C test objects, fault injection, checkpoints and
+test inspectors. Requested test modes fail before memory/device initialization.
+Real driver services, ownership checks and diagnostics remain, and normal boot
+retains the real NIC/runtime without running guest checkpoints or clients.
+Additional native client APIs retain scoped feature-off dead-code allowances,
+not missing-service fallbacks.
+
+Restore `-DKUTOX_GUEST_TESTS=ON` before building/running the acceptance suite.
+This is one image per selected build profile, not separate images per test mode.
+`kernel-build-profile` verifies actual ELF symbols in either profile.
 
 ## Build and test
 
@@ -126,7 +182,7 @@ The build produces:
 The acceptance suite boots with the BIOS firmware supplied by QEMU. The ISO
 also includes UEFI boot files; the automated suite does not verify UEFI boot.
 Guests use TCG, one CPU and 128 MiB of RAM (32 MiB for the low-memory test).
-Kernel suites use an owned local socket pair for controlled Ethernet; MAC
+Kernel/runtime acceptance uses an owned local socket pair for controlled Ethernet; MAC
 cases use restricted user-mode networking. There is no port forwarding or host
 hardware passthrough. Tests run sequentially.
 
@@ -158,10 +214,14 @@ The runner selects a mode at launch through QEMU's `fw_cfg` file
 
 | Value | Behavior |
 |-------|----------|
-| `probe` | Normal MAC probe; also the default when the optional file is absent. |
+| `run` | Persistent driver runtime; also the default when the optional file is absent. Retain a supported e1000 and idle; no NIC is not a fatal boot condition. |
+| `probe` | Explicit finite MAC proof, ending with `E1000_MAC_OK`; no original module startup. |
 | `eeprom-timeout` | Withhold the EEPROM grant to exercise the upstream retry/error path. |
 | `kernel-tests` | Run all registered nonfatal kernel tests in one boot and emit KTAP results. |
 | `kernel-tests-fail` | Run the same suite with an additional intentionally failing case to test host rejection. |
+| `driver-runtime-tests` | Select acceptance from real PCI inventory: five no-NIC lifetime tests, managed packet clients for e1000, or unclaimed-runtime acceptance for an unsupported NIC. |
+| `driver-network-tests` | Exercise the managed e1000 runtime with exact packets, retained clients, typed errors and joined shutdown; reject two matching NICs before probing. |
+| `driver-hardening-tests` | Run five bounded manager/failure/FIFO/concurrent-consumer/pending-source teardown cases through the managed runtime. |
 | `heap-oom` | Attempt an oversized `Vec` allocation and verify Rust's fatal allocation-failure panic. |
 | `thread-stack-guard` | Read a thread's unmapped lower guard and verify the hardware page fault came from its mapped stack. |
 | `page-fault` | Read a deliberately unmapped address and verify the fatal exception diagnostics. |
@@ -194,7 +254,149 @@ fixture for its device-IRQ and packet-DMA cases:
 python3 scripts/qemu_test.py --case kernel-tests --build-dir build
 ```
 
-Run the same 55 registered cases with 32 MiB of guest RAM:
+The separate runtime suite uses that same test-enabled image **without a NIC**
+at 128 or 32 MiB:
+
+```sh
+python3 scripts/qemu_test.py --case driver-runtime-tests --build-dir build
+python3 scripts/qemu_test.py --case driver-runtime-tests-low-memory --build-dir build
+```
+
+Its five cases prove balanced rollback after eleven acquired startup stages,
+partial worker admission rollback, real one-shot IRQ wake/dependency publication,
+worker callbacks after a client returns, and shutdown retry while a source work
+object is still live. Three service stacks plus up to three clients use at most
+six of eight guarded stack slots. The combined conservative infrastructure
+metadata bound is 60,385 bytes, below 64 KiB. These no-NIC cases do not bind
+e1000 or claim network readiness. Feature-off
+builds omit these fixtures and reject `driver-runtime-tests` before allocation.
+
+Managed NIC acceptance uses the same image and an owned isolated socket:
+
+```sh
+python3 scripts/qemu_test.py --case driver-network-tests --build-dir build
+python3 scripts/qemu_test.py --case driver-network-tests-low-memory --build-dir build
+python3 scripts/qemu_test.py --case driver-network-tests-ambiguous --build-dir build
+```
+
+Two managed epochs each exchange six arbitrary-EtherType frames. TX input sizes
+are 14/42/60/252/253/1514 bytes; original Linux skb padding makes the first two
+exactly 60 bytes on the wire, with zero padding. RX returns complete copied L2
+frames without FCS and preserves the original copybreak/build-skb boundary.
+Both socket bytes and PCAP, actual ELF callback identities, source statistics,
+BUSY/timeout ownership, allocation/consumed-drop recovery, client return, stop
+wakeups and balanced shutdown are required. The NIC and shared workers survive
+the first client; three service tasks and three clients peak at six stacks.
+Two matching e1000 endpoints fail admission before either acquires backing.
+Feature-off builds omit these fixtures and reject the mode with `-25`.
+
+Native clients use `net_device::enumerate(runtime)` and `Handle::info`.
+`Frame::from_bytes` and `Frame::from_owned` admit bounded Ethernet II frames;
+`submit(&frame)` copies into the retained Linux skb and returns a checked
+`TxTicket`. `progress` retries BUSY, `wait` observes completion or a timeout, and
+`finish` releases only completed or consumed-drop receipts. Dropping the native
+frame/handle or timing out does **not** free an accepted skb. `receive`/
+`wait_receive` return owned FIFO frames; stop wakes waiters with `Closed`, and
+owner retirement makes later handles `Stale`. There is no IP stack yet.
+
+### Persistent normal boot
+
+Boot without a fw_cfg mode (or set it explicitly to `run`) to register built-ins,
+enumerate the firmware-configured PCI hierarchy, execute original module/probe/
+open callbacks and retain the device/services. Diagnostics distinguish
+`DRIVER_RUNTIME` initialization from `DRIVER_READY` real link readiness, and
+report the owned BDF/parent path, BAR spans and PIRQ/ELCR/swizzled IRQ route.
+A missing or unsupported NIC leaves unclaimed inventory and two shared workers
+alive, without fabricated NIC readiness. Invalid topology fails explicitly
+before partial driver admission. Only deliberate kernel shutdown ends the
+dispatcher; client return does not stop it. Native stop reports
+`KERNEL_RUNTIME_STOPPED`, not a MAC-proof success.
+
+```sh
+python3 scripts/qemu_test.py --case driver-runtime-default --build-dir build
+python3 scripts/qemu_test.py --case driver-runtime-run --build-dir build
+```
+
+These smoke checks use the normal boot path, no guest test clients, and require
+the actual linked Linux startup callbacks, source-derived readiness and at
+least **three seconds alive after readiness** before terminating only their
+owned QEMU child. The default check omits fw_cfg entirely; `default-mode` is a
+compatible runner alias. A watchdog timeout or premature exit is failure,
+not evidence of successful runtime operation. `mac-default-mode` is replaced
+by `driver-runtime-default`; all finite MAC cases explicitly select `probe`.
+
+Finite end-to-end checks select `driver-runtime-tests` with actual hardware:
+
+```sh
+ctest --test-dir build --output-on-failure --parallel 1 \
+  -R '^(driver-runtime-root|driver-runtime-bridge|driver-runtime-nested|driver-runtime-low-memory|driver-runtime-bridge-low-memory|driver-runtime-nested-low-memory|driver-runtime-no-nic|driver-runtime-no-nic-low-memory|driver-runtime-unsupported|driver-runtime-unsupported-low-memory)$'
+```
+
+Root/one/two-bridge clients reuse the same `Resources::start/run` path and managed
+packet API, exchange exact Ethernet bytes in two epochs, retain the NIC across
+client calls, and deliberately stop/join with balanced resources. Root/child
+slots vary across 128/32-MiB profiles; complete ancestry, per-hop swizzle, actual
+source callback identities, packet/byte accounting, socket and PCAP bytes are
+required. Bridged fixtures also corrupt and restore a real bridge bus register
+to prove malformed-topology rejection before backing or probes. Fault controls
+remain guest-only. The original 59-case kernel suite is unchanged.
+
+For a manual persistent QEMU session with restricted user networking:
+
+```sh
+qemu-system-x86_64 -machine pc -accel tcg -cpu qemu64 -smp 1 -m 128M \
+  -display none -monitor none -serial stdio -no-reboot -boot d \
+  -cdrom build/kutox.iso -nic none -netdev user,id=nic,restrict=on \
+  -device e1000,netdev=nic,mac=52:54:00:12:34:56 \
+  -device isa-debug-exit,iobase=0xf4,iosize=0x04
+```
+
+The runtime stays in the dispatcher; use Ctrl+C to end this owned manual session.
+Booting does not automatically generate application packets, DHCP or IP traffic.
+
+### Managed failure and teardown hardening
+
+```sh
+ctest --test-dir build --output-on-failure --parallel 1 \
+  -R '^(driver-hardening-tests|driver-hardening-tests-low-memory|driver-hardening-tests-nested-low-memory)$'
+```
+
+The same image exercises five cases at root/128 MiB, root/32 MiB and nested
+PCI/32 MiB. Native manager tests fill 256 discovered identities, 32 bindings
+and 32 operations; later service publication retries a deferred driver once,
+while an optional failure and selective stop leave unrelated ownership intact.
+Managed startup tests cover PCI regions/MMIO, source allocation/open/coherent/
+streaming-DMA/IRQ failures and shared-worker/client admission rollback, followed
+by actual Linux TX recovery. Original open's partial RX-allocation success is
+preserved and diagnosed, not silently changed into a fake probe failure.
+
+FIFO acceptance injects 13 real 60-byte frames, receives 12 in exact wrap order
+and measures one capacity drop through native `Info::statistics.rx_dropped`.
+Concurrent clients prove admission closes and waiters wake **before** source
+close can run, while a retained manager reservation keeps backing live. Old
+handles/receipts cannot reach a replacement; copied native RX bytes can outlive
+source removal safely.
+
+Pending acceptance observes an actual TX IRQ and 256 streaming maps, then
+reprobes on the same retained platform/IRQ parents. Original NAPI/work
+reservations hold backing during source close, and premature coherent-ring
+free returns `-16` even with engines disabled. Checkpoints suspend the native
+worker **before entering** the atomic C callback, never inside a C NAPI/IRQ
+body. Exact pending RX bytes are read only after the existing CPU-access check,
+drained through original NAPI, then purged before replacement admission.
+Source-private counters, Linux algorithms and DMA/drain rules are unchanged.
+
+Manager `begin_stop` is an idempotent non-sleeping admission/wakeup boundary,
+separate from `stop`'s source close/remove and backing retirement. Lifecycle
+completion wakes the probe coordinator; it retains readiness events while
+another thread is removing/probing instead of treating that state as a failure
+or polling. The host requires exact socket/PCAP bytes, error/injection ledgers,
+original callback identities and causal wake/join/free/purge/reprobe order.
+Peak concurrency remains six of eight guarded stacks; infrastructure metadata
+is 60,385 bytes. These fixtures are omitted in test-free builds, which reject
+the mode with `-25`. Independent original 539-TX/304-hard-RX acceptance remains.
+
+Run the same 59 registered cases with 32 MiB of guest RAM:
 
 ```sh
 python3 scripts/qemu_test.py --case kernel-tests-low-memory --build-dir build
@@ -205,6 +407,18 @@ additional guest boot selector or per-memory-size image.
 The normal suite places the NIC at PCI slot 3; the low-memory suite uses slot 5
 to exercise routing discovery rather than a fixed IRQ number.
 
+The same suite also runs behind one or two firmware-configured conventional
+PCI bridges, with exact Linux packet/cleanup acceptance:
+
+```sh
+python3 scripts/qemu_test.py --case kernel-tests-bridge --build-dir build
+python3 scripts/qemu_test.py --case kernel-tests-nested-low-memory --build-dir build
+```
+
+Bridge suites disable bridge SHPC/MSI, use owned local Ethernet sockets and
+the same ISO/fw_cfg mode. They validate full BDF/parent paths, forwarding windows
+and per-bridge INTx swizzling; they do not assign buses or bridge resources.
+
 The old `memory`, `cpu-locks`, and `breakpoint` CLI cases and the corresponding
 standalone boot modes have been removed. Use `kernel-tests` for all nonfatal
 kernel tests; this is their only dispatch and reporting path. Fatal-fault and
@@ -212,12 +426,12 @@ hardware-configuration cases still use separate boots of the same ISO.
 
 ### Registered kernel tests
 
-[The registry](src/kernel_tests.rs) is a static list of named functions returning
+[The registry](src/guest_tests/mod.rs) is a static list of named functions returning
 `Result`, not Linux KUnit or Rust's nightly custom test framework. Its output is:
 
 ```text
 KTAP version 1
-1..55
+1..59
 ok 1 cpu.irq_lock_restore
 ok 2 cpu.breakpoint_return
 ok 3 memory.alignment_reservations
@@ -250,31 +464,35 @@ ok 29 sync.irq_completion
 ok 30 threads.irq_wait_races
 ok 31 linux.irq_completion
 ok 32 irq.platform_discovery
-ok 33 irq.device_delivery
-ok 34 irq.device_masking_cleanup
-ok 35 dma.coherent_allocation
-ok 36 dma.ownership
-ok 37 linux.coherent_dma
+ok 33 pci.hierarchy
+ok 34 irq.device_delivery
+ok 35 irq.device_masking_cleanup
+ok 36 dma.coherent_allocation
+ok 37 dma.ownership
+ok 38 linux.coherent_dma
 # linux format=-7/0000002A/4294967296/12:34:56:78:9a:bc/end
-ok 38 linux.driver_atomics
-ok 39 linux.driver_lifecycle
-ok 40 linux.driver_work
-ok 41 linux.driver_napi
-ok 42 linux.driver_irq
-ok 43 linux.driver_worker_rollback
-ok 44 linux.driver_allocation
-ok 45 linux.driver_streaming_dma
-ok 46 linux.driver_packets
-ok 47 linux.driver_capacity
-ok 48 linux.driver_failed_open
-ok 49 linux.e1000_lifecycle
-ok 50 linux.e1000_failures
-ok 51 linux.e1000_tx
-ok 52 linux.e1000_rx
-ok 53 linux.e1000_wrap
-ok 54 linux.e1000_backpressure
-ok 55 linux.e1000_teardown
-# Totals: pass:55 fail:0 skip:0 total:55
+ok 39 linux.driver_atomics
+ok 40 linux.driver_lifecycle
+ok 41 linux.driver_work
+ok 42 linux.driver_napi
+ok 43 linux.driver_irq
+ok 44 linux.driver_worker_rollback
+ok 45 linux.driver_allocation
+ok 46 linux.driver_streaming_dma
+ok 47 linux.driver_packets
+ok 48 linux.driver_capacity
+ok 49 linux.driver_failed_open
+ok 50 linux.e1000_lifecycle
+ok 51 linux.e1000_failures
+ok 52 linux.e1000_tx
+ok 53 linux.e1000_rx
+ok 54 linux.e1000_wrap
+ok 55 linux.e1000_backpressure
+ok 56 linux.e1000_teardown
+ok 57 native.initializers
+ok 58 native.probes
+ok 59 native.dependencies
+# Totals: pass:59 fail:0 skip:0 total:59
 ```
 
 Tests run sequentially with interrupts disabled at case boundaries. After
@@ -465,10 +683,11 @@ disabled for deliberately unsupported hardware entry points.
   [parsers and route policy](src/irq_platform.rs). Firmware tables are copied
   through owned read-only WB mappings, including SeaBIOS reserved RAM after
   validating QEMU/PIIX identity and RAM bounds. The supported profile has one
-  xAPIC CPU, one I/O APIC, at most 1 GiB RAM, and a direct bus-zero PCI endpoint.
+  xAPIC CPU, one I/O APIC, at most 1 GiB RAM, and a root or conventionally bridged
+  PCI endpoint on the validated i440FX/PIIX machine.
   Route validation checks PIRQ programming, endpoint pin/line, ELCR and MADT
   overrides; it does not evaluate ACPI `_PRT` or assume a fixed IRQ.
-- [The native e1000 IRQ proof](src/device_irq.rs) uses one ticket-checked claim
+- [The native e1000 IRQ proof](src/guest_tests/device_irq.rs) uses one ticket-checked claim
   at vector `0x41`. `ICS` generates a device interrupt; reading `ICR` deasserts
   it before EOI and directly signals a completion. The NIC IRQ guard keeps MMIO
   live while masking the source, masking/draining the route and checking local
@@ -503,8 +722,8 @@ disabled for deliberately unsupported hardware entry points.
   and ownership. Native publish/reclaim extensions retain the same caller
   quiescence obligation, and device destruction rejects live buffers.
   Streaming DMA, bounce buffers and IOMMU mappings are not stubbed.
-- [DMA acceptance tests](src/dma_tests.rs) and the
-  [C test](compat/dma_test.c) check exact alignment/mask boundaries, zeroing,
+- [DMA acceptance tests](src/guest_tests/dma.rs) and the
+  [C test](compat/guest_tests/dma_test.c) check exact alignment/mask boundaries, zeroing,
   disjoint buffers, exhaustion/reuse, counters, live/stale ownership, output
   preservation, invalid free/lifecycle/context requests and full cleanup.
   They never enable bus mastering or a DMA engine.
@@ -674,7 +893,7 @@ disabled for deliberately unsupported hardware entry points.
   Cancellation of Linux uninterruptible waits or `msleep` is explicitly fatal,
   not success-shaped. Unsupported operations and void-API failures terminate
   through the existing platform-error diagnostic.
-- [The C execution test](compat/execution_test.c) verifies actual mutex
+- [The C execution test](compat/guest_tests/execution_test.c) verifies actual mutex
   contention and sleeping while locked, stored and broadcast completions,
   exact timeout return shapes and the expiry/late-credit race, measured minimum sleep/timeout durations,
   nested spinlock IF/depth restoration, preserved C stack locals, invalid
@@ -739,7 +958,7 @@ disabled for deliberately unsupported hardware entry points.
   table frames. It unmaps leaves, detaches the private subtree, flushes the TLB,
   and only then releases frames. Failed mappings follow the same cleanup path.
 - [Rust platform code](src/) provides Limine requests, polled serial output,
-  bus-zero CF8/CFC PCI discovery, BAR validation, an owned uncacheable MMIO
+  bus-aware CF8/CFC PCI hierarchy discovery, selected BAR/parent-window validation, an owned uncacheable MMIO
   mapping,   and PIT-channel-2-calibrated TSC delays. The boot MAC platform path needs no
   scheduler; reference-counted APIC ownership and firmware copies use the
   already-initialized heap.
@@ -884,7 +1103,7 @@ intentional-failure runs, along with all accepted hardening submissions.
 
 ### Original Linux ring and lifetime hardening
 
-[The hardening fixture](src/linux_hardening.rs) wraps both 256-entry rings with
+[The hardening fixture](src/guest_tests/linux_hardening.rs) wraps both 256-entry rings with
 **300 TX and 300 RX packets**, mixing short copied and larger handed-off RX.
 It checks exact bytes, original cleanup, source producer/consumer indices and
 per-packet resource balance. Zero is a valid wrapped Linux TDT value.

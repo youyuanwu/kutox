@@ -17,7 +17,7 @@ class InputTests(unittest.TestCase):
         names = check.lines(check.DECLARATIONS / "service-ffi.txt")
         self.assertEqual(names, sorted(names))
         self.assertTrue({"memcpy", "memset", "kutox_jiffies", "kutox_driver_dma_map",
-                         "kutox_driver_gate", "kutox_driver_pci"} <= set(names))
+                         "kutox_driver_gate", "kutox_driver_pci", "kutox_net_wake"} <= set(names))
         with self.assertRaises(ValueError):
             check.verify_service_closure(Path("unused"), None)
         with self.assertRaises(ValueError):
@@ -99,6 +99,13 @@ class InputTests(unittest.TestCase):
                 path.write_bytes(data)
                 with self.assertRaises(ValueError):
                     check.Elf(path)
+            executable = bytearray(64)
+            executable[:7] = b"\x7fELF\x02\x01\x01"
+            struct.pack_into("<HH", executable, 16, 2, 62)
+            struct.pack_into("<HHH", executable, 58, 64, 1, 0)
+            path.write_bytes(executable)
+            with self.assertRaises(ValueError):
+                check.Elf(path)
 
 
 class ManifestTests(unittest.TestCase):

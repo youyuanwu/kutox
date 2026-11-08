@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import selectors
+import signal
 import socket
 import struct
 import subprocess
@@ -49,6 +50,7 @@ KERNEL_TEST_NAMES = (
     "threads.irq_wait_races",
     "linux.irq_completion",
     "irq.platform_discovery",
+    "pci.hierarchy",
     "irq.device_delivery",
     "irq.device_masking_cleanup",
     "dma.coherent_allocation",
@@ -72,12 +74,52 @@ KERNEL_TEST_NAMES = (
     "linux.e1000_wrap",
     "linux.e1000_backpressure",
     "linux.e1000_teardown",
+    "native.initializers",
+    "native.probes",
+    "native.dependencies",
 )
 KERNEL_SUITE_CASES = {
     "kernel-tests": "kernel-tests",
     "kernel-tests-low-memory": "kernel-tests",
     "kernel-tests-fail": "kernel-tests-fail",
+    "kernel-tests-bridge": "kernel-tests",
+    "kernel-tests-nested": "kernel-tests",
+    "kernel-tests-bridge-low-memory": "kernel-tests",
+    "kernel-tests-nested-low-memory": "kernel-tests",
 }
+RUNTIME_SUITE_CASES = {
+    "driver-runtime-tests": "driver-runtime-tests",
+    "driver-runtime-tests-low-memory": "driver-runtime-tests",
+    "driver-runtime-no-nic": "driver-runtime-tests",
+    "driver-runtime-no-nic-low-memory": "driver-runtime-tests",
+}
+RUNTIME_TEST_NAMES = (
+    "runtime.startup_rollback", "runtime.admission_rollback",
+    "runtime.no_nic_idle", "runtime.client_return", "runtime.shutdown_busy",
+)
+NETWORK_SUITE_CASES = {
+    "driver-network-tests": "driver-network-tests",
+    "driver-network-tests-low-memory": "driver-network-tests",
+    "driver-network-tests-ambiguous": "driver-network-tests",
+}
+RUNTIME_NETWORK_CASES = {
+    f"driver-runtime-{case}": "driver-runtime-tests"
+    for case in ("root", "bridge", "nested", "low-memory", "bridge-low-memory", "nested-low-memory")
+}
+UNCLAIMED_CASES = {"driver-runtime-unsupported", "driver-runtime-unsupported-low-memory"}
+LIVE_CASES = {
+    "driver-runtime-default": (None, True),
+    "default-mode": (None, True),
+    "driver-runtime-run": ("run", True),
+    "driver-runtime-default-no-nic": (None, False),
+    "driver-runtime-default-unsupported": (None, False),
+}
+HARDENING_CASES = {
+    case: "driver-hardening-tests" for case in (
+        "driver-hardening-tests", "driver-hardening-tests-low-memory", "driver-hardening-tests-nested-low-memory",
+    )
+}
+HARDENING_NAMES = ("hardening.manager", "hardening.failures", "hardening.fifo", "hardening.consumers", "hardening.pending")
 FAULT_RESULTS = {
     "page-fault": "CPU_TEST_OK test=page-fault vector=14 address=0x600000000000 error=0x0",
     "general-protection": "CPU_TEST_OK test=general-protection vector=13 error=0xfff8",
@@ -92,27 +134,86 @@ CASES = {
     "ambiguous": (None, "ambiguous_device"),
     "eeprom-timeout": (None, "read_eeprom"),
     "low-memory": ("52:54:00:12:34:56", None),
-    "default-mode": ("52:54:00:12:34:56", None),
     "invalid-mode": (None, "boot_mode"),
+    "guest-tests-disabled": (None, "boot_mode"),
+    "driver-runtime-tests-disabled": (None, "boot_mode"),
+    "driver-network-tests-disabled": (None, "boot_mode"),
+    "driver-hardening-tests-disabled": (None, "boot_mode"),
     **{case: (None, None) for case in FAULT_RESULTS},
     "smp-unsupported": (None, "cpu_single_processor_required"),
     "heap-oom": (None, None),
     "thread-stack-guard": (None, None),
     **{case: (None, None) for case in KERNEL_SUITE_CASES},
+    **{case: (None, None) for case in RUNTIME_SUITE_CASES},
+    **{case: (None, None) for case in NETWORK_SUITE_CASES},
+    **{case: (None, None) for case in RUNTIME_NETWORK_CASES},
+    **{case: (None, None) for case in UNCLAIMED_CASES},
+    **{case: (None, None) for case in LIVE_CASES},
+    **{case: (None, None) for case in HARDENING_CASES},
 }
 
 
 class KernelSuiteFailure(AssertionError):
     """A complete, consistent guest suite reported failed test cases."""
 
+def pci_layout(case):
+    low = case.endswith("low-memory")
+    root = 5 if low else 3
+    if "nested" in case:
+        return root, 7 if low else 5, [(1, 4), (0, root)]
+    if "bridge" in case:
+        return root, 7 if low else 5, [(0, root)]
+    return root, root, []
 
-def validate_boot_preamble(lines, mode):
+
+def validate_pci_hierarchy(lines, case):
+    root, leaf, parents = pci_layout(case)
+    matches = [line for line in lines if line.startswith("# PCI_HIERARCHY")]
+    if len(matches) != 1:
+        raise AssertionError("missing or duplicate PCI hierarchy evidence")
+    match = re.fullmatch(
+        r"# PCI_HIERARCHY bdf=0000:([0-9a-f]{2}):([0-9a-f]{2})\.0 depth=(\d+) functions=(\d+) buses=(\d+) bridges=(\d+) root_slot=(\d+) root_pin=(\d+) gsi=(\d+) pirqs=(\d+),(\d+),(\d+),(\d+) line=(\d+) elcr=([0-9a-f]{4}) mem=([0-9a-f]+)/(\d+) io=([0-9a-f]+)/64 metadata=(\d+)",
+        matches[0],
+    )
+    if match is None:
+        raise AssertionError("malformed PCI hierarchy evidence")
+    bus, slot, depth, functions, buses, bridges, root_slot, root_pin, gsi, *remaining = match.groups()
+    pin = 1
+    child = leaf
+    for _, parent_slot in parents:
+        pin = (child + pin - 1) % 4 + 1
+        child = parent_slot
+    if (int(bus, 16), int(slot, 16), int(depth), int(buses), int(bridges), int(root_slot), int(root_pin)) != (
+        len(parents), leaf, len(parents), len(parents) + 1, len(parents), root, pin,
+    ) or int(functions) != 6 + len(parents):
+        raise AssertionError("wrong PCI BDF, hierarchy, count or swizzled pin")
+    pirqs = [int(value) for value in remaining[:4]]
+    line = int(remaining[4])
+    elcr = int(remaining[5], 16)
+    memory, length, io, metadata = int(remaining[6], 16), int(remaining[7]), int(remaining[8], 16), int(remaining[9])
+    expected = pirqs[(root - 1 + pin - 1) & 3]
+    if line != expected or int(gsi) != expected or expected not in (10, 11) or not elcr & (1 << expected):
+        raise AssertionError("PCI IRQ line/PIRQ/ELCR/APIC route mismatch")
+    if length != 0x20000 or memory % length or not memory or memory + length > 2**32 or io % 64 or not 0x1000 <= io <= 0xffc0 or not 0 < metadata <= 65536:
+        raise AssertionError("invalid selected PCI BAR or metadata budget")
+    expected_parents = [
+        f"# PCI_PARENT bdf=0000:{bus:02x}:{slot:02x}.0 primary={bus} secondary={bus + 1} subordinate={len(parents)}"
+        for bus, slot in parents
+    ]
+    if [line for line in lines if line.startswith("# PCI_PARENT")] != expected_parents:
+        raise AssertionError("missing, changed or reordered PCI ancestor path")
+    accepted = [index for index, line in enumerate(lines) if re.fullmatch(r"ok \d+ pci\.hierarchy", line)]
+    if len(accepted) != 1 or lines.index(matches[0]) > accepted[0]:
+        raise AssertionError("PCI hierarchy evidence is missing or follows acceptance")
+
+
+def validate_boot_preamble(lines, mode, source="fw_cfg"):
     if [line for line in lines if line.startswith("KUTOX_BOOT")] != [
         f"KUTOX_BOOT linux={REVISION}"
     ]:
         raise AssertionError("missing or duplicate pinned-source boot marker")
     if [line for line in lines if line.startswith("BOOT_MODE")] != [
-        f"BOOT_MODE mode={mode} source=fw_cfg"
+        f"BOOT_MODE mode={mode} source={source}"
     ]:
         raise AssertionError("wrong guest test mode")
     if [line for line in lines if line.startswith("CPU_FOUNDATION")] != [
@@ -124,8 +225,24 @@ def validate_boot_preamble(lines, mode):
 def validate_kernel_suite(case, returncode, output):
     lines = output.splitlines()
     validate_boot_preamble(lines, KERNEL_SUITE_CASES[case])
+    validate_pci_hierarchy(lines, case)
     if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "THREAD_", "Bail out!")) for line in lines):
         raise AssertionError("suite aborted or reached an unexpected exception/device path")
+    expected_names = KERNEL_TEST_NAMES
+    if case == "kernel-tests-fail":
+        expected_names = ("harness.intentional_failure", *expected_names)
+    if lines.count("# linux format=-7/0000002A/4294967296/12:34:56:78:9a:bc/end") != 1:
+        raise AssertionError("missing, duplicate, or incorrect driver diagnostic formatting")
+    failures = validate_ktap(lines, returncode, expected_names)
+    validate_linux_callbacks(output)
+    validate_native_drivers(lines, case)
+    if case == "kernel-tests-fail" and failures != {"harness.intentional_failure"}:
+        raise AssertionError("intentional failure did not fire or another test failed")
+    if failures:
+        raise KernelSuiteFailure(f"kernel suite failed: {', '.join(sorted(failures))}")
+
+
+def validate_ktap(lines, returncode, expected_names):
     headers = [
         index for index, line in enumerate(lines)
         if line.startswith(("KTAP", "TAP version"))
@@ -135,9 +252,6 @@ def validate_kernel_suite(case, returncode, output):
     start = headers[0]
     if any(line.startswith(("ok ", "not ok ", "1..", "# Totals")) for line in lines[:start]):
         raise AssertionError("test results precede KTAP version")
-    expected_names = KERNEL_TEST_NAMES
-    if case == "kernel-tests-fail":
-        expected_names = ("harness.intentional_failure", *expected_names)
     protocol = lines[start + 1:]
     if len(protocol) < 2 or protocol[0] != f"1..{len(expected_names)}":
         raise AssertionError("missing or incorrect KTAP plan")
@@ -148,8 +262,6 @@ def validate_kernel_suite(case, returncode, output):
     if summary is None:
         raise AssertionError("missing or nonterminal KTAP summary")
     results = []
-    if protocol.count("# linux format=-7/0000002A/4294967296/12:34:56:78:9a:bc/end") != 1:
-        raise AssertionError("missing, duplicate, or incorrect driver diagnostic formatting")
     for line in protocol[1:-1]:
         if line.startswith("# ") and not line.startswith("# Totals"):
             continue
@@ -163,7 +275,6 @@ def validate_kernel_suite(case, returncode, output):
         results.append((name, status == "ok"))
     if len(results) != len(expected_names):
         raise AssertionError("kernel suite did not execute every expected test")
-    validate_linux_callbacks(output)
     failures = {name for name, passed in results if not passed}
     passed, failed, total = map(int, summary.groups())
     if (passed, failed, total) != (len(results) - len(failures), len(failures), len(results)):
@@ -171,10 +282,164 @@ def validate_kernel_suite(case, returncode, output):
     expected_exit = 3 if failures else 1
     if returncode != expected_exit:
         raise AssertionError(f"suite QEMU exit {returncode}, expected {expected_exit}")
-    if case == "kernel-tests-fail" and failures != {"harness.intentional_failure"}:
-        raise AssertionError("intentional failure did not fire or another test failed")
+    return failures
+
+
+def validate_runtime_suite(case, returncode, output):
+    lines = output.splitlines()
+    validate_boot_preamble(lines, RUNTIME_SUITE_CASES[case])
+    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "BOOT_MEMORY", "FRAME_ALLOCATOR",
+                            "HEAP_", "THREAD_", "Bail out!", "# LINUX_", "# NATIVE_")) for line in lines):
+        raise AssertionError("runtime suite aborted or used NIC/original-driver evidence")
+    failures = validate_ktap(lines, returncode, RUNTIME_TEST_NAMES)
     if failures:
-        raise KernelSuiteFailure(f"kernel suite failed: {', '.join(sorted(failures))}")
+        raise KernelSuiteFailure(f"runtime suite failed: {', '.join(sorted(failures))}")
+    validate_runtime_evidence(lines, case, 0, 4)
+    batches, events = {}, []
+    for line in lines:
+        if line.startswith("# RUNTIME_"):
+            events.append(line)
+        elif match := re.fullmatch(r"ok \d+ (runtime\.[a-z_]+)", line):
+            batches[match[1]] = events
+            events = []
+    if events or set(batches) != set(RUNTIME_TEST_NAMES):
+        raise AssertionError("incomplete runtime evidence")
+    for name, events in batches.items():
+        allowed_code = -210 if name.endswith(("startup_rollback", "admission_rollback")) else -103 if name.endswith("shutdown_busy") else None
+        errors = [line for line in events if line.startswith("# RUNTIME_ERROR")]
+        observed_errors = Counter()
+        for line in errors:
+            match = re.fullmatch(r"# RUNTIME_ERROR stage=([a-z_]+) code=(-?\d+)", line)
+            if match is None or int(match[2]) != allowed_code:
+                raise AssertionError("unexpected runtime error or concealed startup/stop failure")
+            observed_errors[(match[1], int(match[2]))] += 1
+        expected_errors = (
+            Counter({("runtime_startup_injected", -210): 11, ("runtime_start", -210): 4})
+            if name == "runtime.startup_rollback" else
+            Counter({("runtime_startup_injected", -210): 1})
+            if name == "runtime.admission_rollback" else
+            Counter({("linux_workers_stop", -103): 1}) if name == "runtime.shutdown_busy" else Counter()
+        )
+        if observed_errors != expected_errors:
+            raise AssertionError("missing, duplicate or misplaced runtime failure diagnostics")
+        batches[name] = [line for line in events if line not in errors]
+    if batches["runtime.startup_rollback"] != [
+        f"# RUNTIME_ROLLBACK stage={stage} jobs=0 joined=1 balanced=1" for stage in range(1, 12)
+    ] or batches["runtime.admission_rollback"] != [
+        "# RUNTIME_ADMISSION partial_workers=1 clients=3 peak_limit=6 rolled_back=1"
+    ]:
+        raise AssertionError("missing acquired-resource or partial-worker admission rollback proof")
+    metadata_values = set()
+    for mode, name in enumerate(("runtime.no_nic_idle", "runtime.client_return", "runtime.shutdown_busy")):
+        expected = [
+            f"# RUNTIME_IDLE mode={mode} clients_returned={int(mode == 1)} workers=2 deadline=none stopped=0",
+            "# RUNTIME_WAKE irq=1 published=1 functions=5 bound=0 context=thread",
+        ]
+        if mode == 2:
+            expected.append("# RUNTIME_STOP_BUSY code=-103 workers=2 source_objects=1 retry=1")
+        expected.append(f"# RUNTIME_WORK callbacks={2 if mode == 2 else 1} workers_retained=2 objects_retired=1")
+        events = batches[name]
+        if not events or events[:-1] != expected:
+            raise AssertionError("runtime did not retain services through real idle/IRQ/callback progress")
+        match = re.fullmatch(
+            rf"# RUNTIME_JOIN mode={mode} finished=(\d+) peak=(\d+) persistent_idles=(\d+) irq=1 workers=0 registry=retired stale=1 metadata=(\d+)",
+            events[-1] if events else "",
+        )
+        if match is None:
+            raise AssertionError("missing or malformed stopped/joined runtime proof")
+        finished, peak, idles, metadata = map(int, match.groups())
+        if (finished, peak) != ((6, 6) if mode == 1 else (4, 4)) or idles < 1 or not 57880 < metadata <= 65536:
+            raise AssertionError("runtime task, idle or metadata threshold violated")
+        metadata_values.add(metadata)
+    if len(metadata_values) != 1:
+        raise AssertionError("runtime metadata evidence changed between scopes")
+    if metadata_values != {int(line.rsplit("metadata=", 1)[1]) for line in lines if line.startswith("# DRIVER_RUNTIME ")}:
+        raise AssertionError("runtime initialization and joined metadata disagree")
+
+def validate_native_drivers(lines, case, symbols=None):
+    batches, events = {}, []
+    for line in lines:
+        if line.startswith("# NATIVE_") and not line.startswith("# NATIVE_DRIVER_ERROR "):
+            events.append(line)
+        elif match := re.fullmatch(r"(?:ok|not ok) [0-9]+ ([a-z0-9_.]+)", line):
+            name = match[1]
+            if name.startswith("native."):
+                if name in batches:
+                    raise AssertionError("duplicate native driver batch")
+                batches[name] = events
+            elif events:
+                raise AssertionError("native callbacks ran outside native tests")
+            events = []
+    if events or set(batches) != {"native.initializers", "native.probes", "native.dependencies"}:
+        raise AssertionError("incomplete native driver evidence")
+    tasks = {}
+    normalized = {}
+    for name, events in batches.items():
+        normalized[name] = []
+        for line in events:
+            match = re.fullmatch(
+                r"# NATIVE_(INIT|PROBE|RESUME) epoch=(\d+) id=(\d+)"
+                r"(?: identity=(\d+))?(?: attempt=(\d+))?(?: function=([0-9a-f]+))? task=(\d+) locks=0",
+                line,
+            )
+            if match:
+                kind, epoch, identity, device, attempt, function, task = match.groups()
+                epoch, identity, task = int(epoch), int(identity), int(task)
+                if not task or (epoch in tasks and tasks[epoch] != task):
+                    raise AssertionError("native callback changed thread or held an IRQ guard")
+                tasks[epoch] = task
+                if kind == "INIT":
+                    if device is not None or attempt is not None:
+                        raise AssertionError("malformed native initializer evidence")
+                    symbol = f"kutox_guest_native_init_{identity}"
+                else:
+                    if device is None or (kind == "PROBE") != (attempt is not None):
+                        raise AssertionError("malformed native probe/resume evidence")
+                    symbol = "kutox_guest_native_probe"
+                if kind != "RESUME":
+                    if function is None or not int(function, 16) or (
+                        symbols is not None and int(function, 16) != symbols.get(symbol)
+                    ):
+                        raise AssertionError("native callback did not point to actual linked code")
+                elif function is not None:
+                    raise AssertionError("malformed native resume evidence")
+                suffix = f" identity={device}" if device is not None else ""
+                suffix += f" attempt={attempt}" if attempt is not None else ""
+                normalized[name].append(f"# NATIVE_{kind} epoch={epoch} id={identity}{suffix}")
+            else:
+                normalized[name].append(line)
+    def inits(epoch):
+        return [f"# NATIVE_INIT epoch={epoch} id={identity}" for identity in (10, 20, 30, 40)]
+    functions = 6 + len(pci_layout(case)[2])
+    expected = {
+        "native.initializers": [
+            f"# NATIVE_TABLE production=1 test=4 record_bytes=24 functions={functions}",
+            *inits(0),
+            f"# NATIVE_INITIALIZERS initialized=4 production_attempts=0 waiting=1 unclaimed={functions - 1} profile_rejected=2 duplicate_rejected=1",
+        ],
+        "native.probes": [],
+        "native.dependencies": [],
+    }
+    for epoch in (1, 2, 3):
+        name = "native.dependencies" if epoch == 3 else "native.probes"
+        expected[name].extend(inits(epoch))
+        sequence = (
+            [(20, 1, 1), (10, 2, 1), (40, 3, 1), (30, 4, 1), (40, 5, 2)]
+            if epoch == 3 else
+            [(10, 1, 1), (20, 2, 1), (10, 1, 2), (20, 3, 2), (30, 4, 1), (40, 5, 1)]
+        )
+        for identity, device, attempt in sequence:
+            expected[name].extend([
+                f"# NATIVE_PROBE epoch={epoch} id={identity} identity={device} attempt={attempt}",
+                f"# NATIVE_RESUME epoch={epoch} id={identity} identity={device}",
+            ])
+        counts = ("attempts=5 bound=0 failed=1 waiting=1 unavailable=1 cycles=2 stopped=0 dropped=0" if epoch == 3
+                  else "attempts=6 bound=3 failed=1 waiting=1 unavailable=0 cycles=0 stopped=3 dropped=3")
+        expected[name].append(f"# NATIVE_COORDINATOR epoch={epoch} {counts} live=0 retry_idle=0 stale=1")
+    if normalized != expected:
+        raise AssertionError("missing, reordered or incorrect native initialization/probe/lifetime evidence")
+    if tasks[0] in (tasks[1], tasks[3]) or tasks[1] != tasks[2] or tasks[1] == tasks[3]:
+        raise AssertionError("native initializer/probe worker lifetime mismatch")
 
 DRIVER_WORK_CALLBACKS = (
     "e1000_watchdog", "e1000_update_phy_info_task",
@@ -198,6 +463,69 @@ def runtime_symbols(nm="nm"):
     text = subprocess.check_output([nm, "--defined-only", str(elf)], text=True)
     return {parts[-1]: int(parts[0], 16) for line in text.splitlines()
             if len(parts := line.split()) >= 3}
+
+def validate_callback_symbol(event, function, obj, symbols):
+    if event in DRIVER_CALLBACK_NAMES:
+        if not function or symbols is not None and function not in {
+            symbols.get(symbol) for symbol in DRIVER_CALLBACK_NAMES[event]
+        }:
+            raise AssertionError("callback did not point to the linked original Linux function")
+    elif event not in (14, 16, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 32, *range(36, 50)) or function != 0:
+        raise AssertionError("unknown original callback kind")
+    if event not in (1, 2) and obj == 0:
+        raise AssertionError("callback backing identity is missing")
+
+def validate_callback_lifetime(events, symbols):
+    work, napi, irq, xmit = set(), set(), set(), set()
+    active_poll = active_irq = last_work = None
+    counts = Counter(event for event, _, _, _ in events)
+    for event, function, obj, result in events:
+        if event == 1:
+            work, napi, irq, xmit = set(), set(), set(), set()
+        if event in (1, 6):
+            last_work = None
+        validate_callback_symbol(event, function, obj, symbols)
+        pair = (function, obj)
+        if event == 10:
+            work.add(pair)
+        elif event == 11 and pair not in work:
+            raise AssertionError("unregistered work callback ran")
+        elif event == 11:
+            last_work = function
+        elif event == 12:
+            napi.add(pair)
+        elif event == 13 and (pair not in napi or result != 64):
+            raise AssertionError("unregistered or unbudgeted NAPI poll ran")
+        elif event == 13:
+            if active_poll is not None:
+                raise AssertionError("nested source NAPI poll")
+            active_poll = pair
+        elif event == 26:
+            if active_poll != pair or not 0 <= result <= 64:
+                raise AssertionError("unmatched source NAPI poll return")
+            active_poll = None
+        elif event == 33:
+            xmit.add(function)
+        elif event in (17, 18) and function not in xmit:
+            raise AssertionError("unregistered original xmit ran")
+        elif event == 8:
+            irq.add(pair)
+        elif event in (9, 15) and (pair not in irq or (event == 15 and result not in (0, 1))):
+            raise AssertionError("unregistered IRQ handler or invalid return")
+        elif event == 9:
+            if active_irq is not None or active_poll is not None:
+                raise AssertionError("nested original IRQ or IRQ inside NAPI")
+            active_irq = pair
+        elif event == 15:
+            if active_irq != pair:
+                raise AssertionError("unmatched original IRQ return")
+            active_irq = None
+        elif event == 14 and (last_work is None or (
+            symbols is not None and last_work != symbols.get("e1000_watchdog")
+        )):
+            raise AssertionError("link readiness did not come from original watchdog work")
+    if active_irq is not None or active_poll is not None or counts[13] != counts[26]:
+        raise AssertionError("incomplete original NAPI poll")
 
 
 def validate_linux_callbacks(output, symbols=None):
@@ -257,66 +585,7 @@ def validate_linux_callbacks(output, symbols=None):
         minimum_ready = expected[6] if name.endswith(("_wrap", "_teardown")) else 4 if name.endswith("lifecycle") else 2 if name.endswith(("_tx", "_rx", "_backpressure")) else 1
         if counts[14] < minimum_ready:
             raise AssertionError("each successful lifecycle did not establish source-derived readiness")
-        work, napi, irq, xmit = set(), set(), set(), set()
-        active_poll = active_irq = None
-        last_work = None
-        for event, function, obj, result in events:
-            if event == 1:
-                work, napi, irq, xmit = set(), set(), set(), set()
-            if event in (1, 6):
-                last_work = None
-            if event in DRIVER_CALLBACK_NAMES:
-                if function == 0:
-                    raise AssertionError("null original callback")
-                if symbols is not None and function not in {
-                    symbols.get(symbol) for symbol in DRIVER_CALLBACK_NAMES[event]
-                }:
-                    raise AssertionError("callback did not point to the linked original Linux function")
-            elif event not in (14, 16, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 32, *range(36, 50)) or function != 0:
-                raise AssertionError("unknown original callback kind")
-            if event not in (1, 2) and obj == 0:
-                raise AssertionError("callback backing identity is missing")
-            pair = (function, obj)
-            if event == 10:
-                work.add(pair)
-            elif event == 11 and pair not in work:
-                raise AssertionError("unregistered work callback ran")
-            elif event == 11:
-                last_work = function
-            elif event == 12:
-                napi.add(pair)
-            elif event == 13 and (pair not in napi or result != 64):
-                raise AssertionError("unregistered or unbudgeted NAPI poll ran")
-            elif event == 13:
-                if active_poll is not None:
-                    raise AssertionError("nested source NAPI poll")
-                active_poll = pair
-            elif event == 26:
-                if active_poll != pair or not 0 <= result <= 64:
-                    raise AssertionError("unmatched source NAPI poll return")
-                active_poll = None
-            elif event == 33:
-                xmit.add(function)
-            elif event in (17, 18) and function not in xmit:
-                raise AssertionError("unregistered original xmit ran")
-            elif event == 8:
-                irq.add(pair)
-            elif event in (9, 15) and (pair not in irq or (event == 15 and result not in (0, 1))):
-                raise AssertionError("unregistered IRQ handler or invalid return")
-            elif event == 9:
-                if active_irq is not None or active_poll is not None:
-                    raise AssertionError("nested original IRQ or IRQ inside NAPI")
-                active_irq = pair
-            elif event == 15:
-                if active_irq != pair:
-                    raise AssertionError("unmatched original IRQ return")
-                active_irq = None
-            elif event == 14 and (last_work is None or (
-                symbols is not None and last_work != symbols.get("e1000_watchdog")
-            )):
-                raise AssertionError("link readiness did not come from original watchdog work")
-        if active_irq is not None or active_poll is not None or counts[13] != counts[26]:
-            raise AssertionError("incomplete original NAPI poll")
+        validate_callback_lifetime(events, symbols)
         if name.endswith("_tx"):
             validate_linux_tx_events(events)
         elif name.endswith(("_wrap", "_backpressure", "_teardown")):
@@ -462,8 +731,36 @@ def validate_thread_guard(returncode, output):
 
 
 def validate_result(case, returncode, output):
+    if case in LIVE_CASES:
+        raise AssertionError("persistent runtime requires measured live execution, not an exit code")
+    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled"):
+        lines = output.splitlines()
+        expected = "E1000_MAC_FAIL stage=boot_mode code=-25"
+        if returncode != 3 or not lines or lines[-1] != expected:
+            raise AssertionError("feature-off kernel did not explicitly reject guest test mode")
+        if [line for line in lines if line.startswith("KUTOX_BOOT")] != [f"KUTOX_BOOT linux={REVISION}"]:
+            raise AssertionError("missing pinned-source feature-off boot marker")
+        if [line for line in lines if line.startswith("E1000_")] != [expected] or any(
+            line.startswith(("BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "THREAD_", "Bail out!",
+                             "# RUNTIME_", "# NATIVE_", "# LINUX_"))
+            for line in lines
+        ):
+            raise AssertionError("feature-off test mode reached initialization or guest fixtures")
+        return
     if case in KERNEL_SUITE_CASES:
         validate_kernel_suite(case, returncode, output)
+        return
+    if case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES:
+        validate_network_suite(case, returncode, output)
+        return
+    if case in RUNTIME_SUITE_CASES:
+        validate_runtime_suite(case, returncode, output)
+        return
+    if case in UNCLAIMED_CASES:
+        validate_unclaimed_suite(case, returncode, output)
+        return
+    if case in HARDENING_CASES:
+        validate_managed_hardening(case, returncode, output)
         return
     if case in FAULT_RESULTS:
         validate_fault_result(case, returncode, output)
@@ -494,7 +791,7 @@ def validate_result(case, returncode, output):
         "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled"
     ]:
         raise AssertionError("missing CPU foundation result")
-    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "THREAD_", "KTAP", "HEAP_FAIL", "HEAP_OOM", "ok ", "not ok ", "# Totals")) for line in lines):
+    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "THREAD_", "KTAP", "HEAP_FAIL", "HEAP_OOM", "ok ", "not ok ", "# Totals", "DRIVER_", "# RUNTIME_", "# LINUX_CALLBACK")) for line in lines):
         raise AssertionError("unexpected exception or CPU test during MAC probe")
     if case == "invalid-mode":
         if results != ["E1000_MAC_FAIL stage=boot_mode code=-23"]:
@@ -503,38 +800,11 @@ def validate_result(case, returncode, output):
             raise AssertionError("invalid mode reached the probe or silently selected a default")
         return
     mode = "eeprom-timeout" if case == "eeprom-timeout" else "probe"
-    source = "default" if case == "default-mode" else "fw_cfg"
+    source = "fw_cfg"
     modes = [line for line in lines if line.startswith("BOOT_MODE")]
     if modes != [f"BOOT_MODE mode={mode} source={source}"]:
         raise AssertionError("unexpected runtime boot-mode selection")
-    memory = [line for line in lines if line.startswith("BOOT_MEMORY_OK")]
-    if len(memory) != 1:
-        raise AssertionError("missing or duplicate bootstrap allocator result")
-    match = re.fullmatch(
-        rf"BOOT_MEMORY_OK source=moss revision={MOSS_REVISION} managed_bytes=([0-9]+) regions=([0-9]+)",
-        memory[0],
-    )
-    if match is None:
-        raise AssertionError("unexpected bootstrap allocator provenance or result")
-    managed_bytes, regions = map(int, match.groups())
-    ram = 32 if case == "low-memory" else 128
-    if not 0 < managed_bytes <= ram * 1024 * 1024 or regions <= 0:
-        raise AssertionError("bootstrap allocator reported invalid usable memory")
-    frames = [line for line in lines if line.startswith("FRAME_ALLOCATOR")]
-    match = re.fullmatch(
-        rf"FRAME_ALLOCATOR_OK source=moss revision={MOSS_REVISION} total_pages=([0-9]+) reserved_pages=([0-9]+) free_pages=([0-9]+) metadata_bytes=([0-9]+)",
-        frames[0] if len(frames) == 1 else "",
-    )
-    if match is None:
-        raise AssertionError("missing, duplicate, or malformed buddy allocator result")
-    total, reserved, free, metadata = map(int, match.groups())
-    if (
-        total * 4096 != managed_bytes or reserved + free != total or free <= 0
-        or metadata % 4096 != 0 or not total <= metadata <= reserved * 4096
-    ):
-        raise AssertionError("buddy allocator reported inconsistent page or metadata counts")
-    if [line for line in lines if line.startswith("HEAP_")] != [HEAP_RESULT]:
-        raise AssertionError("missing, duplicate, or unexpected heap initialization result")
+    validate_allocator(lines, 32 if case == "low-memory" else 128)
     if mac:
         if results[0] != f"E1000_MAC_OK mac={mac}":
             raise AssertionError(f"unexpected MAC result: {results[0]}")
@@ -563,6 +833,36 @@ def validate_result(case, returncode, output):
         line.startswith(("E1000_MMIO", "BOOT_MEMORY_TABLES")) for line in lines
     ):
         raise AssertionError("discovery failure reached MMIO/EEPROM access")
+
+
+def validate_allocator(lines, ram):
+    memory = [line for line in lines if line.startswith("BOOT_MEMORY_OK")]
+    if len(memory) != 1:
+        raise AssertionError("missing or duplicate bootstrap allocator result")
+    match = re.fullmatch(
+        rf"BOOT_MEMORY_OK source=moss revision={MOSS_REVISION} managed_bytes=([0-9]+) regions=([0-9]+)",
+        memory[0],
+    )
+    if match is None:
+        raise AssertionError("unexpected bootstrap allocator provenance or result")
+    managed_bytes, regions = map(int, match.groups())
+    if not 0 < managed_bytes <= ram * 1024 * 1024 or regions <= 0:
+        raise AssertionError("bootstrap allocator reported invalid usable memory")
+    frames = [line for line in lines if line.startswith("FRAME_ALLOCATOR")]
+    match = re.fullmatch(
+        rf"FRAME_ALLOCATOR_OK source=moss revision={MOSS_REVISION} total_pages=([0-9]+) reserved_pages=([0-9]+) free_pages=([0-9]+) metadata_bytes=([0-9]+)",
+        frames[0] if len(frames) == 1 else "",
+    )
+    if match is None:
+        raise AssertionError("missing, duplicate, or malformed buddy allocator result")
+    total, reserved, free, metadata = map(int, match.groups())
+    if (
+        total * 4096 != managed_bytes or reserved + free != total or free <= 0
+        or metadata % 4096 != 0 or not total <= metadata <= reserved * 4096
+    ):
+        raise AssertionError("buddy allocator reported inconsistent page or metadata counts")
+    if [line for line in lines if line.startswith("HEAP_")] != [HEAP_RESULT]:
+        raise AssertionError("missing, duplicate, or unexpected heap initialization result")
 
 
 def check_provenance(nm):
@@ -606,7 +906,7 @@ def linux_tx_packet(sequence, size):
     return bytes(packet)
 
 
-def validate_tx_capture(data):
+def validate_tx_capture(data, expected=None):
     if len(data) < 24 or len(data) > 1024 * 1024:
         raise AssertionError("missing, truncated, or oversized TX capture")
     endian = {b"\xd4\xc3\xb2\xa1": "<", b"\xa1\xb2\xc3\xd4": ">"}.get(bytes(data[:4]))
@@ -616,7 +916,7 @@ def validate_tx_capture(data):
     if (major, minor, link) != (2, 4, 1) or snaplen < max(LINUX_TX_LENGTHS):
         raise AssertionError("invalid Ethernet pcap header")
     packets = []
-    expected = expected_tx_packets()
+    expected = expected_tx_packets() if expected is None else expected
     offset = 24
     while offset < len(data):
         if len(data) - offset < 16:
@@ -930,13 +1230,626 @@ def validate_linux_rx_events(events):
         raise AssertionError("incomplete original RX source callback evidence")
 
 
+NETWORK_LENGTHS = (14, 42, 60, 252, 253, 1514)
+
+
+def network_packet(epoch, sequence, incoming=False):
+    size = NETWORK_LENGTHS[sequence - 1]
+    if incoming:
+        size = max(size, 60)
+    mac, host = bytes.fromhex("525400123456"), bytes.fromhex("02aabbccdd01")
+    data = bytearray((index * 17 + sequence * 13 + epoch * 7) & 255 for index in range(size))
+    data[:6], data[6:12] = (mac, host) if incoming else (host, mac)
+    data[12:14] = bytes((0x88, 0xb0 + sequence))
+    return bytes(data) if incoming else bytes(data).ljust(max(size, 60), b"\0")
+
+
+class NetworkProtocol:
+    def __init__(self, send=None, ambiguous=False):
+        self.send, self.ambiguous = send, ambiguous
+        self.epoch, self.sequence, self.pending = 1, 0, False
+        self.frames = []
+
+    def observe(self, line):
+        if line.startswith("# NETWORK_RX_READY"):
+            match = re.fullmatch(r"# NETWORK_RX_READY epoch=([12]) seq=([1-6]) bytes=(\d+)", line)
+            if self.ambiguous or match is None or self.pending:
+                raise AssertionError("invalid or concurrent managed RX offer")
+            epoch, sequence, size = map(int, match.groups())
+            if (epoch, sequence, size) != (self.epoch, self.sequence + 1, max(NETWORK_LENGTHS[sequence - 1], 60)):
+                raise AssertionError("reordered or incorrect managed RX offer")
+            self.sequence, self.pending = sequence, True
+            packet = network_packet(epoch, sequence, True)
+            if self.send:
+                self.send(struct.pack("!I", len(packet)) + packet)
+        elif line.startswith("# NETWORK_RX "):
+            match = re.fullmatch(r"# NETWORK_RX epoch=([12]) seq=([1-6]) bytes=(\d+) path=(copy|build) data=([0-9a-f]+)", line)
+            if self.ambiguous or match is None or not self.pending:
+                raise AssertionError("managed RX without a matching host offer")
+            epoch, sequence, size = map(int, match.groups()[:3])
+            packet = network_packet(epoch, sequence, True)
+            if (epoch, sequence, size, match[4], bytes.fromhex(match[5])) != (
+                self.epoch, self.sequence, len(packet), "copy" if len(packet) <= 252 else "build", packet,
+            ):
+                raise AssertionError("managed RX bytes, FCS removal or copybreak path mismatch")
+            self.frames.append((epoch, sequence))
+            self.pending = False
+        elif line.startswith("# NETWORK_JOIN"):
+            if self.ambiguous or self.pending or self.sequence != 6:
+                raise AssertionError("managed scope joined before completing exact packets")
+            self.epoch += 1
+            self.sequence = 0
+
+    def finish(self):
+        expected = [] if self.ambiguous else [(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)]
+        if self.pending or self.frames != expected:
+            raise AssertionError("missing managed full-frame receipts")
+
+
+def validate_network_suite(case, returncode, output, symbols=None):
+    lines = output.splitlines()
+    runtime = case in RUNTIME_NETWORK_CASES
+    validate_boot_preamble(lines, "driver-runtime-tests" if runtime else "driver-network-tests")
+    failures = validate_ktap(lines, returncode, ("network.integration",))
+    if failures:
+        raise KernelSuiteFailure("managed network integration failed")
+    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "BOOT_MEMORY", "FRAME_ALLOCATOR",
+                            "HEAP_", "THREAD_", "Bail out!", "# NATIVE_", "# LINUX_FAULT")) for line in lines):
+        raise AssertionError("managed network aborted or used unrelated fixture evidence")
+    ambiguous = case.endswith("ambiguous")
+    protocol = NetworkProtocol(ambiguous=ambiguous)
+    for line in lines:
+        protocol.observe(line)
+    protocol.finish()
+    network = [line for line in lines if line.startswith("# NETWORK_")]
+    errors = [line for line in lines if line.startswith("# RUNTIME_ERROR")]
+    callbacks = [line for line in lines if line.startswith("# LINUX_CALLBACK")]
+    if ambiguous:
+        if network != ["# NETWORK_REJECT matches=2 code=-188 probes=0 backing=0 balanced=1"] or callbacks or errors != [
+            "# RUNTIME_ERROR stage=runtime_e1000_inventory code=-188"
+        ]:
+            raise AssertionError("singleton rejection occurred after probing or leaked backing")
+        return
+    if runtime and pci_layout(case)[2]:
+        if errors != ["# RUNTIME_ERROR stage=pci_hierarchy code=-183"] or network[:1] != [
+            "# NETWORK_TOPOLOGY_REJECT code=-183 probes=0 backing=0 balanced=1"
+        ]:
+            raise AssertionError("malformed hierarchy did not fail before driver admission")
+        network = network[1:]
+        errors = []
+    if errors or any(line.startswith("# RUNTIME_PROBE") for line in lines):
+        raise AssertionError("managed probe or shutdown failed")
+    identities, metadata = [], set()
+    cursor = 0
+    for epoch in (1, 2):
+        if cursor >= len(network):
+            raise AssertionError("missing managed device scope")
+        match = re.fullmatch(
+            rf"# NETWORK_DEVICE epoch={epoch} identity=(\d+) bdf=0000:([0-9a-f]{{2}}):([0-9a-f]{{2}})\.0 mac=52:54:00:12:34:56 mtu=1500 link=1 registry_ready=1 workers=2",
+            network[cursor],
+        )
+        if match is None or not int(match[1]) or (int(match[2], 16), int(match[3], 16)) != (len(pci_layout(case)[2]), pci_layout(case)[1]):
+            raise AssertionError("wrong managed identity, MAC, link or selected BDF")
+        identity = int(match[1])
+        identities.append(identity)
+        cursor += 1
+        for sequence, size in enumerate(NETWORK_LENGTHS, 1):
+            if sequence == 4:
+                expected = f"# NETWORK_RETAIN epoch={epoch} identity={identity} first_returned=1 workers=2"
+                if network[cursor:cursor + 1] != [expected]:
+                    raise AssertionError("device or workers did not survive the first client")
+                cursor += 1
+            if sequence == 1:
+                expected = f"# NETWORK_OWNERSHIP epoch={epoch} busy=1 timeout=1 accepted_map=1 stale_receipt=1 retained=1"
+                if network[cursor:cursor + 1] != [expected]:
+                    raise AssertionError("BUSY/timeout released accepted packet ownership")
+                cursor += 1
+            wire = max(size, 60)
+            if network[cursor:cursor + 2] != [
+                f"# NETWORK_TX epoch={epoch} seq={sequence} input={size} wire={wire} complete=1",
+                f"# NETWORK_RX_READY epoch={epoch} seq={sequence} bytes={wire}",
+            ] or cursor + 2 >= len(network) or not network[cursor + 2].startswith(f"# NETWORK_RX epoch={epoch} seq={sequence} "):
+                raise AssertionError("missing or reordered managed packet evidence")
+            cursor += 3
+        if network[cursor:cursor + 1] != [
+            f"# NETWORK_STATS epoch={epoch} tx=6/2199 rx=6/2199 queued=6 completed=6 queue_busy=1 allocation=1 consumed_drop=1"
+        ]:
+            raise AssertionError("source packet/byte accounting or failure recovery mismatch")
+        cursor += 1
+        if network[cursor:cursor + 1] != [f"# NETWORK_WAITER epoch={epoch} closed=1 wake=stop"]:
+            raise AssertionError("native receive waiter did not wake on stop")
+        cursor += 1
+        match = re.fullmatch(
+            rf"# NETWORK_JOIN epoch={epoch} finished=6 peak=6 workers=0 stale=1 balanced=1 metadata=(\d+)",
+            network[cursor] if cursor < len(network) else "",
+        )
+        if match is None or not 59960 < int(match[1]) <= 65536:
+            raise AssertionError("missing joined stacks, resource restoration or metadata bound")
+        metadata.add(int(match[1]))
+        cursor += 1
+    if cursor != len(network) or identities[0] == identities[1] or len(metadata) != 1:
+        raise AssertionError("unexpected evidence, reused lifecycle identity or inconsistent metadata")
+    if runtime:
+        validate_runtime_evidence(lines, case, 1, 2, identities)
+        if metadata != {int(line.rsplit("metadata=", 1)[1]) for line in lines if line.startswith("# DRIVER_RUNTIME ")}:
+            raise AssertionError("managed runtime initialization and joined metadata disagree")
+    net_errors = Counter()
+    for line in lines:
+        if line.startswith("# NET_ERROR"):
+            match = re.fullmatch(r"# NET_ERROR operation=([a-z]+) error=([A-Za-z]+)", line)
+            if match is None:
+                raise AssertionError("unclassified native network error")
+            net_errors[(match[1], match[2])] += 1
+    not_ready = net_errors.pop(("submit", "NotReady"), 0)
+    expected_errors = Counter({
+        ("submit", "Busy"): 8, ("finish", "Busy"): 8, ("wait", "TimedOut"): 2,
+        ("progress", "Stale"): 4, ("submit", "NoMemory"): 4,
+        ("info", "Closed"): 2, ("info", "Stale"): 2,
+        ("receive", "Closed"): 2,
+    })
+    if net_errors != expected_errors or not_ready > 1200:
+        raise AssertionError("missing or unexpected native lifetime/backpressure errors")
+    driver_errors = Counter(line for line in lines if line.startswith("# driver operation="))
+    if driver_errors != Counter({"# driver operation=allocate code=-12": 2, "# driver operation=map code=-12": 2}):
+        raise AssertionError("unexpected source allocation/map failure")
+    events, scopes = [], []
+    for line in lines:
+        if line.startswith("# LINUX_CALLBACK"):
+            match = re.fullmatch(r"# LINUX_CALLBACK event=(\d+) function=([0-9a-f]+) object=([0-9a-f]+) result=(-?\d+)", line)
+            if match is None:
+                raise AssertionError("malformed managed Linux callback")
+            event, function, obj, result = (int(value, 16 if index in (1, 2) else 10) for index, value in enumerate(match.groups()))
+            validate_callback_symbol(event, function, obj, symbols)
+            events.append((event, function, obj, result))
+        elif line.startswith("# NETWORK_JOIN"):
+            scopes.append(events)
+            events = []
+    if events or len(scopes) != 2:
+        raise AssertionError("source callbacks outlived managed scope")
+    for events in scopes:
+        validate_callback_lifetime(events, symbols)
+        counts = Counter(event for event, _, _, _ in events)
+        required = {1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1, 7: 1, 8: 1,
+                    17: 7, 18: 7, 19: 6, 20: 6, 21: 6, 22: 6, 24: 6, 25: 6,
+                    28: 1, 31: 7, 32: 1, 33: 1, 34: 1, 35: 1, 41: 6, 42: 6}
+        if any(counts[event] != count for event, count in required.items()):
+            raise AssertionError("original managed lifecycle, TX/RX or drop callbacks missing")
+        if not all(counts[event] for event in (9, 10, 11, 12, 13, 14, 15, 26)) or counts[9] != counts[15] or counts[13] != counts[26]:
+            raise AssertionError("missing or unmatched original IRQ/NAPI/work callbacks")
+        lengths = [max(size, 60) for size in NETWORK_LENGTHS]
+        for event in (19, 20, 22, 24, 25, 41):
+            if [result for observed, _, _, result in events if observed == event] != lengths:
+                raise AssertionError("Linux source completion or full RX byte sizes mismatch")
+        for event, expected in ((17, list(NETWORK_LENGTHS) + [60]), (36, [64, 64, 64, 256]),
+                                (38, [64, 64, 64, 256]), (37, [1920, 1920]), (39, [1522, 1522])):
+            if [result for observed, _, _, result in events if observed == event] != expected:
+                raise AssertionError("original padding/copybreak/FCS/backing profile mismatch")
+
+
+def validate_runtime_evidence(lines, case, bound, scopes=1, identities=None):
+    lines = [line.removeprefix("# ") for line in lines]
+    summaries = [line for line in lines if line.startswith("DRIVER_RUNTIME")]
+    if len(summaries) != scopes:
+        raise AssertionError("missing or duplicate initialized runtime scopes")
+    functions = 5 if case.endswith("no-nic") or case in RUNTIME_SUITE_CASES else 6 + len(pci_layout(case)[2])
+    epochs, metadata = [], set()
+    for line in summaries:
+        match = re.fullmatch(
+            r"DRIVER_RUNTIME epoch=(\d+) drivers=1 functions=(\d+) bound=(\d+) unclaimed=(\d+) failed=0 deferred=0 workers=2 metadata=(\d+)", line,
+        )
+        if match is None:
+            raise AssertionError("runtime failed, deferred or used an invalid driver/service profile")
+        epoch, found, bindings, unclaimed, size = map(int, match.groups())
+        if not epoch or (found, bindings, unclaimed) != (functions, bound, functions - bound) or not 60376 < size <= 65536:
+            raise AssertionError("runtime admission, inventory or metadata bounds mismatch")
+        epochs.append(epoch)
+        metadata.add(size)
+    if epochs != sorted(set(epochs)) or len(metadata) != 1:
+        raise AssertionError("reused runtime epoch or inconsistent metadata")
+    paths = [line for line in lines if line.startswith("DRIVER_PATH")]
+    parents = [line for line in lines if line.startswith("DRIVER_PARENT")]
+    ready = [line for line in lines if line.startswith("DRIVER_READY")]
+    if not bound:
+        if paths or parents or ready:
+            raise AssertionError("unclaimed inventory fabricated NIC or readiness evidence")
+        return
+    if len(paths) != scopes or len(ready) != scopes:
+        raise AssertionError("missing, duplicate or withdrawn source-derived readiness")
+    root, leaf, ancestors = pci_layout(case)
+    for line in paths:
+        match = re.fullmatch(
+            r"DRIVER_PATH bdf=0000:([0-9a-f]{2}):([0-9a-f]{2})\.0 depth=(\d+) functions=(\d+) buses=(\d+) bridges=(\d+) root_slot=(\d+) root_pin=(\d+) gsi=(\d+) pirqs=(\d+),(\d+),(\d+),(\d+) line=(\d+) elcr=([0-9a-f]{4}) mem=([0-9a-f]+)/(\d+) io=([0-9a-f]+)/64", line,
+        )
+        if match is None:
+            raise AssertionError("invalid runtime hierarchy/IRQ path")
+        bus, slot, depth, found, buses, bridges, root_slot, root_pin, gsi = [int(value, 16 if index < 2 else 10) for index, value in enumerate(match.groups()[:9])]
+        pin, child = 1, leaf
+        for _, parent_slot in ancestors:
+            pin = (child + pin - 1) % 4 + 1
+            child = parent_slot
+        if (bus, slot, depth, found, buses, bridges, root_slot, root_pin) != (
+            len(ancestors), leaf, len(ancestors), functions, len(ancestors) + 1, len(ancestors), root, pin,
+        ):
+            raise AssertionError("selected BDF, hierarchy or per-bridge INTx swizzle mismatch")
+        pirqs = list(map(int, match.groups()[9:13]))
+        irq_line = int(match[14])
+        elcr, memory, length, ports = [int(value, 10 if index == 2 else 16) for index, value in enumerate(match.groups()[14:])]
+        expected = pirqs[(root - 1 + pin - 1) & 3]
+        if irq_line != expected or gsi != expected or gsi not in (10, 11) or not elcr & (1 << gsi):
+            raise AssertionError("runtime PIRQ/ELCR/INTx route mismatch")
+        if length != 0x20000 or not memory or memory % length or memory + length > 2**32 or ports % 64 or not 0x1000 <= ports <= 0xffc0:
+            raise AssertionError("invalid runtime BAR bounds")
+    expected_parents = [
+        f"DRIVER_PARENT bdf=0000:{bus:02x}:{slot:02x}.0 primary={bus} secondary={bus + 1} subordinate={len(ancestors)}"
+        for bus, slot in ancestors
+    ] * scopes
+    if parents != expected_parents:
+        raise AssertionError("missing or reordered retained PCI ancestry")
+    for index, line in enumerate(ready):
+        match = re.fullmatch(
+            rf"DRIVER_READY epoch={epochs[index]} identity=(\d+) bdf=0000:{len(ancestors):02x}:{leaf:02x}\.0 mac=52:54:00:12:34:56 mtu=1500 link=1 ready=1 workers=2", line,
+        )
+        if match is None or not int(match[1]) or identities is not None and int(match[1]) != identities[index]:
+            raise AssertionError("runtime readiness is not the retained source device")
+        if lines.index(paths[index]) >= lines.index(summaries[index]) or lines.index(summaries[index]) >= lines.index(line):
+            raise AssertionError("runtime readiness preceded actual admission")
+
+
+def validate_unclaimed_suite(case, returncode, output):
+    lines = output.splitlines()
+    validate_boot_preamble(lines, "driver-runtime-tests")
+    if validate_ktap(lines, returncode, ("runtime.unclaimed",)):
+        raise KernelSuiteFailure("unclaimed runtime failed")
+    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "BOOT_MEMORY", "FRAME_ALLOCATOR",
+                            "HEAP_", "THREAD_", "Bail out!", "# LINUX_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR")) for line in lines):
+        raise AssertionError("unsupported NIC was probed or runtime shutdown failed")
+    normalized = [line.removeprefix("# ") for line in lines]
+    validate_runtime_evidence(normalized, case, 0)
+    if [line for line in normalized if line.startswith("DRIVER_UNCLAIMED")] != [
+        "DRIVER_UNCLAIMED functions=6 drivers=1 bound=0 unclaimed=6 network=0 workers=2 client_returned=1",
+        "DRIVER_UNCLAIMED_JOIN finished=5 peak=5 workers=0 balanced=1 stale=1",
+    ]:
+        raise AssertionError("unclaimed runtime did not retain services and restore resources")
+
+
+def validate_live_boot(case, output, symbols):
+    lines = output.splitlines()
+    mode = LIVE_CASES[case][0]
+    validate_boot_preamble(lines, "run", "fw_cfg" if mode else "default")
+    validate_allocator(lines, 128)
+    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "KERNEL_RUNTIME_", "THREAD_", "KTAP", "ok ", "not ok ",
+                            "Bail out!", "# LINUX_CALLBACK", "# LINUX_FAULT", "# LINUX_RX_", "# LINUX_HARD_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR", "# HOST_")) for line in lines):
+        raise AssertionError("default runtime exited, failed, or entered a probe/fixture path")
+    bound = int(LIVE_CASES[case][1])
+    normalized = [line.removeprefix("# ") for line in lines]
+    if any(line.startswith("DRIVER_") and not line.startswith(("DRIVER_RUNTIME ", "DRIVER_PATH ", "DRIVER_PARENT ", "DRIVER_READY ", "DRIVER_CALLBACK ")) for line in normalized):
+        raise AssertionError("unexpected normal-runtime lifecycle evidence")
+    validate_runtime_evidence(normalized, case, bound)
+    callbacks = [line for line in normalized if line.startswith("DRIVER_CALLBACK")]
+    events = []
+    for line in callbacks:
+        match = re.fullmatch(r"DRIVER_CALLBACK event=(\d+) function=([0-9a-f]+) object=([0-9a-f]+) result=0", line)
+        if match is None:
+            raise AssertionError("original boot callback failed or produced invalid evidence")
+        event, function, obj = (int(value, 16 if index else 10) for index, value in enumerate(match.groups()))
+        validate_callback_symbol(event, function, obj, symbols)
+        events.append(event)
+    if events != ([1, 3, 4, 33, 6] if bound else []):
+        raise AssertionError("default runtime did not execute original module/probe/open")
+    if bound:
+        summary = next(line for line in normalized if line.startswith("DRIVER_RUNTIME"))
+        if normalized.index(callbacks[-1]) >= normalized.index(summary):
+            raise AssertionError("runtime reported initialization before original open")
+
+
+def execute_live(args, case):
+    deadline = time.monotonic() + args.timeout
+    ready_at = None
+    output, pending = bytearray(), bytearray()
+    symbols = runtime_symbols(getattr(args, "nm", "nm"))
+    host, peer = socket.socketpair()
+    with host, peer:
+        command = qemu_command(args, case, net_fd=peer.fileno())
+        with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              stdin=subprocess.DEVNULL, pass_fds=(peer.fileno(),)) as process:
+            peer.close()
+            try:
+                with selectors.DefaultSelector() as selector:
+                    selector.register(process.stdout, selectors.EVENT_READ, "serial")
+                    selector.register(host, selectors.EVENT_READ, "network")
+                    while True:
+                        now = time.monotonic()
+                        if process.poll() is not None:
+                            raise AssertionError("persistent runtime exited before intentional host termination")
+                        if now >= deadline:
+                            raise subprocess.TimeoutExpired(command, args.timeout, output=bytes(output))
+                        if ready_at is not None and now - ready_at >= 3:
+                            validate_live_boot(case, output.decode("utf-8", errors="replace"), symbols)
+                            elapsed = now - ready_at
+                            # Only this owned child is terminated after measured sustained readiness.
+                            process.terminate()
+                            remaining_output, _ = process.communicate(timeout=2)
+                            output.extend(remaining_output)
+                            qemu_terminated = process.returncode == 0 and re.search(
+                                rf"terminating on signal {signal.SIGTERM} from pid {os.getpid()}\b",
+                                remaining_output.decode("utf-8", errors="replace"),
+                            )
+                            if process.returncode != -signal.SIGTERM and not qemu_terminated:
+                                raise AssertionError("runtime exited independently of owned host termination")
+                            host.settimeout(0.5)
+                            if host.recv(1):
+                                raise AssertionError("default runtime emitted late unexpected packet bytes")
+                            break
+                        for key, _ in selector.select(min(deadline - now, 0.1)):
+                            chunk = os.read(key.fd, 4096)
+                            if not chunk:
+                                selector.unregister(key.fileobj)
+                                continue
+                            if key.data == "network":
+                                raise AssertionError("default runtime emitted unexpected packet bytes")
+                            output.extend(chunk)
+                            pending.extend(chunk)
+                            if len(output) > 1024 * 1024:
+                                raise AssertionError("oversized default runtime journal")
+                            while b"\n" in pending:
+                                line, _, rest = pending.partition(b"\n")
+                                pending = bytearray(rest)
+                                decoded = line.decode("utf-8", errors="replace").rstrip("\r")
+                                marker = "DRIVER_READY" if LIVE_CASES[case][1] else "DRIVER_RUNTIME"
+                                if ready_at is None and decoded.removeprefix("# ").startswith(marker):
+                                    validate_live_boot(case, output.decode("utf-8", errors="replace"), symbols)
+                                    ready_at = time.monotonic()
+                            if len(pending) > 8192:
+                                raise AssertionError("oversized unterminated runtime line")
+                if len(output) > 1024 * 1024 or not output.endswith(b"\n") or elapsed < 3:
+                    raise AssertionError("incomplete or insufficient measured runtime execution")
+                validate_live_boot(case, output.decode("utf-8", errors="replace"), symbols)
+            except AssertionError as error:
+                raise AssertionError(f"{error}\n{output.decode('utf-8', errors='replace')}") from error
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+        return subprocess.CompletedProcess(command, process.returncode, bytes(output)), elapsed
+
+
+def managed_hard_packet(sequence, incoming=False):
+    data = bytearray((sequence * 19 + index * 7) & 255 for index in range(60))
+    nic, host = bytes.fromhex("525400123456"), bytes.fromhex("020000000009")
+    data[:6], data[6:12] = (nic, host) if incoming else (host, nic)
+    data[12:14] = bytes((0x88, 0xbc if incoming else 0xbd))
+    return bytes(data)
+
+
+class ManagedHardProtocol:
+    def __init__(self, send=None):
+        self.send = send
+        self.offers, self.receipts = [], []
+        self.expected_offers = [("fifo", 1, 9), ("fifo", 10, 4), ("late", 30, 1), ("pending", 20, 1)]
+        self.expected_receipts = [("fifo", sequence) for sequence in [1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13]] + [("late", 30)]
+        self.closed = set()
+
+    def observe(self, line):
+        if line.startswith("# MANAGED_HARD_OFFER"):
+            match = re.fullmatch(r"# MANAGED_HARD_OFFER name=(fifo|late|pending) first=(\d+) count=(\d+) bytes=60", line)
+            if match is None:
+                raise AssertionError("invalid managed hardening RX offer")
+            offer = (match[1], int(match[2]), int(match[3]))
+            if match[1] in self.closed or self.offers != self.expected_offers[:len(self.offers)] or len(self.offers) >= 4 or offer != self.expected_offers[len(self.offers)]:
+                raise AssertionError("duplicate, reordered or post-stop managed RX offer")
+            self.offers.append(offer)
+            if self.send:
+                self.send(b"".join(struct.pack("!I", 60) + managed_hard_packet(sequence, True)
+                                   for sequence in range(offer[1], offer[1] + offer[2])))
+        elif line.startswith("# MANAGED_HARD_RX "):
+            match = re.fullmatch(r"# MANAGED_HARD_RX name=(fifo|late) seq=(\d+) bytes=60 data=([0-9a-f]+)", line)
+            if match is None:
+                raise AssertionError("invalid managed hardening full-frame receipt")
+            receipt = (match[1], int(match[2]))
+            if len(self.receipts) >= len(self.expected_receipts) or receipt != self.expected_receipts[len(self.receipts)] or bytes.fromhex(match[3]) != managed_hard_packet(receipt[1], True):
+                raise AssertionError("incorrect FIFO ordering, bytes or dropped frame delivery")
+            if not any(name == receipt[0] and first <= receipt[1] < first + count for name, first, count in self.offers):
+                raise AssertionError("managed receipt without actual host injection")
+            self.receipts.append(receipt)
+        elif line.startswith("# MANAGED_HARD_JOIN mode="):
+            match = re.match(r"# MANAGED_HARD_JOIN mode=(\d+)", line)
+            name = {1: "fifo", 2: "late", 3: "pending"}.get(int(match[1]))
+            if name:
+                self.closed.add(name)
+
+    def finish(self):
+        if self.offers != self.expected_offers or self.receipts != self.expected_receipts:
+            raise AssertionError("incomplete managed hardening injection/FIFO ledger")
+
+
+def validate_managed_hardening(case, returncode, output, symbols=None):
+    lines = output.splitlines()
+    validate_boot_preamble(lines, "driver-hardening-tests")
+    if validate_ktap(lines, returncode, HARDENING_NAMES):
+        raise KernelSuiteFailure("managed driver hardening failed")
+    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "THREAD_", "Bail out!")) for line in lines):
+        raise AssertionError("managed hardening aborted or used another boot path")
+    protocol = ManagedHardProtocol()
+    for line in lines:
+        protocol.observe(line)
+    protocol.finish()
+    proofs = [line for line in lines if line.startswith("# MANAGED_HARD_")]
+    allowed = {"MANAGER", "DEPENDENCY", "FAILURE", "ROLLBACK", "READY", "RECOVERY", "OFFER", "RX", "FIFO", "BUSY", "WAKE", "VIEW", "REBIND", "LATE", "PENDING", "SOURCE", "DRAINED", "PURGE", "JOIN"}
+    for line in proofs:
+        match = re.match(r"# MANAGED_HARD_([A-Z]+)", line)
+        if match is None or match[1] not in allowed:
+            raise AssertionError("unexpected managed hardening proof")
+    readies = [re.fullmatch(r"# MANAGED_HARD_READY mode=([0-3]) identity=(\d+) workers=2", line)
+               for line in proofs if line.startswith("# MANAGED_HARD_READY")]
+    if any(match is None or not int(match[2]) for match in readies) or [int(match[1]) for match in readies] != [0, 0, 1, 2, 3]:
+        raise AssertionError("source-ready managed failure/recovery epochs are missing")
+    if proofs[:1] != ["# MANAGED_HARD_MANAGER discovered=256 bound=32 limited=224 operations=32 stopped=32 dropped=32 retained=1"]:
+        raise AssertionError("manager capacity/late-consumer retirement proof missing")
+    rollbacks = [line for line in proofs if line.startswith("# MANAGED_HARD_ROLLBACK")]
+    if rollbacks != [f"# MANAGED_HARD_ROLLBACK kind={fault} balanced=1 workers=0 backing=0" for fault in range(1, 10)]:
+        raise AssertionError("failed managed probe/open/worker admission did not restore resources")
+    failures = [line for line in proofs if line.startswith("# MANAGED_HARD_FAILURE")]
+    if failures != [f"# MANAGED_HARD_FAILURE kind={fault} bound={int(fault == 6)} failed={int(fault != 6)} workers=2" for fault in range(1, 8)]:
+        raise AssertionError("optional failure/readiness accounting mismatch")
+    for expected in (
+        "# MANAGED_HARD_RECOVERY tx=1 bytes=60 ready=1",
+        "# MANAGED_HARD_FIFO received=13 delivered=12 dropped=1 bytes=780 capacity=8 wrapped=1",
+        "# MANAGED_HARD_BUSY operations=1 backing=live admission=closed",
+        "# MANAGED_HARD_WAKE before_close=1 operations=1 closed=1",
+        "# MANAGED_HARD_VIEW reserved=1 closed=1 backing=live",
+        "# MANAGED_HARD_LATE frame=30 replacement=live source_unchanged=1",
+        "# MANAGED_HARD_PURGE replaced=1 ingress=0",
+        "# MANAGED_HARD_DEPENDENCY attempts=2 bound=1 failed=1 waiting=1 retries=1 no_progress=0 stopped_target=1 survivor=1",
+    ):
+        if proofs.count(expected) != 1:
+            raise AssertionError("missing, duplicate or incorrect managed ownership/pressure proof")
+    rebinding = [line for line in proofs if line.startswith("# MANAGED_HARD_REBIND")]
+    drained = [line for line in proofs if line.startswith("# MANAGED_HARD_DRAINED")]
+    if drained != [f"# MANAGED_HARD_DRAINED seq=20 bytes=60 data={managed_hard_packet(20, True).hex()}"]:
+        raise AssertionError("pending original RX did not drain exact L2 bytes before purge")
+    match = re.fullmatch(r"# MANAGED_HARD_REBIND old=(\d+) new=(\d+) stale=1 workers=2", rebinding[0] if len(rebinding) == 1 else "")
+    if match is None or not int(match[1]) or not int(match[2]) or match[1] == match[2]:
+        raise AssertionError("replacement reused a live device generation")
+    sources = [line for line in proofs if line.startswith("# MANAGED_HARD_SOURCE")]
+    if len(sources) != 2:
+        raise AssertionError("original pending work/NAPI were not joined")
+    for line, kind, maps in zip(sources, ("napi", "work"), (256, 255)):
+        match = re.fullmatch(rf"# MANAGED_HARD_SOURCE kind={kind} joined=1 backing=live maps=(\d+) admission=closed free=-16", line)
+        if match is None or int(match[1]) != maps:
+            raise AssertionError("pending callback backing was released or premature ring free was accepted")
+    pending = [line for line in proofs if line.startswith("# MANAGED_HARD_PENDING")]
+    if pending != ["# MANAGED_HARD_PENDING irq=1 tx=1 maps=256 watchdog=queued"]:
+        raise AssertionError("actual pending IRQ/accepted TX ownership missing")
+    joins = [line for line in proofs if line.startswith("# MANAGED_HARD_JOIN")]
+    metadata = set()
+    for mode, line in enumerate(joins):
+        count = 6 if mode >= 2 else 4
+        match = re.fullmatch(rf"# MANAGED_HARD_JOIN mode={mode} finished={count} peak={count} balanced=1 workers=0 metadata=(\d+)", line)
+        if match is None or not 60377 < int(match[1]) <= 65536:
+            raise AssertionError("managed stacks/workers/metadata did not join within bounds")
+        metadata.add(int(match[1]))
+    if len(joins) != 4 or len(metadata) != 1:
+        raise AssertionError("incomplete or inconsistent managed resource epochs")
+    events = []
+    for line in lines:
+        if line.startswith("# LINUX_CALLBACK"):
+            match = re.fullmatch(r"# LINUX_CALLBACK event=(\d+) function=([0-9a-f]+) object=([0-9a-f]+) result=(-?\d+)", line)
+            if match is None:
+                raise AssertionError("malformed original managed hardening callback")
+            events.append(tuple(int(value, 16 if index in (1, 2) else 10) for index, value in enumerate(match.groups())))
+    validate_callback_lifetime(events, symbols)
+    counts = Counter(event for event, _, _, _ in events)
+    if counts[17] != 4 or counts[18] != 4 or counts[41] != 13 or counts[44] != 1 or counts[42] != 14:
+        raise AssertionError("source xmit/RX authority or exact hardening packet counts missing")
+    if any(result != 60 for event, _, _, result in events if event in (17, 19, 20, 22, 41)):
+        raise AssertionError("source hardening packet/map byte size mismatch")
+    if not counts[9] or counts[9] != counts[15] or counts[13] != counts[26]:
+        raise AssertionError("pending original IRQ/NAPI callbacks failed to return")
+    batches, batch = {}, []
+    for line in lines:
+        if match := re.fullmatch(r"ok \d+ (hardening\.[a-z]+)", line):
+            batches[match[1]], batch = batch, []
+        else:
+            batch.append(line)
+    lifecycle = {
+        "hardening.failures": {1: 8, 2: 5, 3: 8, 4: 8, 5: 5, 6: 5, 7: 2, 8: 2, 33: 5},
+        "hardening.fifo": {1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1, 7: 1, 8: 1, 33: 1},
+        "hardening.consumers": {1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 33: 2},
+        "hardening.pending": {1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 3, 8: 3, 33: 3},
+    }
+    for name, batch in batches.items():
+        observed = Counter(int(re.match(r"# LINUX_CALLBACK event=(\d+)", line)[1]) for line in batch if line.startswith("# LINUX_CALLBACK"))
+        if any(observed[event] != count for event, count in lifecycle.get(name, {}).items()):
+            raise AssertionError("original close/remove or replacement lifecycle ran the wrong number of times")
+        if name == "hardening.manager" and observed:
+            raise AssertionError("native synthetic drivers supplied Linux provenance")
+        runtime_errors = Counter(line for line in batch if line.startswith("# RUNTIME_ERROR"))
+        expected = Counter({"# RUNTIME_ERROR stage=runtime_startup_injected code=-210": 2}) if name == "hardening.failures" else Counter()
+        if runtime_errors != expected:
+            raise AssertionError("unexpected runtime failure or missing worker/admission injection")
+        native_errors = Counter(line for line in batch if line.startswith("# NATIVE_DRIVER_ERROR"))
+        expected_native = {
+            "hardening.manager": Counter({
+                "# NATIVE_DRIVER_ERROR operation=driver-discover code=-161": 1,
+                "# NATIVE_DRIVER_ERROR operation=driver-probe-reserve code=-170": 224,
+                "# NATIVE_DRIVER_ERROR operation=driver-operation code=-161": 1,
+                "# NATIVE_DRIVER_ERROR operation=driver-shutdown-complete code=-164": 1,
+                "# NATIVE_DRIVER_ERROR operation=driver-probe-callback code=-12": 1,
+            }),
+            "hardening.failures": Counter({
+                "# NATIVE_DRIVER_ERROR operation=driver-probe-callback code=-12": 5,
+                "# NATIVE_DRIVER_ERROR operation=driver-probe-callback code=-5": 1,
+            }),
+            "hardening.consumers": Counter({
+                "# NATIVE_DRIVER_ERROR operation=driver-stop-reserve code=-164": 1,
+                "# NATIVE_DRIVER_ERROR operation=driver-inspect code=-163": 2,
+            }),
+        }.get(name, Counter())
+        if native_errors != expected_native:
+            raise AssertionError("unclassified manager failure or concealed admission error")
+        net_errors = Counter(line for line in batch if line.startswith("# NET_ERROR"))
+        expected_net = {
+            "hardening.consumers": Counter({
+                "# NET_ERROR operation=submit error=Closed": 1, "# NET_ERROR operation=receive error=Closed": 1,
+                "# NET_ERROR operation=info error=Closed": 2, "# NET_ERROR operation=info error=Stale": 1,
+                "# NET_ERROR operation=submit error=Stale": 1,
+            }),
+            "hardening.pending": Counter({
+                "# NET_ERROR operation=progress error=Closed": 2, "# NET_ERROR operation=progress error=Stale": 2,
+                "# NET_ERROR operation=receive error=Closed": 2, "# NET_ERROR operation=info error=Closed": 1,
+            }),
+        }.get(name, Counter())
+        if net_errors != expected_net:
+            raise AssertionError("missing or unclassified native closed/stale consumer outcome")
+        driver_errors = Counter(line for line in batch if line.startswith("# driver operation=") or line.startswith("# driver pci_operation="))
+        if name == "hardening.failures":
+            maps = driver_errors.pop("# driver operation=map code=-12", 0)
+            if not 1 <= maps <= 256:
+                raise AssertionError("streaming-map failure was not reached or retry budget was exceeded")
+            if driver_errors != Counter({
+                "# driver pci_operation=2 code=-12": 1, "# driver pci_operation=6 code=-12": 1,
+                "# driver operation=pci_probe code=-12": 2, "# driver operation=pci_probe code=-5": 1,
+                "# driver operation=allocate code=-12": 3,
+            }):
+                raise AssertionError("probe/open allocation failure paths are incomplete")
+            for line in batch:
+                if line.startswith("# RUNTIME_PROBE") and re.fullmatch(r"# RUNTIME_PROBE Failed \{ device: DeviceHandle\(\d+\), error: Driver\(-(12|5)\) \}", line) is None:
+                    raise AssertionError("unclassified optional probe result")
+        elif driver_errors != (Counter({"# driver operation=ingress_capacity code=-12": 1}) if name == "hardening.fifo" else Counter()):
+            raise AssertionError("unexpected platform/packet error")
+        if name != "hardening.failures" and any(line.startswith("# RUNTIME_PROBE") for line in batch):
+            raise AssertionError("lifecycle concurrency was incorrectly treated as a probe failure")
+    consumers = batches["hardening.consumers"]
+    close = next(index for index, line in enumerate(consumers) if line.startswith("# LINUX_CALLBACK event=7 "))
+    for marker in ("# MANAGED_HARD_WAKE", "# MANAGED_HARD_VIEW"):
+        index = next(index for index, line in enumerate(consumers) if line.startswith(marker))
+        if index >= close:
+            raise AssertionError("native waiters/reserved views stayed open until source close")
+    pending = batches["hardening.pending"]
+    closes = [index for index, line in enumerate(pending) if line.startswith("# LINUX_CALLBACK event=7 ")]
+    removes = [index for index, line in enumerate(pending) if line.startswith("# LINUX_CALLBACK event=5 ")]
+    drained = next(index for index, line in enumerate(pending) if line.startswith("# MANAGED_HARD_DRAINED"))
+    source_rows = [index for index, line in enumerate(pending) if line.startswith("# MANAGED_HARD_SOURCE")]
+    offer = next(index for index, line in enumerate(pending) if line.startswith("# MANAGED_HARD_OFFER"))
+    purge = next(index for index, line in enumerate(pending) if line.startswith("# MANAGED_HARD_PURGE"))
+    if not removes[0] < offer < closes[1] < source_rows[0] < drained < removes[1] < purge < closes[2] < source_rows[1] < removes[2]:
+        raise AssertionError("source join, RX drain, purge and replacement backing order is unsafe")
+
+
 def execute_suite(args, case, capture):
     deadline = time.monotonic() + args.timeout
     output = bytearray()
     serial_pending = bytearray()
     network_pending = bytearray()
     transmitted = []
-    expected = expected_tx_packets()
+    network = case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES
+    hardening = case in HARDENING_CASES
+    ambiguous = case.endswith("ambiguous")
+    expected = [managed_hard_packet(sequence) for sequence in range(1, 5)] if hardening else [] if network and ambiguous else [network_packet(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)] if network else expected_tx_packets()
     host, peer = socket.socketpair()
     with host, peer:
         command = qemu_command(args, case, capture, peer.fileno())
@@ -946,8 +1859,7 @@ def execute_suite(args, case, capture):
         ) as process:
             peer.close()
             host.settimeout(min(args.timeout, 2))
-            protocol = RXProtocol(host.sendall)
-            hard = HardProtocol(host.sendall)
+            protocols = (ManagedHardProtocol(host.sendall),) if hardening else (NetworkProtocol(host.sendall, ambiguous),) if network else (RXProtocol(host.sendall), HardProtocol(host.sendall))
             try:
                 with selectors.DefaultSelector() as selector:
                     selector.register(process.stdout, selectors.EVENT_READ, "serial")
@@ -970,8 +1882,8 @@ def execute_suite(args, case, capture):
                                     line, _, rest = serial_pending.partition(b"\n")
                                     serial_pending = bytearray(rest)
                                     decoded = line.decode("utf-8", errors="replace").rstrip("\r")
-                                    protocol.observe(decoded)
-                                    hard.observe(decoded)
+                                    for protocol in protocols:
+                                        protocol.observe(decoded)
                                 if len(serial_pending) > 8192:
                                     raise AssertionError("oversized unterminated guest line")
                             else:
@@ -994,8 +1906,8 @@ def execute_suite(args, case, capture):
                         raise AssertionError("truncated guest serial/socket output")
                     if transmitted != expected:
                         raise AssertionError("isolated socket did not carry the exact Linux TX frames")
-                    protocol.finish()
-                    hard.finish()
+                    for protocol in protocols:
+                        protocol.finish()
             except subprocess.TimeoutExpired as error:
                 raise subprocess.TimeoutExpired(command, args.timeout, output=bytes(output)) from error
             except OSError as error:
@@ -1017,24 +1929,34 @@ def qemu_command(args, case, capture=None, net_fd=None):
     command = [
         args.qemu, "-machine", "pc", "-accel", "tcg", "-cpu", "qemu64",
         "-smp", "2,sockets=2,cores=1,threads=1" if case == "smp-unsupported" else "1",
-        "-m", "32M" if case in ("low-memory", "kernel-tests-low-memory") else "128M",
+        "-m", "32M" if case.endswith("low-memory") else "128M",
         "-display", "none", "-monitor", "none", "-serial", "stdio",
         "-no-reboot", "-boot", "d",
         "-cdrom", str(args.build_dir / "kutox.iso"), "-nic", "none",
         "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
     ]
-    if case != "default-mode":
+    if case not in LIVE_CASES or LIVE_CASES[case][0] is not None:
         mode = {
             "eeprom-timeout": "eeprom-timeout",
             "invalid-mode": "unsupported",
+            "guest-tests-disabled": "kernel-tests",
+            "driver-runtime-tests-disabled": "driver-runtime-tests",
+            "driver-network-tests-disabled": "driver-network-tests",
+            "driver-hardening-tests-disabled": "driver-hardening-tests",
             "heap-oom": "heap-oom",
             "thread-stack-guard": "thread-stack-guard",
             **{case: case for case in FAULT_RESULTS},
             **KERNEL_SUITE_CASES,
+            **RUNTIME_SUITE_CASES,
+            **NETWORK_SUITE_CASES,
+            **RUNTIME_NETWORK_CASES,
+            **HARDENING_CASES,
+            **{case: "driver-runtime-tests" for case in UNCLAIMED_CASES},
+            **{case: mode for case, (mode, _) in LIVE_CASES.items() if mode is not None},
         }.get(case, "probe")
         command += ["-fw_cfg", f"name=opt/kutox/test-mode,string={mode}"]
-    if case not in ("missing", "smp-unsupported", "heap-oom", "thread-stack-guard") and case not in FAULT_RESULTS and case not in KERNEL_SUITE_CASES:
-        model = "e1000e" if case == "unsupported" else "e1000"
+    if case not in ("missing", "smp-unsupported", "heap-oom", "thread-stack-guard", "guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled") and case not in FAULT_RESULTS and case not in KERNEL_SUITE_CASES and case not in RUNTIME_SUITE_CASES and case not in NETWORK_SUITE_CASES and case not in RUNTIME_NETWORK_CASES and case not in LIVE_CASES and case not in HARDENING_CASES:
+        model = "e1000e" if case == "unsupported" or case in UNCLAIMED_CASES else "e1000"
         mac = CASES[case][0] or "52:54:00:12:34:56"
         command += [
             "-netdev", "user,id=macprobe,restrict=on",
@@ -1045,14 +1967,22 @@ def qemu_command(args, case, capture=None, net_fd=None):
             "-netdev", "user,id=second,restrict=on",
             "-device", "e1000,netdev=second,mac=52:54:00:00:00:02",
         ]
-    if case in KERNEL_SUITE_CASES:
+    if case in KERNEL_SUITE_CASES or case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES or case in HARDENING_CASES or case in LIVE_CASES and case != "driver-runtime-default-no-nic":
         if net_fd is None or net_fd < 0:
             raise AssertionError("kernel suite requires an owned RX socket")
-        slot = "5" if case == "kernel-tests-low-memory" else "3"
+        root, leaf, parents = pci_layout(case)
+        if parents:
+            command += ["-device", f"pci-bridge,id=bridge0,chassis_nr=1,shpc=off,msi=off,addr={root:x}"]
+            if len(parents) == 2:
+                command += ["-device", "pci-bridge,id=bridge1,chassis_nr=2,shpc=off,msi=off,bus=bridge0,addr=4"]
+        bus = f",bus=bridge{len(parents) - 1}" if parents else ""
+        model = "e1000e" if case == "driver-runtime-default-unsupported" else "e1000"
         command += [
             "-netdev", f"socket,id=irqtest,fd={net_fd}",
-            "-device", f"e1000,netdev=irqtest,addr={slot},mac=52:54:00:12:34:56",
+            "-device", f"{model},netdev=irqtest{bus},addr={leaf:x},mac=52:54:00:12:34:56",
         ]
+        if case == "driver-network-tests-ambiguous":
+            command += ["-device", "e1000,addr=4,mac=52:54:00:00:00:02"]
         if capture is not None:
             # QEMU key/value options escape literal commas by doubling them.
             filename = str(capture).replace(",", ",,")
@@ -1066,15 +1996,18 @@ def qemu_command(args, case, capture=None, net_fd=None):
 def run_case(args, case, index=0):
     log = args.build_dir / "test-logs" / f"{args.case}-{index}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
-    capture = log.with_suffix(".pcap") if case in KERNEL_SUITE_CASES else None
+    capture = log.with_suffix(".pcap") if case in KERNEL_SUITE_CASES or case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES or case in HARDENING_CASES else None
     if capture is not None:
         capture.unlink(missing_ok=True)
-    command = qemu_command(args, case) if capture is None else None
+    command = qemu_command(args, case) if capture is None and case not in LIVE_CASES else None
     try:
-        completed = execute_suite(args, case, capture) if capture is not None else subprocess.run(
-            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=args.timeout, check=False,
-        )
+        if case in LIVE_CASES:
+            completed, elapsed = execute_live(args, case)
+        else:
+            completed = execute_suite(args, case, capture) if capture is not None else subprocess.run(
+                command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                timeout=args.timeout, check=False,
+            )
     except subprocess.TimeoutExpired as error:
         output = (error.output or b"").decode("utf-8", errors="replace")
         log.write_text(output, encoding="utf-8")
@@ -1089,14 +2022,28 @@ def run_case(args, case, index=0):
             if not capture.is_file():
                 raise AssertionError("QEMU did not produce the required TX capture")
             with capture.open("rb") as stream:
-                validate_tx_capture(stream.read(1024 * 1024 + 1))
-            validate_linux_callbacks(output, runtime_symbols(getattr(args, "nm", "nm")))
-        validate_result(case, completed.returncode, output)
+                expected = None
+                if case in HARDENING_CASES:
+                    expected = [managed_hard_packet(sequence) for sequence in range(1, 5)]
+                if case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES:
+                    expected = [] if case.endswith("ambiguous") else [network_packet(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)]
+                validate_tx_capture(stream.read(1024 * 1024 + 1), expected)
+            symbols = runtime_symbols(getattr(args, "nm", "nm"))
+            if case in HARDENING_CASES:
+                validate_managed_hardening(case, completed.returncode, output, symbols)
+            elif case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES:
+                validate_network_suite(case, completed.returncode, output, symbols)
+            else:
+                validate_linux_callbacks(output, symbols)
+                validate_native_drivers(output.splitlines(), case, symbols)
+        if case not in LIVE_CASES:
+            validate_result(case, completed.returncode, output)
     except KernelSuiteFailure as error:
         raise KernelSuiteFailure(f"{error}\nlog: {log}\n{output}") from error
     except AssertionError as error:
         raise AssertionError(f"{error}\nlog: {log}\n{output}") from error
-    print(f"PASS {case}: {log}")
+    measured = f" (alive {elapsed:.3f}s after readiness, owned child terminated)" if case in LIVE_CASES else ""
+    print(f"PASS {case}: {log}{measured}")
 
 
 def main():

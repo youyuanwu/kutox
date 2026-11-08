@@ -5,9 +5,11 @@ use crate::{
     irq::external::{self, ClaimedIrq, IoApic, Token},
     serial, threads,
 };
+#[cfg(feature = "guest-tests")]
+use core::sync::atomic::AtomicBool;
 use core::{
     ffi::c_void,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicU64, Ordering},
 };
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 
@@ -25,13 +27,22 @@ struct Registration {
 static BINDING: SpinLockIrq<Option<Registration>, X86Cpu> = SpinLockIrq::new(None);
 static HANDLED: AtomicU64 = AtomicU64::new(0);
 static UNHANDLED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "guest-tests")]
 static FAIL_REQUEST: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "guest-tests")]
 pub fn fail_request(fail: bool) {
     FAIL_REQUEST.store(fail, Ordering::Release);
 }
 
 pub struct BoundIrq<'controller, 'a, 'storage> {
     claim: ClaimedIrq<'controller, 'a, 'storage>,
+}
+
+pub fn callbacks_drained() -> bool {
+    BINDING
+        .lock_save_irq()
+        .as_ref()
+        .is_none_or(|binding| binding.handler.is_none() && !binding.running)
 }
 
 impl<'controller, 'a, 'storage> BoundIrq<'controller, 'a, 'storage> {
@@ -136,8 +147,9 @@ extern "C" fn kutox_linux_request_irq(
     if threads::check_boot_or_thread_context().is_err() {
         return -106;
     }
+    #[cfg(feature = "guest-tests")]
     if FAIL_REQUEST.swap(false, Ordering::AcqRel) {
-        crate::linux_driver::record_fault();
+        crate::guest_tests::linux_e1000::record_fault();
         return -12;
     }
     if handler.is_none() || device == 0 || number > i32::MAX as u32 {
@@ -216,11 +228,12 @@ pub fn counts() -> (u64, u64) {
 
 #[unsafe(no_mangle)]
 extern "C" fn kutox_linux_irq_pending() -> i32 {
+    i32::from(pending().unwrap_or_else(|error| fail(error.stage, error.code)))
+}
+
+pub fn pending() -> Result<bool, Failure> {
     let registration = (*BINDING.lock_save_irq()).expect("test IRQ binding missing");
-    i32::from(
-        external::pending_bound(registration.token)
-            .unwrap_or_else(|error| fail(error.stage, error.code)),
-    )
+    external::pending_bound(registration.token)
 }
 pub fn quiescent() -> bool {
     BINDING.lock_save_irq().is_none()

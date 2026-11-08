@@ -1,11 +1,13 @@
+//! Guest-only acceptance fixtures; not production driver code.
+
 use crate::{
     Failure,
     boot::BootInfo,
-    e1000,
+    guest_tests::e1000_irq,
     irq::{self, LocalApic, external::IoApic},
     linux_deferred,
     linux_irq::{self, BoundIrq},
-    linux_runtime, memory, pci, platform, threads,
+    linux_runtime, memory, platform, threads,
 };
 
 unsafe extern "C" {
@@ -92,8 +94,8 @@ pub fn irq(boot: &BootInfo, frames: &memory::PhysicalFrames<'static>) -> Result<
     let topology = platform::discover(boot, frames)?;
     let apic = LocalApic::start(boot, frames)?;
     let controller = IoApic::start(boot, frames, &apic, &topology)?;
-    let nic = e1000::Nic::start(boot, frames, &topology)?;
-    let gsi = pci::discover()?.interrupt_route(&topology)?;
+    let nic = e1000_irq::E1000IrqFixture::start(boot, frames, &topology)?;
+    let gsi = nic.gsi();
     let binding = BoundIrq::bind(&controller, gsi)?;
     unsafe { kutox_c_driver_irq_config(nic.address(), gsi) };
     let timer = irq::Timer::attach(&apic)?;

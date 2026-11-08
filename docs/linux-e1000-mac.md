@@ -15,6 +15,31 @@ This milestone proves that selected upstream hardware code can run on our
 own platform services. It does **not** establish compatibility with the
 complete Linux e1000 driver, LinuxKPI, or arbitrary Linux drivers.
 
+### Selecting this proof today
+
+Normal boot no longer runs this finite proof: absent fw_cfg (or explicit `run`)
+starts and retains the full managed e1000/runtime. To exercise the historical
+helper using the current shared image:
+
+```sh
+python3 scripts/qemu_test.py --case known --build-dir build
+```
+
+That runner explicitly supplies `opt/kutox/test-mode=probe`. A manual QEMU boot
+selects the same path with:
+
+```text
+-fw_cfg name=opt/kutox/test-mode,string=probe
+```
+
+Successful `probe` still ends with `E1000_MAC_OK`; it never runs original module
+startup or packet clients. Missing/unsupported NICs fail this proof, whereas the
+persistent runtime retains unclaimed inventory without fabricating NIC readiness.
+Both `probe` and `run` work with guest fixtures omitted; injected EEPROM/fault/
+guest modes require the test-enabled build. See the
+[boot guide](../README.md#persistent-normal-boot) for image/build commands and
+persistent diagnostics, not MAC-proof terminal results.
+
 ## Source baseline
 
 Use the existing shallow [Linux submodule](../linux), pinned to:
@@ -229,3 +254,14 @@ Do not follow the earlier transmit/receive sequence by writing another native
 Rust NIC driver. The [current roadmap](rust-kernel-linux-drivers.md#linux-e1000-driver-reuse-roadmap)
 defines the phased source/configuration, environment, lifecycle, packet and
 cleanup gates. A native network stack/Embassy adapter is subsequent work.
+
+The separate [Moss-style integration milestone](rust-kernel-linux-drivers.md#moss-style-driver-infrastructure)
+is also complete: retained built-in initialization, firmware-configured PCI
+hierarchies, kernel-thread probing, persistent default boot and checked native
+Ethernet handles now wrap the unchanged Linux backend. Managed failure/FIFO/
+consumer/pending-callback acceptance supplements, rather than replaces, the
+original source/packet gates. The
+[kernel-client guide](rust-kernel-linux-drivers.md#kernel-client-lifecycle)
+explains runtime ownership and packet receipts without Linux structs. This
+does not broaden the historical helper's original scope or add an IP stack,
+multiple Linux NIC instances or `.ko` loading.

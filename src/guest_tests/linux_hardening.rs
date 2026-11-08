@@ -1,7 +1,9 @@
+//! Guest-only acceptance fixtures; not production driver code.
+
 use crate::{
     driver_memory, linux_deferred,
     linux_driver::{DriverHandle, control},
-    serial, threads,
+    serial, threads, time,
 };
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -139,6 +141,20 @@ pub(crate) fn source_join(kind: u32) {
         serial::print(format_args!("# LINUX_HARD_JOIN kind={kind} backing=live\n"));
     }
 }
+pub(crate) fn hold_source(kind: u32, ticket: u64) {
+    TICKET.store(ticket, Ordering::Release);
+    arm(kind);
+}
+pub(crate) fn source_held(kind: u32) -> bool {
+    PAUSED.load(Ordering::Acquire) == kind
+}
+pub(crate) fn source_joined(kind: u32) -> bool {
+    JOIN.load(Ordering::Acquire) == kind
+}
+pub(crate) fn release_source() {
+    RELEASE.store(true, Ordering::Release);
+    PAUSE_QUEUE.notify_without_switch(true).unwrap();
+}
 pub(crate) fn atomic_reentry() {
     if REENTRY.swap(false, Ordering::AcqRel) {
         assert_eq!(DriverHandle(TICKET.load(Ordering::Acquire)).close(), -58);
@@ -231,7 +247,7 @@ fn wrap() {
     serial::print(format_args!("# LINUX_HARD_STOP kind=wrap seq=300\n"));
     assert_eq!(handle.rx_stop(), 0);
     assert_eq!(handle.close(), 0);
-    handle.unbind();
+    handle.unbind_checked();
 }
 
 fn backpressure() {
@@ -340,7 +356,7 @@ fn backpressure() {
     serial::print(format_args!("# LINUX_HARD_STOP kind=errors seq=3\n"));
     assert_eq!(handle.rx_stop(), 0);
     assert_eq!(handle.close(), 0);
-    handle.unbind();
+    handle.unbind_checked();
 }
 
 fn teardown() {
@@ -348,10 +364,21 @@ fn teardown() {
     DONE.store(0, Ordering::Release);
     let handle = opened();
     TICKET.store(handle.0, Ordering::Release);
+    handle.wait_irq_poll_idle();
     assert_eq!(kick(&handle, 0), 0, "watchdog must have requeued");
     assert_eq!(handle.packet(&packet(3, 1, 60, false)[..60]), 0);
     assert_eq!(handle.transmit(), 0);
     assert_eq!(handle.tx_status(), 1);
+    let start = time::now_ticks();
+    let budget = time::ticks_for_us(100_000)
+        .unwrap_or_else(|error| panic!("pending TX IRQ clock: {} {}", error.stage, error.code));
+    while unsafe { kutox_linux_irq_pending() } == 0 {
+        assert!(
+            time::now_ticks().wrapping_sub(start) < budget,
+            "TX IRQ did not become pending"
+        );
+        core::hint::spin_loop();
+    }
     assert_eq!(unsafe { kutox_linux_irq_pending() }, 1);
     serial::print(format_args!(
         "# LINUX_HARD_IRQ pending=1 tx=1 watchdog=queued\n"
@@ -383,7 +410,7 @@ fn teardown() {
     assert_eq!(handle.close(), 0);
     wait(|| DONE.load(Ordering::Acquire) == 1);
     assert_eq!(handle.close(), 0);
-    handle.unbind();
+    handle.unbind_checked();
     QUIT.store(true, Ordering::Release);
     serial::print(format_args!(
         "# LINUX_HARD_TEARDOWN joined=2 serialized=2 stale=1\n"

@@ -1,3 +1,6 @@
+//! Guest-only acceptance fixtures; not production driver code.
+use crate::boot::BootInfo;
+
 use super::*;
 use crate::completion::{Completion, Error as CompletionError, WaitResult};
 use core::sync::atomic::AtomicUsize;

@@ -1,3 +1,5 @@
+//! Guest-only acceptance fixtures; not production driver code.
+
 use crate::{
     Failure, boot::BootInfo, irq::external::ClaimedIrq, irq::external::IoApic, memory, pci, serial,
 };
@@ -24,13 +26,17 @@ pub fn write(base: usize, offset: usize, value: u32) {
     let _ = read(base, 8);
 }
 
-pub struct Nic<'a, 'storage> {
+pub struct E1000IrqFixture<'a, 'storage> {
     mapping: memory::MmioMapping<'a, 'storage>,
     _bar: pci::Bar,
     gsi: u32,
 }
 
-impl<'a, 'storage> Nic<'a, 'storage> {
+impl<'a, 'storage> E1000IrqFixture<'a, 'storage> {
+    pub fn gsi(&self) -> u32 {
+        self.gsi
+    }
+
     pub fn start(
         boot: &BootInfo,
         frames: &'a memory::PhysicalFrames<'storage>,
@@ -74,7 +80,7 @@ impl<'a, 'storage> Nic<'a, 'storage> {
         controller: &'controller IoApic<'a, 'storage>,
         cause: u32,
         handler: crate::irq::Handler,
-    ) -> Result<NicIrq<'nic, 'controller, 'a, 'storage>, Failure> {
+    ) -> Result<E1000IrqClaim<'nic, 'controller, 'a, 'storage>, Failure> {
         let claim = controller.claim(self.gsi, handler)?;
         let _ = read(self.address(), ICR);
         write(self.address(), IMS, cause);
@@ -82,7 +88,7 @@ impl<'a, 'storage> Nic<'a, 'storage> {
             self.mask();
             return Err(Failure::new("e1000_irq_mask_readback", -1));
         }
-        Ok(NicIrq {
+        Ok(E1000IrqClaim {
             nic: self,
             claim,
             live: true,
@@ -95,7 +101,7 @@ impl<'a, 'storage> Nic<'a, 'storage> {
     }
 }
 
-impl Drop for Nic<'_, '_> {
+impl Drop for E1000IrqFixture<'_, '_> {
     fn drop(&mut self) {
         assert_eq!(
             read(self.address(), 0x400) & 2,
@@ -108,13 +114,13 @@ impl Drop for Nic<'_, '_> {
     }
 }
 
-pub struct NicIrq<'nic, 'controller, 'a, 'storage> {
-    nic: &'nic Nic<'a, 'storage>,
+pub struct E1000IrqClaim<'nic, 'controller, 'a, 'storage> {
+    nic: &'nic E1000IrqFixture<'a, 'storage>,
     pub claim: ClaimedIrq<'controller, 'a, 'storage>,
     live: bool,
 }
 
-impl NicIrq<'_, '_, '_, '_> {
+impl E1000IrqClaim<'_, '_, '_, '_> {
     pub fn close(&mut self) -> Result<(), Failure> {
         if !self.live {
             return Err(Failure::new("e1000_irq_stale", -1));
@@ -127,7 +133,7 @@ impl NicIrq<'_, '_, '_, '_> {
     }
 }
 
-impl Drop for NicIrq<'_, '_, '_, '_> {
+impl Drop for E1000IrqClaim<'_, '_, '_, '_> {
     fn drop(&mut self) {
         if self.live {
             self.close().unwrap_or_else(|error| {

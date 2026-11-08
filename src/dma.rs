@@ -58,7 +58,7 @@ impl Address {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Profile {
     hhdm: u64,
     ram_limit: u64,
@@ -280,5 +280,6 @@ impl Drop for Buffer<'_, '_> {
     }
 }
 
-#[path = "dma_tests.rs"]
+#[cfg(feature = "guest-tests")]
+#[path = "guest_tests/dma.rs"]
 pub mod tests;

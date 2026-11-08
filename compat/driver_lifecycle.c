@@ -53,6 +53,30 @@ int kutox_c_linux_ready(uint64_t ticket)
         device->features != 0 || device->mtu != 1500) kutox_platform_fail("linux_default_profile");
     return netif_running(device) && netif_carrier_ok(device) && !netif_queue_stopped(device);
 }
+int kutox_c_linux_info(uint64_t ticket, u8 *mac, unsigned int *mtu, unsigned int *link)
+{
+    if (!ticket || ticket != generation) return -ESTALE;
+    if (!loaded || !device || !netif_running(device)) return -ENODEV;
+    if (!mac || !mtu || !link) return -EINVAL;
+    memcpy(mac,device->dev_addr,ETH_ALEN);
+    *mtu = device->mtu;
+    *link = netif_carrier_ok(device);
+    return 0;
+}
+int kutox_c_linux_statistics(uint64_t ticket, uint64_t *statistics)
+{
+    if (!ticket || ticket != generation) return -ESTALE;
+    if (!loaded || !device) return -ENODEV;
+    if (!statistics) return -EINVAL;
+    statistics[0] = device->stats.tx_packets;
+    statistics[1] = device->stats.tx_bytes;
+    statistics[2] = device->stats.rx_packets;
+    statistics[3] = device->stats.rx_bytes;
+    statistics[4] = device->sent_packets;
+    statistics[5] = device->completed_packets;
+    statistics[6] = device->stats.rx_dropped;
+    return 0;
+}
 bool kutox_c_linux_rx_failure_seen(uint64_t ticket)
 {
     if (!ticket || ticket != generation || !device) kutox_platform_fail("linux_rx_snapshot_handle");
@@ -90,7 +114,7 @@ int kutox_c_linux_tx_release(uint64_t ticket)
 int kutox_c_linux_rx_start(uint64_t ticket)
 {
     if (!ticket || ticket != generation || !loaded || !device) return -ESTALE;
-    if (!kutox_c_linux_ready(ticket)) return -EBUSY;
+    if (!netif_running(device)) return -ENODEV;
     struct e1000_adapter *adapter = netdev_priv(device);
     if (adapter->rx_buffer_len != MAXIMUM_ETHERNET_VLAN_SIZE ||
         SKB_DATA_ALIGN(adapter->rx_buffer_len + NET_SKB_PAD + NET_IP_ALIGN) +
@@ -110,6 +134,7 @@ int kutox_c_linux_rx_path(uint64_t ticket)
     if (!ticket || ticket != generation || !loaded || !device) return -ESTALE;
     return kutox_c_rx_path();
 }
+#if KUTOX_GUEST_TESTS
 int kutox_c_linux_rx_state(uint64_t ticket, unsigned int packets, unsigned int bytes,
                           unsigned int dropped, unsigned int failures, bool replenished)
 {
@@ -128,6 +153,7 @@ int kutox_c_linux_rx_state(uint64_t ticket, unsigned int packets, unsigned int b
     }
     return resident;
 }
+#endif
 int kutox_c_linux_unbind(uint64_t ticket)
 {
     if (!loaded || !ticket || ticket != generation) return -ESTALE;
@@ -140,6 +166,13 @@ int kutox_c_linux_unbind(uint64_t ticket)
 }
 bool kutox_c_linux_empty(void) { return !loaded && !device && kutox_c_packet_empty() && kutox_c_deferred_empty(); }
 
+#if KUTOX_GUEST_TESTS
+int kutox_c_linux_queue(uint64_t ticket, bool stopped)
+{
+    if (!ticket || ticket != generation || !loaded || !device) return -ESTALE;
+    if (stopped) netif_stop_queue(device); else netif_wake_queue(device);
+    return 0;
+}
 int kutox_c_linux_many(uint64_t ticket, const void *bytes, unsigned int count)
 {
     if (!loaded || !ticket || ticket != generation || !device) return -ESTALE;
@@ -208,3 +241,4 @@ int kutox_c_linux_rx_failures(uint64_t ticket)
     if (adapter->alloc_rx_buff_failed > 0x7fffffff) return -ERANGE;
     return adapter->alloc_rx_buff_failed;
 }
+#endif

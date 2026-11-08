@@ -2,9 +2,11 @@ use crate::{
     Failure, boot::BootInfo, cpu, driver_memory, io, linux_deferred, linux_irq, memory, pci,
     platform, serial, time,
 };
+#[cfg(feature = "guest-tests")]
+use core::sync::atomic::AtomicU32;
 use core::{
     cell::UnsafeCell,
-    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
 struct Binding {
@@ -25,17 +27,30 @@ static KEY: AtomicUsize = AtomicUsize::new(0);
 static MMIO: AtomicUsize = AtomicUsize::new(0);
 static MASK: AtomicU64 = AtomicU64::new(0);
 static GATED: AtomicBool = AtomicBool::new(true);
+#[cfg(feature = "guest-tests")]
 static FAIL_OPERATION: AtomicU32 = AtomicU32::new(u32::MAX);
+#[cfg(feature = "guest-tests")]
 pub fn fail_operation(operation: u32) {
     FAIL_OPERATION.store(operation, Ordering::Release);
 }
 
 pub struct Owner;
 impl Owner {
+    pub fn report_path(&self, topology: &kutox::irq_platform::Topology) -> Result<(), Failure> {
+        driver_memory::context(false)
+            .map_err(|error| Failure::new("driver_path_context", error))?;
+        let binding = unsafe { (&*BINDING.0.get()).as_ref() }
+            .ok_or(Failure::new("driver_path_owner", -19))?;
+        binding
+            .device
+            .report_runtime_path(topology, binding.bar.length)
+    }
+
     pub fn bind(
         boot: &BootInfo,
         frames: &'static memory::PhysicalFrames<'static>,
         key: usize,
+        device: pci::Device,
     ) -> Result<Self, Failure> {
         driver_memory::context(false)
             .map_err(|error| Failure::new("driver_bind_context", error))?;
@@ -43,7 +58,6 @@ impl Owner {
             return Err(Failure::new("driver_bind_live", -16));
         }
         let ram = platform::dma_ram_limit(boot, frames)?;
-        let device = pci::discover()?;
         let bar = device.enable_mmio()?;
         let mapping = memory::map_mmio(boot, bar.base, frames)?;
         if read(mapping.address(), 0x100) & 2 != 0 || read(mapping.address(), 0x400) & 2 != 0 {
@@ -116,6 +130,12 @@ pub fn check_device(key: usize) -> Result<(), i32> {
         Ok(())
     }
 }
+pub fn selected_location() -> Result<(u8, u8, u8), i32> {
+    driver_memory::context(false)?;
+    unsafe { (&*BINDING.0.get()).as_ref() }
+        .map(|binding| binding.device.location())
+        .ok_or(-19)
+}
 #[unsafe(no_mangle)]
 extern "C" fn kutox_driver_device() -> usize {
     KEY.load(Ordering::Acquire)
@@ -129,12 +149,13 @@ extern "C" fn kutox_driver_known(key: usize) -> bool {
 pub extern "C" fn kutox_driver_pci(operation: u32, first: u64, second: u64) -> i32 {
     let result = (|| {
         driver_memory::context(false)?;
+        #[cfg(feature = "guest-tests")]
         if FAIL_OPERATION.load(Ordering::Acquire) != u32::MAX
             && FAIL_OPERATION
                 .compare_exchange(operation, u32::MAX, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
         {
-            crate::linux_driver::record_fault();
+            crate::guest_tests::linux_e1000::record_fault();
             return Err(-12);
         }
         let binding = unsafe { (&mut *BINDING.0.get()).as_mut() }.ok_or(-19)?;
@@ -258,11 +279,11 @@ extern "C" fn kutox_driver_pci_value(operation: u32) -> u64 {
     let binding = unsafe { (&*BINDING.0.get()).as_ref() }.expect("unbound PCI query");
     match operation {
         0 => binding.bar.base,
-        1 => memory::MMIO_LENGTH as u64,
+        1 => binding.bar.length,
         2 => MMIO.load(Ordering::Acquire) as u64,
         3 => {
-            let (slot, function) = binding.device.location();
-            (u64::from(slot) << 8) | u64::from(function)
+            let (bus, slot, function) = binding.device.location();
+            (u64::from(bus) << 16) | (u64::from(slot) << 8) | u64::from(function)
         }
         4 => u64::from(binding.bar.io_port),
         _ => fail(Failure::new("driver_pci_query", -22)),

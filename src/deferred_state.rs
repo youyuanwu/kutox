@@ -350,6 +350,14 @@ impl<const N: usize> Registry<N> {
         self.slots.iter().all(Option::is_none)
     }
 
+    pub fn napi_idle(&self) -> bool {
+        self.slots
+            .iter()
+            .flatten()
+            .filter(|slot| slot.kind == Kind::Napi)
+            .all(|slot| !slot.running && slot.pending.is_none() && !slot.scheduled)
+    }
+
     pub fn callbacks_drained(&self) -> bool {
         self.slots.iter().flatten().all(|slot| {
             !slot.running
@@ -368,6 +376,27 @@ pub fn time_after(a: u64, b: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enabled_idle_napi_is_distinct_from_scheduled_running_and_drained_callbacks() {
+        let mut registry = Registry::<2>::new();
+        let work = registry.register(1, Kind::Work).unwrap();
+        let napi = registry.register(2, Kind::Napi).unwrap();
+        registry.enable(napi, 2).unwrap();
+        registry.enqueue(work, 1, 1000).unwrap();
+        assert!(registry.napi_idle());
+        assert!(!registry.callbacks_drained());
+        registry.prepare(napi, 2).unwrap();
+        assert!(!registry.napi_idle());
+        registry.schedule_napi(napi, 2).unwrap();
+        let invocation = registry.take(Kind::Napi, 0).unwrap();
+        assert!(!registry.napi_idle());
+        assert_eq!(registry.complete(napi, 2, 0, 64), Ok(true));
+        assert!(!registry.napi_idle());
+        registry.finish(invocation, 0, 64).unwrap();
+        assert!(registry.napi_idle());
+        assert!(!registry.callbacks_drained());
+    }
 
     #[test]
     fn generation_capacity_and_copy_rejection() {

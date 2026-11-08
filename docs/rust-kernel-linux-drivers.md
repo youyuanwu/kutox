@@ -23,6 +23,12 @@ Controlled original RX and selected ring/backpressure/lifetime hardening are
 tested. All eight driver-reuse phases are complete for the
 [as-built support profile](#as-built-support-statement), not arbitrary Linux
 drivers or physical hardware.
+Normal boot now retains the managed e1000 in the persistent kernel runtime;
+explicit `probe` preserves the finite boot-time MAC proof. No IP stack or Linux
+application environment is implied.
+All eight [Moss-style integration phases](#moss-style-driver-infrastructure) are
+complete. The [kernel-client lifecycle](#kernel-client-lifecycle) describes how
+to admit native consumers and retain/retire their packet ownership.
 The [third-party notice](../THIRDPARTY-NOTICES.md) records the source revision,
 MIT license, and adaptation boundaries.
 
@@ -81,8 +87,9 @@ firmware is restricted to the BIOS `0xe0000..0x100000` range; allocator-owned
 usable pages and device MMIO are never accepted as tables.
 Bootloader/ACPI reservations are not reclaimed.
 
-The selected bus-zero endpoint must expose a valid interrupt pin and line.
-Its slot/pin swizzle selects a PIIX PIRQ byte; that programmed route must match
+The selected endpoint must expose a valid interrupt pin and line. Conventional
+bridge paths swizzle the child slot/pin at every parent before the root slot/pin
+selects a PIIX PIRQ byte; that programmed route must match
 the endpoint line and the ELCR level-trigger bit. MADT overrides are checked for
 compatible polarity/trigger semantics and the GSI must belong to the discovered
 controller. PIIX's routed ISA/GSI input is active-high and level-triggered;
@@ -90,7 +97,8 @@ the PCI pin's active-low electrical convention is not programmed blindly into
 the I/O APIC. This follows the verified
 [QEMU pc swizzle](https://github.com/qemu/qemu/blob/v10.2.1/hw/i386/pc_piix.c)
 and [PIIX routing](https://github.com/qemu/qemu/blob/v10.2.1/hw/isa/piix.c).
-No IRQ 11/GSI 16 assumption, AML interpreter, or bridged PCI routing is added.
+No IRQ 11/GSI 16 assumption or AML interpreter is added. Root PIIX lookup remains
+on bus zero even when the selected device is on a secondary bus.
 
 Following Moss's
 [owned interrupt-handler model](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/interrupts/mod.rs),
@@ -115,8 +123,9 @@ Guest tests cover ACPI/controller discovery, mapping exhaustion/rollback,
 duplicate/stale claims, finite and untimed completion wakeups, timer-independent
 delivery, source and route masking, pending delivery, no interrupt storm, timeout,
 drain/retirement/reuse, and complete allocator/heap/window recovery. The same ISO
-tests PCI slots 3 and 5 at 128/32 MiB. General vector allocation, shared-source
-demultiplexing, PCI bridges, ACPI `_PRT` evaluation, MSI/MSI-X, SMP, IOMMU and
+tests root PCI slots 3/5 and one/two conventional bridge levels at 128/32 MiB.
+General vector allocation, shared-source demultiplexing, bridge resource
+assignment, ACPI `_PRT` evaluation, MSI/MSI-X, SMP, IOMMU and
 physical-hardware acceptance remain unsupported. This native interrupt proof
 does not execute another upstream Linux driver unit or provide `request_irq`.
 
@@ -454,7 +463,12 @@ GPL-2.0-only Linux code in a combined distributed work. See the
 [Apache Software Foundation's compatibility explanation](https://www.apache.org/licenses/GPL-compatibility.html).
 Changing kutox's own license would not relicense its Linux driver source.
 
-## Proposed architecture
+## Architecture and future OS boundary
+
+The diagram includes a future OS/userspace track. Processes, VFS, a network
+stack and a Linux-compatible userspace ABI are not implemented here. The current
+runtime implements the native device boundary, selected Linux driver environment
+and Rust platform services below those layers.
 
 ```text
 Linux application binaries
@@ -541,7 +555,7 @@ synthetic-service cases remain isolated from explicit original module startup.
 
 [Shared C execution types](../compat/execution_types.h) and
 [native deferred services](../src/linux_deferred.rs) now supply Phase 2's
-bounded environment, tested through [synthetic C callbacks](../compat/driver_execution_test.c).
+bounded environment, tested through [synthetic C callbacks](../compat/guest_tests/driver_execution_test.c).
 These are OS services, not replacement implementations of Linux's watchdog,
 IRQ, poll or packet algorithms.
 
@@ -660,7 +674,7 @@ free; unchanged source need not call kutox destruction extensions.
 
 The independent source-plus-services closure resolves driver APIs to actual C
 providers, optional-profile errors or three existing Rust primitives
-(`memcpy`, `memset`, elapsed jiffies). Its 51 remaining platform symbols have an
+(`memcpy`, `memset`, elapsed jiffies). Its 52 remaining platform symbols have an
 explicit exact allowlist; missing, stale or changed providers fail evidence
 verification. The compile-only barrier remains present. All four unchanged
 source units, callbacks and default 256-ring layouts remain audited; resolving
@@ -788,7 +802,7 @@ releases every mapping and allocation at 128/32 MiB.
 
 ### Selected ring and lifecycle hardening
 
-[The hardening tests](../src/linux_hardening.rs) drive 300 accepted packets
+[The hardening tests](../src/guest_tests/linux_hardening.rs) drive 300 accepted packets
 through each original 256-entry ring, verify wrapped source indices, mixed
 copybreak/build-skb bytes and exact resource balance. The C boundary accepts
 TDT zero on wrap. Receipt tracking stops matching retired TX skb addresses:
@@ -931,19 +945,27 @@ one pinned configuration, not support for every retained optional callback.
 | Boundary | Supported / excluded |
 | --- | --- |
 | Source | Four unchanged e1000 units from Linux `v7.3.1`, commit `79a907609d53d5cd645b42c11550d295d43abf99`; original UAPI/GFP/net-feature definitions, separate audited runtime objects. |
-| Platform | QEMU 82540EM `8086:100e`, BIOS `pc`/i440FX/PIIX, one BSP, owned INTx route, validated RAM/identity DMA and BARs; tested with 128/32 MiB, NIC slots 3/5. |
+| Platform | QEMU 82540EM `8086:100e`, BIOS `pc`/i440FX/PIIX, one BSP, owned INTx route, validated RAM/identity DMA and BARs; tested with 128/32 MiB, root slots 3/5 and one/two firmware-configured conventional PCI bridges. |
 | Driver | Original module/probe/open/close/remove, reset/PHY/options, xmit, IRQ, watchdog and NAPI TX/RX cleanup; 256-entry rings, one queue each, MTU 1500, zero offloads. |
 | Native boundary | Owned linear TX packets and eight-packet full-L2 ingress FIFO; Linux owns descriptors and packet algorithms. No native Rust e1000 driver remains. |
 | Lifecycle evidence | Ring wrap, BUSY/stop/wake/retry, allocation/map failures, repeated lifecycle and cooperative pending IRQ/work/NAPI/TX/RX teardown with callback joins and serialized reopen. |
 | Excluded | Generic LinuxKPI or internal/module binary ABI, `.ko` loading, Kbuild/Linux boot, all ethtool controls, Linux applications, IP/GRO stack, offloads/fragments/jumbo/VLAN, PM/hotplug, SMP/preemption/NMI, general shared IRQs, physical NICs, IOMMU/bounce buffers and hardware performance guarantees. |
 
-The independent audit records 209 source-only APIs and 51 explicit platform
+The independent audit records 209 source-only APIs and 52 explicit platform
 symbols, while current-ELF callback identity, exact packets and source cleanup
-establish execution. Ten targeted CTest entries passed at the final code
-milestone: 55 normal cases at 128/32 MiB, deliberate-failure rejection, 539 exact
+establish execution. At the earlier standalone driver milestone, ten targeted
+CTest entries passed: 55 normal cases at 128/32 MiB, deliberate-failure rejection, 539 exact
 TX frames, 304 hardening RX receipts plus 12 baseline deliveries/four drops,
 120 Python tests and 58 portable root Rust tests. This does not claim that all
-25 CTest entries or Moss tests were rerun.
+25 CTest entries at that milestone or Moss tests were rerun.
+
+The completed managed-runtime integration preserves that independent packet
+ledger and now has 59 normal guest cases, with runtime/network/hardening tables
+selected separately. Final code-phase validation passed 133 portable root tests
+per feature profile, 157 Python tests, 30 targeted feature-on and ten feature-off
+CTest checks, source/provider and actual-ELF audits, and strict kernel/host lint.
+This was targeted validation, not a full CTest or Moss-suite rerun. Documentation
+finalization checks contracts and links without rebuilding or rerunning guests.
 
 The original stop/drain and unsafe DMA contracts above remain essential:
 disabled QEMU RX rejects later receive callbacks, original callback users join
@@ -1039,6 +1061,503 @@ Phases 1-8 are complete, including original lifecycle, packet paths, selected
 ring/lifetime hardening and as-built documentation. Integration with a native
 network stack and extraction for a second Linux driver are subsequent work;
 they do not replace this roadmap's driver-execution gates.
+
+<a id="planned-moss-style-driver-infrastructure"></a>
+
+### Moss-style driver infrastructure
+
+The integration milestone has **all eight phases complete**. The native
+[registry policy](../src/driver_registry.rs) and
+[owned manager boundary](../src/drivers.rs) have portable and guarded-thread
+guest tests, including retained built-in initializers and probe coordination.
+The e1000 backend now works behind retained native network handles in the
+managed runtime, and normal boot now starts and retains this runtime.
+Explicit MAC/test modes retain their previous behavior.
+
+The implementation follows pinned Moss's
+[built-in initialization](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/init.rs)
+and [retained driver manager](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/mod.rs)
+model: register compiled-in drivers, discover devices, match/probe candidates,
+retry dependency-deferred probes while progress occurs, and retain successful
+instances. Moss currently discovers FDT-compatible devices; kutox's implemented
+bus is x86 PCI, not an imported ARM/device-tree implementation or `.ko` loader.
+
+The completed integration includes persistent e1000 use, changing the
+unconfigured normal boot to the driver runtime while preserving explicit
+MAC/test modes, and PCI hierarchy discovery through conventional firmware-
+configured bridges. This is more than scanning extra buses: complete BDF and
+parent identity reaches config access, target BAR/ancestor-window checks,
+C/native diagnostics, IRQ swizzling and the retained resource owner.
+
+The completed phases are:
+
+1. **Native registry and ownership:** bounded driver/device registrations,
+   generation-checked handles, matching, dependency/error state and retirement.
+   Implemented, portable-tested and wired into normal kernel startup.
+2. **PCI hierarchy:** read-only assigned-bus discovery, parent/window validation
+   and INTx swizzling through each bridge into the existing PIIX/APIC route.
+   Implemented, with actual Linux packet/lifetime acceptance behind bridges.
+3. **Built-in startup:** retained linker initializer records and deterministic
+   kernel-thread probe coordination, with synthetic multi-driver tests.
+   Implemented and validated in release ELFs and actual guest threads.
+4. **Persistent kernel services:** boot-owned scheduler/controller/worker
+   lifetimes and explicit kernel idle distinct from finite-test deadlock.
+   Implemented through the common service scope and explicit no-NIC tests.
+5. **Managed e1000:** original Linux lifecycle behind native network-device
+   discovery, link/MAC/MTU, owned-byte TX/RX and diagnosed client errors.
+   Implemented, including exact managed packets and retained-client lifetime.
+6. **Normal boot:** runtime default, explicit MAC/fault compatibility and exact
+   root/one-bridge/nested-bridge packet acceptance at 128/32 MiB.
+   Implemented, including measured default liveness and no-NIC/unknown-NIC startup.
+7. **Hardening:** dependency progress, failures/capacity, consumer lifetime and
+   pending source callback/packet teardown with complete resource recovery.
+   Implemented and verified in portable and managed root/low-memory/nested tests.
+8. **Documentation:** actual interfaces, default-mode migration, budgets,
+   provenance, commands and supported/unsupported profile.
+   Consolidated here, with native client usage and the historical MAC proof
+   explicitly distinguished from persistent boot.
+
+Do not copy Moss's global IRQ-lock callback boundary for Linux's sleepable
+probe/open/remove: reserve identity, release locks/borrows, execute on a kernel
+thread, then commit or unwind. Shared workers and parent resources outlive
+dependent bindings. Linux still owns all e1000 packet/descriptor algorithms.
+
+Phase 1 provides explicit initializer/probe/readiness/stop contracts, retained
+native device objects and non-transferable probe/consumer/stop reservations.
+Callbacks and object destruction occur outside the reused Moss IRQ-saving
+lock. Dependency publication versions prevent lost readiness during an unlocked
+probe; failed or abandoned probes and failed stops remain diagnosed states.
+Reverse dependency teardown retains backing until consumers/callbacks retire.
+Production registries reject synthetic/test fallback drivers.
+
+The manager has 16 driver slots, 256 discovery slots, 32 active bindings,
+32 consumer operations, 16 named services and four dependencies per driver/device.
+The Phase 1 measured x86_64 manager size was 50,096 bytes. The final conservative
+combined infrastructure bound is **60,385 bytes**, including PCI inventory,
+initializers and runtime/native-network metadata, below 64 KiB. This excludes
+packet/DMA backing, physical-frame metadata, heap storage and guarded-stack pages.
+Use boot-owned/static
+storage rather than constructing it on a 16-KiB worker stack. Thirty-seven portable
+policy/manager tests cover ownership, matching, failures, capacity, generation
+exhaustion, dependency progress/cycles and unlocked callback reentry. These
+phase-one portable tests alone do not claim real kernel-thread startup or PCI
+hierarchy support; subsequent phases supply the guest proofs below.
+The new registry/manager is kutox code following Moss's model, not a wholesale
+copy of Moss's FDT/VFS driver subsystem.
+
+Phase 2's [portable inventory](../src/pci_state.rs) enumerates present functions
+and firmware-assigned type-1 bridge buses without touching unrelated command/
+BAR registers or assigning resources. It rejects malformed headers, primary/
+secondary/subordinate conflicts, sibling overlap, stale identity/parent paths
+and capacity overflow; ordinary nested subordinate ranges remain valid.
+Unconfigured bridges stay recorded without traversing or assigning a child bus.
+Selection remains separate from enumeration; production admits at most one
+matching e1000 before acquiring its backing.
+
+[Native PCI owners](../src/pci.rs) retain an immutable inventory through device/
+BAR/DMA lifetimes and bind the selected full BDF without rediscovery. Source C
+config operations and location strings carry the same bus identity. Before
+MMIO or I/O reset, the selected BAR spans must fit every enabled ancestor window.
+QEMU bridge I/O/memory decode bits control forwarding; its bridge bus-master
+bit is not a BAR-forwarding or DMA-completion witness. Endpoint mastering and
+the original stopped-engine/callback-drain contract are unchanged. Failed window
+validation reports the actual bridge registers, and selected BAR sizing restores
+BARs and command state.
+
+PCI inventory capacity is 256 functions/buses. Its conservative metadata bound,
+including scan workspace, is 6,944 bytes; manager state plus header allowance
+and inventory is 57,272 bytes, below 64 KiB. Seventeen portable PCI tests cover
+config addresses, multifunction discovery, topology/window failures and routing.
+The `pci.hierarchy` guest case requires exact BDF, parent bus ranges, counts,
+swizzled pin, PIRQ/line/ELCR/GSI agreement, BAR spans and sizing recovery. Full
+Linux TX/RX acceptance runs at root and one/two bridge levels on the same ISO.
+Phase 6 now uses this inventory/routing for persistent default startup; explicit
+`probe` keeps the earlier MAC proof.
+
+Phase 3's [native initializer records](../src/drivers.rs) use a versioned
+24-byte layout, stable priority/ID ordering and a bounded initializer table.
+[The linker](../linker.ld) retains separate production/test tables and a
+16-byte read-only header, with exact bounds and layout assertions.
+[The kernel boundary](../src/driver_init.rs) rejects bad headers, bounds,
+duplicate identities, wrong scope and callbacks outside linked kernel text.
+Raw callback addresses are checked before constructing typed Rust records.
+Registration creates immutable descriptors once per manager epoch, separate
+from hardware probing and original Linux module startup; failed initialization
+unwinds registrations outside locks.
+
+The coordinator admits a completed PCI inventory, reserves identities, probes
+on the caller's guarded thread, retains owned results and publishes actual
+readiness. Named dependency publication permits retries; unavailable providers,
+cycles and no-progress dependencies are diagnosed and retained, not polled.
+A failed probe does not retire another driver's successful bindings. Shutdown
+and explicit restart clear retired identities without reusing global handles
+or constructing the large manager on a worker stack.
+
+[Three guest cases](../src/guest_tests/native_drivers.rs) use actual release-linked
+initializers, deliberately reverse physical record order and verify sorted
+execution. They check production admission rejection, read-only real PCI
+inventory with unclaimed functions, unlocked callback reentry, timed sleeping
+and resumption, exactly one successful deferred retry, partial failure,
+cycles/unavailable providers and two balanced manager epochs. Seven additional
+portable manager tests cover metadata, initialization rollback, coordination,
+readiness failures, instance limits and stale identities.
+
+Phase 3 originally retained an empty production table. Phase 5 now registers
+one real e1000 initializer, separate from its later module/probe/open callbacks.
+Synthetic initializers still cannot run in the production scope, and no
+no-op/fallback driver is registered.
+The [ELF profile check](../scripts/guest_build_check.py) verifies actual
+read-only section contents, scopes, ordering keys and callback symbols in
+both build profiles; compile-only Linux source rejection and exact original
+callback evidence remain separate requirements.
+
+Initializer records, sorting workspace and coordinator results add a bounded
+608 bytes to the phase-two metadata allowance. The phase-three compiler-measured combined
+infrastructure bound is **57,880 bytes**, including the 6,944-byte PCI
+inventory/scan allowance, below 64 KiB. Synthetic guest-manager storage is
+test-only, not a second production manager.
+
+Phase 4's [kernel runtime](../src/kernel_runtime.rs) keeps the PCI inventory,
+native manager, APIC, I/O APIC, one-shot timer and stack space owned in a scoped
+boot lifetime. Controllers/timer share owned APIC references; the dispatcher
+borrows stack space only during execution. No movable self-referential resource
+structure or intentionally leaked allocation is used. Handles carry a checked
+runtime epoch and reject access after owner release.
+
+`Resources::start` acquires the platform resources; `Clients::add` admits up to
+three native client entries; `Resources::run` starts two shared Linux workers
+and a control/probe coordinator. Clients run on guarded stacks after actual
+manager initialization, and their return does not stop the services.
+`Handle::publish_service` wakes the coordinator for named dependency progress;
+`wait_probes` waits for the completed coordinator batch, not NIC readiness.
+Callback waits for their own control/coordinator completion are rejected,
+without preventing ordinary timed sleeping or unlocked metadata reentry.
+The production table now contains the e1000 descriptor; no-NIC startup retains
+real unclaimed inventory and zero bindings rather than fabricating a device.
+
+The [scheduler idle policy](../src/run_queue.rs) is explicit: finite calls retain
+their previous completion/deadlock/deadline/armed-IRQ behavior; persistent calls
+cannot finish until deliberate shutdown has completed and every stack has
+returned. With no deadline or device IRQ, persistent idle uses the BSP's
+`sti; hlt; cli` boundary, not a periodic timer or polling worker.
+Real deadlines and IRQ notifications continue to wake suspended tasks.
+
+Shutdown reserves normal native retirement first, then verifies that source
+IRQ/synchronization users have drained before asking
+[the shared Linux workers](../src/linux_deferred.rs) to stop and join.
+Live source work objects produce an explicit busy error and retain the workers;
+the caller retires those objects and retries. Unstarted task admission failures
+roll back owned stacks; started Rust stacks must return normally and are
+reclaimed from the dispatcher stack. Controllers and timer remain owned until
+after those joins, with original Linux callback/backing contracts unchanged.
+
+[Five gated runtime cases](../src/guest_tests/kernel_runtime.rs) run through the
+same production service scope in explicit `driver-runtime-tests` mode.
+They check exact frame/heap/IRQ/registry restoration after eleven startup stages,
+partial worker/maximum-client admission rollback, no-NIC idle, a real one-shot
+test IRQ and later dependency publication, callbacks after client return, busy
+shutdown/retry and epoch retirement at 128/32 MiB. Only the fixture arms that
+one-shot idle wake; the runtime itself manufactures no periodic work.
+The [host validator](../tests/test_kernel_runtime.py) requires exact case order,
+diagnosed failures, zero fake NIC bindings, positive persistent-idle counts and
+peak/lifetime/resource thresholds.
+
+The conservative service-resource/control/dispatcher/client allowance adds
+2,080 bytes to the phase-three bound, including owned APIC metadata. Combined
+Phase 4 infrastructure was **59,960 bytes**, below 64 KiB; the peak test/runtime task
+count is six of eight 16-KiB slots. The Phase 5 additions brought the combined
+bound to **60,376 bytes**; Phase 6's bounded startup reporting flag adds one byte,
+for **60,377 bytes**. Normal boot now retains the runtime.
+
+#### Managed native network interface
+
+[linux_driver.rs](../src/linux_driver.rs) registers production driver ID 1,
+priority 10, for the selected `8086:100e` Ethernet profile. It declares one
+instance and named platform/shared-worker dependencies. The runtime checks the
+completed inventory for multiple matching endpoints before BAR sizing, MMIO,
+IRQ claims or any original module callback. The selected full BDF and immutable
+ancestor inventory reach the existing source-facing PCI adapter; source ID-table
+matching remains authoritative within that selected backend.
+
+`Resources::start` accepts the kernel's static physical-frame allocator and
+copies the small boot description. `Resources::run` scopes the selected
+platform owner and IRQ claim around the entire dispatcher. These parents remain
+owned until manager close/remove and worker/client joins complete; no movable
+self-reference or leaked allocation is used. Probe executes original module
+initialization, probe and open on the control task outside registry locks.
+Link transitions and real packet notifications wake the coordinator to refresh
+source-derived manager readiness and retry eligible dependencies, not a
+fabricated polling worker.
+
+[net_device.rs](../src/net_device.rs) exposes epoch-checked native handles;
+[portable packet values](../src/net_state.rs) contain no Linux-private layouts:
+
+- `enumerate(runtime)` returns bound network handles even while link readiness
+  is still pending. `info()` returns actual MAC, full BDF, link, MTU and source
+  TX/RX/queue/drop statistics.
+- `Frame::from_bytes` fallibly copies, while `Frame::from_owned` reuses bounded
+  owned storage. Ethernet II sizes are 14-1514 bytes; LLC, VLAN/QinQ and other
+  offload profiles are explicitly unsupported. Heap-backed frame values avoid
+  large return-value copies on the existing 16-KiB guarded stacks.
+- `submit(&frame)` retains its own copied linear skb and returns a checked
+  receipt. Linux's original `eth_skb_pad` produces zero-padded 60-byte short
+  packets, including safe backing-pointer updates when padding reallocates.
+  Completion byte counts describe the actual padded wire frame.
+- `progress` returns BUSY/in-flight/completed/consumed-drop state; `wait`
+  suspends without retaining a manager reservation. A timeout or native
+  frame/handle drop does not release an accepted skb. `finish` rejects pending
+  packets and releases only completed or consumed-drop receipts.
+- `receive` and `wait_receive` return owned, full-L2 FIFO bytes without FCS.
+  Destination storage is allocated before consuming a FIFO entry. The existing
+  eight RX slots and one outstanding production TX remain unchanged.
+- Errors distinguish not-ready, stale, BUSY, timeout, allocation, consumed drop,
+  closed, unsupported, context and explicit driver-code failures. `begin_stop` closes native admission
+  and wakes waiters without sleeping or freeing backing, even when consumer
+  reservations prevent `stop` from running. Stop waits for reservations,
+  stops observation before source RX teardown, invokes original close/
+  remove once, retires pending receipts only after source stop/drain, and purges
+  copied ingress before releasing the parent owners.
+
+The guest-only [managed acceptance](../src/guest_tests/network.rs) runs in
+explicit `driver-network-tests` mode, not normal boot. At 128/32 MiB, two
+managed epochs each exchange exact 14/42/60/252/253/1514-byte TX inputs and full
+RX frames, with real original xmit/IRQ/NAPI/RX callbacks, 2,199 source bytes
+each direction, padding/FCS/copybreak evidence, allocation/drop recovery,
+retained ownership after BUSY/timeout, clients returning, stop-woken RX waiters,
+stale handles and complete resource restoration. Peak concurrency is six of
+eight guarded stacks. A two-NIC scenario proves pre-probe singleton rejection.
+[Host tests](../tests/test_network_runtime.py) reject incorrect bytes, source
+symbols, ready identities, error outcomes, task bounds or joins.
+The original 539-TX/304-hard-RX acceptance remains independent and unchanged.
+No new Linux algorithm, network stack or arbitrary hardware support is claimed.
+
+#### Kernel-client lifecycle
+
+These APIs are kernel-internal, not userspace sockets or a binary driver ABI.
+Use [kernel_runtime.rs](../src/kernel_runtime.rs) and
+[net_device.rs](../src/net_device.rs) from guarded cooperative client threads,
+with no outer IRQ-saving guard. The normal boot path supplies an empty
+`Clients` list and generates no application traffic.
+
+1. After allocator/time initialization, keep `Resources::start(&boot, frames)`
+   alive in the boot scope; `frames` is the kernel's static physical allocator.
+   Obtain `Resources::handle()` and store that checked handle in client-owned
+   state that outlives the client. `Clients::add(entry, argument)` accepts
+   `fn(usize)` callbacks, not closures or a runtime handle implicitly passed to
+   each callback. Admit at most three clients before `Resources::run(clients)`.
+2. In a client, `runtime.wait_ready()` means manager initialization, **not link
+   readiness**. `wait_probes()` means a completed coordinator batch, not a bound
+   NIC. `net_device::enumerate(runtime)` can return an empty list or a bound
+   device whose `info().ready` is false. Handle missing devices and link changes
+   explicitly; neither initial wait guarantees packets can be sent.
+3. Construct a `Frame` from 14-1514 Ethernet II bytes, including the L2 header
+   but no FCS. `Frame::from_owned` also rejects a Vec capacity above 1514.
+   `submit(&frame)` copies into source-owned skb backing and returns a
+   `TxTicket`; the caller may then drop its original frame.
+4. A `submit` error gives no new ticket. `NotReady` means link is unavailable;
+   `Busy` means an existing receipt or source queue prevents a new offer.
+   After a ticket is returned, use `progress(ticket)` to drive BUSY retry or
+   `wait(ticket, timeout_us)` to wait for completion. Completion reports padded
+   wire bytes, at least 60. `Dropped` is consumed source ownership, not permission
+   to resubmit the same ticket.
+5. Call `finish(ticket)` after completion or consumed drop. Pending finish is
+   `Busy`; a finished ticket is stale. Timeout does not cancel an accepted TX:
+   retain the ticket and observe/finish it later, or deliberately stop the
+   device/runtime. Dropping a handle is not cancellation or source teardown.
+6. `receive()` returns `Ok(None)` for an empty FIFO, or a copied owned frame.
+   `wait_receive(timeout_us)` suspends until data, timeout or closure. Allocation
+   failure leaves the FIFO entry intact. Owned RX bytes remain valid after
+   device removal; source counters can exceed delivered frames because
+   `info().statistics.rx_dropped` includes FIFO/unsupported ingress drops.
+7. To stop one device, use `runtime.manager()?.stop(...)` with its native
+   `DeviceHandle` obtained from manager enumeration; the network handle's
+   numeric identity is diagnostic, not a constructor for a registry handle.
+   To stop all services, call `runtime.request_shutdown()` and, from a
+   non-control client, `wait_stopped()`. Release any explicit manager operations
+   or live source objects before retrying a busy stop. Admission closes and
+   waiters wake before source close, but backing stays live until reservations
+   and callbacks drain.
+
+After shutdown, clients must return before `Resources::run` can finish.
+Only then can the boot scope release timer/controllers/stack space. Do not wait
+for control-task completion from that control task; it fails with
+`runtime_control_self_wait` (`-209`). Closed views cannot submit to a stopped
+device; forgotten/rebound device identities and released runtime epochs reject
+old handles/receipts as stale. Device generations never reuse a global identity.
+The [managed guest clients](../src/guest_tests/network.rs) demonstrate this
+startup/packet/stop flow; their injection, journals and assertions are test-only,
+not APIs required by production consumers.
+
+#### Default runtime boot and end-to-end acceptance
+
+[The boot selector](../src/fw_cfg.rs) chooses `run` when the optional fw_cfg
+mode is absent. Explicit `run` is valid in both build profiles; `probe`,
+EEPROM timeout, faults, heap/stack-guard and kernel-test modes keep their
+existing semantics. Configuration and build gating still fail before memory/
+device access. Isolated MAC proofs never invoke original module initialization.
+
+[Normal startup](../src/main.rs) initializes allocators/time and enters the
+same owned `Resources::start/run` service path used by finite acceptance.
+It supplies no guest/application clients: original driver work, watchdog, IRQ/
+NAPI and the control coordinator retain the NIC while the dispatcher idles.
+Only deliberately requested native shutdown can return, reported separately as
+`KERNEL_RUNTIME_STOPPED`. Empty or unsupported network inventory is valid
+kernel startup, with zero bound network devices and no fabricated link success.
+Unsafe/malformed topology remains a diagnosed admission failure.
+
+`DRIVER_RUNTIME` reports initialized driver/inventory/binding/error/deferred
+counts and metadata; `DRIVER_READY` reports an actual source readiness transition,
+owned identity, full BDF, MAC, MTU, link and live workers. `DRIVER_PATH`/
+`DRIVER_PARENT` describe the actual retained ancestry, sized BAR spans, swizzled
+pin and validated PIRQ/ELCR/GSI route. Normal boot emits bounded startup callback
+identities (`DRIVER_CALLBACK`) rather than enabling the full guest packet/
+callback journal. Guest checkpoints and control-test assertions run only in
+explicit guest modes even when the image includes test code.
+
+The [host boot validator](../tests/test_runtime_boot.py) verifies unconfigured
+default and explicit run using the actual linked original module/probe/open
+functions. It measures at least three seconds of continued execution **after**
+validated readiness (or initialized zero-NIC service state), then terminates
+only its owned child. Normal watchdog expiration, any premature exit, a MAC/
+test terminal, or a late error cannot become liveness success. This also passes
+with guest fixtures omitted. Restricted/isolated backends do not touch host
+hardware or unrelated services.
+
+Finite `driver-runtime-tests` chooses its table from real PCI inventory:
+the existing five no-NIC service-lifetime cases, managed packet acceptance for
+the supported e1000, or an unclaimed-runtime case for an unknown NIC. Root,
+one-bridge and nested-bridge clients at 128/32 MiB run the same startup path and
+native APIs through two balanced epochs. Exact socket/PCAP bytes, original
+callback identity/lifetime, source byte accounting, BDF/parent/swizzle and
+client/device/worker retention are all required. Bridged guest-only fixtures
+temporarily corrupt and restore a real type-1 bus register; startup must reject
+the malformed hierarchy before platform backing or driver callbacks. No
+synthetic driver can satisfy the network proof.
+
+CTest replaces `mac-default-mode` with `driver-runtime-default`, adds explicit
+run and default no-NIC/unsupported liveness checks, and provides
+`driver-runtime-root`, `driver-runtime-bridge`, `driver-runtime-nested`,
+`driver-runtime-low-memory`, `driver-runtime-no-nic` and
+`driver-runtime-unsupported`, plus bridged/nested/no-NIC/unknown low-memory
+variants. All use the selected `build/kutox.iso`; no per-mode images or module
+loader is introduced. Independent original packet/hardening acceptance remains
+unchanged. Expanded failure/teardown hardening and as-built documentation are
+complete for this profile.
+
+#### Managed failure, concurrency and callback lifetime
+
+[Manager stop admission](../src/drivers.rs) invokes `NativeDevice::begin_stop`
+outside IRQ locks before reserving final retirement. The selected e1000 adapter
+atomically closes existing/new views and wakes waiters, while active operations
+retain their Arc/source backing. `stop` remains the source close/remove and
+retirement boundary; retry does not repeat an already completed close.
+Late probes completing during shutdown also close admission before retirement.
+Unlocked, non-sleeping lifecycle-completion hooks wake the runtime coordinator.
+It preserves pending readiness requests while another thread is probing/
+stopping and resumes on actual completion, not polling or success-shaped error
+suppression. Context-rejected calls do not invoke notifications under outer
+IRQ guards.
+
+[Portable manager tests](../src/driver_manager_tests.rs) exercise exact driver/
+device/binding/operation capacities, notification before late reservation
+release, selective stop isolation, deferred publication after startup and
+context-safe completion. The existing duplicate/metadata/cycle/failure/restart
+tests remain independent. A guarded-thread guest fills 256 identities,
+32 native bindings and 32 operations; 224 instance-limit failures do not
+truncate discovery. One retained operation keeps its backing alive through
+partial shutdown. An actual later service publication retries one synthetic
+dependent while optional failure/target stop leave a survivor usable.
+
+[Five managed hardening cases](../src/guest_tests/network_hardening.rs) use
+explicit `driver-hardening-tests`, separate from the unchanged 59-case suite.
+They run at 128/32 MiB and through retained nested PCI parents:
+
+- Nine admission/failure epochs cover regions, MMIO, allocation, coherent
+  TX/RX setup, streaming RX mapping, IRQ and shared-worker/client stack
+  admission. Actual resource snapshots balance, followed by original TX
+  recovery. Linux's successful open with partial RX allocation is measured,
+  preserved and closed normally; void source registration APIs are not
+  replaced with fictitious recoverable returns.
+- Thirteen actual ingress frames exercise the eight-slot FIFO and wrap;
+  12 exact deliveries plus one source-accounted capacity drop are required.
+  Native statistics now include `rx_dropped` through a seven-value internal
+  C/Rust snapshot, without exposing or resetting private layouts/counters.
+- Three concurrent clients prove pre-close waiter wake, closed retained views,
+  live backing under busy stop, deliberate reservation release, same-parent
+  rebind, stale old handles and copied RX bytes released after replacement.
+- Pending TX observes the actual APIC IRQ and 256 streaming mappings. Further
+  epochs retain original NAPI/work reservations through close; source callbacks
+  join before coherent/backing release. Premature coherent-ring free returns
+  `-16` while engines are disabled. Atomic callbacks are never suspended inside
+  C: the native worker's pre-invocation checkpoint is the retained boundary.
+  The original NAPI path drains exact pending RX bytes under the existing
+  CPU-access validation; copied ingress is purged before replacement use.
+
+[Host hardening tests](../tests/test_managed_hardening.py) require exact
+injection/error counts, owned-socket/PCAP packets and original callback
+identity/lifetime. Wake-before-close, callback join before free, exact drain
+before purge and new-generation use are causal requirements, not incidental
+scheduler order or timeout/BME/reset proxies. Source algorithms, private
+counters, ring sizes, RX grant revocation and independent original
+539-TX/304-hard-RX acceptance are unchanged.
+
+Peak managed acceptance remains six guarded stacks. The additional native drop
+statistic brings conservative infrastructure to **60,385 bytes**; lifecycle
+hook storage fits the existing manager-header allowance. All hardening
+callbacks/checkpoints are feature-gated and absent from test-free ELFs. No new
+Linux source, module loader, multi-Linux-instance support or IP stack is added.
+
+Bridge timing also exposed two fixture assumptions: an earlier link IRQ's
+queued NAPI may legitimately clean a new TX before its TXDW interrupt, and
+interrupt moderation need not assert APIC IRR immediately after submission.
+The baseline TX/pending-teardown fixtures now establish real IRQ/NAPI idle
+before submission and bound the wait for an actual pending IRQ with IF clear.
+This changes fixture ordering only, not Linux's algorithms or the host's
+original-TX-IRQ-before-cleanup acceptance rule. Enabled idle NAPI is not callback
+destruction/drain readiness.
+
+Initial infrastructure is bounded; the actual Linux backend retains its
+one-e1000-instance limit while native synthetic drivers prove generic registry
+behavior. PCI bridges are firmware-configured on the selected QEMU i440FX/PIIX
+machine; bus/window assignment, general AML routing, PCIe/MSI, physical hardware,
+SMP, module loading and an IP stack remain outside this profile. Bridge support
+is limited to the validated QEMU firmware-configured profile, not arbitrary
+PCI topology or hardware.
+
+### Guest-test isolation
+
+Guest acceptance code is separate from the production driver/platform boundary.
+[Rust guest fixtures](../src/guest_tests/) contain the static registry, native
+IRQ fixture, original Linux packet/lifetime scenarios and primitive tests.
+[C guest tests](../compat/guest_tests/) compile into separate archives, not the
+runtime-provider closure. White-box tests remain included as feature-gated
+`tests` submodules of their runtime parent where access to private state is
+needed; the physical files still live under the guest-test directory.
+
+The `guest-tests` Cargo feature is enabled by default for the reusable
+acceptance image. CMake's matching `KUTOX_GUEST_TESTS` option selects that profile
+or a feature-off image at the same output path. Rust unit tests independently
+use `cfg(test)`. Runtime fw_cfg dispatch does not remove compiled fixtures.
+
+Feature-off builds omit synthetic callbacks, packet fixtures, fault injection,
+pause/reentry checkpoints, test-only assembly and C inspection helpers. The
+boot parser rejects test requests with `-25` before memory/device initialization;
+there is no fallback to Probe. Original Linux units, real services, generation/
+ownership checks and normal diagnostics remain. The callback/packet observer
+boundary remains runtime code, not an unconditional-success substitute.
+
+The IRQ helper is [E1000IrqFixture](../src/guest_tests/e1000_irq.rs), explicitly
+test-only. [linux_driver.rs](../src/linux_driver.rs) is now the core control/
+packet ticket adapter; waiting scenarios and stale-ticket assertions live in
+[the guest e1000 fixture](../src/guest_tests/linux_e1000.rs).
+ELF profile checks positively require real driver/service symbols and require
+or reject test symbols according to the selected build. Test-disabled boot and
+test-enabled guest regressions use the same image location sequentially.
+
+Normal boot remains the MAC helper while persistent service/managed-e1000
+integration is pending. Feature-off dormant-service dead-code allowances are scoped to those
+kernel modules only; strict type/lint checks and test-enabled warnings remain.
+No KUnit runtime, Linux module loader or additional kernel dependency is imported.
 
 ### Rust OS and userspace track
 

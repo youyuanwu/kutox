@@ -1,17 +1,10 @@
-use crate::{
-    Failure,
-    boot::BootInfo,
-    driver_memory, driver_platform,
-    irq::{self, LocalApic, external::IoApic},
-    linux_deferred,
-    linux_irq::BoundIrq,
-    linux_runtime, memory, pci, platform, serial, threads,
-};
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+//! Runtime control and packet tickets for unchanged Linux e1000, not guest fixtures.
+
+use crate::{linux_deferred, serial, threads};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 static TRACING: AtomicBool = AtomicBool::new(false);
-static FAULT: AtomicU32 = AtomicU32::new(0);
-static FAULT_SEEN: AtomicBool = AtomicBool::new(false);
+static BOOT_REPORTING: AtomicBool = AtomicBool::new(false);
 static CONTROL: crate::mutex::Mutex<()> = crate::mutex::Mutex::new(());
 
 pub(crate) fn control(operation: &str, call: impl FnOnce() -> i32) -> i32 {
@@ -53,37 +46,19 @@ pub(crate) fn control(operation: &str, call: impl FnOnce() -> i32) -> i32 {
     };
     call()
 }
-pub fn record_fault() {
-    let fault = FAULT.load(Ordering::Acquire);
-    if fault != 0 {
-        FAULT_SEEN.store(true, Ordering::Release);
-        serial::print(format_args!("# LINUX_FAULT kind={fault}\n"));
-    }
-}
-fn clear_fault() {
-    FAULT.store(0, Ordering::Release);
-    driver_memory::fault(u32::MAX, usize::MAX);
-    driver_platform::fail_operation(u32::MAX);
-    crate::linux_irq::fail_request(false);
-}
-fn inject(fault: u32) {
-    clear_fault();
-    FAULT.store(fault, Ordering::Release);
-    FAULT_SEEN.store(false, Ordering::Release);
-    match fault {
-        1 => driver_platform::fail_operation(2),
-        2 => driver_platform::fail_operation(6),
-        3 => driver_memory::fault(u32::MAX, 0),
-        4 => driver_memory::fault(3, 0),
-        5 => driver_memory::fault(3, 1),
-        6 => driver_memory::fault(1, 0),
-        7 => crate::linux_irq::fail_request(true),
-        _ => panic!("invalid driver fault"),
-    }
-}
-
 pub fn tracing() -> bool {
     TRACING.load(Ordering::Acquire)
+}
+pub fn report_boot_callbacks(enabled: bool) {
+    BOOT_REPORTING.store(enabled, Ordering::Release);
+}
+#[cfg(feature = "guest-tests")]
+pub(crate) fn set_tracing(enabled: bool) {
+    TRACING.store(enabled, Ordering::Release);
+}
+
+pub(crate) fn quiescent() -> bool {
+    CONTROL.snapshot() == kutox::mutex_state::MutexState::new()
 }
 #[unsafe(no_mangle)]
 extern "C" fn kutox_driver_tracing() -> bool {
@@ -95,33 +70,421 @@ pub extern "C" fn kutox_driver_trace(event: u32, function: usize, object: usize,
         serial::print(format_args!(
             "# LINUX_CALLBACK event={event} function={function:x} object={object:x} result={result}\n"
         ));
+    } else if BOOT_REPORTING.load(Ordering::Acquire) && matches!(event, 1..=7 | 33) {
+        serial::print(format_args!(
+            "# DRIVER_CALLBACK event={event} function={function:x} object={object:x} result={result}\n"
+        ));
     }
 }
 unsafe extern "C" {
-    fn kutox_c_driver_device() -> usize;
     fn kutox_c_linux_bind(ticket: *mut u64) -> i32;
     fn kutox_c_linux_open(ticket: u64) -> i32;
     fn kutox_c_linux_ready(ticket: u64) -> i32;
     fn kutox_c_linux_close(ticket: u64) -> i32;
     fn kutox_c_linux_unbind(ticket: u64) -> i32;
-    fn kutox_c_linux_empty() -> bool;
-    fn kutox_linux_workers_stop();
-    fn kutox_c_linux_rx_failure_seen(ticket: u64) -> bool;
     fn kutox_c_linux_tx_begin(ticket: u64, bytes: *const u8, size: u32) -> i32;
     fn kutox_c_linux_tx(ticket: u64, retry: bool) -> i32;
     fn kutox_c_linux_tx_release(ticket: u64) -> i32;
     fn kutox_c_linux_rx_start(ticket: u64) -> i32;
     fn kutox_c_linux_rx_stop(ticket: u64) -> i32;
     fn kutox_c_linux_rx_path(ticket: u64) -> i32;
-    fn kutox_c_linux_rx_state(
-        ticket: u64,
-        packets: u32,
-        bytes: u32,
-        dropped: u32,
-        failures: u32,
-        replenished: bool,
-    ) -> i32;
+    fn kutox_c_linux_info(ticket: u64, mac: *mut u8, mtu: *mut u32, link: *mut u32) -> i32;
+    fn kutox_c_linux_statistics(ticket: u64, statistics: *mut u64) -> i32;
+    fn kutox_c_linux_empty() -> bool;
+    pub(crate) fn kutox_c_driver_device() -> usize;
+    pub(crate) fn kutox_c_linux_bind_irq(irq: u32);
 }
+
+use alloc::sync::Arc;
+use core::sync::atomic::AtomicU64;
+use kutox::{
+    driver_registry::{
+        Dependency, DeviceInfo, DriverId, DriverSpec, Matcher, PciAddress, Scope, ServiceId,
+    },
+    drivers::{InitRecord, NativeDevice, NativeDriver, ProbeResult},
+    net_state::{Error, Frame, Info, NetworkDevice, TxStatus, TxTicket},
+};
+
+pub const DRIVER_ID: DriverId = match DriverId::new(1) {
+    Ok(id) => id,
+    Err(_) => panic!("driver ID"),
+};
+pub const PLATFORM: ServiceId = match ServiceId::new(0) {
+    Ok(id) => id,
+    Err(_) => panic!("platform service"),
+};
+pub const WORKERS: ServiceId = match ServiceId::new(1) {
+    Ok(id) => id,
+    Err(_) => panic!("worker service"),
+};
+
+#[used]
+#[unsafe(link_section = ".kutox.native_init.production")]
+static INITIALIZER: InitRecord =
+    InitRecord::new(DRIVER_ID, 10, Scope::Production, kutox_e1000_init);
+
+#[unsafe(no_mangle)]
+pub fn kutox_e1000_init() -> Result<Arc<dyn NativeDriver>, kutox::driver_registry::Error> {
+    Ok(Arc::new(E1000))
+}
+
+struct E1000;
+impl NativeDriver for E1000 {
+    fn spec(&self) -> DriverSpec {
+        DriverSpec {
+            id: DRIVER_ID,
+            priority: 10,
+            scope: Scope::Production,
+            matcher: Matcher::Pci {
+                vendor: Some(0x8086),
+                device: Some(0x100e),
+                class: 0x020000,
+                mask: 0xffffff,
+            },
+            max_instances: 1,
+            dependencies: [
+                Some(Dependency::Service(PLATFORM)),
+                Some(Dependency::Service(WORKERS)),
+                None,
+                None,
+            ],
+        }
+    }
+
+    fn probe(&self, info: DeviceInfo) -> ProbeResult {
+        let DeviceInfo::Pci {
+            address,
+            vendor: 0x8086,
+            device: 0x100e,
+            class: 0x020000,
+        } = info
+        else {
+            return ProbeResult::NoMatch;
+        };
+        match bind_managed(address) {
+            Ok(device) => ProbeResult::Bound(Arc::new(device)),
+            Err(code) => ProbeResult::Failed(code),
+        }
+    }
+}
+
+struct ManagedState {
+    driver: DriverHandle,
+    opened: bool,
+    rx: bool,
+    receipt: Option<(TxTicket, usize)>,
+}
+
+static MANAGED: crate::mutex::Mutex<Option<ManagedState>> = crate::mutex::Mutex::new(None);
+static NEXT_TX: AtomicU64 = AtomicU64::new(1);
+static MANAGED_TICKET: AtomicU64 = AtomicU64::new(0);
+
+pub const METADATA_BYTES: usize = core::mem::size_of::<crate::mutex::Mutex<Option<ManagedState>>>()
+    + core::mem::size_of::<ManagedDevice>()
+    + 17;
+
+pub fn managed_quiescent() -> bool {
+    MANAGED_TICKET.load(Ordering::Acquire) == 0
+        && MANAGED.snapshot() == kutox::mutex_state::MutexState::new()
+        && quiescent()
+        && unsafe { kutox_c_linux_empty() }
+}
+
+fn managed_lock() -> Result<crate::mutex::MutexGuard<Option<ManagedState>>, i32> {
+    MANAGED.lock().map_err(|error| {
+        serial::print(format_args!("# NET_ERROR operation=lock error={error:?}\n"));
+        match error {
+            crate::mutex::Error::Context(error) => error as i32,
+            crate::mutex::Error::TimedOut => -110,
+            crate::mutex::Error::Cancelled => -125,
+            crate::mutex::Error::State(_) => -16,
+        }
+    })
+}
+
+fn checked(result: i32) -> Result<(), i32> {
+    if result == 0 { Ok(()) } else { Err(result) }
+}
+
+fn bind_managed(address: PciAddress) -> Result<ManagedDevice, i32> {
+    threads::check_thread_context().map_err(|error| error as i32)?;
+    if address.segment != 0
+        || crate::driver_platform::selected_location()?
+            != (address.bus, address.slot(), address.function())
+        || linux_deferred::worker_count() != 2
+    {
+        return Err(-19);
+    }
+    let mut state = managed_lock()?;
+    if state.is_some() {
+        return Err(-16);
+    }
+    let driver = DriverHandle::bind()?;
+    if let Err(error) = checked(driver.open()) {
+        checked(control("probe-rollback", || unsafe {
+            kutox_c_linux_unbind(driver.0)
+        }))
+        .expect("failed original probe rollback; backing retained");
+        return Err(error);
+    }
+    if let Err(error) = checked(driver.rx_start()) {
+        checked(driver.close()).expect("failed original open rollback; backing retained");
+        checked(control("probe-rollback", || unsafe {
+            kutox_c_linux_unbind(driver.0)
+        }))
+        .expect("failed original probe rollback; backing retained");
+        return Err(error);
+    }
+    let ticket = driver.0;
+    *state = Some(ManagedState {
+        driver,
+        opened: true,
+        rx: true,
+        receipt: None,
+    });
+    MANAGED_TICKET.store(ticket, Ordering::Release);
+    Ok(ManagedDevice {
+        ticket,
+        address,
+        stopping: AtomicBool::new(false),
+    })
+}
+
+struct ManagedDevice {
+    ticket: u64,
+    address: PciAddress,
+    stopping: AtomicBool,
+}
+
+impl ManagedDevice {
+    fn call<T>(
+        &self,
+        operation: &'static str,
+        call: impl FnOnce(&mut ManagedState) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let result = (|| {
+            if self.stopping.load(Ordering::Acquire) {
+                return Err(Error::Closed);
+            }
+            let mut state = managed_lock().map_err(Error::from_code)?;
+            if self.stopping.load(Ordering::Acquire) {
+                return Err(Error::Closed);
+            }
+            let state = state.as_mut().ok_or(Error::Closed)?;
+            if state.driver.0 != self.ticket {
+                return Err(Error::Stale);
+            }
+            if !state.opened {
+                return Err(Error::Closed);
+            }
+            call(state)
+        })();
+        result.inspect_err(|error| {
+            serial::print(format_args!(
+                "# NET_ERROR operation={operation} error={error:?}\n"
+            ))
+        })
+    }
+
+    fn receipt(state: &ManagedState, ticket: TxTicket) -> Result<usize, Error> {
+        state
+            .receipt
+            .filter(|(current, _)| *current == ticket)
+            .map(|(_, bytes)| bytes)
+            .ok_or(Error::Stale)
+    }
+}
+
+impl NativeDevice for ManagedDevice {
+    fn begin_stop(&self) {
+        if !self.stopping.swap(true, Ordering::AcqRel) {
+            crate::net_device::wake();
+        }
+    }
+    fn ready(&self) -> Result<bool, i32> {
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(-19);
+        }
+        let mut state = managed_lock()?;
+        let state = state.as_mut().ok_or(-19)?;
+        if state.driver.0 != self.ticket {
+            return Err(-116);
+        }
+        let result = control("ready", || unsafe { kutox_c_linux_ready(self.ticket) });
+        match result {
+            0 => Ok(false),
+            1 => Ok(true),
+            code => Err(code),
+        }
+    }
+
+    fn network(&self) -> Option<&dyn NetworkDevice> {
+        Some(self)
+    }
+
+    fn stop(&self) -> Result<(), i32> {
+        self.begin_stop();
+        let mut owner = managed_lock()?;
+        let state = owner.as_mut().ok_or(-19)?;
+        if state.driver.0 != self.ticket {
+            return Err(-116);
+        }
+        if state.rx {
+            checked(state.driver.rx_stop())?;
+            state.rx = false;
+        }
+        if state.opened {
+            checked(state.driver.close())?;
+            state.opened = false;
+        }
+        if state.receipt.is_some() {
+            checked(control("tx-release", || unsafe {
+                kutox_c_linux_tx_release(self.ticket)
+            }))?;
+            state.receipt = None;
+        }
+        checked(control("unbind", || unsafe {
+            kutox_c_linux_unbind(self.ticket)
+        }))?;
+        crate::driver_memory::discard_ingress();
+        *owner = None;
+        MANAGED_TICKET.store(0, Ordering::Release);
+        Ok(())
+    }
+}
+
+impl NetworkDevice for ManagedDevice {
+    fn info(&self) -> Result<Info, Error> {
+        self.call("info", |_| {
+            let mut info = Info {
+                address: self.address,
+                mac: [0; 6],
+                mtu: 0,
+                link: false,
+                ready: false,
+                statistics: [0; 7].into(),
+            };
+            let mut link = 0;
+            checked(control("info", || unsafe {
+                kutox_c_linux_info(self.ticket, info.mac.as_mut_ptr(), &mut info.mtu, &mut link)
+            }))
+            .map_err(Error::from_code)?;
+            info.link = link != 0;
+            let mut statistics = [0; 7];
+            checked(control("statistics", || unsafe {
+                kutox_c_linux_statistics(self.ticket, statistics.as_mut_ptr())
+            }))
+            .map_err(Error::from_code)?;
+            info.statistics = statistics.into();
+            let ready = control("ready", || unsafe { kutox_c_linux_ready(self.ticket) });
+            match ready {
+                0 => {}
+                1 => info.ready = true,
+                code => return Err(Error::from_code(code)),
+            }
+            Ok(info)
+        })
+    }
+
+    fn submit(&self, frame: &Frame) -> Result<TxTicket, Error> {
+        self.call("submit", |state| {
+            if state.receipt.is_some() {
+                return Err(Error::Busy);
+            }
+            let ready = control("ready", || unsafe { kutox_c_linux_ready(self.ticket) });
+            if ready == 0 {
+                let mut mac = [0; 6];
+                let mut mtu = 0;
+                let mut link = 0;
+                checked(control("info", || unsafe {
+                    kutox_c_linux_info(self.ticket, mac.as_mut_ptr(), &mut mtu, &mut link)
+                }))
+                .map_err(Error::from_code)?;
+                return Err(if link == 0 {
+                    Error::NotReady
+                } else {
+                    Error::Busy
+                });
+            }
+            if ready != 1 {
+                return Err(Error::from_code(ready));
+            }
+            let sequence = NEXT_TX
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                    value.checked_add(1)
+                })
+                .map_err(|_| Error::Driver(-165))?;
+            checked(state.driver.packet(frame.bytes())).map_err(Error::from_code)?;
+            let ticket = TxTicket::new(self.ticket, sequence)?;
+            state.receipt = Some((ticket, frame.wire_bytes()));
+            Ok(ticket)
+        })
+    }
+
+    fn progress(&self, ticket: TxTicket) -> Result<TxStatus, Error> {
+        self.call("progress", |state| {
+            let bytes = Self::receipt(state, ticket)?;
+            let mut status = state.driver.tx_status();
+            if status == 0 {
+                match state.driver.transmit() {
+                    0 => status = state.driver.tx_status(),
+                    16 => return Ok(TxStatus::Busy),
+                    code => return Err(Error::from_code(code)),
+                }
+            }
+            match status {
+                0 => Ok(TxStatus::Busy),
+                1 => Ok(TxStatus::InFlight),
+                2 => Ok(TxStatus::Complete { bytes }),
+                -5 => Ok(TxStatus::Dropped),
+                code => Err(Error::from_code(code)),
+            }
+        })
+    }
+
+    fn finish(&self, ticket: TxTicket) -> Result<(), Error> {
+        self.call("finish", |state| {
+            Self::receipt(state, ticket)?;
+            match state.driver.tx_status() {
+                2 | -5 => {}
+                0 | 1 => return Err(Error::Busy),
+                code => return Err(Error::from_code(code)),
+            }
+            checked(control("tx-release", || unsafe {
+                kutox_c_linux_tx_release(self.ticket)
+            }))
+            .map_err(Error::from_code)?;
+            state.receipt = None;
+            Ok(())
+        })
+    }
+
+    fn receive(&self) -> Result<Option<Frame>, Error> {
+        self.call("receive", |_| {
+            let mut bytes = alloc::vec::Vec::new();
+            bytes.try_reserve_exact(1514).map_err(|_| Error::NoMemory)?;
+            bytes.resize(1514, 0);
+            let buffer: &mut [u8; 1514] = bytes
+                .as_mut_slice()
+                .try_into()
+                .expect("bounded receive buffer");
+            let size = crate::driver_memory::receive(buffer);
+            if size == 0 {
+                return Ok(None);
+            }
+            bytes.truncate(size);
+            Frame::from_owned(bytes).map(Some)
+        })
+    }
+}
+
+#[cfg(feature = "guest-tests")]
+#[path = "guest_tests/network.rs"]
+pub mod tests;
+
+#[cfg(feature = "guest-tests")]
+#[path = "guest_tests/network_hardening.rs"]
+pub mod hardening;
 
 pub(crate) struct DriverHandle(pub(crate) u64);
 impl DriverHandle {
@@ -132,6 +495,7 @@ impl DriverHandle {
         if result < 0 {
             return Err(result);
         }
+
         assert_ne!(ticket, 0, "module bind returned no handle");
         Ok(Self(ticket))
     }
@@ -167,30 +531,7 @@ impl DriverHandle {
             0
         );
     }
-    pub(crate) fn wait_ready(&self) {
-        for _ in 0..300 {
-            if self.ready() {
-                return;
-            }
-            assert_eq!(threads::sleep_us(10_000), Ok(threads::WakeReason::TimedOut));
-        }
-        panic!("original watchdog did not establish link readiness");
-    }
-    pub(crate) fn wait_transmitted(&self) -> Result<(), Failure> {
-        for _ in 0..300 {
-            match self.tx_status() {
-                0 => match self.transmit() {
-                    0 | 16 => {}
-                    error => return Err(Failure::new("linux_tx_submit", error)),
-                },
-                1 => {}
-                2 => return Ok(()),
-                error => return Err(Failure::new("linux_tx_completion", error)),
-            }
-            assert_eq!(threads::sleep_us(10_000), Ok(threads::WakeReason::TimedOut));
-        }
-        Err(Failure::new("linux_tx_timeout", -110))
-    }
+
     pub(crate) fn rx_start(&self) -> i32 {
         control("rx-start", || unsafe { kutox_c_linux_rx_start(self.0) })
     }
@@ -200,398 +541,10 @@ impl DriverHandle {
     pub(crate) fn rx_path(&self) -> i32 {
         control("rx-path", || unsafe { kutox_c_linux_rx_path(self.0) })
     }
-    pub(crate) fn rx_state(
-        &self,
-        packets: u32,
-        bytes: u32,
-        dropped: u32,
-        failures: u32,
-        replenished: bool,
-    ) -> i32 {
-        control("rx-state", || unsafe {
-            kutox_c_linux_rx_state(self.0, packets, bytes, dropped, failures, replenished)
-        })
-    }
-    pub(crate) fn rx_failure_seen(&self) -> bool {
-        control("rx-failure", || {
-            i32::from(unsafe { kutox_c_linux_rx_failure_seen(self.0) })
-        }) == 1
-    }
     pub(crate) fn unbind(self) {
         assert_eq!(
             control("unbind", || unsafe { kutox_c_linux_unbind(self.0) }),
             0
         );
-        assert_eq!(
-            unsafe { kutox_c_linux_ready(self.0) },
-            -116,
-            "retired handle remained valid"
-        );
-        assert_eq!(unsafe { kutox_c_linux_tx(self.0, false) }, -116);
-        assert_eq!(unsafe { kutox_c_linux_tx_release(self.0) }, -116);
-        assert_eq!(unsafe { kutox_c_linux_rx_stop(self.0) }, -116);
-        assert_eq!(
-            unsafe { kutox_c_linux_rx_state(self.0, 0, 0, 0, 0, true) },
-            -116
-        );
     }
-}
-
-fn worker(which: usize) {
-    TRACING.store(true, Ordering::Release);
-    if which == 1 {
-        fault_worker();
-        TRACING.store(false, Ordering::Release);
-        unsafe { kutox_linux_workers_stop() };
-        return;
-    }
-    if which == 2 {
-        tx_worker();
-        TRACING.store(false, Ordering::Release);
-        unsafe { kutox_linux_workers_stop() };
-        return;
-    }
-    if which == 3 {
-        rx_worker();
-        TRACING.store(false, Ordering::Release);
-        unsafe { kutox_linux_workers_stop() };
-        return;
-    }
-    if which >= 4 {
-        crate::linux_hardening::worker(which);
-        TRACING.store(false, Ordering::Release);
-        unsafe { kutox_linux_workers_stop() };
-        return;
-    }
-    for _ in 0..2 {
-        let handle = DriverHandle::bind().expect("original Linux probe failed");
-        for _ in 0..2 {
-            assert_eq!(handle.open(), 0, "original Linux open failed");
-            handle.wait_ready();
-            assert_eq!(handle.close(), 0, "original Linux close failed");
-        }
-        handle.unbind();
-    }
-    TRACING.store(false, Ordering::Release);
-    unsafe { kutox_linux_workers_stop() };
-}
-
-fn run(
-    boot: &BootInfo,
-    frames: &'static memory::PhysicalFrames<'static>,
-    which: usize,
-) -> Result<(), Failure> {
-    let topology = platform::discover(boot, frames)?;
-    let owner = driver_platform::Owner::bind(boot, frames, unsafe { kutox_c_driver_device() })?;
-    let apic = LocalApic::start(boot, frames)?;
-    let controller = IoApic::start(boot, frames, &apic, &topology)?;
-    let gsi = pci::discover()?.interrupt_route(&topology)?;
-    let binding = BoundIrq::bind(&controller, gsi)?;
-    unsafe { kutox_c_linux_bind_irq(gsi) };
-    let timer = irq::Timer::attach(&apic)?;
-    let space = memory::StackSpace::new(boot, frames)?;
-    let mut scheduler = threads::Scheduler::new(&space);
-    linux_deferred::start(&mut scheduler)?;
-    scheduler.spawn(worker, which)?;
-    if which == 6 {
-        scheduler.spawn(crate::linux_hardening::actor, 0)?;
-    }
-    if scheduler.run_with_timer(&timer)?.finished != if which == 6 { 4 } else { 3 }
-        || !driver_memory::quiescent()
-        || !linux_runtime::quiescent()
-        || !linux_deferred::quiescent()
-        || !unsafe { kutox_c_linux_empty() }
-        || CONTROL.snapshot() != kutox::mutex_state::MutexState::new()
-    {
-        return Err(Failure::new("linux_driver_cleanup", -1));
-    }
-    drop(binding);
-    drop(owner);
-    Ok(())
-}
-
-fn fault_worker() {
-    for fault in 1..=3 {
-        inject(fault);
-        assert!(
-            DriverHandle::bind().is_err(),
-            "original probe did not propagate failure"
-        );
-        assert!(
-            FAULT_SEEN.load(Ordering::Acquire),
-            "probe fault was not reached"
-        );
-        clear_fault();
-        assert!(
-            driver_memory::quiescent()
-                && linux_runtime::quiescent()
-                && unsafe { kutox_c_linux_empty() }
-        );
-    }
-    let handle = DriverHandle::bind().expect("original Linux recovery probe failed");
-    let baseline = driver_memory::snapshot();
-    for fault in 4..=7 {
-        inject(fault);
-        let result = handle.open();
-        if fault == 6 {
-            assert_eq!(
-                result, 0,
-                "original open accepts initial RX-buffer exhaustion"
-            );
-            assert!(handle.rx_failure_seen());
-            assert_eq!(handle.close(), 0);
-        } else {
-            assert!(result < 0, "original open did not propagate failure");
-        }
-        assert!(
-            FAULT_SEEN.load(Ordering::Acquire),
-            "open fault was not reached"
-        );
-        clear_fault();
-        assert_eq!(
-            driver_memory::snapshot(),
-            baseline,
-            "original open unwind leaked resources"
-        );
-    }
-    assert_eq!(handle.open(), 0);
-    handle.wait_ready();
-    assert_eq!(handle.close(), 0);
-    handle.unbind();
-}
-pub fn lifecycle(
-    boot: &BootInfo,
-    frames: &'static memory::PhysicalFrames<'static>,
-) -> Result<(), Failure> {
-    run(boot, frames, 0)
-}
-pub fn failures(
-    boot: &BootInfo,
-    frames: &'static memory::PhysicalFrames<'static>,
-) -> Result<(), Failure> {
-    run(boot, frames, 1)
-}
-pub fn transmit(
-    boot: &BootInfo,
-    frames: &'static memory::PhysicalFrames<'static>,
-) -> Result<(), Failure> {
-    run(boot, frames, 2)
-}
-pub fn receive(
-    boot: &BootInfo,
-    frames: &'static memory::PhysicalFrames<'static>,
-) -> Result<(), Failure> {
-    run(boot, frames, 3)
-}
-pub fn wrap(
-    boot: &BootInfo,
-    frames: &'static memory::PhysicalFrames<'static>,
-) -> Result<(), Failure> {
-    run(boot, frames, 4)
-}
-pub fn backpressure(
-    boot: &BootInfo,
-    frames: &'static memory::PhysicalFrames<'static>,
-) -> Result<(), Failure> {
-    run(boot, frames, 5)
-}
-pub fn teardown(
-    boot: &BootInfo,
-    frames: &'static memory::PhysicalFrames<'static>,
-) -> Result<(), Failure> {
-    run(boot, frames, 6)
-}
-
-fn tx_packet(sequence: u8, size: usize) -> [u8; 1514] {
-    let mut bytes = [0; 1514];
-    bytes[..6].fill(255);
-    bytes[6..14].copy_from_slice(&[0x52, 0x54, 0, 0x12, 0x34, 0x56, 0x88, 0xb6]);
-    for (index, byte) in bytes[14..size].iter_mut().enumerate() {
-        *byte = sequence.wrapping_add((index + 14) as u8);
-    }
-    bytes[14..22].copy_from_slice(b"KUTOX-LX");
-    bytes[22] = sequence;
-    bytes
-}
-
-fn tx_worker() {
-    const LENGTHS: [usize; 4] = [60, 128, 512, 1514];
-    for session in 0..2 {
-        let handle = DriverHandle::bind().expect("original TX probe failed");
-        let before = driver_memory::snapshot();
-        assert_eq!(handle.packet(&tx_packet(0, 60)[..60]), 0);
-        assert_eq!(handle.transmit(), 16, "down queue did not retain BUSY skb");
-        assert_eq!(handle.tx_status(), 0);
-        handle.release_packet();
-        assert_eq!(
-            driver_memory::snapshot(),
-            before,
-            "BUSY cancellation leaked"
-        );
-        assert_eq!(handle.open(), 0);
-        handle.wait_ready();
-        let baseline = driver_memory::snapshot();
-        for (index, &size) in LENGTHS.iter().enumerate().skip(session * 2).take(2) {
-            assert_eq!(handle.packet(&tx_packet(index as u8 + 1, size)[..size]), 0);
-            assert_eq!(handle.tx_status(), 0);
-            assert_eq!(handle.transmit(), 0, "original xmit did not accept skb");
-            assert_eq!(handle.tx_status(), 1, "completed before IRQ/NAPI ran");
-            let in_flight = driver_memory::snapshot();
-            assert_eq!(in_flight.0, baseline.0 + 2);
-            assert_eq!(in_flight.2, baseline.2 + 1);
-            if let Err(error) = handle.wait_transmitted() {
-                assert_eq!(handle.close(), 0);
-                handle.release_packet();
-                handle.unbind();
-                panic!("Linux TX failed: {} {}", error.stage, error.code);
-            }
-            handle.release_packet();
-            assert_eq!(
-                driver_memory::snapshot(),
-                baseline,
-                "Linux TX cleanup leaked"
-            );
-        }
-        assert_eq!(handle.close(), 0);
-        handle.unbind();
-    }
-}
-
-fn rx_packet(epoch: u8, sequence: u8, size: usize) -> [u8; 1514] {
-    let mut bytes = [0; 1514];
-    bytes[..14].copy_from_slice(&[
-        0x52, 0x54, 0, 0x12, 0x34, 0x56, 2, 0, 0, 0, 0, 6, 0x88, 0xb7,
-    ]);
-    for (index, byte) in bytes[14..size].iter_mut().enumerate() {
-        *byte = sequence
-            .wrapping_add(epoch)
-            .wrapping_add((index + 14) as u8);
-    }
-    bytes[14..22].copy_from_slice(b"KUTOX-RX");
-    bytes[22] = sequence;
-    bytes[23] = epoch;
-    if sequence == 7 {
-        bytes[12..14].copy_from_slice(&[0, 1]);
-    } else if sequence == 8 {
-        bytes[12..18].copy_from_slice(&[0x81, 0, 0, 1, 0x88, 0xb7]);
-    }
-    bytes
-}
-
-fn wait_rx(output: &mut [u8; 1514], attempts: usize) -> Result<usize, Failure> {
-    for _ in 0..attempts {
-        let size = driver_memory::receive(output);
-        if size != 0 {
-            return Ok(size);
-        }
-        assert_eq!(threads::sleep_us(10_000), Ok(threads::WakeReason::TimedOut));
-    }
-    Err(Failure::new("linux_rx_timeout", -110))
-}
-
-fn rx_worker() {
-    const LENGTHS: [usize; 8] = [60, 252, 253, 1514, 1514, 60, 60, 60];
-    const ACTIONS: [&str; 8] = [
-        "deliver", "deliver", "deliver", "deliver", "pressure", "deliver", "llc", "vlan",
-    ];
-    let mut output = [0; 1514];
-    for epoch in 1..=2 {
-        let handle = DriverHandle::bind().expect("original RX probe failed");
-        assert_eq!(handle.open(), 0);
-        handle.wait_ready();
-        assert_eq!(handle.rx_start(), 0);
-        let baseline = driver_memory::snapshot();
-        let initial = handle.rx_state(0, 0, 0, 0, true);
-        assert_eq!(initial, 255, "original posted RX buffers");
-        assert_eq!(wait_rx(&mut output, 2).unwrap_err().code, -110);
-        assert_eq!(driver_memory::snapshot(), baseline);
-        serial::print(format_args!("# LINUX_RX_IDLE epoch={epoch} timeout=1\n"));
-        let mut bytes = 0;
-        let mut dropped = 0;
-        for (index, (&size, action)) in LENGTHS.iter().zip(ACTIONS).enumerate() {
-            let sequence = index + 1;
-            if sequence == 5 {
-                driver_memory::fault(1, 0);
-            }
-            serial::print(format_args!(
-                "# LINUX_RX_READY epoch={epoch} seq={sequence} bytes={size} action={action}\n"
-            ));
-            if sequence <= 6 {
-                let received = match wait_rx(&mut output, 300) {
-                    Ok(size) => size,
-                    Err(error) => {
-                        driver_memory::fault(u32::MAX, usize::MAX);
-                        assert_eq!(handle.rx_stop(), 0);
-                        assert_eq!(handle.close(), 0);
-                        handle.unbind();
-                        panic!("Linux RX failed: {} {}", error.stage, error.code);
-                    }
-                };
-                assert_eq!(received, size, "RX length/FCS mismatch");
-                assert_eq!(
-                    &output[..size],
-                    &rx_packet(epoch, sequence as u8, size)[..size],
-                    "original RX changed packet bytes"
-                );
-                let path = handle.rx_path();
-                assert_eq!(path, if size <= 252 { 1 } else { 2 });
-                serial::print(format_args!(
-                    "# LINUX_RX_FRAME epoch={epoch} seq={sequence} bytes={size} path={} data=",
-                    if path == 1 { "copy" } else { "build" }
-                ));
-                for byte in &output[..size] {
-                    serial::print(format_args!("{byte:02x}"));
-                }
-                serial::print(format_args!("\n"));
-            } else {
-                dropped += 1;
-            }
-            bytes += size as u32;
-            let failures = u32::from(sequence >= 5);
-            let mut resident = -11;
-            for _ in 0..300 {
-                resident =
-                    handle.rx_state(sequence as u32, bytes, dropped, failures, sequence != 5);
-                if resident != -11 {
-                    break;
-                }
-                assert_eq!(threads::sleep_us(10_000), Ok(threads::WakeReason::TimedOut));
-            }
-            driver_memory::fault(u32::MAX, usize::MAX);
-            assert!(
-                (254..=256).contains(&resident),
-                "RX stats/replenishment failed: {resident}"
-            );
-            let resident = resident as usize;
-            let snapshot = driver_memory::snapshot();
-            assert_eq!(snapshot.0, baseline.0 - 255 + resident);
-            assert_eq!(snapshot.1, baseline.1 - 255 * 1920 + resident * 1920);
-            assert_eq!(snapshot.2, resident);
-            assert_eq!(
-                driver_memory::rx_cpu_grants(),
-                0,
-                "RX republish left CPU grant"
-            );
-            assert_eq!(
-                driver_memory::receive(&mut output),
-                0,
-                "unexpected or duplicate ingress"
-            );
-            serial::print(format_args!(
-                "# LINUX_RX_STATE epoch={epoch} seq={sequence} resident={resident} failures={failures} dropped={dropped}\n"
-            ));
-            if sequence > 6 {
-                serial::print(format_args!(
-                    "# LINUX_RX_DROP epoch={epoch} seq={sequence} bytes={size} errno=-95\n"
-                ));
-            }
-        }
-        serial::print(format_args!("# LINUX_RX_STOP epoch={epoch} seq=8\n"));
-        assert_eq!(handle.rx_stop(), 0);
-        assert_eq!(handle.close(), 0);
-        handle.unbind();
-    }
-}
-unsafe extern "C" {
-    fn kutox_c_linux_bind_irq(irq: u32);
 }

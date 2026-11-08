@@ -10,6 +10,10 @@ members = ["third_party/moss-libkernel"]
 default-members = ["."]
 resolver = "2"
 
+[features]
+default = ["guest-tests"]
+guest-tests = []
+
 [dependencies]
 limine = "0.5"
 moss-libkernel = { path = "third_party/moss-libkernel" }

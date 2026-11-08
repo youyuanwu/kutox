@@ -114,10 +114,11 @@ void unregister_netdev(struct net_device *device)
     }
     device->registered = false;
 }
-void netif_carrier_off(struct net_device *device) { netdev_check(device); device->carrier = false; }
+void netif_carrier_off(struct net_device *device) { netdev_check(device); device->carrier = false; kutox_net_wake(); }
 void netif_carrier_on(struct net_device *device) {
     extern void kutox_driver_trace(unsigned int,uintptr_t,uintptr_t,int);
     netdev_check(device); device->carrier = true; kutox_driver_trace(14,0,(uintptr_t)device,0);
+    kutox_net_wake();
 }
 bool netif_carrier_ok(const struct net_device *device) { netdev_check(device); return device->carrier; }
 bool netif_running(const struct net_device *device) { netdev_check(device); return device->running; }
@@ -151,6 +152,7 @@ void netdev_completed_queue(struct net_device *device, unsigned int packets, uns
         if (!tx.accepted || !tx.published || tx.mapped || !tx.freed || tx.completed ||
             packets != 1 || bytes != tx.bytes) kutox_platform_fail("tx_completed_order");
         tx.completed = true; tx_event(24,bytes);
+        kutox_net_wake();
     }
 }
 void netdev_reset_queue(struct net_device *device)
@@ -276,6 +278,7 @@ static void free_skb(struct sk_buff *skb)
     if (tracked) {
         if (tx.mapped || tx.freed) kutox_platform_fail("tx_free_order");
         tx.freed = true; tx.skb = NULL;
+        kutox_net_wake();
         if (!tx.sent || tx.aborting) tx_event(28,0);
     }
     if (received) {
@@ -303,12 +306,13 @@ int eth_skb_pad(struct sk_buff *skb)
     if (skb_tailroom(skb) >= padding) { memset(skb_put(skb,padding),0,padding); return 0; }
     size_t headroom = (size_t)(skb->data - skb->head);
     size_t capacity = SKB_DATA_ALIGN(headroom + 60) + SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
-    u8 *head = kmalloc(capacity,GFP_ATOMIC);
+    u8 *head = kzalloc(capacity,GFP_ATOMIC);
     if (!head) { free_skb(skb); return -ENOMEM; }
     driver_check(kutox_driver_range((uintptr_t)skb->data,skb->len,0), "pad_device_owned");
     memcpy(head + headroom, skb->data, skb->len);
     if (skb->backing_kind) skb_free_frag(skb->head); else kfree(skb->head);
     skb->head = head; skb->data = head + headroom; skb->tail = skb->data + skb->len;
+    if (tx.live && (uintptr_t)skb == tx.identity) tx.data = (uintptr_t)skb->data;
     skb->end = head + SKB_DATA_ALIGN(headroom + 60); skb->backing_kind = 0;
     skb->truesize = (unsigned int)(capacity + sizeof(*skb));
     memset(skb_put(skb,padding),0,padding);
@@ -359,13 +363,13 @@ int kutox_c_tx_begin(struct net_device *device, uintptr_t mmio, const void *byte
 {
     netdev_check(device);
     if (tx.live || many.live) return -EBUSY;
-    if (!bytes || !mmio || size < 60 || size > 1514) {
+    if (!bytes || !mmio || size < ETH_HLEN || size > 1514) {
         kutox_driver_diag("tx_packet_profile",-EINVAL); return -EINVAL;
     }
     struct sk_buff *skb = copy_tx_skb(device,bytes,size);
     if (!skb) return -ENOMEM;
     tx = (typeof(tx)) {
-        .skb = skb, .identity = (uintptr_t)skb, .data = (uintptr_t)skb->data, .mmio = mmio, .bytes = size,
+        .skb = skb, .identity = (uintptr_t)skb, .data = (uintptr_t)skb->data, .mmio = mmio, .bytes = max(size,60U),
         .completed_before = device->completed_packets, .completed_bytes_before = device->completed_bytes,
         .stats_before = device->stats.tx_packets, .stats_bytes_before = device->stats.tx_bytes,
         .live = true,

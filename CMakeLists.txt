@@ -19,8 +19,16 @@ FetchContent_Declare(limine
 FetchContent_MakeAvailable(limine)
 
 set(KERNEL "${CMAKE_SOURCE_DIR}/target/x86_64-unknown-none/release/kutox")
+option(KUTOX_GUEST_TESTS "Include guest acceptance fixtures in the reusable image" ON)
+if(KUTOX_GUEST_TESTS)
+    set(KERNEL_FEATURES --features guest-tests)
+    set(GUEST_TEST_PROFILE enabled)
+else()
+    set(KERNEL_FEATURES --no-default-features)
+    set(GUEST_TEST_PROFILE disabled)
+endif()
 add_custom_target(kernel
-    COMMAND ${CARGO} build --locked --release --jobs 1
+    COMMAND ${CARGO} build --locked --release --jobs 1 ${KERNEL_FEATURES}
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     BYPRODUCTS "${KERNEL}"
     USES_TERMINAL
@@ -49,7 +57,11 @@ add_test(NAME linux-driver-compile-check
 )
 set_tests_properties(linux-driver-compile-check PROPERTIES TIMEOUT 65 RUN_SERIAL TRUE)
 
-foreach(case IN ITEMS known alternate missing unsupported ambiguous eeprom-timeout low-memory default-mode invalid-mode page-fault general-protection double-fault unexpected-page-fault smp-unsupported repeat provenance)
+set(MAC_CASES known alternate missing unsupported ambiguous low-memory invalid-mode smp-unsupported repeat provenance)
+if(KUTOX_GUEST_TESTS)
+    list(APPEND MAC_CASES eeprom-timeout page-fault general-protection double-fault unexpected-page-fault)
+endif()
+foreach(case IN LISTS MAC_CASES)
     add_test(NAME "mac-${case}"
         COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
             --case "${case}" --build-dir "${CMAKE_BINARY_DIR}"
@@ -57,6 +69,19 @@ foreach(case IN ITEMS known alternate missing unsupported ambiguous eeprom-timeo
     )
     set_tests_properties("mac-${case}" PROPERTIES TIMEOUT 65 RUN_SERIAL TRUE)
 endforeach()
+add_test(NAME kernel-build-profile
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/guest_build_check.py"
+        --kernel "${KERNEL}" --nm "${NM}" --guest-tests "${GUEST_TEST_PROFILE}"
+)
+foreach(case IN ITEMS driver-runtime-default driver-runtime-run driver-runtime-default-no-nic driver-runtime-default-unsupported)
+    add_test(NAME "${case}"
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --case "${case}" --build-dir "${CMAKE_BINARY_DIR}"
+            --qemu "${QEMU}" --nm "${NM}" --timeout 20
+    )
+    set_tests_properties("${case}" PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
+endforeach()
+if(KUTOX_GUEST_TESTS)
 add_test(NAME kernel-suite
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
         --case kernel-tests --build-dir "${CMAKE_BINARY_DIR}"
@@ -73,6 +98,22 @@ add_test(NAME kernel-suite-low-memory
         --qemu "${QEMU}" --timeout 80
 )
 set_tests_properties(kernel-suite kernel-suite-rejection kernel-suite-low-memory PROPERTIES TIMEOUT 85 RUN_SERIAL TRUE)
+foreach(topology IN ITEMS bridge nested bridge-low-memory nested-low-memory)
+    add_test(NAME "kernel-suite-${topology}"
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --case "kernel-tests-${topology}" --build-dir "${CMAKE_BINARY_DIR}"
+            --qemu "${QEMU}" --timeout 80
+    )
+    set_tests_properties("kernel-suite-${topology}" PROPERTIES TIMEOUT 85 RUN_SERIAL TRUE)
+endforeach()
+foreach(case IN ITEMS driver-runtime-root driver-runtime-bridge driver-runtime-nested driver-runtime-low-memory driver-runtime-bridge-low-memory driver-runtime-nested-low-memory driver-runtime-no-nic driver-runtime-no-nic-low-memory driver-runtime-unsupported driver-runtime-unsupported-low-memory)
+    add_test(NAME "${case}"
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --case "${case}" --build-dir "${CMAKE_BINARY_DIR}"
+            --qemu "${QEMU}" --nm "${NM}" --timeout 25
+    )
+    set_tests_properties("${case}" PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+endforeach()
 add_test(NAME heap-oom-rejection
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
         --case heap-oom --build-dir "${CMAKE_BINARY_DIR}"
@@ -85,6 +126,56 @@ add_test(NAME thread-stack-guard
         --qemu "${QEMU}" --timeout 20
 )
 set_tests_properties(thread-stack-guard PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
+foreach(case IN ITEMS driver-runtime-tests driver-runtime-tests-low-memory)
+    add_test(NAME "${case}"
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --case "${case}" --build-dir "${CMAKE_BINARY_DIR}"
+            --qemu "${QEMU}" --timeout 20
+    )
+    set_tests_properties("${case}" PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
+endforeach()
+foreach(case IN ITEMS driver-network-tests driver-network-tests-low-memory driver-network-tests-ambiguous)
+    add_test(NAME "${case}"
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --case "${case}" --build-dir "${CMAKE_BINARY_DIR}"
+            --qemu "${QEMU}" --timeout 25
+    )
+    set_tests_properties("${case}" PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+endforeach()
+foreach(case IN ITEMS driver-hardening-tests driver-hardening-tests-low-memory driver-hardening-tests-nested-low-memory)
+    add_test(NAME "${case}"
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --case "${case}" --build-dir "${CMAKE_BINARY_DIR}"
+            --qemu "${QEMU}" --nm "${NM}" --timeout 75
+    )
+    set_tests_properties("${case}" PROPERTIES TIMEOUT 80 RUN_SERIAL TRUE)
+endforeach()
+else()
+    add_test(NAME guest-tests-disabled
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --case guest-tests-disabled --build-dir "${CMAKE_BINARY_DIR}"
+            --qemu "${QEMU}" --timeout 20
+    )
+    set_tests_properties(guest-tests-disabled PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
+    add_test(NAME driver-runtime-tests-disabled
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --case driver-runtime-tests-disabled --build-dir "${CMAKE_BINARY_DIR}"
+            --qemu "${QEMU}" --timeout 20
+    )
+    set_tests_properties(driver-runtime-tests-disabled PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
+    add_test(NAME driver-network-tests-disabled
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --case driver-network-tests-disabled --build-dir "${CMAKE_BINARY_DIR}"
+            --qemu "${QEMU}" --timeout 20
+    )
+    set_tests_properties(driver-network-tests-disabled PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
+    add_test(NAME driver-hardening-tests-disabled
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --case driver-hardening-tests-disabled --build-dir "${CMAKE_BINARY_DIR}"
+            --qemu "${QEMU}" --timeout 20
+    )
+    set_tests_properties(driver-hardening-tests-disabled PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
+endif()
 add_test(NAME harness-unit
     COMMAND ${Python3_EXECUTABLE} -m unittest discover -s tests -v
 )

@@ -118,10 +118,11 @@ class ResultTests(unittest.TestCase):
             validate_result("known", 1, output)
 
     def test_default_mode_without_fw_cfg_file(self):
-        validate_result(
-            "default-mode", 1,
-            boot_log("E1000_MAC_OK mac=52:54:00:12:34:56", source="default"),
-        )
+        with self.assertRaises(AssertionError):
+            validate_result(
+                "default-mode", 1,
+                boot_log("E1000_MAC_OK mac=52:54:00:12:34:56", source="default"),
+            )
 
     def test_invalid_mode_is_rejected_before_memory_initialization(self):
         output = f"KUTOX_BOOT linux={REVISION}\n{FOUNDATION}E1000_MAC_FAIL stage=boot_mode code=-23\n"
@@ -138,6 +139,12 @@ class ResultTests(unittest.TestCase):
 
 
 class CommandTests(unittest.TestCase):
+    def test_disabled_guest_mode_uses_no_network_and_the_same_image(self):
+        command = qemu_command(self.args, "guest-tests-disabled")
+        self.assertNotIn("-netdev", command)
+        self.assertIn("name=opt/kutox/test-mode,string=kernel-tests", command)
+        self.assertEqual(command[command.index("-cdrom") + 1], str(Path("build/kutox.iso")))
+
     def setUp(self):
         self.args = SimpleNamespace(qemu="qemu-system-x86_64", build_dir=Path("build"))
 
@@ -168,7 +175,7 @@ class CommandTests(unittest.TestCase):
                 )
 
     def test_default_mode_omits_fw_cfg(self):
-        self.assertNotIn("-fw_cfg", qemu_command(self.args, "default-mode"))
+        self.assertNotIn("-fw_cfg", qemu_command(self.args, "default-mode", net_fd=17))
 
     def test_fault_cases_have_no_network_device(self):
         for case in (*FAULT_RESULTS, "heap-oom", "thread-stack-guard"):
@@ -179,6 +186,23 @@ class CommandTests(unittest.TestCase):
             command = qemu_command(self.args, case, net_fd=17)
             self.assertIn(f"e1000,netdev=irqtest,addr={slot},mac=52:54:00:12:34:56", command)
             self.assertEqual(command[command.index("-cdrom") + 1], str(Path("build/kutox.iso")))
+
+    def test_bridge_suites_use_firmware_assigned_buses_and_owned_socket(self):
+        for case, root, leaf, nested in [
+            ("kernel-tests-bridge", 3, 5, False),
+            ("kernel-tests-nested", 3, 5, True),
+            ("kernel-tests-bridge-low-memory", 5, 7, False),
+            ("kernel-tests-nested-low-memory", 5, 7, True),
+        ]:
+            with self.subTest(case=case):
+                command = qemu_command(self.args, case, net_fd=17)
+                self.assertIn(f"pci-bridge,id=bridge0,chassis_nr=1,shpc=off,msi=off,addr={root}", command)
+                if nested:
+                    self.assertIn("pci-bridge,id=bridge1,chassis_nr=2,shpc=off,msi=off,bus=bridge0,addr=4", command)
+                self.assertIn(f"e1000,netdev=irqtest,bus=bridge{int(nested)},addr={leaf},mac=52:54:00:12:34:56", command)
+                self.assertIn("socket,id=irqtest,fd=17", command)
+                self.assertEqual(command[command.index("-m") + 1], "32M" if case.endswith("low-memory") else "128M")
+                self.assertEqual(command[command.index("-fw_cfg") + 1], "name=opt/kutox/test-mode,string=kernel-tests")
 
     def test_removed_nonfatal_cases_are_not_cli_choices(self):
         for case in ("memory", "cpu-locks", "breakpoint"):

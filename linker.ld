@@ -10,7 +10,11 @@ PHDRS {
 SECTIONS {
     . = 0xffffffff80000000;
     _kernel_start = .;
-    .text : { *(.text .text.*) } :text
+    .text : {
+        _kernel_text_start = .;
+        *(.text .text.*)
+        _kernel_text_end = .;
+    } :text
     . = ALIGN(4096);
     .rodata : { *(.rodata .rodata.*) } :rodata
     .kutox.driver : {
@@ -23,6 +27,23 @@ SECTIONS {
     .kutox.compile_only : { KEEP(*(.kutox.compile_only)) } :rodata
     ASSERT(SIZEOF(.kutox.compile_only) == 0,
            "compile-only Linux driver objects are not a runtime driver")
+    .kutox.native_inits ALIGN(8) : {
+        _native_init_header = .;
+        KEEP(*(.kutox.native_init_header))
+        _native_init_header_end = .;
+        _native_init_production_start = .;
+        KEEP(*(.kutox.native_init.production))
+        _native_init_production_end = .;
+        _native_init_test_start = .;
+        KEEP(*(.kutox.native_init.test))
+        _native_init_test_end = .;
+    } :rodata
+    ASSERT(_native_init_header_end - _native_init_header == 16,
+           "missing or duplicate native initializer header")
+    ASSERT((_native_init_production_end - _native_init_production_start) % 24 == 0,
+           "malformed production initializer layout")
+    ASSERT((_native_init_test_end - _native_init_test_start) % 24 == 0,
+           "malformed test initializer layout")
     . = ALIGN(4096);
     .data : {
         *(.data .data.*)

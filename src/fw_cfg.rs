@@ -8,6 +8,7 @@ const MODE_FILE: &[u8] = b"opt/kutox/test-mode";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BootMode {
+    Run,
     Probe,
     EepromTimeout,
     PageFault,
@@ -16,13 +17,24 @@ pub enum BootMode {
     UnexpectedPageFault,
     KernelTests,
     KernelTestsFail,
+    DriverRuntimeTests,
+    DriverNetworkTests,
+    DriverHardeningTests,
     HeapOom,
     ThreadStackGuard,
 }
 
 impl BootMode {
+    pub const fn selected(configured: Option<Self>) -> Self {
+        match configured {
+            Some(mode) => mode,
+            None => Self::Run,
+        }
+    }
+
     pub const fn name(self) -> &'static str {
         match self {
+            Self::Run => "run",
             Self::Probe => "probe",
             Self::EepromTimeout => "eeprom-timeout",
             Self::PageFault => "page-fault",
@@ -31,6 +43,9 @@ impl BootMode {
             Self::UnexpectedPageFault => "unexpected-page-fault",
             Self::KernelTests => "kernel-tests",
             Self::KernelTestsFail => "kernel-tests-fail",
+            Self::DriverRuntimeTests => "driver-runtime-tests",
+            Self::DriverNetworkTests => "driver-network-tests",
+            Self::DriverHardeningTests => "driver-hardening-tests",
             Self::HeapOom => "heap-oom",
             Self::ThreadStackGuard => "thread-stack-guard",
         }
@@ -45,6 +60,31 @@ impl BootMode {
                 | Self::UnexpectedPageFault
         )
     }
+
+    pub fn validate_build(self) -> Result<(), Error> {
+        if self.is_guest_test() && !cfg!(feature = "guest-tests") {
+            return Err(Error::TestsDisabled);
+        }
+        Ok(())
+    }
+
+    pub const fn is_guest_test(self) -> bool {
+        matches!(
+            self,
+            Self::EepromTimeout
+                | Self::PageFault
+                | Self::GeneralProtection
+                | Self::DoubleFault
+                | Self::UnexpectedPageFault
+                | Self::KernelTests
+                | Self::KernelTestsFail
+                | Self::DriverRuntimeTests
+                | Self::DriverNetworkTests
+                | Self::DriverHardeningTests
+                | Self::HeapOom
+                | Self::ThreadStackGuard
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -55,6 +95,7 @@ pub enum Error {
     InvalidModeLength = -22,
     UnknownMode = -23,
     DuplicateModeFile = -24,
+    TestsDisabled = -25,
 }
 
 fn read_bytes<const N: usize>(read: &mut impl FnMut() -> u8) -> [u8; N] {
@@ -116,6 +157,7 @@ pub fn read_mode(
     }
     let value = bytes[..size].strip_suffix(&[0]).unwrap_or(&bytes[..size]);
     match value {
+        b"run" => Ok(Some(BootMode::Run)),
         b"probe" => Ok(Some(BootMode::Probe)),
         b"eeprom-timeout" => Ok(Some(BootMode::EepromTimeout)),
         b"page-fault" => Ok(Some(BootMode::PageFault)),
@@ -124,6 +166,9 @@ pub fn read_mode(
         b"unexpected-page-fault" => Ok(Some(BootMode::UnexpectedPageFault)),
         b"kernel-tests" => Ok(Some(BootMode::KernelTests)),
         b"kernel-tests-fail" => Ok(Some(BootMode::KernelTestsFail)),
+        b"driver-runtime-tests" => Ok(Some(BootMode::DriverRuntimeTests)),
+        b"driver-network-tests" => Ok(Some(BootMode::DriverNetworkTests)),
+        b"driver-hardening-tests" => Ok(Some(BootMode::DriverHardeningTests)),
         b"heap-oom" => Ok(Some(BootMode::HeapOom)),
         b"thread-stack-guard" => Ok(Some(BootMode::ThreadStackGuard)),
         _ => Err(Error::UnknownMode),
@@ -182,6 +227,7 @@ mod tests {
     #[test]
     fn selects_each_supported_mode() {
         for mode in [
+            BootMode::Run,
             BootMode::Probe,
             BootMode::EepromTimeout,
             BootMode::PageFault,
@@ -190,6 +236,9 @@ mod tests {
             BootMode::UnexpectedPageFault,
             BootMode::KernelTests,
             BootMode::KernelTestsFail,
+            BootMode::DriverRuntimeTests,
+            BootMode::DriverNetworkTests,
+            BootMode::DriverHardeningTests,
             BootMode::HeapOom,
             BootMode::ThreadStackGuard,
         ] {
@@ -287,6 +336,37 @@ mod tests {
                 ("opt/kutox/test-mode", b"kernel-tests"),
             ])),
             Err(Error::DuplicateModeFile)
+        );
+    }
+}
+#[test]
+fn guest_modes_require_the_build_feature_without_changing_probe() {
+    assert_eq!(BootMode::selected(None), BootMode::Run);
+    assert_eq!(BootMode::selected(Some(BootMode::Probe)), BootMode::Probe);
+    assert_eq!(BootMode::Run.validate_build(), Ok(()));
+    assert!(!BootMode::Run.is_guest_test());
+    assert_eq!(BootMode::Probe.validate_build(), Ok(()));
+    for mode in [
+        BootMode::KernelTests,
+        BootMode::KernelTestsFail,
+        BootMode::DriverRuntimeTests,
+        BootMode::DriverNetworkTests,
+        BootMode::DriverHardeningTests,
+        BootMode::EepromTimeout,
+        BootMode::PageFault,
+        BootMode::GeneralProtection,
+        BootMode::DoubleFault,
+        BootMode::UnexpectedPageFault,
+        BootMode::HeapOom,
+        BootMode::ThreadStackGuard,
+    ] {
+        assert_eq!(
+            mode.validate_build(),
+            if cfg!(feature = "guest-tests") {
+                Ok(())
+            } else {
+                Err(Error::TestsDisabled)
+            }
         );
     }
 }

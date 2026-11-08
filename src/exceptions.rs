@@ -3,14 +3,15 @@ use crate::{
     cpu::{self, X86Cpu},
     io, irq, serial,
 };
+#[cfg(feature = "guest-tests")]
+use core::sync::atomic::AtomicUsize;
 use core::{
-    arch::{asm, global_asm},
+    arch::global_asm,
     mem::{offset_of, size_of},
     ptr::{addr_of, addr_of_mut},
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, Ordering},
 };
-use kutox::fw_cfg::BootMode;
-use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
+use moss_libkernel::CpuOps;
 use x86_64::{
     VirtAddr,
     instructions::tables::{lidt, load_tss},
@@ -28,17 +29,30 @@ use x86_64::{
 global_asm!(include_str!("exception_entry.S"));
 
 const STACK_SIZE: usize = 16 * 1024;
+#[cfg(feature = "guest-tests")]
 const FAULT_ADDRESS: u64 = 0x0000_6000_0000_0000;
+#[cfg(feature = "guest-tests")]
 const GP_SELECTOR: u64 = 0xfff8;
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 static DISPATCHING: AtomicBool = AtomicBool::new(false);
 static HARDWARE_IRQ: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "guest-tests")]
 static mut CONTEXT_PROBE: Option<fn()> = None;
+#[cfg(feature = "guest-tests")]
 static EXPECTED_VECTOR: AtomicUsize = AtomicUsize::new(usize::MAX);
+#[cfg(feature = "guest-tests")]
 static BREAKPOINTS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "guest-tests")]
 static THREAD_GUARD: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "guest-tests")]
 static THREAD_BOTTOM: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "guest-tests")]
 static THREAD_TOP: AtomicUsize = AtomicUsize::new(0);
+const FAILURE_PREFIX: &str = if cfg!(feature = "guest-tests") {
+    "CPU_TEST_FAIL"
+} else {
+    "CPU_EXCEPTION_FAIL"
+};
 
 #[repr(C, align(16))]
 struct Stack([u8; STACK_SIZE]);
@@ -162,7 +176,7 @@ pub fn initialize() -> Result<(), Failure> {
 #[unsafe(no_mangle)]
 extern "C" fn kutox_exception_dispatch(frame: &ExceptionFrame) {
     if DISPATCHING.swap(true, Ordering::AcqRel) {
-        serial::print(format_args!("CPU_TEST_FAIL stage=nested_exception\n"));
+        serial::print(format_args!("{FAILURE_PREFIX} stage=nested_exception\n"));
         io::finish(false);
     }
     let vector = frame.vector as usize;
@@ -179,14 +193,16 @@ extern "C" fn kutox_exception_dispatch(frame: &ExceptionFrame) {
             }
             Err(error) => {
                 serial::print(format_args!(
-                    "CPU_TEST_FAIL stage={} code={} vector={vector}\n",
+                    "{FAILURE_PREFIX} stage={} code={} vector={vector}\n",
                     error.stage, error.code
                 ));
                 io::finish(false);
             }
         }
     }
+    #[cfg(feature = "guest-tests")]
     let expected = EXPECTED_VECTOR.load(Ordering::Acquire) == vector;
+    #[cfg(feature = "guest-tests")]
     if vector == 3 && expected && frame.error == 0 {
         if let Some(probe) = unsafe { addr_of!(CONTEXT_PROBE).read() } {
             probe();
@@ -200,46 +216,49 @@ extern "C" fn kutox_exception_dispatch(frame: &ExceptionFrame) {
         "CPU_EXCEPTION vector={vector} error={:#x} rip={:#x} cr2={address:#x}\n",
         frame.error, frame.instruction_pointer
     ));
-    if expected && vector == 14 && address == FAULT_ADDRESS && frame.error == 0 {
-        serial::print(format_args!(
-            "CPU_TEST_OK test=page-fault vector=14 address={address:#x} error=0x0\n"
-        ));
-        io::finish(true);
-    }
-    if expected
-        && vector == 14
-        && address != 0
-        && address as usize == THREAD_GUARD.load(Ordering::Relaxed)
-        && frame.error == 0
-        && frame.stack_pointer as usize >= THREAD_BOTTOM.load(Ordering::Relaxed)
-        && (frame.stack_pointer as usize) < THREAD_TOP.load(Ordering::Relaxed)
+    #[cfg(feature = "guest-tests")]
     {
-        serial::print(format_args!(
-            "THREAD_GUARD_OK vector=14 address={address:#x} error=0x0 stack=verified\n"
-        ));
-        io::finish(true);
-    }
-    if expected && vector == 13 && frame.error == GP_SELECTOR {
-        serial::print(format_args!(
-            "CPU_TEST_OK test=general-protection vector=13 error={:#x}\n",
-            frame.error
-        ));
-        io::finish(true);
-    }
-    if expected && vector == 8 && frame.error == 0 && frame.stack_pointer == FAULT_ADDRESS {
-        let stack_start = unsafe { addr_of!(STACKS).cast::<Stack>().add(1) } as usize;
-        let frame_start = frame as *const ExceptionFrame as usize;
-        if frame_start >= stack_start
-            && frame_start + size_of::<ExceptionFrame>() <= stack_start + STACK_SIZE
-        {
+        if expected && vector == 14 && address == FAULT_ADDRESS && frame.error == 0 {
             serial::print(format_args!(
-                "CPU_TEST_OK test=double-fault vector=8 error=0x0 ist=verified\n"
+                "CPU_TEST_OK test=page-fault vector=14 address={address:#x} error=0x0\n"
             ));
             io::finish(true);
         }
+        if expected
+            && vector == 14
+            && address != 0
+            && address as usize == THREAD_GUARD.load(Ordering::Relaxed)
+            && frame.error == 0
+            && frame.stack_pointer as usize >= THREAD_BOTTOM.load(Ordering::Relaxed)
+            && (frame.stack_pointer as usize) < THREAD_TOP.load(Ordering::Relaxed)
+        {
+            serial::print(format_args!(
+                "THREAD_GUARD_OK vector=14 address={address:#x} error=0x0 stack=verified\n"
+            ));
+            io::finish(true);
+        }
+        if expected && vector == 13 && frame.error == GP_SELECTOR {
+            serial::print(format_args!(
+                "CPU_TEST_OK test=general-protection vector=13 error={:#x}\n",
+                frame.error
+            ));
+            io::finish(true);
+        }
+        if expected && vector == 8 && frame.error == 0 && frame.stack_pointer == FAULT_ADDRESS {
+            let stack_start = unsafe { addr_of!(STACKS).cast::<Stack>().add(1) } as usize;
+            let frame_start = frame as *const ExceptionFrame as usize;
+            if frame_start >= stack_start
+                && frame_start + size_of::<ExceptionFrame>() <= stack_start + STACK_SIZE
+            {
+                serial::print(format_args!(
+                    "CPU_TEST_OK test=double-fault vector=8 error=0x0 ist=verified\n"
+                ));
+                io::finish(true);
+            }
+        }
     }
     serial::print(format_args!(
-        "CPU_TEST_FAIL stage=unexpected_exception vector={vector}\n"
+        "{FAILURE_PREFIX} stage=unexpected_exception vector={vector}\n"
     ));
     io::finish(false);
 }
@@ -252,123 +271,6 @@ pub fn is_hardware_irq() -> bool {
     HARDWARE_IRQ.load(Ordering::Acquire)
 }
 
-pub fn test_thread_context(probe: fn()) -> Result<(), Failure> {
-    if cpu::interrupts_enabled()
-        || is_dispatching()
-        || unsafe { addr_of!(CONTEXT_PROBE).read() }.is_some()
-    {
-        return Err(Failure::new("exception_context_probe_state", -1));
-    }
-    unsafe { addr_of_mut!(CONTEXT_PROBE).write(Some(probe)) };
-    let result = test_breakpoint();
-    unsafe { addr_of_mut!(CONTEXT_PROBE).write(None) };
-    result
-}
-
-pub fn expect_thread_guard(guard: u64, bottom: u64, top: u64) {
-    THREAD_GUARD.store(guard as usize, Ordering::Relaxed);
-    THREAD_BOTTOM.store(bottom as usize, Ordering::Relaxed);
-    THREAD_TOP.store(top as usize, Ordering::Relaxed);
-    EXPECTED_VECTOR.store(14, Ordering::Release);
-}
-
-pub fn run_fault_test(mode: BootMode) -> Result<core::convert::Infallible, Failure> {
-    match mode {
-        BootMode::PageFault | BootMode::UnexpectedPageFault => {
-            if mode == BootMode::PageFault {
-                EXPECTED_VECTOR.store(14, Ordering::Release);
-            }
-            unsafe {
-                asm!("mov rax, [{}]", in(reg) FAULT_ADDRESS, out("rax") _, options(nostack));
-            }
-            Err(Failure::new("page_fault_did_not_fire", -1))
-        }
-        BootMode::GeneralProtection => {
-            EXPECTED_VECTOR.store(13, Ordering::Release);
-            unsafe {
-                asm!("mov ds, ax", in("ax") GP_SELECTOR as u16, options(nostack));
-            }
-            Err(Failure::new("general_protection_did_not_fire", -1))
-        }
-        BootMode::DoubleFault => {
-            EXPECTED_VECTOR.store(8, Ordering::Release);
-            // A page fault with an unmapped current stack cannot construct its
-            // exception frame. The processor must deliver #DF on the TSS IST.
-            unsafe {
-                asm!(
-                    "mov rsp, {stack}",
-                    "mov rax, [rsp]",
-                    "ud2",
-                    stack = in(reg) FAULT_ADDRESS,
-                    options(noreturn)
-                );
-            }
-        }
-        _ => Err(Failure::new("invalid_fault_test", -1)),
-    }
-}
-
-pub fn test_breakpoint() -> Result<(), Failure> {
-    let before = BREAKPOINTS.load(Ordering::Relaxed);
-    EXPECTED_VECTOR.store(3, Ordering::Release);
-    X86Cpu::enable_interrupts();
-    let rax: u64;
-    let r10: u64;
-    unsafe {
-        asm!("int3", inout("rax") 0x1122_3344u64 => rax,
-            inout("r10") 0x5566_7788u64 => r10);
-    }
-    let enabled = cpu::interrupts_enabled();
-    X86Cpu::disable_interrupts();
-    EXPECTED_VECTOR.store(usize::MAX, Ordering::Release);
-    if BREAKPOINTS.load(Ordering::Relaxed) != before + 1
-        || !enabled
-        || rax != 0x1122_3344
-        || r10 != 0x5566_7788
-    {
-        return Err(Failure::new("breakpoint_return", -1));
-    }
-    Ok(())
-}
-
-pub fn test_locks() -> Result<(), Failure> {
-    let first = SpinLockIrq::<_, X86Cpu>::new(0);
-    let second = SpinLockIrq::<_, X86Cpu>::new(0);
-    X86Cpu::disable_interrupts();
-    {
-        let mut guard = first.lock_save_irq();
-        *guard = 1;
-    }
-    if cpu::interrupts_enabled() {
-        return Err(Failure::new("lock_disabled_restore", -1));
-    }
-    X86Cpu::enable_interrupts();
-    let mut outer = first.lock_save_irq();
-    if cpu::interrupts_enabled() {
-        return Err(Failure::new("lock_irq_disable", -1));
-    }
-    {
-        let mut inner = second.lock_save_irq();
-        *inner = 2;
-        *outer += *inner;
-        if cpu::interrupts_enabled() {
-            return Err(Failure::new("lock_inner_disable", -1));
-        }
-    }
-    if cpu::interrupts_enabled() {
-        return Err(Failure::new("lock_nested_restore", -1));
-    }
-    drop(outer);
-    let enabled = cpu::interrupts_enabled();
-    X86Cpu::disable_interrupts();
-    if !enabled || first.into_inner() != 3 || second.into_inner() != 2 {
-        return Err(Failure::new("lock_enabled_restore", -1));
-    }
-    // Re-acquisition proves the previous guard released the lock on real hardware.
-    let lock = SpinLockIrq::<_, X86Cpu>::new(7);
-    drop(lock.lock_save_irq());
-    if *lock.lock_save_irq() != 7 {
-        return Err(Failure::new("lock_reacquire", -1));
-    }
-    Ok(())
-}
+#[cfg(feature = "guest-tests")]
+#[path = "guest_tests/exceptions.rs"]
+pub mod tests;

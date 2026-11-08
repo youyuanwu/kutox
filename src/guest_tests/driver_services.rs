@@ -1,3 +1,5 @@
+//! Guest-only acceptance fixtures; not production driver code.
+
 use crate::linux_deferred;
 use crate::{
     Failure, boot::BootInfo, driver_memory, driver_platform, irq, memory, pci, platform, threads,
@@ -33,8 +35,9 @@ fn test(
 ) -> Result<(), Failure> {
     let topology = platform::discover(boot, frames)?;
     let key = unsafe { kutox_c_driver_device() };
-    let owner = driver_platform::Owner::bind(boot, frames, key)?;
-    let gsi = pci::discover()?.interrupt_route(&topology)?;
+    let device = pci::discover()?;
+    let gsi = device.interrupt_route(&topology)?;
+    let owner = driver_platform::Owner::bind(boot, frames, key, device)?;
     unsafe { kutox_c_services_begin(gsi) };
     let timer = irq::Timer::start(boot, frames)?;
     let space = memory::StackSpace::new(boot, frames)?;
