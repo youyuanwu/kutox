@@ -15,13 +15,11 @@ It executes upstream hardware helpers and now includes a fixed-capacity port
 of Moss's `Smalloc` to bootstrap metadata for its adapted buddy/frame allocator.
 The buddy allocator now owns usable RAM and MMIO page-table frames and backs
 an adapted Moss slab heap for Rust allocations. The kernel still has no
-RX path, general driver scheduler, or Linux application environment. A bounded
-native e1000 TX acceptance proof now exercises real packet DMA and IRQ completion.
-That TX proof validates platform services, not Linux's packet implementation.
-Only the upstream hardware helpers currently execute; `e1000_main.c` does not.
-Its isolated source/dependency compile check is now implemented; the runtime
-environment and execution of original probe/open/xmit remain future phases,
-not native RX.
+controlled RX acceptance or Linux application environment. All four unchanged
+e1000 units now execute original lifecycle and TX/IRQ/NAPI cleanup through the
+source-facing environment. The earlier native Rust TX scaffold has been removed:
+Linux is the only packet driver, while Rust supplies kernel/platform services.
+Controlled original RX delivery is the next milestone.
 The [third-party notice](../THIRDPARTY-NOTICES.md) records the source revision,
 MIT license, and adaptation boundaries.
 
@@ -157,61 +155,18 @@ exhaustion/reuse, ownership and stale witnesses, C output/free/lifecycle/context
 contracts, and exact resource recovery. Bus mastering stays disabled throughout
 these allocation-only tests. Real device DMA is tested separately below.
 
-### One-packet e1000 TX platform scaffold
+### Linux-owned packet DMA
 
-The native [TX fixture](../src/e1000_tx.rs) reuses a shared
-[NIC owner](../src/e1000.rs), rather than duplicating PCI/MMIO/source/route
-lifetimes. It allocates one 128-byte, 128-aligned ring (eight legacy descriptors)
-and a separate 60-byte coherent packet with Moss frame guards. The unchanged
-`e1000_hw.c` still executes EEPROM helpers to obtain the source MAC; descriptor
-construction in kutox's C bridge uses the unchanged `e1000_hw.h` structure,
-EOP/IFCS/RS flags, and checked Rust/C size/status offsets. No `e1000_main.c`
-functions, skb, NAPI, workqueue, or Linux networking stack execute. The latter
-file is register/ordering/teardown prior art only.
+The earlier native Rust TX scaffold and its C descriptor-construction helper
+have been removed. Only the unchanged Linux e1000 implementation owns packet
+DMA and descriptor algorithms. The Rust MMIO/IRQ fixtures and coherent-allocation
+tests remain kernel/platform tests; they do not submit packets or implement a
+second NIC driver.
 
-Both buffers publish before a lifetime-bound, checked PCI bus-master guard
-enables DMA. RX remains disabled, and an already-up 1 Gb/s full-duplex QEMU link
-is required. One tail doorbell exposes only descriptor zero. Only TXDW is
-unmasked; the handler acknowledges ICR (TXQE may accompany TXDW) and directly
-wakes a completion waiter without switching stacks. A protocol-bound unsafe
-`device_read_u32()` performs an aligned/in-range volatile coherent status read
-followed by an acquire compiler barrier. It returns a value, never a CPU slice
-or reclamation rights. DD and absence of descriptor error flags are checked
-independently of completion signalling.
-
-Teardown follows the disable/flush/10 ms drain shape of Linux `e1000_down`, but
-its guarantee is deliberately restricted to the verified
-[QEMU 10.2.1 model](https://github.com/qemu/qemu/blob/v10.2.1/hw/net/e1000.c):
-`start_xmit` performs descriptor reads, packet reads, DD writeback and cause
-generation synchronously inside TDT/TCTL writes. An empty ring and flushed TX
-disable, disabled RX, cleared/read-back bus mastering, and source/route
-mask/drain/retirement together prove no DMA path remains. Buffers then reclaim
-through the domain/epoch witness; registers restore before normal guard release.
-Neither DD nor a timeout alone proves quiescence. Failure to establish drain is
-fatal without freeing live DMA buffers. The model's CTRL.RST merely self-clears,
-so it is not used as a reset witness. TIPG/TIDV are unmodelled and omitted;
-descriptor IDE is clear, and the modelled ITR/TADV delays are zero.
-
-This keeps Moss's contiguous-frame/direct-map/coherent-QEMU approach, researched
-in its pinned
-[VirtioHal](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/virtio_hal.rs),
-but retains owned guards and explicit quiescence rather than leaking/rebuilding
-allocation ownership or adding a second DMA allocator.
-
-Three new guest cases exercise repeated one-packet sessions, withheld-doorbell
-timeout, completed DD with a masked notification source, and Drop with a pending
-IRQ. They check native ownership exclusions, one IRQ per packet, timer-independent
-wakeup, descriptor errors, and exact frame/heap/controller/window recovery.
-Each normal, low-memory and intentional-failure suite captures NIC TX using a
-backend-RX `filter-dump`; the host requires exactly four ordered 60-byte Ethernet
-frames with the fixed MAC, experimental EtherType `0x88b5`, marker and sequence
-payload byte-for-byte. A missing/stale/malformed/extra packet cannot pass.
-This remains native hardware-helper reuse, not a port of the complete Linux
-network driver. Retain it as an independent platform regression fixture; do not
-extend it into a replacement native RX/TX driver. Streaming mappings, RX setup,
-work/NAPI and packet ownership are now prerequisites to the original Linux
-driver path described below. A network stack and physical-hardware acceptance
-remain outside the initial driver-reuse target.
+Original Linux TX acceptance is described below. Its QEMU fixture requires
+four exact Linux frames and original IRQ/NAPI unmap/free/accounting; a native
+packet or descriptor-helper symbol cannot pass as fallback success. A network
+stack and physical-hardware acceptance remain outside this milestone.
 
 ### Other native foundations
 
@@ -574,7 +529,7 @@ source API, not Linux's binary kernel ABI. The separately typed eight-slot boot
 DMA fixture is accessed through primitive FFI, not reinterpreted as Linux devices.
 The bridge uses the checked full-source `e1000_get_hw_dev` provider and constructs
 the original adapter/netdev types even for boot MAC. All four unchanged units
-now link separately as runtime objects. The boot MAC, native IRQ/DMA/TX and
+now link separately as runtime objects. The boot MAC, native IRQ/DMA and
 synthetic-service cases remain isolated from explicit original module startup.
 
 ### Tested execution-service profile
@@ -752,8 +707,8 @@ The generation-checked lifecycle boundary keeps Linux structs in C and admits
 one owned linear skb at a time. Packet bytes are copied before the caller sleeps.
 The registered original `e1000_xmit_frame` performs mapping, descriptor
 construction and the doorbell on its default 256-entry ring. The Rust fixture
-does not construct, read or reclaim descriptors; native TX/helper entry is
-fatal during original-driver tests.
+does not construct, read or reclaim descriptors. The native TX implementation
+and descriptor helper are removed; provenance rejects the helper's reintroduction.
 
 `NETDEV_TX_BUSY` leaves ownership with the adapter for bounded retry or
 cancellation. `NETDEV_TX_OK` transfers ownership even when Linux consumes a
@@ -776,8 +731,8 @@ The test transmits 60/128/512/1514-byte no-offload, untagged frames across two
 probe/open/close/remove sessions. It checks retained BUSY ownership/cancellation,
 no completion before deferred IRQ/NAPI progress, one live TX mapping and two
 packet allocations, and exact snapshot recovery per completion at 128/32 MiB.
-Fresh capture requires all four existing native frames followed by all four
-distinct exact Linux frames; intentional-failure mode cannot skip packet checks.
+Fresh capture requires only the four distinct exact Linux frames;
+intentional-failure mode cannot skip packet checks.
 Controlled original RX delivery and ring-wrap/backpressure/map-failure/pending
 teardown hardening remain subsequent phases.
 
@@ -909,7 +864,7 @@ kernel releases. Upgrading that baseline is a porting and verification task.
 
 ### Linux e1000 driver-reuse roadmap
 
-The MAC helper and Rust kernel/resource/native-TX foundations are completed
+The MAC helper and Rust kernel/resource foundations are completed
 baseline work, not completion of the Linux packet-driver goal. The following
 phases replace a native-RX-first roadmap:
 
@@ -934,7 +889,8 @@ phases replace a native-RX-first roadmap:
    This phase is complete for the selected profile.
 5. **Original Linux TX.** Submit a linear skb through `ndo_start_xmit`, receive
    the original IRQ, and complete through original NAPI DD/unmap/free/queue
-   accounting. Verify exact captured bytes and zero native-TX fallback calls.
+   accounting. Verify exact captured bytes with no native TX implementation.
+   This phase is complete for the selected linear profile.
 6. **Original Linux RX.** Inject known packets through an isolated fixture and
    deliver through original RX cleanup and native ingress. Test both copybreak
    and non-copybreak ownership, header/FCS handling and replenishment; no new
@@ -949,12 +905,12 @@ phases replace a native-RX-first roadmap:
 
 Every hardware acceptance case must combine source/build provenance, observed
 original callback execution, packet bytes and Linux completion/cleanup. Linked
-symbols or native DD/IRQ success alone are not sufficient. Keep native scaffold
-cases separate and retain exact KTAP/pcap validation, one ISO, fw_cfg selectors,
+symbols or native DD/IRQ success alone are not sufficient. Retain isolated
+kernel/platform tests and exact KTAP/pcap validation, one ISO, fw_cfg selectors,
 and sequential low-memory regression runs.
 
-Phases 1-4 are complete, including original lifecycle/IRQ/deferred execution.
-The next item is **phase 5: original Linux TX and completion**. Integration with a native network
+Phases 1-5 are complete, including original lifecycle and TX/IRQ/NAPI cleanup.
+The next item is **phase 6: original Linux RX delivery**. Integration with a native network
 stack and extraction for a second Linux driver follow this roadmap; they do not
 replace its driver-execution gates.
 

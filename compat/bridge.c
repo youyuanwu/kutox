@@ -17,31 +17,7 @@ extern bool kutox_driver_mmio(uintptr_t, u32, bool);
 extern int kutox_vprint(const char *, va_list);
 #ifdef KUTOX_E1000_FULL_SOURCE
 extern void kutox_c_tx_mmio(uintptr_t, u32, bool);
-extern bool kutox_driver_tracing(void);
 #endif
-
-_Static_assert(sizeof(struct e1000_tx_desc) == 16, "TX descriptor size");
-_Static_assert(offsetof(struct e1000_tx_desc, upper) == 12, "TX status offset");
-
-int kutox_e1000_tx_descriptor(void *ring, size_t ring_bytes,
-                             uint64_t packet_dma, u16 packet_bytes)
-{
-#ifdef KUTOX_E1000_FULL_SOURCE
-    if (kutox_driver_tracing()) kutox_platform_fail("linux_tx_native_descriptor");
-#endif
-    if (!ring || ((uintptr_t)ring & 15) || ring_bytes != 128 ||
-        packet_bytes < 60 || packet_bytes > 1514 ||
-        packet_dma > UINT32_MAX - packet_bytes + 1)
-        return -1;
-    struct e1000_tx_desc *desc = ring;
-    *desc = (struct e1000_tx_desc) {
-        .buffer_addr = cpu_to_le64(packet_dma),
-        .lower.data = cpu_to_le32(packet_bytes | E1000_TXD_CMD_EOP |
-                                 E1000_TXD_CMD_IFCS | E1000_TXD_CMD_RS),
-        .upper.data = 0,
-    };
-    return 0;
-}
 
 static void check_address(const volatile void *address, u32 value, bool writing)
 {

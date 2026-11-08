@@ -207,14 +207,14 @@ Do not benchmark throughput at this stage: there is no packet data path.
 ## Follow-on milestones
 
 The boot MAC helper is complete. Kernel scheduling, IRQ/DMA foundations and a
-native TX capture proof now validate the platform, but that native TX path is
-scaffolding rather than execution of Linux's packet driver.
+source-facing DMA/packet tests validate the platform. The earlier native TX
+scaffold has been removed in favor of the original Linux packet driver.
 
 The isolated original-source compile/dependency check and synthetic
 execution/object/deferred and PCI/packet/DMA service contracts are now complete.
 Original module/probe/open/close, IRQ, watchdog and NAPI callbacks now execute
 in separate lifecycle cases. Original xmit, TXDW IRQ and NAPI TX cleanup now
-have exact four-frame packet acceptance, separate from the native scaffold.
+have exact four-frame packet acceptance with no native TX implementation.
 Controlled original RX cleanup/delivery is next. Upstream open requires RX
 setup and link work even for TX-first
 testing; declarations or constant-success substitutes do not satisfy it.

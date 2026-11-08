@@ -49,9 +49,6 @@ KERNEL_TEST_NAMES = (
     "dma.coherent_allocation",
     "dma.ownership",
     "linux.coherent_dma",
-    "net.e1000_tx",
-    "net.e1000_tx_timeout",
-    "net.e1000_tx_pending_cleanup",
     "linux.driver_atomics",
     "linux.driver_lifecycle",
     "linux.driver_work",
@@ -563,18 +560,8 @@ def check_provenance(nm):
     }:
         if symbol not in names:
             raise AssertionError(f"original full-driver source/callback symbol missing: {symbol}")
-    if "kutox_e1000_tx_descriptor" not in names:
-        raise AssertionError("native C descriptor helper using the upstream header not linked")
-
-
-def tx_packet(sequence):
-    packet = bytearray(
-        b"\xff" * 6 + bytes.fromhex("52540012345688b5")
-        + bytes((sequence + index) & 255 for index in range(14, 60))
-    )
-    packet[14:22] = b"KUTOX-TX"
-    packet[22] = sequence
-    return bytes(packet)
+    if "kutox_e1000_tx_descriptor" in names:
+        raise AssertionError("removed native TX descriptor helper was linked")
 
 
 LINUX_TX_LENGTHS = (60, 128, 512, 1514)
@@ -600,9 +587,8 @@ def validate_tx_capture(data):
     if (major, minor, link) != (2, 4, 1) or snaplen < max(LINUX_TX_LENGTHS):
         raise AssertionError("invalid Ethernet pcap header")
     packets = []
-    expected = [tx_packet(sequence) for sequence in (1, 2, 3, 4)]
-    expected += [linux_tx_packet(sequence, size)
-                 for sequence, size in enumerate(LINUX_TX_LENGTHS, 1)]
+    expected = [linux_tx_packet(sequence, size)
+                for sequence, size in enumerate(LINUX_TX_LENGTHS, 1)]
     offset = 24
     while offset < len(data):
         if len(data) - offset < 16:

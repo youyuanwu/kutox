@@ -181,24 +181,6 @@ pub struct Bar {
 }
 
 impl Bar {
-    /// # Safety
-    /// The caller owns every reachable DMA buffer and engine, has validated the
-    /// identity-DMA platform, and must stop/drain engines before releasing them.
-    pub unsafe fn enable_bus_master(&self) -> Result<BusMaster<'_>, Failure> {
-        crate::threads::check_boot_or_thread_context()
-            .map_err(|error| Failure::new("pci_dma_context", error as i32))?;
-        let command = self.device.read(4) as u16;
-        if command & 6 != 2 {
-            return Err(Failure::new("pci_dma_command", -1));
-        }
-        self.device.command(command | 4);
-        if self.device.read(4) as u16 != command | 4 {
-            self.device.command(command);
-            return Err(Failure::new("pci_dma_readback", -1));
-        }
-        Ok(BusMaster { bar: self })
-    }
-
     pub fn enable_interrupts(&self) -> Result<(), Failure> {
         let command = self.device.read(4) as u16 & !(1 << 10);
         self.device.command(command);
@@ -206,21 +188,6 @@ impl Bar {
             return Err(Failure::new("pci_irq_command", -1));
         }
         Ok(())
-    }
-}
-
-pub struct BusMaster<'bar> {
-    bar: &'bar Bar,
-}
-
-impl Drop for BusMaster<'_> {
-    fn drop(&mut self) {
-        let command = self.bar.device.read(4) as u16;
-        self.bar.device.command(command & !4);
-        assert!(
-            self.bar.device.bus_mastering_disabled(),
-            "PCI DMA disable failed"
-        );
     }
 }
 

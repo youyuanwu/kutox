@@ -119,7 +119,7 @@ def suite_log(case="kernel-tests"):
 
 class KernelSuiteTests(unittest.TestCase):
     def test_requires_original_driver_lifecycle_cases(self):
-        self.assertEqual(KERNEL_TEST_NAMES[51:], (
+        self.assertEqual(KERNEL_TEST_NAMES[48:], (
             "linux.e1000_lifecycle", "linux.e1000_failures", "linux.e1000_tx",
         ))
 
@@ -222,15 +222,25 @@ class KernelSuiteTests(unittest.TestCase):
             "linux.coherent_dma",
         ))
 
-    def test_requires_the_actual_tx_cases(self):
-        self.assertEqual(KERNEL_TEST_NAMES[37:40], (
-            "net.e1000_tx",
-            "net.e1000_tx_timeout",
-            "net.e1000_tx_pending_cleanup",
-        ))
+    def test_requires_only_linux_packet_driver_cases(self):
+        self.assertFalse(any(name.startswith("net.e1000_tx") for name in KERNEL_TEST_NAMES))
+        self.assertIn("linux.e1000_tx", KERNEL_TEST_NAMES)
+
+    def test_provenance_rejects_native_descriptor_helper(self):
+        names = {name for values in qemu_test.DRIVER_CALLBACK_NAMES.values() for name in values}
+        names.update(("e1000_set_mac_type", "e1000_init_eeprom_params", "e1000_read_mac_addr",
+                      "kutox_jiffies", "memcpy", "memset", "e1000_check_options",
+                      "e1000_set_ethtool_ops", "kutox_module_init", "kutox_module_exit"))
+        symbols = "\n".join(f"0000000000001000 T {name}" for name in sorted(names))
+        with patch.object(qemu_test.subprocess, "check_output", side_effect=[REVISION, "", symbols]):
+            qemu_test.check_provenance("nm")
+        with patch.object(qemu_test.subprocess, "check_output", side_effect=[
+            REVISION, "", symbols + "\n0000000000002000 T kutox_e1000_tx_descriptor",
+        ]), self.assertRaisesRegex(AssertionError, "removed native TX"):
+            qemu_test.check_provenance("nm")
 
     def test_requires_driver_execution_services(self):
-        self.assertEqual(KERNEL_TEST_NAMES[40:46], (
+        self.assertEqual(KERNEL_TEST_NAMES[37:43], (
             "linux.driver_atomics",
             "linux.driver_lifecycle",
             "linux.driver_work",
@@ -240,7 +250,7 @@ class KernelSuiteTests(unittest.TestCase):
         ))
 
     def test_requires_driver_memory_packet_contracts(self):
-        self.assertEqual(KERNEL_TEST_NAMES[46:51], (
+        self.assertEqual(KERNEL_TEST_NAMES[43:48], (
             "linux.driver_allocation",
             "linux.driver_streaming_dma",
             "linux.driver_packets",
@@ -396,9 +406,8 @@ class KernelSuiteTests(unittest.TestCase):
 
 def tx_pcap(packets=None, endian="<"):
     if packets is None:
-        packets = [qemu_test.tx_packet(sequence) for sequence in (1, 2, 3, 4)]
-        packets += [qemu_test.linux_tx_packet(sequence, size)
-                    for sequence, size in enumerate(qemu_test.LINUX_TX_LENGTHS, 1)]
+        packets = [qemu_test.linux_tx_packet(sequence, size)
+                   for sequence, size in enumerate(qemu_test.LINUX_TX_LENGTHS, 1)]
     magic = b"\xd4\xc3\xb2\xa1" if endian == "<" else b"\xa1\xb2\xc3\xd4"
     data = magic + struct.pack(endian + "HHIIII", 2, 4, 0, 0, 65536, 1)
     for packet in packets:
@@ -407,13 +416,6 @@ def tx_pcap(packets=None, endian="<"):
 
 
 class TxCaptureTests(unittest.TestCase):
-    def test_exact_packet_shape(self):
-        self.assertEqual(
-            qemu_test.tx_packet(1),
-            b"\xff" * 6 + bytes.fromhex("52540012345688b5")
-            + b"KUTOX-TX\x01" + bytes(range(24, 61)),
-        )
-
     def test_accepts_both_classic_pcap_byte_orders(self):
         for endian in ("<", ">"):
             qemu_test.validate_tx_capture(tx_pcap(endian=endian))
@@ -427,14 +429,13 @@ class TxCaptureTests(unittest.TestCase):
             self.assertEqual(packet[23:], bytes((sequence + index) & 255 for index in range(23, size)))
 
     def test_rejects_absent_extra_duplicate_reordered_or_wrong_packets(self):
-        packets = [qemu_test.tx_packet(sequence) for sequence in (1, 2, 3, 4)]
-        native = packets[:]
-        packets += [qemu_test.linux_tx_packet(sequence, size)
-                    for sequence, size in enumerate(qemu_test.LINUX_TX_LENGTHS, 1)]
+        packets = [qemu_test.linux_tx_packet(sequence, size)
+                   for sequence, size in enumerate(qemu_test.LINUX_TX_LENGTHS, 1)]
+        native = b"\xff" * 6 + bytes.fromhex("52540012345688b5") + b"KUTOX-TX\x01" + bytes(range(24, 61))
         wrong = bytearray(packets[0])
         wrong[-1] ^= 1
         for frames in (
-            [], packets[:3], native, packets[:-1], packets + [packets[0]], [packets[0]] * 8,
+            [], packets[:3], [native], [native, *packets], packets + [packets[0]], [packets[0]] * 4,
             packets[::-1], [bytes(wrong), *packets[1:]],
         ):
             with self.subTest(frames=frames), self.assertRaises(AssertionError):

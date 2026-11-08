@@ -61,18 +61,16 @@ Owned coherent DMA buffers now reuse Moss contiguous frame guards, with checked
 32/64-bit masks, size/alignment, distinct CPU/device addresses, zero initialization,
 and explicit CPU/device ownership. A bounded C adapter supplies coherent allocation,
 free, mask selection and ordering barriers. The allocation-only tests keep
-bus mastering disabled; a separate native TX proof now performs real device DMA.
+bus mastering disabled; the original Linux TX case performs real device DMA.
 
-The bounded e1000 TX proof sends one 60-byte Ethernet frame per owned descriptor
-ring, verifies descriptor `DD` and a real `TXDW` IRQ wakeup, and captures the exact
-bytes in QEMU. Timeout and pending-IRQ teardown stop/drain the device before
-reclaiming buffers. This is QEMU-only TX test scaffolding, not the target Linux packet driver,
-RX, or a networking stack.
+The earlier native Rust TX implementation and descriptor helper have been
+removed. The unchanged Linux e1000 implementation is the only packet driver:
+it owns descriptor programming, submission and IRQ/NAPI cleanup. Rust still
+provides PCI, MMIO, IRQ, DMA, scheduling and allocation services. Controlled RX
+delivery and a networking stack remain subsequent work.
 
-These native proofs remain scaffolding, not a LinuxKPI implementation or
-Linux packet-path acceptance. TX descriptor construction uses the original header.
-All four original driver units are now linked for separately tested Linux
-lifecycle execution. See the
+All four original driver units are linked for Linux lifecycle and TX
+execution. See the
 [milestone design](docs/linux-e1000-mac.md) for its scope and acceptance goals.
 
 An isolated compile-only target now compiles unchanged `e1000_main.c` with its
@@ -214,7 +212,7 @@ hardware-configuration cases still use separate boots of the same ISO.
 
 ```text
 KTAP version 1
-1..54
+1..51
 ok 1 cpu.irq_lock_restore
 ok 2 cpu.breakpoint_return
 ok 3 memory.alignment_reservations
@@ -252,25 +250,22 @@ ok 34 irq.device_masking_cleanup
 ok 35 dma.coherent_allocation
 ok 36 dma.ownership
 ok 37 linux.coherent_dma
-ok 38 net.e1000_tx
-ok 39 net.e1000_tx_timeout
-ok 40 net.e1000_tx_pending_cleanup
 # linux format=-7/0000002A/4294967296/12:34:56:78:9a:bc/end
-ok 41 linux.driver_atomics
-ok 42 linux.driver_lifecycle
-ok 43 linux.driver_work
-ok 44 linux.driver_napi
-ok 45 linux.driver_irq
-ok 46 linux.driver_worker_rollback
-ok 47 linux.driver_allocation
-ok 48 linux.driver_streaming_dma
-ok 49 linux.driver_packets
-ok 50 linux.driver_capacity
-ok 51 linux.driver_failed_open
-ok 52 linux.e1000_lifecycle
-ok 53 linux.e1000_failures
-ok 54 linux.e1000_tx
-# Totals: pass:54 fail:0 skip:0 total:54
+ok 38 linux.driver_atomics
+ok 39 linux.driver_lifecycle
+ok 40 linux.driver_work
+ok 41 linux.driver_napi
+ok 42 linux.driver_irq
+ok 43 linux.driver_worker_rollback
+ok 44 linux.driver_allocation
+ok 45 linux.driver_streaming_dma
+ok 46 linux.driver_packets
+ok 47 linux.driver_capacity
+ok 48 linux.driver_failed_open
+ok 49 linux.e1000_lifecycle
+ok 50 linux.e1000_failures
+ok 51 linux.e1000_tx
+# Totals: pass:51 fail:0 skip:0 total:51
 ```
 
 Tests run sequentially with interrupts disabled at case boundaries. After
@@ -504,24 +499,10 @@ disabled for deliberately unsupported hardware entry points.
   disjoint buffers, exhaustion/reuse, counters, live/stale ownership, output
   preservation, invalid free/lifecycle/context requests and full cleanup.
   They never enable bus mastering or a DMA engine.
-- [The native TX proof](src/e1000_tx.rs) reuses the shared
-  [NIC/MMIO/IRQ owner](src/e1000.rs), a 128-byte ring of eight legacy descriptors,
-  and one 60-byte coherent packet. The [C bridge](compat/bridge.c) constructs the
-  first descriptor with the original Linux `e1000_tx_desc` and EOP/IFCS/RS flags.
-  No additional upstream translation unit or `e1000_main.c` entry point executes.
-  Buffers publish before bus mastering/TX enablement and the ordered tail
-  doorbell; a real TXDW handler acknowledges ICR and signals a waiting thread.
-  DD is read volatile without a CPU slice and descriptor errors fail acceptance.
-  Actual Linux RX/TX and a network stack remain absent. Separate synthetic
-  services now provide standard streaming DMA and linear packet ownership.
-- TX teardown flushes a disabled engine, allows the Linux-style 10 ms drain,
-  requires an empty hardware ring and disabled RX, clears/readbacks bus mastering,
-  masks/drains/retires its IRQ, then obtains a DMA quiescence witness and restores
-  registers. Failure to establish drain is fatal rather than freeing live DMA.
-  This relies on the validated QEMU 82540EM model's synchronous TDT/TCTL processing,
-  verified against QEMU 10.2.1; it is not a physical-hardware teardown guarantee.
-  QEMU does not model TIPG/TIDV; delayed-IRQ IDE is clear. Its CTRL.RST write is not
-  used as a fabricated reset/quiescence witness.
+- [The original Linux TX fixture](src/linux_driver.rs) calls registered source
+  callbacks through [the C adapter](compat/driver_lifecycle.c). Only Linux
+  constructs and reclaims descriptors. Rust supplies source-facing allocation,
+  streaming DMA and execution services; there is no native Rust TX fallback.
 - The four timer registry cases cover repeated hardware delivery/EOI, ordinary
   and already-pending HLT wakeups, all fifteen non-RSP GPRs plus RSP and IF/DF/
   arithmetic flags, LVT masking and a real bounded timeout, pending delivery
@@ -812,7 +793,7 @@ probe/open/IRQ/NAPI/packet callback executes in these cases.
 module initializer and registered PCI/net-device callbacks explicitly. It uses
 generation-checked handles, original EEPROM/options/PHY/reset behavior, default
 256-entry TX/RX rings and legitimate zero-offload feature negotiation. Metadata
-does not auto-start the driver in boot MAC, native TX or synthetic cases.
+does not auto-start the driver in boot MAC or native/synthetic service cases.
 
 The lifecycle case performs two probe/remove sessions, each with two open/close
 cycles. Link readiness comes from original `e1000_watchdog`; real LSC/device IRQs
@@ -854,18 +835,17 @@ then original NAPI unmap, skb consumption, completed-queue accounting and poll
 return before native acceptance. Packet/byte statistics and exact allocation/
 mapping snapshots must recover after every completion.
 
-The fresh pcap must contain the existing four 60-byte native scaffold frames,
-unchanged and in order, followed by the four exact Linux frames (`KUTOX-LX`,
+The fresh pcap must contain only the four exact Linux frames (`KUTOX-LX`,
 EtherType `0x88b6`). Missing, reordered, duplicate or wrong bytes fail, including
-intentional-failure mode. Native TX/descriptor-helper entry is fatal while the
-Linux fixture runs; there is no fallback. RX setup remains original Linux, but
+intentional-failure mode. Provenance rejects the removed native descriptor
+helper; there is no fallback. RX setup remains original Linux, but
 controlled RX delivery, ring wrap/backpressure/fault hardening and an IP stack
 are later work.
 
 The build and provenance test require Linux `v7.3.1`, commit
 `79a907609d53d5cd645b42c11550d295d43abf99`, with no submodule modifications.
 The whole selected Linux e1000 source closure is linked. Embclox's native NIC
-implementation is not linked; the kutox native TX scaffold is separately tested.
+implementation is not linked, and kutox's former native TX scaffold is removed.
 
 ## Prior work and licensing
 

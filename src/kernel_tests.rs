@@ -4,8 +4,8 @@ use crate::{
     boot::BootInfo,
     completion,
     cpu::{self, X86Cpu},
-    device_irq, dma, e1000_tx, exceptions, heap, io, irq, linux_deferred, linux_dma,
-    linux_driver_tests, linux_irq, linux_runtime, memory, mutex, serial, threads,
+    device_irq, dma, exceptions, heap, io, irq, linux_deferred, linux_dma, linux_driver_tests,
+    linux_irq, linux_runtime, memory, mutex, serial, threads,
 };
 use crate::{driver_memory, driver_platform, driver_service_tests};
 use kutox::fw_cfg::BootMode;
@@ -168,18 +168,6 @@ static TESTS: &[TestCase] = &[
         run: linux_dma::test,
     },
     TestCase {
-        name: "net.e1000_tx",
-        run: e1000_tx::delivery,
-    },
-    TestCase {
-        name: "net.e1000_tx_timeout",
-        run: e1000_tx::timeout_cleanup,
-    },
-    TestCase {
-        name: "net.e1000_tx_pending_cleanup",
-        run: e1000_tx::pending_cleanup,
-    },
-    TestCase {
         name: "linux.driver_atomics",
         run: linux_driver_tests::atomics,
     },
@@ -264,7 +252,6 @@ pub fn run(boot: &BootInfo) -> ! {
         || !driver_memory::quiescent()
         || !driver_platform::quiescent()
         || !device_irq::quiescent()
-        || !e1000_tx::quiescent()
         || !linux_dma::quiescent()
         || !memory::apic_window_unused(boot)
         || !memory::stack_window_unused(boot)
@@ -335,7 +322,6 @@ pub fn run(boot: &BootInfo) -> ! {
             || !driver_memory::quiescent()
             || !driver_platform::quiescent()
             || !device_irq::quiescent()
-            || !e1000_tx::quiescent()
             || !linux_dma::quiescent()
             || !memory::apic_window_unused(boot)
             || !memory::stack_window_unused(boot)

@@ -1,6 +1,5 @@
 use crate::{
-    Failure, ProbeResult, boot::BootInfo, irq::external::ClaimedIrq, irq::external::IoApic, memory,
-    pci, serial,
+    Failure, boot::BootInfo, irq::external::ClaimedIrq, irq::external::IoApic, memory, pci, serial,
 };
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -27,7 +26,7 @@ pub fn write(base: usize, offset: usize, value: u32) {
 
 pub struct Nic<'a, 'storage> {
     mapping: memory::MmioMapping<'a, 'storage>,
-    bar: pci::Bar,
+    _bar: pci::Bar,
     gsi: u32,
 }
 
@@ -59,32 +58,15 @@ impl<'a, 'storage> Nic<'a, 'storage> {
             "# e1000 IRQ gsi={gsi} source=piix vector={:#x} dma=disabled\n",
             crate::irq::DEVICE_VECTOR
         ));
-        Ok(Self { mapping, bar, gsi })
+        Ok(Self {
+            mapping,
+            _bar: bar,
+            gsi,
+        })
     }
 
     pub fn address(&self) -> usize {
         self.mapping.address()
-    }
-
-    pub fn bar(&self) -> &pci::Bar {
-        &self.bar
-    }
-
-    pub fn mac(&self) -> Result<[u8; 6], Failure> {
-        let device = pci::discover()?;
-        let mut result = ProbeResult::default();
-        unsafe {
-            crate::kutox_read_mac(
-                self.address(),
-                memory::MMIO_LENGTH,
-                device.vendor,
-                device.device,
-                device.revision,
-                0,
-                &mut result,
-            );
-        }
-        result.permanent_mac()
     }
 
     pub fn claim<'nic, 'controller>(

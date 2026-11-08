@@ -12,7 +12,6 @@ mod driver_memory;
 mod driver_platform;
 mod driver_service_tests;
 mod e1000;
-mod e1000_tx;
 mod exceptions;
 mod heap;
 mod io;
