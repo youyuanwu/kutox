@@ -144,7 +144,7 @@ class CommandTests(unittest.TestCase):
     def test_every_case_uses_the_same_iso(self):
         for case in CASES:
             with self.subTest(case=case):
-                command = qemu_command(self.args, case)
+                command = qemu_command(self.args, case, net_fd=17)
                 self.assertEqual(command[command.index("-cdrom") + 1], str(Path("build/kutox.iso")))
 
     def test_modes_are_selected_at_launch(self):
@@ -161,7 +161,7 @@ class CommandTests(unittest.TestCase):
             ("unexpected-page-fault", "unexpected-page-fault"),
         ]:
             with self.subTest(case=case):
-                command = qemu_command(self.args, case)
+                command = qemu_command(self.args, case, net_fd=17)
                 self.assertEqual(
                     command[command.index("-fw_cfg") + 1],
                     f"name=opt/kutox/test-mode,string={mode}",
@@ -176,7 +176,7 @@ class CommandTests(unittest.TestCase):
 
     def test_device_irq_suites_use_distinct_pci_slots_in_the_same_image(self):
         for case, slot in (("kernel-tests", "3"), ("kernel-tests-low-memory", "5"), ("kernel-tests-fail", "3")):
-            command = qemu_command(self.args, case)
+            command = qemu_command(self.args, case, net_fd=17)
             self.assertIn(f"e1000,netdev=irqtest,addr={slot},mac=52:54:00:12:34:56", command)
             self.assertEqual(command[command.index("-cdrom") + 1], str(Path("build/kutox.iso")))
 

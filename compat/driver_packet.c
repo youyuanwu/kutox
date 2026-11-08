@@ -14,9 +14,18 @@ static struct {
     unsigned long completed_before, completed_bytes_before, stats_before, stats_bytes_before;
     bool live, accepted, mapped, sent, published, freed, completed, aborting;
 } tx;
+static struct {
+    struct net_device *device;
+    uintptr_t mmio, identity;
+    bool enabled, active_skb, copy;
+} rx;
 static void tx_event(unsigned int event, int result)
 {
     kutox_driver_trace(event,0,tx.identity,result);
+}
+static void rx_event(unsigned int event, int result)
+{
+    kutox_driver_trace(event,0,rx.identity,result);
 }
 struct net_device *kutox_c_registered_netdev(void) { return netdev && netdev->registered ? netdev : NULL; }
 int kutox_c_netdev_close(struct net_device *device)
@@ -52,7 +61,8 @@ struct net_device *alloc_etherdev(size_t private_size)
 void free_netdev(struct net_device *device)
 {
     netdev_check(device);
-    if (device->registered || device->running || device->sent_packets != device->completed_packets || tx.live)
+    if (device->registered || device->running || device->sent_packets != device->completed_packets ||
+        tx.live || rx.enabled)
         kutox_platform_fail("free_netdev_live");
     kutox_c_retire_napi_device(device);
     kutox_c_pci_clear_data(device);
@@ -255,6 +265,8 @@ static void free_skb(struct sk_buff *skb)
 {
     skb_check(skb);
     bool tracked = tx.live && (uintptr_t)skb == tx.identity;
+    bool received = rx.enabled && rx.active_skb && (uintptr_t)skb == rx.identity;
+    unsigned int backing = skb->backing_kind;
     if (skb->references != 1) kutox_platform_fail("skb_reference_profile");
     if (skb->backing_kind) skb_free_frag(skb->head); else kfree(skb->head);
     skb->references = 0; kfree(skb);
@@ -262,6 +274,10 @@ static void free_skb(struct sk_buff *skb)
         if (tx.mapped || tx.freed) kutox_platform_fail("tx_free_order");
         tx.freed = true; tx.skb = NULL;
         if (!tx.sent || tx.aborting) tx_event(28,0);
+    }
+    if (received) {
+        rx.active_skb = false;
+        rx_event(42,backing);
     }
 }
 void dev_kfree_skb(struct sk_buff *skb) { if (skb) free_skb(skb); }
@@ -426,6 +442,7 @@ void *netdev_alloc_frag(unsigned int size)
     if (slot == ARRAY_SIZE(fragments)) { kutox_driver_diag("fragment_capacity", -ENOMEM); return NULL; }
     void *pointer = (void *)kutox_driver_alloc(size,GFP_ATOMIC,1);
     if (pointer) fragments[slot] = pointer;
+    else if (rx.enabled && rx.identity) rx_event(46,-ENOMEM);
     return pointer;
 }
 static size_t fragment_slot(const void *pointer)
@@ -455,6 +472,11 @@ struct sk_buff *napi_build_skb(void *pointer, unsigned int size)
     driver_check(kutox_driver_range((uintptr_t)skb->end,sizeof(struct skb_shared_info),0), "build_skb_sharedinfo_owned");
     memset(skb->end,0,sizeof(struct skb_shared_info));
     skb->references = 1; skb->backing_kind = 1; skb->truesize = size + sizeof(*skb);
+    if (rx.enabled) {
+        if (rx.active_skb) kutox_platform_fail("rx_overlapping_skb");
+        rx.identity = (uintptr_t)skb; rx.active_skb = true; rx.copy = false;
+        rx_event(37,size);
+    }
     return skb;
 }
 struct sk_buff *napi_alloc_skb(struct napi_struct *napi, unsigned int size)
@@ -462,6 +484,11 @@ struct sk_buff *napi_alloc_skb(struct napi_struct *napi, unsigned int size)
     if (!napi || napi->device != netdev) kutox_platform_fail("napi_skb_identity");
     struct sk_buff *skb = alloc_skb(size + 66,GFP_ATOMIC);
     if (skb) skb_reserve(skb,66);
+    if (skb && rx.enabled) {
+        if (rx.active_skb) kutox_platform_fail("rx_overlapping_skb");
+        rx.identity = (uintptr_t)skb; rx.active_skb = true; rx.copy = true;
+        rx_event(36,size);
+    }
     return skb;
 }
 void napi_free_frags(struct napi_struct *napi)
@@ -472,13 +499,17 @@ void napi_free_frags(struct napi_struct *napi)
 __be16 eth_type_trans(struct sk_buff *skb, struct net_device *device)
 {
     netdev_check(device); skb_check(skb);
-    if (skb->len < ETH_HLEN) kutox_platform_fail("ethernet_short");
-    driver_check(kutox_driver_range((uintptr_t)skb->data,skb->len,0), "ethernet_device_owned");
     skb->mac_header = (unsigned int)(skb->data - skb->head);
+    if (skb->len < ETH_HLEN) {
+        kutox_driver_diag("ethernet_short",-EINVAL);
+        skb->device = device; skb->protocol = 0;
+        return 0;
+    }
+    driver_check(kutox_driver_range((uintptr_t)skb->data,skb->len,0), "ethernet_device_owned");
     skb->device = device;
     u16 type = ((u16)skb->data[12] << 8) | skb->data[13];
     skb_pull(skb,ETH_HLEN);
-    if (type < 1536) kutox_platform_fail("ethernet_llc_profile");
+    if (rx.enabled && (uintptr_t)skb == rx.identity) rx_event(40,type);
     skb->protocol = htons(type); return skb->protocol;
 }
 int napi_gro_receive(struct napi_struct *napi, struct sk_buff *skb)
@@ -487,14 +518,51 @@ int napi_gro_receive(struct napi_struct *napi, struct sk_buff *skb)
     skb_check(skb);
     u8 *frame = skb->head + skb->mac_header;
     size_t size = (size_t)(skb->tail - frame);
-    if (size < 14 || size > 1514) kutox_platform_fail("ingress_mtu_profile");
-    driver_check(kutox_driver_range((uintptr_t)frame,size,0), "ingress_device_owned");
-    int result = kutox_driver_ingress((uintptr_t)frame,size);
+    bool unsupported = size < 14 || size > 1514 || skb->vlan_present ||
+        skb->ip_summed != CHECKSUM_NONE || ntohs(skb->protocol) < 1536 ||
+        ntohs(skb->protocol) == 0x8100 || ntohs(skb->protocol) == 0x88a8;
+    if (size) driver_check(kutox_driver_range((uintptr_t)frame,size,0), "ingress_device_owned");
+    int result;
+    if (unsupported) {
+        kutox_driver_diag("ingress_profile",-EOPNOTSUPP); result = -EOPNOTSUPP;
+    } else result = kutox_driver_ingress((uintptr_t)frame,size);
+    if (result < 0) netdev->stats.rx_dropped++;
+    if (rx.enabled && (uintptr_t)skb == rx.identity) rx_event(result < 0 ? 44 : 41,result < 0 ? result : (int)size);
     free_skb(skb);
     return result;
 }
 bool kutox_c_packet_empty(void)
 {
     for (size_t slot = 0; slot < ARRAY_SIZE(fragments); slot++) if (fragments[slot]) return false;
-    return !netdev && !tx_queue.device && !tx.live;
+    return !netdev && !tx_queue.device && !tx.live && !rx.enabled;
+}
+
+void kutox_c_rx_start(struct net_device *device, uintptr_t mmio)
+{
+    netdev_check(device);
+    if (rx.enabled || tx.live || !mmio) kutox_platform_fail("rx_start_state");
+    rx = (typeof(rx)){.device = device, .mmio = mmio, .enabled = true};
+}
+void kutox_c_rx_stop(void)
+{
+    if (!rx.enabled || rx.active_skb) kutox_platform_fail("rx_stop_state");
+    rx = (typeof(rx)){0};
+}
+int kutox_c_rx_path(void)
+{
+    if (!rx.enabled || rx.active_skb || !rx.identity) return -EINVAL;
+    return rx.copy ? 1 : 2;
+}
+void kutox_c_rx_dma(u64 dma, size_t size, unsigned int event)
+{
+    if (!rx.enabled || !rx.identity) return;
+    if (!dma || (event != 43 && !rx.active_skb)) kutox_platform_fail("rx_dma_order");
+    rx_event(event,size);
+}
+void kutox_c_rx_mmio(uintptr_t address, u32 value, bool writing)
+{
+    if (!rx.enabled) return;
+    if (!writing && address == rx.mmio + 0xc0)
+        kutox_driver_trace(47,0,(uintptr_t)rx.device,value);
+    else if (writing && address == rx.mmio + 0x2818 && rx.identity) rx_event(45,value);
 }

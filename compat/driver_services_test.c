@@ -230,6 +230,17 @@ void kutox_c_services_packets(void)
     skb_put(skb,60); eth_type_trans(skb,device); napi_gro_receive(&napi,skb);
     check(kutox_driver_receive(received,sizeof(received)) == 60, "p3_build_handoff_ingress");
     for (size_t i = 0; i < 60; i++) check(received[i] == frame[i], "p3_build_handoff_bytes");
+    for (unsigned int type = 0; type < 2; type++) {
+        frame[12] = type ? 0x81 : 0; frame[13] = type ? 0 : 1;
+        skb = napi_alloc_skb(&napi,60); check(skb, "p6_rejected_skb");
+        skb_put_data(skb,frame,60); eth_type_trans(skb,device);
+        check(napi_gro_receive(&napi,skb) == -EOPNOTSUPP &&
+              !kutox_driver_receive(received,sizeof(received)), "p6_unsupported_ingress_drop");
+    }
+    skb = napi_alloc_skb(&napi,1); check(skb, "p6_empty_skb");
+    check(eth_type_trans(skb,device) == 0 &&
+          napi_gro_receive(&napi,skb) == -EOPNOTSUPP &&
+          device->stats.rx_dropped == 3, "p6_short_ingress_drop");
     fragment = netdev_alloc_frag(frag_size);
     skb_free_frag((u8 *)fragment + 66); /* Original normal ring cleanup passes this interior pointer. */
     napi_free_frags(&napi); netif_napi_del(&napi);

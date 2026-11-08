@@ -16,7 +16,7 @@ CALLBACK_SYMBOLS = {name: 0xffffffff80001000 + index * 16 for index, name in enu
 )}
 
 
-def callback_log(failures=False, transmit=False):
+def callback_log(failures=False, transmit=False, receive=False):
     lines = []
     def event(kind, name=None, obj=0x1000, result=0):
         function = CALLBACK_SYMBOLS[name] if name else 0
@@ -58,6 +58,44 @@ def callback_log(failures=False, transmit=False):
         opened()
         event(7, "e1000_close")
         removed()
+    elif receive:
+        for epoch in (1, 2):
+            probe()
+            opened()
+            event(34, "e1000_clean_rx_irq")
+            event(35, "e1000_alloc_rx_buffers")
+            lines.append(f"# LINUX_RX_IDLE epoch={epoch} timeout=1")
+            for index, (size, action) in enumerate(zip(qemu_test.RX_LENGTHS, qemu_test.RX_ACTIONS)):
+                sequence = index + 1
+                lines.append(f"# LINUX_RX_READY epoch={epoch} seq={sequence} bytes={size} action={action}")
+                event(9, "e1000_intr")
+                event(47, result=128)
+                event(15, "e1000_intr", result=1)
+                event(13, "e1000_clean", result=64)
+                copied = size <= 252
+                event(36 if copied else 37, obj=0x3000, result=size + 4 if copied else qemu_test.RX_FRAGMENT_SIZE)
+                event(38 if copied else 39, obj=0x3000, result=size + 4 if copied else qemu_test.RX_BUFFER_SIZE)
+                event(40, obj=0x3000, result=1 if sequence == 7 else 0x8100 if sequence == 8 else 0x88b7)
+                event(41 if sequence <= 6 else 44, obj=0x3000, result=size if sequence <= 6 else -95)
+                event(42, obj=0x3000, result=0 if copied else 1)
+                for _ in range(qemu_test.RX_MAPS[index]):
+                    event(43, obj=0x3000, result=qemu_test.RX_BUFFER_SIZE)
+                if sequence == 5:
+                    event(46, obj=0x3000, result=-12)
+                else:
+                    event(45, obj=0x3000, result=qemu_test.RX_TAILS[index])
+                event(26, "e1000_clean", result=1)
+                if sequence <= 6:
+                    packet = qemu_test.rx_packet(epoch, sequence, size)
+                    lines.append(f"# LINUX_RX_FRAME epoch={epoch} seq={sequence} bytes={size} "
+                                 f"path={'copy' if copied else 'build'} data={packet.hex()}")
+                lines.append(f"# LINUX_RX_STATE epoch={epoch} seq={sequence} resident={qemu_test.RX_RESIDENT[index]} "
+                             f"failures={int(sequence >= 5)} dropped={max(sequence - 6, 0)}")
+                if sequence > 6:
+                    lines.append(f"# LINUX_RX_DROP epoch={epoch} seq={sequence} bytes=60 errno=-95")
+            lines.append(f"# LINUX_RX_STOP epoch={epoch} seq=8")
+            event(7, "e1000_close")
+            removed()
     elif transmit:
         for session in range(2):
             probe()
@@ -109,7 +147,7 @@ def suite_log(case="kernel-tests"):
     ]
     for index, name in enumerate(names, 1):
         if name.startswith("linux.e1000_"):
-            lines.extend(callback_log(name.endswith("failures"), name.endswith("_tx")))
+            lines.extend(callback_log(name.endswith("failures"), name.endswith("_tx"), name.endswith("_rx")))
         status = "not ok" if name == "harness.intentional_failure" else "ok"
         lines.append(f"{status} {index} {name}")
     failures = int(case == "kernel-tests-fail")
@@ -120,7 +158,7 @@ def suite_log(case="kernel-tests"):
 class KernelSuiteTests(unittest.TestCase):
     def test_requires_original_driver_lifecycle_cases(self):
         self.assertEqual(KERNEL_TEST_NAMES[48:], (
-            "linux.e1000_lifecycle", "linux.e1000_failures", "linux.e1000_tx",
+            "linux.e1000_lifecycle", "linux.e1000_failures", "linux.e1000_tx", "linux.e1000_rx",
         ))
 
     def test_original_callback_addresses_match_actual_symbols(self):
@@ -374,13 +412,13 @@ class KernelSuiteTests(unittest.TestCase):
     def test_suites_use_one_iso_with_the_device_irq_fixture(self):
         args = SimpleNamespace(qemu="qemu-system-x86_64", build_dir=Path("build"))
         for case in KERNEL_SUITE_CASES:
-            command = qemu_test.qemu_command(args, case)
+            command = qemu_test.qemu_command(args, case, net_fd=17)
             self.assertEqual(command[command.index("-cdrom") + 1], str(Path("build/kutox.iso")))
-            self.assertIn("user,id=irqtest,restrict=on", command)
+            self.assertIn("socket,id=irqtest,fd=17", command)
 
     def test_low_memory_suite_uses_32_mib_without_a_new_mode_or_image(self):
         args = SimpleNamespace(qemu="qemu-system-x86_64", build_dir=Path("build"))
-        command = qemu_test.qemu_command(args, "kernel-tests-low-memory")
+        command = qemu_test.qemu_command(args, "kernel-tests-low-memory", net_fd=17)
         self.assertEqual(command[command.index("-m") + 1], "32M")
         self.assertEqual(
             command[command.index("-fw_cfg") + 1],
@@ -459,7 +497,7 @@ class TxCaptureTests(unittest.TestCase):
 
     def test_capture_is_transmit_only_and_uses_the_owned_fixture(self):
         args = SimpleNamespace(qemu="qemu-system-x86_64", build_dir=Path("build"))
-        command = qemu_test.qemu_command(args, "kernel-tests", Path("build/a,b.pcap"))
+        command = qemu_test.qemu_command(args, "kernel-tests", Path("build/a,b.pcap"), net_fd=17)
         self.assertEqual(
             command[command.index("-object") + 1],
             "filter-dump,id=txcapture,netdev=irqtest,queue=rx,file=build/a,,b.pcap",
@@ -475,7 +513,7 @@ class TxCaptureTests(unittest.TestCase):
             capture.parent.mkdir()
             capture.write_bytes(tx_pcap())
             completed = SimpleNamespace(returncode=3, stdout=suite_log(args.case).encode())
-            with patch.object(qemu_test.subprocess, "run", return_value=completed):
+            with patch.object(qemu_test, "execute_suite", return_value=completed):
                 with self.assertRaises(AssertionError) as caught:
                     qemu_test.run_case(args, args.case)
             self.assertNotIsInstance(caught.exception, KernelSuiteFailure)
@@ -486,16 +524,136 @@ class TxCaptureTests(unittest.TestCase):
             args = SimpleNamespace(
                 qemu="qemu", build_dir=Path(directory), case="kernel-tests-fail", timeout=1,
             )
-            def execute(command, **kwargs):
-                filename = command[command.index("-object") + 1].split("file=", 1)[1]
-                Path(filename).write_bytes(tx_pcap())
+            def execute(args, case, capture):
+                capture.write_bytes(tx_pcap())
                 return SimpleNamespace(returncode=3, stdout=suite_log(args.case).encode())
 
-            with patch.object(qemu_test.subprocess, "run", side_effect=execute), patch.object(
+            with patch.object(qemu_test, "execute_suite", side_effect=execute), patch.object(
                 qemu_test, "runtime_symbols", return_value=CALLBACK_SYMBOLS
             ):
                 with self.assertRaises(KernelSuiteFailure):
                     qemu_test.run_case(args, args.case)
+
+
+class RxHarnessTests(unittest.TestCase):
+    def test_owned_socket_injects_exact_frames_only_after_readiness(self):
+        offered = []
+        protocol = qemu_test.RXProtocol(offered.append)
+        for line in callback_log(receive=True):
+            protocol.observe(line)
+        protocol.finish()
+        expected = [
+            qemu_test.rx_packet(epoch, sequence, size)
+            for epoch in (1, 2) for sequence, size in enumerate(qemu_test.RX_LENGTHS, 1)
+        ]
+        self.assertEqual(offered, [struct.pack("!I", len(packet)) + packet for packet in expected])
+        command = qemu_test.qemu_command(
+            SimpleNamespace(qemu="qemu", build_dir=Path("build")), "kernel-tests", net_fd=17,
+        )
+        self.assertIn("socket,id=irqtest,fd=17", command)
+        self.assertFalse(any("user,id=" in option for option in command))
+        with self.assertRaisesRegex(AssertionError, "owned RX socket"):
+            qemu_test.qemu_command(SimpleNamespace(qemu="qemu", build_dir=Path("build")), "kernel-tests")
+
+    def test_rx_frame_header_and_epoch_payload(self):
+        packet = qemu_test.rx_packet(2, 3, 253)
+        self.assertEqual(packet[:24], bytes.fromhex("52540012345602000000000688b7") + b"KUTOX-RX\x03\x02")
+        self.assertEqual(packet[24:], bytes((2 + 3 + index) & 255 for index in range(24, 253)))
+
+    def test_rejects_wrong_or_missing_rx_source_evidence(self):
+        output = suite_log()
+        for original, replacement in (
+            ("event=47 function=0 object=1000 result=128", "event=47 function=0 object=1000 result=16"),
+            ("event=38 function=0 object=3000 result=64", "event=38 function=0 object=3000 result=60"),
+            ("event=37 function=0 object=3000 result=1920", "event=37 function=0 object=3000 result=2496"),
+            ("event=39 function=0 object=3000 result=1522", "event=39 function=0 object=3000 result=2048"),
+            ("event=42 function=0 object=3000 result=0", "event=42 function=0 object=3000 result=1"),
+            ("event=43 function=0 object=3000 result=1522", "event=43 function=0 object=3000 result=0"),
+            ("event=45 function=0 object=3000 result=255", "event=45 function=0 object=3000 result=254"),
+            ("event=46 function=0 object=3000 result=-12", "event=46 function=0 object=3000 result=0"),
+            ("event=44 function=0 object=3000 result=-95", "event=44 function=0 object=3000 result=0"),
+        ):
+            with self.subTest(original=original), self.assertRaises(AssertionError):
+                qemu_test.validate_linux_callbacks(output.replace(original, replacement, 1), CALLBACK_SYMBOLS)
+
+    def test_rejects_wrong_bytes_paths_epochs_pressure_and_incomplete_handshakes(self):
+        output = suite_log()
+        frame = qemu_test.rx_packet(1, 1, 60).hex()
+        for original, replacement in (
+            (frame, frame[:-2] + "00"),
+            ("path=copy", "path=build"),
+            ("epoch=2", "epoch=1"),
+            ("resident=254", "resident=255"),
+            ("# LINUX_RX_STOP epoch=1 seq=8\n", ""),
+            ("# LINUX_RX_IDLE epoch=1 timeout=1\n", ""),
+            ("# LINUX_RX_READY epoch=1 seq=1 bytes=60 action=deliver\n", ""),
+        ):
+            with self.subTest(original=original), self.assertRaises(AssertionError):
+                qemu_test.validate_linux_callbacks(output.replace(original, replacement, 1), CALLBACK_SYMBOLS)
+        protocol = qemu_test.RXProtocol()
+        protocol.observe("# LINUX_RX_IDLE epoch=1 timeout=1")
+        protocol.observe("# LINUX_RX_READY epoch=1 seq=1 bytes=60 action=deliver")
+        for line in ("# LINUX_RX_READY epoch=1 seq=2 bytes=252 action=deliver",
+                     "# LINUX_RX_STOP epoch=1 seq=8",
+                     "# LINUX_CALLBACK event=7 function=123 object=1000 result=0"):
+            with self.subTest(line=line), self.assertRaises(AssertionError):
+                protocol.observe(line)
+
+    def test_interactive_transport_handles_serial_and_network_framing(self):
+        journal = suite_log()
+        tx = b"".join(struct.pack("!I", len(packet)) + packet for packet in (
+            qemu_test.linux_tx_packet(sequence, size)
+            for sequence, size in enumerate(qemu_test.LINUX_TX_LENGTHS, 1)
+        ))
+        expected = {
+            f"{epoch}:{sequence}": qemu_test.rx_packet(epoch, sequence, size)
+            for epoch in (1, 2) for sequence, size in enumerate(qemu_test.RX_LENGTHS, 1)
+        }
+        script = f"""
+import socket, struct, sys
+sock = socket.socket(fileno=int(sys.argv[1]))
+sock.sendall({tx!r})
+def read(size):
+    data = bytearray()
+    while len(data) < size:
+        chunk = sock.recv(size - len(data))
+        assert chunk
+        data.extend(chunk)
+    return bytes(data)
+expected = {expected!r}
+for line in {journal!r}.splitlines():
+    split = len(line) // 2
+    sys.stdout.write(line[:split]); sys.stdout.flush()
+    sys.stdout.write(line[split:] + '\\n'); sys.stdout.flush()
+    if line.startswith('# LINUX_RX_READY'):
+        parts = line.split()
+        key = parts[2].split('=')[1] + ':' + parts[3].split('=')[1]
+        size = struct.unpack('!I', read(4))[0]
+        assert read(size) == expected[key]
+"""
+        args = SimpleNamespace(qemu="unused", build_dir=Path("build"), timeout=5)
+        def command(args, case, capture, fd):
+            return [sys.executable, "-c", script, str(fd)]
+        with patch.object(qemu_test, "qemu_command", side_effect=command):
+            completed = qemu_test.execute_suite(args, "kernel-tests", None)
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(completed.stdout, journal.encode())
+
+    def test_timeout_reaps_only_the_owned_child(self):
+        processes = []
+        start = qemu_test.subprocess.Popen
+        def record(*args, **kwargs):
+            process = start(*args, **kwargs)
+            processes.append(process)
+            return process
+        args = SimpleNamespace(qemu="unused", build_dir=Path("build"), timeout=0.2)
+        with patch.object(qemu_test, "qemu_command", return_value=[
+            sys.executable, "-c", "import time; time.sleep(5)",
+        ]), patch.object(qemu_test.subprocess, "Popen", side_effect=record):
+            with self.assertRaises(qemu_test.subprocess.TimeoutExpired):
+                qemu_test.execute_suite(args, "kernel-tests", None)
+        self.assertEqual(len(processes), 1)
+        self.assertIsNotNone(processes[0].poll())
 
 
 if __name__ == "__main__":

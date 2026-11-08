@@ -223,6 +223,10 @@ static TESTS: &[TestCase] = &[
         name: "linux.e1000_tx",
         run: linux_driver::transmit,
     },
+    TestCase {
+        name: "linux.e1000_rx",
+        run: linux_driver::receive,
+    },
 ];
 
 static INTENTIONAL_FAILURE: TestCase = TestCase {

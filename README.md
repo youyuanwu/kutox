@@ -66,8 +66,9 @@ bus mastering disabled; the original Linux TX case performs real device DMA.
 The earlier native Rust TX implementation and descriptor helper have been
 removed. The unchanged Linux e1000 implementation is the only packet driver:
 it owns descriptor programming, submission and IRQ/NAPI cleanup. Rust still
-provides PCI, MMIO, IRQ, DMA, scheduling and allocation services. Controlled RX
-delivery and a networking stack remain subsequent work.
+provides PCI, MMIO, IRQ, DMA, scheduling and allocation services. Controlled
+original RX delivery now passes; ring hardening and a networking stack remain
+subsequent work.
 
 All four original driver units are linked for Linux lifecycle and TX
 execution. See the
@@ -86,10 +87,10 @@ objects are compiled separately against the same selected source profile.
 The [driver-reuse roadmap](docs/rust-kernel-linux-drivers.md#linux-e1000-driver-reuse-roadmap)
 now has tested execution/object, workqueue, NAPI/IRQ and PCI/skb/streaming-DMA
 services. Original module/probe/open/close, PHY/reset/options, IRQ, watchdog
-and NAPI callbacks now execute on real kernel stacks. Original Linux TX now
-submits and completes exact captured frames through those callbacks; Rust
-supplies OS services, not descriptor algorithms. Controlled original Linux RX
-delivery is next, not a native Rust RX driver.
+and NAPI callbacks now execute on real kernel stacks. Original Linux TX/RX
+transmits and delivers exact frames through those callbacks; Rust supplies OS
+services, not descriptor algorithms. Ring/backpressure/pending-teardown
+hardening is next, not a native Rust RX driver.
 
 ## Requirements
 
@@ -212,7 +213,7 @@ hardware-configuration cases still use separate boots of the same ISO.
 
 ```text
 KTAP version 1
-1..51
+1..52
 ok 1 cpu.irq_lock_restore
 ok 2 cpu.breakpoint_return
 ok 3 memory.alignment_reservations
@@ -265,7 +266,8 @@ ok 48 linux.driver_failed_open
 ok 49 linux.e1000_lifecycle
 ok 50 linux.e1000_failures
 ok 51 linux.e1000_tx
-# Totals: pass:51 fail:0 skip:0 total:51
+ok 52 linux.e1000_rx
+# Totals: pass:52 fail:0 skip:0 total:52
 ```
 
 Tests run sequentially with interrupts disabled at case boundaries. After
@@ -838,9 +840,40 @@ mapping snapshots must recover after every completion.
 The fresh pcap must contain only the four exact Linux frames (`KUTOX-LX`,
 EtherType `0x88b6`). Missing, reordered, duplicate or wrong bytes fail, including
 intentional-failure mode. Provenance rejects the removed native descriptor
-helper; there is no fallback. RX setup remains original Linux, but
-controlled RX delivery, ring wrap/backpressure/fault hardening and an IP stack
-are later work.
+helper; there is no fallback. Ring wrap/backpressure/pending-teardown hardening
+and an IP stack are later work.
+
+### Original Linux RX acceptance
+
+The suite uses an owned local stream socket passed to QEMU, not a user-network
+backend or an external network. [The harness](scripts/qemu_test.py) injects one
+Ethernet frame only after a numbered source-ready request. Exact receipt and
+resource state are required before the next request; injection stops before
+original close, and epochs cannot overlap or replay across reopen.
+
+`linux.e1000_rx` runs two probe/open/close/remove sessions. Each receives
+60/252/253/1514-byte frames, another 1514-byte frame under replacement-buffer
+pressure, a 60-byte recovery frame, and LLC/VLAN frames that must be dropped.
+The host checks all **12 delivered frames byte-for-byte** and four explicit
+drops, original RX callback addresses, real RXT0 IRQs, NAPI budget/return,
+copybreak sync or build-skb unmap, free and replenishment. Short/unsupported
+ingress is diagnosed and counted without pretending to implement IP or GRO.
+
+Linux's default copybreak compares the length including four FCS bytes:
+252 bytes takes the copy path; 253 bytes takes build-skb. Linux strips FCS and
+pulls the L2 header; the owned native FIFO preserves the complete original
+Ethernet frame. Its actual software RX mapping is **1522 bytes**, with a
+**1920-byte fragment** including headroom/shared-info, despite the hardware's
+2048-byte receive-size setting. The earlier synthetic 2048/2496-byte fixture
+remains a separate capacity regression; vendor ring/profile fields are unchanged.
+
+Copybreak retains its mapping. The platform revokes CPU-sync grants when Linux
+publishes RDT, before a reused buffer can be handed back to the device. Tests
+check exact live allocation/mapping counts, a failed replacement allocation and
+subsequent replenishment, no retained CPU grants, and complete teardown at
+128/32 MiB. A no-packet wait explicitly times out before each injection epoch.
+The same Linux-only four-frame TX capture remains mandatory in normal,
+low-memory and intentional-failure runs.
 
 The build and provenance test require Linux `v7.3.1`, commit
 `79a907609d53d5cd645b42c11550d295d43abf99`, with no submodule modifications.

@@ -15,11 +15,12 @@ It executes upstream hardware helpers and now includes a fixed-capacity port
 of Moss's `Smalloc` to bootstrap metadata for its adapted buddy/frame allocator.
 The buddy allocator now owns usable RAM and MMIO page-table frames and backs
 an adapted Moss slab heap for Rust allocations. The kernel still has no
-controlled RX acceptance or Linux application environment. All four unchanged
-e1000 units now execute original lifecycle and TX/IRQ/NAPI cleanup through the
+Linux application environment. All four unchanged
+e1000 units now execute original lifecycle and TX/RX/IRQ/NAPI cleanup through the
 source-facing environment. The earlier native Rust TX scaffold has been removed:
 Linux is the only packet driver, while Rust supplies kernel/platform services.
-Controlled original RX delivery is the next milestone.
+Controlled original RX delivery is tested; asynchronous ring/backpressure
+hardening is the next milestone.
 The [third-party notice](../THIRDPARTY-NOTICES.md) records the source revision,
 MIT license, and adaptation boundaries.
 
@@ -589,7 +590,7 @@ Phase 3 supplies [C providers](../compat/driver_services.h) using the same
 source-facing PCI/netdev/skb types as the compile check. Rust retains physical
 allocation/MMIO/PCI ownership; C owns its structs and original callback tables.
 The normal image now links all four original driver units for lifecycle and
-linear TX acceptance; controlled original RX delivery follows separately.
+linear TX and controlled RX acceptance.
 
 [Memory ownership](../src/driver_memory.rs) consists of 2048 registered
 buddy-backed allocations and 1024 streaming map slots. Original allocation
@@ -605,7 +606,9 @@ requires. Wrong/double unmap or free while pinned is rejected. The standard
 unsafe DMA caller must first observe the original driver's completion, abandon
 a submission that was never published, or stop the relevant engine for abort.
 Matching arguments are not themselves a completion witness. In particular,
-TX unmap does not stop unrelated RX. Tests exercise that separation.
+TX unmap does not stop unrelated RX. Tests exercise that separation. Original
+copybreak omits sync-for-device on coherent x86; the platform revokes RX CPU
+grants before source RDT publication, without requiring a custom vendor API.
 
 Coherent C descriptors are raw protocol-shared memory; no live exclusive Rust
 slice is created. Free checks exact provenance and disabled engines/idle
@@ -632,8 +635,9 @@ model, TX DMA completes synchronously and receive callbacks reject disabled RX.
 The grace interval supplements those conditions; CTRL.RST, BME alone and time
 alone are not witnesses. RX remains disabled until newly owned rings are
 configured. A later source IMS enable restores the retained route after reset.
-Pending host injection/reopen-epoch acceptance remains part of original RX
-integration, not a claim made by the synthetic tests.
+Controlled host injection/stop/reopen epochs are now tested with original RX.
+Adversarial late injection and pending asynchronous teardown remain hardening
+work, not claims made by the synthetic tests.
 
 #### Packets and dependency evidence
 
@@ -733,8 +737,50 @@ no completion before deferred IRQ/NAPI progress, one live TX mapping and two
 packet allocations, and exact snapshot recovery per completion at 128/32 MiB.
 Fresh capture requires only the four distinct exact Linux frames;
 intentional-failure mode cannot skip packet checks.
-Controlled original RX delivery and ring-wrap/backpressure/map-failure/pending
-teardown hardening remain subsequent phases.
+Ring-wrap/backpressure/map-failure/pending teardown hardening remains a
+subsequent phase.
+
+### Original Linux RX execution
+
+[The host harness](../scripts/qemu_test.py) owns a local socket pair and passes
+only the QEMU peer descriptor to its child. The framed stream carries raw
+Ethernet, not an external network or a Linux network stack. A bounded selector
+loop services serial readiness and network output, validates exact TX too, and
+reaps only its owned child on errors/timeouts. No injection is timer-driven:
+each numbered request offers one frame, waits for complete receipt/state, then
+permits the next. A stop precedes source close; two probe/open/close/remove
+epochs exercise reopen without replay or outstanding host offers.
+
+Original `e1000_intr` reads RXT0 and schedules original `e1000_clean`, which
+invokes the installed legacy RX cleanup and allocator callbacks. Registered
+addresses match the current original ELF functions. Service evidence connects
+one packet's successful skb allocation, prefix CPU sync or exact streaming
+unmap, protocol extraction, owned FIFO admission/drop, free, replacement maps,
+RDT publication and poll return. Rust verifies complete bytes and resource
+counts; it neither reads descriptors nor implements an RX loop.
+
+Each epoch receives 60/252/253/1514-byte frames, a second 1514-byte frame with
+injected replacement-fragment failure, a 60-byte recovery frame, and two
+unsupported LLC/VLAN frames. Across both epochs, 12 exact frames reach the
+native boundary and four are explicitly diagnosed/counted/consumed as drops.
+The no-packet wait has a tested timeout. Empty/short/LLC/VLAN ingress handling
+also has synthetic C coverage; no full IP, checksum-offload or GRO claim is made.
+
+The source's default copybreak 256 includes FCS: 252 bytes is copied, 253
+uses build-skb. Linux removes the four QEMU FCS bytes and pulls the Ethernet
+header; native delivery preserves full L2 bytes. Unchanged software init uses
+`MAXIMUM_ETHERNET_VLAN_SIZE` (1522) for streaming maps. Headroom/shared-info make
+the actual fragment 1920 bytes; hardware RCTL still selects a 2048-byte receive
+size. The synthetic 2048-byte/2496-fragment capacity test is not the runtime
+profile, and no private field is overridden to force that synthetic size.
+
+Original rings remain 256 entries, initially with 255 posted buffers. Copybreak
+can retain the spare backing (256 resident maps); build-skb transfers backing
+after original unmap. Replacement pressure temporarily leaves 254 resident
+buffers; the next original poll replenishes them. Native snapshots must match
+source buffer ownership exactly, with no live skb allocations or stale CPU
+grants after publication. Source close cancels/joins, disables/masks/drains and
+releases every mapping and allocation at 128/32 MiB.
 
 ### Source-facing dependency and lifetime requirements
 
@@ -747,10 +793,10 @@ Each retained API needs an explicit provider or an enforced unsupported contract
 | --- | --- |
 | Module/PCI/net-device registration and object lifetimes | Original module/probe/open/close/remove now execute with generation-checked handles. |
 | MMIO in driver threads and hardware IRQs | Owned source MMIO and the selected reset I/O BAR are integrated separately from boot MAC. |
-| Driver allocation and packet buffers | Original linear TX consumption is tested; controlled original RX/ingress acceptance follows. |
+| Driver allocation and packet buffers | Original TX and RX copybreak/build-skb/owned ingress are tested; broader pressure/backpressure hardening follows. |
 | Coherent descriptor sharing and streaming map/sync/unmap | Original TX completion unmap is tested; mapping failures and pending abort/reopen hardening follow. |
 | Delayed work, jiffies, lifecycle locking and cancellation | Original watchdog and real lifecycle cancellation execute; packet-triggered reset hardening follows. |
-| IRQ registration and NAPI scheduling/budget/disable | Original IRQ/NAPI TX cleanup is tested; controlled RX cleanup follows. |
+| IRQ registration and NAPI scheduling/budget/disable | Original IRQ/NAPI TX/RX cleanup is tested; pending-callback teardown hardening follows. |
 | Probe/open/error/close/remove cleanup | Original repeated lifecycle/error unwind is tested; pending packet/injection/reopen hardening follows. |
 
 Three ordering constraints shape the environment:
@@ -894,7 +940,8 @@ phases replace a native-RX-first roadmap:
 6. **Original Linux RX.** Inject known packets through an isolated fixture and
    deliver through original RX cleanup and native ingress. Test both copybreak
    and non-copybreak ownership, header/FCS handling and replenishment; no new
-   Rust RX descriptor loop is involved.
+   Rust RX descriptor loop is involved. This phase is complete for the selected
+   controlled, linear profile.
 7. **Hardening.** Wrap both configured rings, exercise BUSY/queue backpressure,
    allocation/map failures and close/remove with pending IRQ, work, poll and
    packet state. Retire callbacks and prove the relevant hardware drain before
@@ -909,8 +956,8 @@ symbols or native DD/IRQ success alone are not sufficient. Retain isolated
 kernel/platform tests and exact KTAP/pcap validation, one ISO, fw_cfg selectors,
 and sequential low-memory regression runs.
 
-Phases 1-5 are complete, including original lifecycle and TX/IRQ/NAPI cleanup.
-The next item is **phase 6: original Linux RX delivery**. Integration with a native network
+Phases 1-6 are complete, including original lifecycle and TX/RX/IRQ/NAPI cleanup.
+The next item is **phase 7: failure, backpressure and teardown hardening**. Integration with a native network
 stack and extraction for a second Linux driver follow this roadmap; they do not
 replace its driver-execution gates.
 

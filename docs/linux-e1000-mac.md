@@ -215,7 +215,9 @@ execution/object/deferred and PCI/packet/DMA service contracts are now complete.
 Original module/probe/open/close, IRQ, watchdog and NAPI callbacks now execute
 in separate lifecycle cases. Original xmit, TXDW IRQ and NAPI TX cleanup now
 have exact four-frame packet acceptance with no native TX implementation.
-Controlled original RX cleanup/delivery is next. Upstream open requires RX
+Controlled original RX now verifies copybreak/build-skb delivery, FCS handling,
+replacement-buffer pressure/recovery and explicit unsupported-packet drops.
+Ring/backpressure/pending-teardown hardening is next. Upstream open requires RX
 setup and link work even for TX-first
 testing; declarations or constant-success substitutes do not satisfy it.
 

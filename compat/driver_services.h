@@ -29,6 +29,11 @@ int kutox_c_tx_retry(struct net_device *);
 int kutox_c_tx_status(struct net_device *);
 void kutox_c_tx_release(struct net_device *);
 void kutox_c_tx_abort(struct net_device *);
+void kutox_c_rx_start(struct net_device *, uintptr_t);
+void kutox_c_rx_stop(void);
+int kutox_c_rx_path(void);
+void kutox_c_rx_dma(u64, size_t, unsigned int);
+void kutox_c_rx_mmio(uintptr_t, u32, bool);
 static inline void driver_check(int result, const char *operation)
 {
     if (result < 0) kutox_platform_fail(operation);

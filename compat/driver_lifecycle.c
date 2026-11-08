@@ -87,6 +87,46 @@ int kutox_c_linux_tx_release(uint64_t ticket)
     kutox_c_tx_release(device);
     return 0;
 }
+int kutox_c_linux_rx_start(uint64_t ticket)
+{
+    if (!ticket || ticket != generation || !loaded || !device) return -ESTALE;
+    if (!kutox_c_linux_ready(ticket)) return -EBUSY;
+    struct e1000_adapter *adapter = netdev_priv(device);
+    if (adapter->rx_buffer_len != MAXIMUM_ETHERNET_VLAN_SIZE ||
+        SKB_DATA_ALIGN(adapter->rx_buffer_len + NET_SKB_PAD + NET_IP_ALIGN) +
+        SKB_DATA_ALIGN(sizeof(struct skb_shared_info)) != 1920) kutox_platform_fail("rx_buffer_profile");
+    kutox_c_rx_start(device,(uintptr_t)adapter->hw.hw_addr);
+    kutox_driver_trace(34,(uintptr_t)adapter->clean_rx,(uintptr_t)device,0);
+    kutox_driver_trace(35,(uintptr_t)adapter->alloc_rx_buf,(uintptr_t)device,0);
+    return 0;
+}
+int kutox_c_linux_rx_stop(uint64_t ticket)
+{
+    if (!ticket || ticket != generation || !loaded || !device) return -ESTALE;
+    kutox_c_rx_stop(); return 0;
+}
+int kutox_c_linux_rx_path(uint64_t ticket)
+{
+    if (!ticket || ticket != generation || !loaded || !device) return -ESTALE;
+    return kutox_c_rx_path();
+}
+int kutox_c_linux_rx_state(uint64_t ticket, unsigned int packets, unsigned int bytes,
+                          unsigned int dropped, unsigned int failures, bool replenished)
+{
+    if (!ticket || ticket != generation || !loaded || !device) return -ESTALE;
+    struct e1000_adapter *adapter = netdev_priv(device);
+    if (device->stats.rx_packets != packets || device->stats.rx_bytes != bytes ||
+        device->stats.rx_dropped != dropped) return -EAGAIN;
+    if (adapter->alloc_rx_buff_failed != failures ||
+        (replenished && E1000_DESC_UNUSED(adapter->rx_ring))) return -EIO;
+    unsigned int resident = 0;
+    for (unsigned int i = 0; i < adapter->rx_ring->count; i++) {
+        struct e1000_rx_buffer *buffer = &adapter->rx_ring->buffer_info[i];
+        if (!!buffer->dma != !!buffer->rxbuf.data) kutox_platform_fail("rx_backing_pair");
+        resident += buffer->dma != 0;
+    }
+    return resident;
+}
 int kutox_c_linux_unbind(uint64_t ticket)
 {
     if (!loaded || !ticket || ticket != generation) return -ESTALE;

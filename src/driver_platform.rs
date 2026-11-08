@@ -298,6 +298,10 @@ extern "C" fn kutox_driver_mmio(address: usize, value: u32, writing: bool) -> bo
     if writing && address == base + 0xc8 {
         crate::linux_driver::kutox_driver_trace(16, 0, KEY.load(Ordering::Acquire), value as i32);
     }
+    if writing && address == base + 0x2818 {
+        driver_memory::rx_rearm()
+            .unwrap_or_else(|error| fail(Failure::new("driver_rx_rearm", error)));
+    }
     true
 }
 

@@ -147,13 +147,13 @@
     {
       "name": "rx-fragment-handoff", "phase": 3, "contexts": ["thread", "napi"],
       "contract": "RX fragment backing is required even for linear profile; retain mappings/backing through copybreak or build-skb handoff and replenish without double free.",
-      "policy": "required", "test": "linux.driver_packets and linux.driver_capacity",
+      "policy": "required", "test": "linux.driver_packets, linux.driver_capacity and linux.e1000_rx (original copybreak/build-skb/replenishment)",
       "symbols": ["netdev_alloc_frag", "skb_free_frag", "napi_alloc_skb", "napi_build_skb", "napi_free_frags"]
     },
     {
       "name": "ethernet-ingress", "phase": 3, "contexts": ["thread", "napi"],
-      "contract": "Real address validation/copy, L2 header/protocol/FCS handling and owned native ingress transfer; no claim of full IP/GRO stack.",
-      "policy": "required", "test": "linux.driver_packets (exact copybreak/build-skb ingress)",
+      "contract": "Real L2 header/protocol/FCS handling and owned native ingress; short/LLC/VLAN/offload profile violations are diagnosed, counted and consumed as drops, not fatal network-input errors; no full IP/GRO stack.",
+      "policy": "required", "test": "linux.driver_packets and linux.e1000_rx (exact original ingress, FCS thresholds, drops and pressure)",
       "symbols": ["eth_hw_addr_set", "eth_type_trans", "eth_validate_addr", "is_broadcast_ether_addr", "is_multicast_ether_addr", "is_valid_ether_addr", "napi_gro_receive"]
     },
     {

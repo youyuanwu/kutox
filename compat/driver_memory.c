@@ -38,6 +38,7 @@ dma_addr_t dma_map_single(struct device *device, void *pointer, size_t size, enu
 {
     dma_addr_t dma = kutox_driver_dma_map((uintptr_t)device, (uintptr_t)pointer, size, direction);
     kutox_c_tx_mapped((uintptr_t)pointer,dma,size,direction);
+    if (direction == DMA_FROM_DEVICE && dma != UINT64_MAX) kutox_c_rx_dma(dma,size,43);
     return dma;
 }
 bool dma_mapping_error(struct device *device, dma_addr_t address)
@@ -49,10 +50,12 @@ void dma_unmap_single(struct device *device, dma_addr_t address, size_t size, en
 {
     driver_check(kutox_driver_dma_operation((uintptr_t)device, address, size, direction, 0), "dma_unmap");
     kutox_c_tx_unmapped(address,size,direction);
+    if (direction == DMA_FROM_DEVICE) kutox_c_rx_dma(address,size,39);
 }
 void dma_sync_single_for_cpu(struct device *device, dma_addr_t address, size_t size, enum dma_data_direction direction)
 {
     driver_check(kutox_driver_dma_operation((uintptr_t)device, address, size, direction, 1), "dma_sync_cpu");
+    if (direction == DMA_FROM_DEVICE) kutox_c_rx_dma(address,size,38);
 }
 void dma_sync_single_for_device(struct device *device, dma_addr_t address, size_t size, enum dma_data_direction direction)
 {

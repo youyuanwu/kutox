@@ -17,6 +17,7 @@ extern bool kutox_driver_mmio(uintptr_t, u32, bool);
 extern int kutox_vprint(const char *, va_list);
 #ifdef KUTOX_E1000_FULL_SOURCE
 extern void kutox_c_tx_mmio(uintptr_t, u32, bool);
+extern void kutox_c_rx_mmio(uintptr_t, u32, bool);
 #endif
 
 static void check_address(const volatile void *address, u32 value, bool writing)
@@ -35,7 +36,10 @@ u32 readl(const volatile void *address)
     u32 value = *(const volatile u32 *)address;
     __asm__ volatile ("lfence" ::: "memory");
 #ifdef KUTOX_E1000_FULL_SOURCE
-    if (!probe_active) kutox_c_tx_mmio((uintptr_t)address,value,false);
+    if (!probe_active) {
+        kutox_c_tx_mmio((uintptr_t)address,value,false);
+        kutox_c_rx_mmio((uintptr_t)address,value,false);
+    }
 #endif
     if (probe_active && (uintptr_t)address == mmio_base + E1000_EECD) {
         eeprom_reads++;
@@ -54,7 +58,10 @@ void writel(u32 value, volatile void *address)
     *(volatile u32 *)address = value;
     __asm__ volatile ("" ::: "memory");
 #ifdef KUTOX_E1000_FULL_SOURCE
-    if (!probe_active) kutox_c_tx_mmio((uintptr_t)address,value,true);
+    if (!probe_active) {
+        kutox_c_tx_mmio((uintptr_t)address,value,true);
+        kutox_c_rx_mmio((uintptr_t)address,value,true);
+    }
 #endif
 }
 

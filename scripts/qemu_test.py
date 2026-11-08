@@ -2,10 +2,14 @@
 """Bounded QEMU kernel-suite and hardware-scenario tests."""
 
 import argparse
+import os
 from pathlib import Path
 import re
+import selectors
+import socket
 import struct
 import subprocess
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 REVISION = "79a907609d53d5cd645b42c11550d295d43abf99"
@@ -63,6 +67,7 @@ KERNEL_TEST_NAMES = (
     "linux.e1000_lifecycle",
     "linux.e1000_failures",
     "linux.e1000_tx",
+    "linux.e1000_rx",
 )
 KERNEL_SUITE_CASES = {
     "kernel-tests": "kernel-tests",
@@ -180,6 +185,7 @@ DRIVER_CALLBACK_NAMES = {
     12: ("e1000_clean",), 13: ("e1000_clean",),
     17: ("e1000_xmit_frame",), 18: ("e1000_xmit_frame",),
     26: ("e1000_clean",), 33: ("e1000_xmit_frame",),
+    34: ("e1000_clean_rx_irq",), 35: ("e1000_alloc_rx_buffers",),
 }
 
 
@@ -214,16 +220,18 @@ def validate_linux_callbacks(output, symbols=None):
             elif events or faults:
                 raise AssertionError("original driver ran in a native/synthetic case")
             events, faults = [], []
-    if events or faults or set(batches) != {"linux.e1000_lifecycle", "linux.e1000_failures", "linux.e1000_tx"}:
+    if events or faults or set(batches) != {"linux.e1000_lifecycle", "linux.e1000_failures", "linux.e1000_tx", "linux.e1000_rx"}:
         raise AssertionError("incomplete original-driver callback batches")
     for name, (events, faults) in batches.items():
-        counts = {event: sum(item[0] == event for item in events) for event in range(1, 34)}
+        counts = {event: sum(item[0] == event for item in events) for event in range(1, 48)}
         expected = {1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 4, 7: 4, 33: 2} if name.endswith("lifecycle") else {
             1: 4, 2: 1, 3: 4, 4: 4, 5: 1, 6: 5, 7: 2,
             33: 1,
         }
         if name.endswith("_tx"):
             expected = {1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 2, 33: 2}
+        elif name.endswith("_rx"):
+            expected = {1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 2, 33: 2, 34: 2, 35: 2}
         if any(counts[event] != count for event, count in expected.items()):
             raise AssertionError("original lifecycle callbacks missing, duplicated, or bypassed")
         expected_faults = list(range(1, 8)) if name.endswith("failures") else []
@@ -239,7 +247,7 @@ def validate_linux_callbacks(output, symbols=None):
             raise AssertionError("original IRQ returns are missing or invalid")
         if not any(event == 16 and result == 4 for event, _, _, result in events):
             raise AssertionError("original open did not generate an LSC IRQ")
-        minimum_ready = 4 if name.endswith("lifecycle") else 2 if name.endswith("_tx") else 1
+        minimum_ready = 4 if name.endswith("lifecycle") else 2 if name.endswith(("_tx", "_rx")) else 1
         if counts[14] < minimum_ready:
             raise AssertionError("each successful lifecycle did not establish source-derived readiness")
         work, napi, irq, xmit = set(), set(), set(), set()
@@ -257,7 +265,7 @@ def validate_linux_callbacks(output, symbols=None):
                     symbols.get(symbol) for symbol in DRIVER_CALLBACK_NAMES[event]
                 }:
                     raise AssertionError("callback did not point to the linked original Linux function")
-            elif event not in (14, 16, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 32) or function != 0:
+            elif event not in (14, 16, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 32, *range(36, 48)) or function != 0:
                 raise AssertionError("unknown original callback kind")
             if event not in (1, 2) and obj == 0:
                 raise AssertionError("callback backing identity is missing")
@@ -306,6 +314,14 @@ def validate_linux_callbacks(output, symbols=None):
             validate_linux_tx_events(events)
         elif any(17 <= event <= 32 and event != 26 for event, _, _, _ in events):
             raise AssertionError("packet submission ran outside the Linux TX case")
+        if name.endswith("_rx"):
+            validate_linux_rx_events(events)
+        elif any(34 <= event <= 47 for event, _, _, _ in events):
+            raise AssertionError("RX evidence ran outside the original RX case")
+    protocol = RXProtocol()
+    for line in output.splitlines():
+        protocol.observe(line)
+    protocol.finish()
 
 
 def validate_linux_tx_events(events):
@@ -605,7 +621,239 @@ def validate_tx_capture(data):
         raise AssertionError("TX capture has missing, reordered, duplicate, or incorrect packet bytes")
 
 
-def qemu_command(args, case, capture=None):
+RX_LENGTHS = (60, 252, 253, 1514, 1514, 60, 60, 60)
+RX_BUFFER_SIZE = 1522
+RX_FRAGMENT_SIZE = 1920
+RX_ACTIONS = ("deliver", "deliver", "deliver", "deliver", "pressure", "deliver", "llc", "vlan")
+RX_RESIDENT = (256, 256, 255, 255, 254, 256, 256, 256)
+RX_MAPS = (1, 0, 0, 1, 0, 2, 0, 0)
+RX_TAILS = (255, 0, 1, 2, None, 4, 5, 6)
+
+
+def rx_packet(epoch, sequence, size):
+    packet = bytearray(
+        bytes.fromhex("52540012345602000000000688b7")
+        + bytes((epoch + sequence + index) & 255 for index in range(14, size))
+    )
+    packet[14:22] = b"KUTOX-RX"
+    packet[22:24] = bytes((sequence, epoch))
+    if sequence == 7:
+        packet[12:14] = b"\x00\x01"
+    elif sequence == 8:
+        packet[12:18] = bytes.fromhex("8100000188b7")
+    return bytes(packet)
+
+
+class RXProtocol:
+    """One requested frame at a time; no timer-driven injection or reopen races."""
+
+    def __init__(self, send=None):
+        self.send = send
+        self.epoch = 0
+        self.sequence = 0
+        self.closed = True
+        self.pending = None
+        self.receipt = self.state = False
+
+    def observe(self, line):
+        if line.startswith("# LINUX_CALLBACK event=7 ") and not self.closed:
+            raise AssertionError("original close preceded host injection stop")
+        if not line.startswith("# LINUX_RX"):
+            return
+        if match := re.fullmatch(r"# LINUX_RX_IDLE epoch=([12]) timeout=1", line):
+            if not self.closed or self.pending is not None or int(match[1]) != self.epoch + 1:
+                raise AssertionError("invalid RX epoch or missing no-packet timeout")
+            self.epoch += 1
+            self.sequence = 0
+            self.closed = False
+            return
+        if match := re.fullmatch(r"# LINUX_RX_STOP epoch=([12]) seq=8", line):
+            if self.closed or self.pending is not None or int(match[1]) != self.epoch or self.sequence != 8:
+                raise AssertionError("RX injection stopped before all packets completed")
+            self.closed = True
+            return
+        if match := re.fullmatch(r"# LINUX_RX_READY epoch=([12]) seq=([1-8]) bytes=([0-9]+) action=([a-z]+)", line):
+            epoch, sequence, size = map(int, match.groups()[:3])
+            if (self.closed or self.pending is not None or epoch != self.epoch
+                    or sequence != self.sequence + 1 or size != RX_LENGTHS[sequence - 1]
+                    or match[4] != RX_ACTIONS[sequence - 1]):
+                raise AssertionError("unexpected, duplicate, or unready RX injection request")
+            self.pending = (sequence, size)
+            self.receipt = self.state = False
+            if self.send is not None:
+                packet = rx_packet(epoch, sequence, size)
+                self.send(struct.pack("!I", len(packet)) + packet)
+            return
+        if self.closed or self.pending is None:
+            raise AssertionError("RX result without a live injection request")
+        sequence, size = self.pending
+        if match := re.fullmatch(r"# LINUX_RX_FRAME epoch=([12]) seq=([1-8]) bytes=([0-9]+) path=(copy|build) data=([0-9a-f]+)", line):
+            if (self.receipt or sequence > 6 or tuple(map(int, match.groups()[:3])) != (self.epoch, sequence, size)
+                    or match[4] != ("copy" if size <= 252 else "build")
+                    or match[5] != rx_packet(self.epoch, sequence, size).hex()):
+                raise AssertionError("RX length/FCS, header, payload, or ownership path mismatch")
+            self.receipt = True
+        elif match := re.fullmatch(r"# LINUX_RX_DROP epoch=([12]) seq=([78]) bytes=60 errno=-95", line):
+            if self.receipt or tuple(map(int, match.groups())) != (self.epoch, sequence):
+                raise AssertionError("unsupported RX packet was not explicitly dropped")
+            self.receipt = True
+        elif match := re.fullmatch(r"# LINUX_RX_STATE epoch=([12]) seq=([1-8]) resident=([0-9]+) failures=([01]) dropped=([0-2])", line):
+            expected = (self.epoch, sequence, RX_RESIDENT[sequence - 1], int(sequence >= 5), max(sequence - 6, 0))
+            if self.state or tuple(map(int, match.groups())) != expected:
+                raise AssertionError("RX allocation pressure/replenishment/ownership accounting mismatch")
+            self.state = True
+        else:
+            raise AssertionError("malformed original RX evidence")
+        if self.receipt and self.state:
+            self.sequence = sequence
+            self.pending = None
+
+    def finish(self):
+        if self.epoch != 2 or not self.closed or self.pending is not None or self.sequence != 8:
+            raise AssertionError("incomplete RX injection, delivery, or stop handshake")
+
+
+def validate_linux_rx_events(events):
+    epoch = sequence = 0
+    packet = None
+    transaction = []
+    irq = None
+    cause = handled = polling = False
+    for event, _, obj, result in events:
+        if event == 34:
+            if packet is not None or (epoch and sequence != 8):
+                raise AssertionError("incomplete RX session before reprobe")
+            epoch += 1
+            sequence = 0
+            handled = False
+        elif event == 9:
+            irq = obj
+            cause = False
+        elif event == 47:
+            if irq != obj:
+                raise AssertionError("RX cause was not read inside original IRQ")
+            cause |= bool(result & 0x80)
+        elif event == 15:
+            if cause:
+                if result != 1:
+                    raise AssertionError("original RX IRQ did not return HANDLED")
+                handled = True
+            irq = None
+        elif event == 13:
+            polling = True
+        elif event in (36, 37):
+            if not polling or not handled or packet is not None or sequence >= 8:
+                raise AssertionError("RX allocation preceded original receive IRQ/NAPI")
+            packet = obj
+            transaction = []
+        if 36 <= event <= 46:
+            if packet != obj or not polling:
+                raise AssertionError("RX buffer service ran outside original poll or packet")
+            transaction.append((event, result))
+        if event == 26:
+            polling = False
+            if packet is None:
+                continue
+            size = RX_LENGTHS[sequence]
+            copied = size <= 252
+            protocol = 1 if sequence == 6 else 0x8100 if sequence == 7 else 0x88b7
+            expected = [(36, size + 4), (38, size + 4)] if copied else [(37, RX_FRAGMENT_SIZE), (39, RX_BUFFER_SIZE)]
+            expected += [(40, protocol), (41, size) if sequence < 6 else (44, -95), (42, 0 if copied else 1)]
+            expected += [(43, RX_BUFFER_SIZE)] * RX_MAPS[sequence]
+            if sequence == 4:
+                expected.append((46, -12))
+            else:
+                expected.append((45, RX_TAILS[sequence]))
+            if transaction != expected or result != 1:
+                raise AssertionError("original copybreak/build/unmap/drop/replenishment sequence disagrees")
+            sequence += 1
+            packet = None
+            handled = False
+    if epoch != 2 or sequence != 8 or packet is not None:
+        raise AssertionError("incomplete original RX source callback evidence")
+
+
+def execute_suite(args, case, capture):
+    deadline = time.monotonic() + args.timeout
+    output = bytearray()
+    serial_pending = bytearray()
+    network_pending = bytearray()
+    transmitted = []
+    host, peer = socket.socketpair()
+    with host, peer:
+        command = qemu_command(args, case, capture, peer.fileno())
+        with subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL, pass_fds=(peer.fileno(),),
+        ) as process:
+            peer.close()
+            host.settimeout(min(args.timeout, 2))
+            protocol = RXProtocol(host.sendall)
+            try:
+                with selectors.DefaultSelector() as selector:
+                    selector.register(process.stdout, selectors.EVENT_READ, "serial")
+                    selector.register(host, selectors.EVENT_READ, "network")
+                    while selector.get_map():
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise subprocess.TimeoutExpired(command, args.timeout, output=bytes(output))
+                        for key, _ in selector.select(min(remaining, 0.1)):
+                            chunk = os.read(key.fd, 4096)
+                            if not chunk:
+                                selector.unregister(key.fileobj)
+                                continue
+                            if key.data == "serial":
+                                output.extend(chunk)
+                                if len(output) > 1024 * 1024:
+                                    raise AssertionError("oversized guest journal")
+                                serial_pending.extend(chunk)
+                                while b"\n" in serial_pending:
+                                    line, _, rest = serial_pending.partition(b"\n")
+                                    serial_pending = bytearray(rest)
+                                    protocol.observe(line.decode("utf-8", errors="replace").rstrip("\r"))
+                                if len(serial_pending) > 8192:
+                                    raise AssertionError("oversized unterminated guest line")
+                            else:
+                                network_pending.extend(chunk)
+                                while len(network_pending) >= 4:
+                                    size = struct.unpack_from("!I", network_pending)[0]
+                                    if not 60 <= size <= 1514:
+                                        raise AssertionError("invalid guest TX socket record")
+                                    if len(network_pending) < size + 4:
+                                        break
+                                    transmitted.append(bytes(network_pending[4:size + 4]))
+                                    del network_pending[:size + 4]
+                                    if len(transmitted) > 4:
+                                        raise AssertionError("unexpected guest packet on isolated socket")
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(command, args.timeout, output=bytes(output))
+                    returncode = process.wait(timeout=remaining)
+                    if serial_pending or network_pending:
+                        raise AssertionError("truncated guest serial/socket output")
+                    expected = [linux_tx_packet(sequence, size)
+                                for sequence, size in enumerate(LINUX_TX_LENGTHS, 1)]
+                    if transmitted != expected:
+                        raise AssertionError("isolated socket did not carry the exact Linux TX frames")
+                    protocol.finish()
+            except subprocess.TimeoutExpired as error:
+                raise subprocess.TimeoutExpired(command, args.timeout, output=bytes(output)) from error
+            except OSError as error:
+                raise AssertionError(f"RX harness I/O failed: {error}\n{output.decode('utf-8', errors='replace')}") from error
+            except AssertionError as error:
+                raise AssertionError(f"{error}\n{output.decode('utf-8', errors='replace')}") from error
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+        return subprocess.CompletedProcess(command, returncode, bytes(output))
+
+
+def qemu_command(args, case, capture=None, net_fd=None):
     command = [
         args.qemu, "-machine", "pc", "-accel", "tcg", "-cpu", "qemu64",
         "-smp", "2,sockets=2,cores=1,threads=1" if case == "smp-unsupported" else "1",
@@ -638,9 +886,11 @@ def qemu_command(args, case, capture=None):
             "-device", "e1000,netdev=second,mac=52:54:00:00:00:02",
         ]
     if case in KERNEL_SUITE_CASES:
+        if net_fd is None or net_fd < 0:
+            raise AssertionError("kernel suite requires an owned RX socket")
         slot = "5" if case == "kernel-tests-low-memory" else "3"
         command += [
-            "-netdev", "user,id=irqtest,restrict=on",
+            "-netdev", f"socket,id=irqtest,fd={net_fd}",
             "-device", f"e1000,netdev=irqtest,addr={slot},mac=52:54:00:12:34:56",
         ]
         if capture is not None:
@@ -659,9 +909,9 @@ def run_case(args, case, index=0):
     capture = log.with_suffix(".pcap") if case in KERNEL_SUITE_CASES else None
     if capture is not None:
         capture.unlink(missing_ok=True)
-    command = qemu_command(args, case, capture)
+    command = qemu_command(args, case) if capture is None else None
     try:
-        completed = subprocess.run(
+        completed = execute_suite(args, case, capture) if capture is not None else subprocess.run(
             command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             timeout=args.timeout, check=False,
         )
@@ -669,6 +919,9 @@ def run_case(args, case, index=0):
         output = (error.output or b"").decode("utf-8", errors="replace")
         log.write_text(output, encoding="utf-8")
         raise AssertionError(f"QEMU timed out after {args.timeout}s; log: {log}\n{output}") from error
+    except AssertionError as error:
+        log.write_text(str(error), encoding="utf-8")
+        raise AssertionError(f"{error}\nlog: {log}") from error
     output = completed.stdout.decode("utf-8", errors="replace")
     log.write_text(output, encoding="utf-8")
     try:

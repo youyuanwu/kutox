@@ -108,6 +108,10 @@ unsafe extern "C" fn kutox_driver_receive(pointer: *mut u8, capacity: usize) -> 
     size
 }
 
+pub fn receive(output: &mut [u8; 1514]) -> usize {
+    unsafe { kutox_driver_receive(output.as_mut_ptr(), output.len()) }
+}
+
 pub fn context(atomic: bool) -> Result<(), i32> {
     if cpu::interrupts_enabled() || X86Cpu::irq_lock_depth() != 0 || exceptions::is_dispatching() {
         return Err(-106);
@@ -478,6 +482,26 @@ pub fn snapshot() -> (usize, usize, usize) {
             .sum(),
         state.maps.iter().flatten().count(),
     )
+}
+
+pub fn rx_rearm() -> Result<(), i32> {
+    state(|state| {
+        for mapping in state.maps.iter_mut().flatten() {
+            if mapping.direction == 2 {
+                mapping.cpu = None;
+            }
+        }
+        Ok(())
+    })
+}
+
+pub fn rx_cpu_grants() -> usize {
+    unsafe { &*STATE.0.get() }
+        .maps
+        .iter()
+        .flatten()
+        .filter(|mapping| mapping.direction == 2 && mapping.cpu.is_some())
+        .count()
 }
 
 #[unsafe(no_mangle)]
