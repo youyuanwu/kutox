@@ -5,9 +5,11 @@ use crate::{
     irq::external::{self, ClaimedIrq, IoApic, Token},
     serial, threads,
 };
+#[cfg(feature = "guest-tests")]
+use core::sync::atomic::AtomicBool;
 use core::{
     ffi::c_void,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicU64, Ordering},
 };
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 
@@ -25,7 +27,9 @@ struct Registration {
 static BINDING: SpinLockIrq<Option<Registration>, X86Cpu> = SpinLockIrq::new(None);
 static HANDLED: AtomicU64 = AtomicU64::new(0);
 static UNHANDLED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "guest-tests")]
 static FAIL_REQUEST: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "guest-tests")]
 pub fn fail_request(fail: bool) {
     FAIL_REQUEST.store(fail, Ordering::Release);
 }
@@ -136,8 +140,9 @@ extern "C" fn kutox_linux_request_irq(
     if threads::check_boot_or_thread_context().is_err() {
         return -106;
     }
+    #[cfg(feature = "guest-tests")]
     if FAIL_REQUEST.swap(false, Ordering::AcqRel) {
-        crate::linux_driver::record_fault();
+        crate::guest_tests::linux_e1000::record_fault();
         return -12;
     }
     if handler.is_none() || device == 0 || number > i32::MAX as u32 {

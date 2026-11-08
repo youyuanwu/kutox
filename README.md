@@ -112,6 +112,40 @@ tests, but the normal default remains the boot MAC proof.
 No full Linux kernel configuration or build is needed. No sibling repository
 is needed at build or run time.
 
+### Test code and build profiles
+
+The default `guest-tests` Cargo feature includes the unified guest acceptance
+suite. Guest fixtures live in [src/guest_tests/](src/guest_tests/); synthetic C
+tests live in [compat/guest_tests/](compat/guest_tests/) and separate test archives.
+The IRQ-only helper is explicitly named
+[E1000IrqFixture](src/guest_tests/e1000_irq.rs), not a production NIC driver.
+[linux_driver.rs](src/linux_driver.rs) retains the real Linux control boundary;
+packet fixtures, fault controls and stale-handle assertions are separate.
+
+Portable Rust unit tests use `#[cfg(test)]`. Guest tests instead use
+`#[cfg(feature = "guest-tests")]`, because ordinary freestanding builds do not
+set Rust's `cfg(test)`. The existing fw_cfg modes select execution within one
+test-enabled ISO; the feature controls whether fixture code is included at all.
+
+For a feature-off build of the same image:
+
+```sh
+cmake -S . -B build -G Ninja -DKUTOX_GUEST_TESTS=OFF
+cmake --build build --target images --parallel 1
+ctest --test-dir build --output-on-failure --parallel 1 \
+  -R '^(kernel-build-profile|guest-tests-disabled|mac-known)$'
+```
+
+This omits guest fixtures, C test objects, fault injection, checkpoints and
+test inspectors. Requested test modes fail before memory/device initialization.
+Real driver services, ownership checks and diagnostics remain. Normal boot is
+still the MAC proof; dormant kernel-service APIs have scoped feature-off
+dead-code allowances until boot integration, not missing-service fallbacks.
+
+Restore `-DKUTOX_GUEST_TESTS=ON` before building/running the acceptance suite.
+This is one image per selected build profile, not separate images per test mode.
+`kernel-build-profile` verifies actual ELF symbols in either profile.
+
 ## Build and test
 
 ```sh
@@ -229,7 +263,7 @@ hardware-configuration cases still use separate boots of the same ISO.
 
 ### Registered kernel tests
 
-[The registry](src/kernel_tests.rs) is a static list of named functions returning
+[The registry](src/guest_tests/mod.rs) is a static list of named functions returning
 `Result`, not Linux KUnit or Rust's nightly custom test framework. Its output is:
 
 ```text
@@ -487,7 +521,7 @@ disabled for deliberately unsupported hardware entry points.
   PCI endpoint on the validated i440FX/PIIX machine.
   Route validation checks PIRQ programming, endpoint pin/line, ELCR and MADT
   overrides; it does not evaluate ACPI `_PRT` or assume a fixed IRQ.
-- [The native e1000 IRQ proof](src/device_irq.rs) uses one ticket-checked claim
+- [The native e1000 IRQ proof](src/guest_tests/device_irq.rs) uses one ticket-checked claim
   at vector `0x41`. `ICS` generates a device interrupt; reading `ICR` deasserts
   it before EOI and directly signals a completion. The NIC IRQ guard keeps MMIO
   live while masking the source, masking/draining the route and checking local
@@ -522,8 +556,8 @@ disabled for deliberately unsupported hardware entry points.
   and ownership. Native publish/reclaim extensions retain the same caller
   quiescence obligation, and device destruction rejects live buffers.
   Streaming DMA, bounce buffers and IOMMU mappings are not stubbed.
-- [DMA acceptance tests](src/dma_tests.rs) and the
-  [C test](compat/dma_test.c) check exact alignment/mask boundaries, zeroing,
+- [DMA acceptance tests](src/guest_tests/dma.rs) and the
+  [C test](compat/guest_tests/dma_test.c) check exact alignment/mask boundaries, zeroing,
   disjoint buffers, exhaustion/reuse, counters, live/stale ownership, output
   preservation, invalid free/lifecycle/context requests and full cleanup.
   They never enable bus mastering or a DMA engine.
@@ -693,7 +727,7 @@ disabled for deliberately unsupported hardware entry points.
   Cancellation of Linux uninterruptible waits or `msleep` is explicitly fatal,
   not success-shaped. Unsupported operations and void-API failures terminate
   through the existing platform-error diagnostic.
-- [The C execution test](compat/execution_test.c) verifies actual mutex
+- [The C execution test](compat/guest_tests/execution_test.c) verifies actual mutex
   contention and sleeping while locked, stored and broadcast completions,
   exact timeout return shapes and the expiry/late-credit race, measured minimum sleep/timeout durations,
   nested spinlock IF/depth restoration, preserved C stack locals, invalid
@@ -903,7 +937,7 @@ intentional-failure runs, along with all accepted hardening submissions.
 
 ### Original Linux ring and lifetime hardening
 
-[The hardening fixture](src/linux_hardening.rs) wraps both 256-entry rings with
+[The hardening fixture](src/guest_tests/linux_hardening.rs) wraps both 256-entry rings with
 **300 TX and 300 RX packets**, mixing short copied and larger handed-off RX.
 It checks exact bytes, original cleanup, source producer/consumer indices and
 per-packet resource balance. Zero is a valid wrapped Linux TDT value.

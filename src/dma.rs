@@ -280,5 +280,6 @@ impl Drop for Buffer<'_, '_> {
     }
 }
 
-#[path = "dma_tests.rs"]
+#[cfg(feature = "guest-tests")]
+#[path = "guest_tests/dma.rs"]
 pub mod tests;

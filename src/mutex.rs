@@ -167,5 +167,6 @@ impl<T: ?Sized + 'static> Drop for Registration<T> {
     }
 }
 
-#[path = "mutex_tests.rs"]
+#[cfg(feature = "guest-tests")]
+#[path = "guest_tests/mutex.rs"]
 pub mod tests;

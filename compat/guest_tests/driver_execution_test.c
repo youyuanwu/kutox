@@ -1,4 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+#if !KUTOX_GUEST_TESTS
+#error "guest test unit requires guest-tests"
+#endif
 #include "kutox_compat.h"
 extern void kutox_platform_fail(const char *) __attribute__((noreturn));
 extern int kutox_linux_context(void);

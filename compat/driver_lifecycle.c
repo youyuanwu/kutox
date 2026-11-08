@@ -110,6 +110,7 @@ int kutox_c_linux_rx_path(uint64_t ticket)
     if (!ticket || ticket != generation || !loaded || !device) return -ESTALE;
     return kutox_c_rx_path();
 }
+#if KUTOX_GUEST_TESTS
 int kutox_c_linux_rx_state(uint64_t ticket, unsigned int packets, unsigned int bytes,
                           unsigned int dropped, unsigned int failures, bool replenished)
 {
@@ -128,6 +129,7 @@ int kutox_c_linux_rx_state(uint64_t ticket, unsigned int packets, unsigned int b
     }
     return resident;
 }
+#endif
 int kutox_c_linux_unbind(uint64_t ticket)
 {
     if (!loaded || !ticket || ticket != generation) return -ESTALE;
@@ -140,6 +142,7 @@ int kutox_c_linux_unbind(uint64_t ticket)
 }
 bool kutox_c_linux_empty(void) { return !loaded && !device && kutox_c_packet_empty() && kutox_c_deferred_empty(); }
 
+#if KUTOX_GUEST_TESTS
 int kutox_c_linux_many(uint64_t ticket, const void *bytes, unsigned int count)
 {
     if (!loaded || !ticket || ticket != generation || !device) return -ESTALE;
@@ -208,3 +211,4 @@ int kutox_c_linux_rx_failures(uint64_t ticket)
     if (adapter->alloc_rx_buff_failed > 0x7fffffff) return -ERANGE;
     return adapter->alloc_rx_buff_failed;
 }
+#endif

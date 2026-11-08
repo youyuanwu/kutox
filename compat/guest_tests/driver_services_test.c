@@ -1,4 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+#if !KUTOX_GUEST_TESTS
+#error "guest test unit requires guest-tests"
+#endif
 #include "driver_services.h"
 extern struct pci_dev *kutox_c_driver_endpoint(unsigned int);
 extern void kutox_c_driver_endpoint_release(void);

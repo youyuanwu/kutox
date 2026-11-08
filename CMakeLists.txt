@@ -19,8 +19,16 @@ FetchContent_Declare(limine
 FetchContent_MakeAvailable(limine)
 
 set(KERNEL "${CMAKE_SOURCE_DIR}/target/x86_64-unknown-none/release/kutox")
+option(KUTOX_GUEST_TESTS "Include guest acceptance fixtures in the reusable image" ON)
+if(KUTOX_GUEST_TESTS)
+    set(KERNEL_FEATURES --features guest-tests)
+    set(GUEST_TEST_PROFILE enabled)
+else()
+    set(KERNEL_FEATURES --no-default-features)
+    set(GUEST_TEST_PROFILE disabled)
+endif()
 add_custom_target(kernel
-    COMMAND ${CARGO} build --locked --release --jobs 1
+    COMMAND ${CARGO} build --locked --release --jobs 1 ${KERNEL_FEATURES}
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     BYPRODUCTS "${KERNEL}"
     USES_TERMINAL
@@ -49,7 +57,11 @@ add_test(NAME linux-driver-compile-check
 )
 set_tests_properties(linux-driver-compile-check PROPERTIES TIMEOUT 65 RUN_SERIAL TRUE)
 
-foreach(case IN ITEMS known alternate missing unsupported ambiguous eeprom-timeout low-memory default-mode invalid-mode page-fault general-protection double-fault unexpected-page-fault smp-unsupported repeat provenance)
+set(MAC_CASES known alternate missing unsupported ambiguous low-memory default-mode invalid-mode smp-unsupported repeat provenance)
+if(KUTOX_GUEST_TESTS)
+    list(APPEND MAC_CASES eeprom-timeout page-fault general-protection double-fault unexpected-page-fault)
+endif()
+foreach(case IN LISTS MAC_CASES)
     add_test(NAME "mac-${case}"
         COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
             --case "${case}" --build-dir "${CMAKE_BINARY_DIR}"
@@ -57,6 +69,11 @@ foreach(case IN ITEMS known alternate missing unsupported ambiguous eeprom-timeo
     )
     set_tests_properties("mac-${case}" PROPERTIES TIMEOUT 65 RUN_SERIAL TRUE)
 endforeach()
+add_test(NAME kernel-build-profile
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/guest_build_check.py"
+        --kernel "${KERNEL}" --nm "${NM}" --guest-tests "${GUEST_TEST_PROFILE}"
+)
+if(KUTOX_GUEST_TESTS)
 add_test(NAME kernel-suite
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
         --case kernel-tests --build-dir "${CMAKE_BINARY_DIR}"
@@ -93,6 +110,14 @@ add_test(NAME thread-stack-guard
         --qemu "${QEMU}" --timeout 20
 )
 set_tests_properties(thread-stack-guard PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
+else()
+    add_test(NAME guest-tests-disabled
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --case guest-tests-disabled --build-dir "${CMAKE_BINARY_DIR}"
+            --qemu "${QEMU}" --timeout 20
+    )
+    set_tests_properties(guest-tests-disabled PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
+endif()
 add_test(NAME harness-unit
     COMMAND ${Python3_EXECUTABLE} -m unittest discover -s tests -v
 )

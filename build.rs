@@ -65,6 +65,8 @@ fn main() {
         println!("cargo:rerun-if-changed={path}");
     }
     let flags = fs::read_to_string("compat/cflags.txt").expect("cannot read freestanding C flags");
+    let guest_tests = env::var_os("CARGO_FEATURE_GUEST_TESTS").is_some();
+    let guest_define = if guest_tests { "1" } else { "0" };
     let mut build = cc::Build::new();
     build
         .compiler("clang")
@@ -75,9 +77,7 @@ fn main() {
         .file("compat/execution_ops.c")
         .file("compat/deferred.c")
         .file("compat/diagnostics.c")
-        .file("compat/driver_execution_test.c")
-        .file("compat/execution_test.c")
-        .file("compat/dma_test.c")
+        .define("KUTOX_GUEST_TESTS", guest_define)
         .warnings_into_errors(true);
     for flag in flags.lines() {
         build.flag(flag);
@@ -113,7 +113,6 @@ fn main() {
         .file("compat/driver_pci.c")
         .file("compat/driver_packet.c")
         .file("compat/driver_optional.c")
-        .file("compat/driver_services_test.c")
         .file("compat/bridge.c")
         .file(driver.join("e1000_main.c"))
         .file(driver.join("e1000_hw.c"))
@@ -121,10 +120,47 @@ fn main() {
         .file(driver.join("e1000_ethtool.c"))
         .file("compat/driver_lifecycle.c")
         .define("KUTOX_E1000_FULL_SOURCE", "1")
+        .define("KUTOX_GUEST_TESTS", guest_define)
         .warnings_into_errors(true);
     for flag in flags.lines() {
         source.flag(flag);
     }
     source.flag("-Wno-pointer-sign").flag("-Wno-sign-compare");
     source.compile("linux_e1000");
+    if guest_tests {
+        let mut tests = cc::Build::new();
+        tests
+            .compiler("clang")
+            .include(&include)
+            .include("compat")
+            .include(&driver)
+            .define("KUTOX_GUEST_TESTS", "1")
+            .file("compat/guest_tests/driver_execution_test.c")
+            .file("compat/guest_tests/execution_test.c")
+            .file("compat/guest_tests/dma_test.c")
+            .warnings_into_errors(true);
+        for flag in flags.lines() {
+            tests.flag(flag);
+        }
+        tests.compile("kutox_guest_tests");
+        let mut source_tests = cc::Build::new();
+        source_tests
+            .compiler("clang")
+            .include(&source_include)
+            .include("compat")
+            .include(&driver)
+            .include("linux/include")
+            .include("linux/include/uapi")
+            .include("linux/arch/x86/include/uapi")
+            .define("KUTOX_GUEST_TESTS", "1")
+            .file("compat/guest_tests/driver_services_test.c")
+            .warnings_into_errors(true);
+        for flag in flags.lines() {
+            source_tests.flag(flag);
+        }
+        source_tests
+            .flag("-Wno-pointer-sign")
+            .flag("-Wno-sign-compare");
+        source_tests.compile("kutox_source_guest_tests");
+    }
 }

@@ -45,6 +45,28 @@ impl BootMode {
                 | Self::UnexpectedPageFault
         )
     }
+
+    pub fn validate_build(self) -> Result<(), Error> {
+        if self.is_guest_test() && !cfg!(feature = "guest-tests") {
+            return Err(Error::TestsDisabled);
+        }
+        Ok(())
+    }
+
+    pub const fn is_guest_test(self) -> bool {
+        matches!(
+            self,
+            Self::EepromTimeout
+                | Self::PageFault
+                | Self::GeneralProtection
+                | Self::DoubleFault
+                | Self::UnexpectedPageFault
+                | Self::KernelTests
+                | Self::KernelTestsFail
+                | Self::HeapOom
+                | Self::ThreadStackGuard
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -55,6 +77,7 @@ pub enum Error {
     InvalidModeLength = -22,
     UnknownMode = -23,
     DuplicateModeFile = -24,
+    TestsDisabled = -25,
 }
 
 fn read_bytes<const N: usize>(read: &mut impl FnMut() -> u8) -> [u8; N] {
@@ -287,6 +310,30 @@ mod tests {
                 ("opt/kutox/test-mode", b"kernel-tests"),
             ])),
             Err(Error::DuplicateModeFile)
+        );
+    }
+}
+#[test]
+fn guest_modes_require_the_build_feature_without_changing_probe() {
+    assert_eq!(BootMode::Probe.validate_build(), Ok(()));
+    for mode in [
+        BootMode::KernelTests,
+        BootMode::KernelTestsFail,
+        BootMode::EepromTimeout,
+        BootMode::PageFault,
+        BootMode::GeneralProtection,
+        BootMode::DoubleFault,
+        BootMode::UnexpectedPageFault,
+        BootMode::HeapOom,
+        BootMode::ThreadStackGuard,
+    ] {
+        assert_eq!(
+            mode.validate_build(),
+            if cfg!(feature = "guest-tests") {
+                Ok(())
+            } else {
+                Err(Error::TestsDisabled)
+            }
         );
     }
 }

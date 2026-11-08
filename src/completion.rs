@@ -121,5 +121,6 @@ impl Drop for Registration {
     }
 }
 
-#[path = "completion_tests.rs"]
+#[cfg(feature = "guest-tests")]
+#[path = "guest_tests/completion.rs"]
 pub mod tests;

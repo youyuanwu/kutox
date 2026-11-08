@@ -138,6 +138,12 @@ class ResultTests(unittest.TestCase):
 
 
 class CommandTests(unittest.TestCase):
+    def test_disabled_guest_mode_uses_no_network_and_the_same_image(self):
+        command = qemu_command(self.args, "guest-tests-disabled")
+        self.assertNotIn("-netdev", command)
+        self.assertIn("name=opt/kutox/test-mode,string=kernel-tests", command)
+        self.assertEqual(command[command.index("-cdrom") + 1], str(Path("build/kutox.iso")))
+
     def setUp(self):
         self.args = SimpleNamespace(qemu="qemu-system-x86_64", build_dir=Path("build"))
 

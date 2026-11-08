@@ -230,7 +230,8 @@ fn work(address: usize, key: Key, operation: u32, delay: u64) -> Result<bool, Er
                 if linux_runtime::holds_mutex() {
                     return Err(Error::Context);
                 }
-                crate::linux_hardening::source_join(1);
+                #[cfg(feature = "guest-tests")]
+                crate::guest_tests::linux_hardening::source_join(1);
             }
             let pending = { SERVICES.lock_save_irq().state.cancel_begin(key, address)? };
             notify(&WORK_READY);
@@ -315,7 +316,8 @@ fn napi(address: usize, key: Key, operation: u32, done: i32) -> Result<bool, Err
                 if !SERVICES.lock_save_irq().state.running(key, address)? {
                     break;
                 }
-                crate::linux_hardening::source_join(2);
+                #[cfg(feature = "guest-tests")]
+                crate::guest_tests::linux_hardening::source_join(2);
                 token.wait(None).map_err(|_| Error::Context)?;
             }
             SERVICES
@@ -405,15 +407,18 @@ fn worker(which: usize) {
                         invocation.address,
                         0,
                     );
-                    crate::linux_hardening::pause_source(1);
+                    #[cfg(feature = "guest-tests")]
+                    crate::guest_tests::linux_hardening::pause_source(1);
                     unsafe { callback(invocation.address as *mut c_void) };
                     CURRENT_WORK.store(0, Ordering::Release);
                     0
                 }
                 Callback::Napi(callback) => {
-                    crate::linux_hardening::pause_source(2);
+                    #[cfg(feature = "guest-tests")]
+                    crate::guest_tests::linux_hardening::pause_source(2);
                     CURRENT_NAPI.store(invocation.key.raw(), Ordering::Release);
-                    crate::linux_hardening::atomic_reentry();
+                    #[cfg(feature = "guest-tests")]
+                    crate::guest_tests::linux_hardening::atomic_reentry();
                     crate::linux_driver::kutox_driver_trace(
                         13,
                         callback as usize,

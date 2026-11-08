@@ -2,9 +2,11 @@ use crate::{
     Failure, boot::BootInfo, cpu, driver_memory, io, linux_deferred, linux_irq, memory, pci,
     platform, serial, time,
 };
+#[cfg(feature = "guest-tests")]
+use core::sync::atomic::AtomicU32;
 use core::{
     cell::UnsafeCell,
-    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
 struct Binding {
@@ -25,7 +27,9 @@ static KEY: AtomicUsize = AtomicUsize::new(0);
 static MMIO: AtomicUsize = AtomicUsize::new(0);
 static MASK: AtomicU64 = AtomicU64::new(0);
 static GATED: AtomicBool = AtomicBool::new(true);
+#[cfg(feature = "guest-tests")]
 static FAIL_OPERATION: AtomicU32 = AtomicU32::new(u32::MAX);
+#[cfg(feature = "guest-tests")]
 pub fn fail_operation(operation: u32) {
     FAIL_OPERATION.store(operation, Ordering::Release);
 }
@@ -129,12 +133,13 @@ extern "C" fn kutox_driver_known(key: usize) -> bool {
 pub extern "C" fn kutox_driver_pci(operation: u32, first: u64, second: u64) -> i32 {
     let result = (|| {
         driver_memory::context(false)?;
+        #[cfg(feature = "guest-tests")]
         if FAIL_OPERATION.load(Ordering::Acquire) != u32::MAX
             && FAIL_OPERATION
                 .compare_exchange(operation, u32::MAX, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
         {
-            crate::linux_driver::record_fault();
+            crate::guest_tests::linux_e1000::record_fault();
             return Err(-12);
         }
         let binding = unsafe { (&mut *BINDING.0.get()).as_mut() }.ok_or(-19)?;

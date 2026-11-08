@@ -1,3 +1,5 @@
+//! Guest-only acceptance fixtures; not production driver code.
+
 use crate::{
     driver_memory, linux_deferred,
     linux_driver::{DriverHandle, control},
@@ -231,7 +233,7 @@ fn wrap() {
     serial::print(format_args!("# LINUX_HARD_STOP kind=wrap seq=300\n"));
     assert_eq!(handle.rx_stop(), 0);
     assert_eq!(handle.close(), 0);
-    handle.unbind();
+    handle.unbind_checked();
 }
 
 fn backpressure() {
@@ -340,7 +342,7 @@ fn backpressure() {
     serial::print(format_args!("# LINUX_HARD_STOP kind=errors seq=3\n"));
     assert_eq!(handle.rx_stop(), 0);
     assert_eq!(handle.close(), 0);
-    handle.unbind();
+    handle.unbind_checked();
 }
 
 fn teardown() {
@@ -394,7 +396,7 @@ fn teardown() {
     assert_eq!(handle.close(), 0);
     wait(|| DONE.load(Ordering::Acquire) == 1);
     assert_eq!(handle.close(), 0);
-    handle.unbind();
+    handle.unbind_checked();
     QUIT.store(true, Ordering::Release);
     serial::print(format_args!(
         "# LINUX_HARD_TEARDOWN joined=2 serialized=2 stale=1\n"

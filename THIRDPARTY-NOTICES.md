@@ -197,7 +197,7 @@ linked into the kernel.
 
 The native [C execution adapter](compat/runtime.c),
 [Rust registry/backend](src/linux_runtime.rs), and
-[C acceptance test](compat/execution_test.c) are kutox code. They expose a
+[C acceptance test](compat/guest_tests/execution_test.c) are kutox code. They expose a
 tested static-object subset of Linux-facing mutex, spinlock, sleep, and completion
 APIs without copying a Linux synchronization implementation. The Linux submodule
 and all four selected upstream units remain unchanged. These services now back
@@ -205,6 +205,10 @@ original driver execution for the selected profile, not general Linux
 synchronization or binary ABI compatibility.
 
 ## Other dependencies and references
+
+Guest-test fixtures, build-profile gating and symbol/KTAP acceptance are kutox
+code. Moving them into explicit Rust/C guest-test directories does not change
+the upstream notices of runtime ports. No KUnit implementation is imported.
 
 Cargo dependencies retain their respective licenses and source notices.
 Limine bootloader files in generated images retain the upstream release's

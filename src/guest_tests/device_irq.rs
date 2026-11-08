@@ -1,4 +1,6 @@
-use crate::e1000::{self, ICR, ICS, Nic, read, write};
+//! Guest-only acceptance fixtures; not production driver code.
+
+use crate::guest_tests::e1000_irq::{self, E1000IrqFixture, ICR, ICS, read, write};
 use crate::{
     Failure,
     boot::BootInfo,
@@ -18,7 +20,7 @@ static RESUMED: AtomicUsize = AtomicUsize::new(0);
 static COMPLETION: Completion = Completion::new();
 
 fn handle() -> Result<(), Failure> {
-    let address = e1000::irq_address();
+    let address = e1000_irq::irq_address();
     if address == 0 || read(address, ICR) & CAUSE == 0 {
         return Err(Failure::new("e1000_irq_cause", -1));
     }
@@ -42,7 +44,7 @@ fn handle() -> Result<(), Failure> {
 }
 
 fn trigger(_: usize) {
-    let address = e1000::irq_address();
+    let address = e1000_irq::irq_address();
     assert_ne!(address, 0);
     write(address, ICS, CAUSE);
 }
@@ -74,7 +76,7 @@ fn consume(_: usize) {
 }
 
 pub fn quiescent() -> bool {
-    e1000::irq_address() == 0 && COMPLETION.snapshot() == CompletionState::new()
+    e1000_irq::irq_address() == 0 && COMPLETION.snapshot() == CompletionState::new()
 }
 
 pub fn discovery(boot: &BootInfo, frames: &memory::PhysicalFrames<'static>) -> Result<(), Failure> {
@@ -86,7 +88,7 @@ pub fn discovery(boot: &BootInfo, frames: &memory::PhysicalFrames<'static>) -> R
             .alloc_frames(2)
             .map_err(|error| Failure::new("irq_donate", error as i32))?;
         let mut metadata = [const { Frame::EMPTY }; 4];
-        let limited = memory::donated_allocator(donated.region(), &mut metadata)?;
+        let limited = memory::tests::donated_allocator(donated.region(), &mut metadata)?;
         let empty = limited.stats();
         {
             let apic = LocalApic::start(boot, &limited)?;
@@ -132,7 +134,7 @@ pub fn delivery(boot: &BootInfo, frames: &memory::PhysicalFrames<'static>) -> Re
     let topology = platform::discover(boot, frames)?;
     let apic = LocalApic::start(boot, frames)?;
     let controller = IoApic::start(boot, frames, &apic, &topology)?;
-    let nic = Nic::start(boot, frames, &topology)?;
+    let nic = E1000IrqFixture::start(boot, frames, &topology)?;
     let mut route = nic.claim(&controller, CAUSE, handle)?;
     route.claim.unmask()?;
     let timer = irq::Timer::attach(&apic)?;
@@ -170,7 +172,7 @@ pub fn masking_cleanup(
     let topology = platform::discover(boot, frames)?;
     let apic = LocalApic::start(boot, frames)?;
     let controller = IoApic::start(boot, frames, &apic, &topology)?;
-    let nic = Nic::start(boot, frames, &topology)?;
+    let nic = E1000IrqFixture::start(boot, frames, &topology)?;
     let space = memory::StackSpace::new(boot, frames)?;
     let mut scheduler = Scheduler::new(&space);
     let mut route = nic.claim(&controller, CAUSE, handle)?;

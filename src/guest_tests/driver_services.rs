@@ -1,3 +1,5 @@
+//! Guest-only acceptance fixtures; not production driver code.
+
 use crate::linux_deferred;
 use crate::{
     Failure, boot::BootInfo, driver_memory, driver_platform, irq, memory, pci, platform, threads,

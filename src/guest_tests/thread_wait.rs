@@ -1,3 +1,6 @@
+//! Guest-only acceptance fixtures; not production driver code.
+use crate::boot::BootInfo;
+
 use super::*;
 use alloc::{boxed::Box, vec::Vec};
 use core::sync::atomic::AtomicUsize;

@@ -9,8 +9,11 @@ extern void kutox_platform_fail(const char *operation) __attribute__((noreturn))
 
 static uintptr_t mmio_base;
 static size_t mmio_length;
+/* Fault injection is absent from feature-off builds; the result ABI is stable. */
+#if KUTOX_GUEST_TESTS
 static bool deny_eeprom_grant;
 static u32 denied_grants;
+#endif
 static u32 eeprom_reads;
 static bool probe_active;
 extern bool kutox_driver_mmio(uintptr_t, u32, bool);
@@ -43,10 +46,12 @@ u32 readl(const volatile void *address)
 #endif
     if (probe_active && (uintptr_t)address == mmio_base + E1000_EECD) {
         eeprom_reads++;
+#if KUTOX_GUEST_TESTS
         if (deny_eeprom_grant) {
             value &= ~E1000_EECD_GNT;
             denied_grants++;
         }
+#endif
     }
     return value;
 }
@@ -124,11 +129,19 @@ void kutox_read_mac(uintptr_t base, size_t length, u16 vendor,
         deny_grant > 1)
         return;
     kutox_check_boot_context();
+#if !KUTOX_GUEST_TESTS
+    if (deny_grant) {
+        result->code = -95;
+        return;
+    }
+#endif
     probe_active = true;
     mmio_base = base;
     mmio_length = length;
+#if KUTOX_GUEST_TESTS
     deny_eeprom_grant = deny_grant;
     denied_grants = 0;
+#endif
     eeprom_reads = 0;
     struct net_device netdev = { .name = "e1000-mac" };
     struct e1000_adapter adapter = { 0 };
@@ -155,7 +168,11 @@ void kutox_read_mac(uintptr_t base, size_t length, u16 vendor,
         result->mac[i] = hw->perm_mac_addr[i];
     result->stage = KUTOX_COMPLETE;
 done:
+#if KUTOX_GUEST_TESTS
     result->denied_grants = denied_grants;
+#else
+    result->denied_grants = 0;
+#endif
     result->eeprom_reads = eeprom_reads;
     probe_active = false;
     mmio_base = 0;

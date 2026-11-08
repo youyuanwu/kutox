@@ -544,7 +544,7 @@ synthetic-service cases remain isolated from explicit original module startup.
 
 [Shared C execution types](../compat/execution_types.h) and
 [native deferred services](../src/linux_deferred.rs) now supply Phase 2's
-bounded environment, tested through [synthetic C callbacks](../compat/driver_execution_test.c).
+bounded environment, tested through [synthetic C callbacks](../compat/guest_tests/driver_execution_test.c).
 These are OS services, not replacement implementations of Linux's watchdog,
 IRQ, poll or packet algorithms.
 
@@ -791,7 +791,7 @@ releases every mapping and allocation at 128/32 MiB.
 
 ### Selected ring and lifecycle hardening
 
-[The hardening tests](../src/linux_hardening.rs) drive 300 accepted packets
+[The hardening tests](../src/guest_tests/linux_hardening.rs) drive 300 accepted packets
 through each original 256-entry ring, verify wrapped source indices, mixed
 copybreak/build-skb bytes and exact resource balance. The C boundary accepts
 TDT zero on wrap. Receipt tracking stops matching retired TX skb addresses:
@@ -1154,6 +1154,41 @@ machine; bus/window assignment, general AML routing, PCIe/MSI, physical hardware
 SMP, module loading and an IP stack remain outside this plan. Bridge support
 is limited to the validated QEMU firmware-configured profile, not arbitrary
 PCI topology or hardware.
+
+### Guest-test isolation
+
+Guest acceptance code is separate from the production driver/platform boundary.
+[Rust guest fixtures](../src/guest_tests/) contain the static registry, native
+IRQ fixture, original Linux packet/lifetime scenarios and primitive tests.
+[C guest tests](../compat/guest_tests/) compile into separate archives, not the
+runtime-provider closure. White-box tests remain included as feature-gated
+`tests` submodules of their runtime parent where access to private state is
+needed; the physical files still live under the guest-test directory.
+
+The `guest-tests` Cargo feature is enabled by default for the reusable
+acceptance image. CMake's matching `KUTOX_GUEST_TESTS` option selects that profile
+or a feature-off image at the same output path. Rust unit tests independently
+use `cfg(test)`. Runtime fw_cfg dispatch does not remove compiled fixtures.
+
+Feature-off builds omit synthetic callbacks, packet fixtures, fault injection,
+pause/reentry checkpoints, test-only assembly and C inspection helpers. The
+boot parser rejects test requests with `-25` before memory/device initialization;
+there is no fallback to Probe. Original Linux units, real services, generation/
+ownership checks and normal diagnostics remain. The callback/packet observer
+boundary remains runtime code, not an unconditional-success substitute.
+
+The IRQ helper is [E1000IrqFixture](../src/guest_tests/e1000_irq.rs), explicitly
+test-only. [linux_driver.rs](../src/linux_driver.rs) is now the core control/
+packet ticket adapter; waiting scenarios and stale-ticket assertions live in
+[the guest e1000 fixture](../src/guest_tests/linux_e1000.rs).
+ELF profile checks positively require real driver/service symbols and require
+or reject test symbols according to the selected build. Test-disabled boot and
+test-enabled guest regressions use the same image location sequentially.
+
+Normal boot remains the MAC helper while driver-init/runtime integration is
+pending. Feature-off dormant-service dead-code allowances are scoped to those
+kernel modules only; strict type/lint checks and test-enabled warnings remain.
+No KUnit runtime, Linux module loader or additional kernel dependency is imported.
 
 ### Rust OS and userspace track
 

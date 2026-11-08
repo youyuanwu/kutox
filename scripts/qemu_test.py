@@ -99,6 +99,7 @@ CASES = {
     "low-memory": ("52:54:00:12:34:56", None),
     "default-mode": ("52:54:00:12:34:56", None),
     "invalid-mode": (None, "boot_mode"),
+    "guest-tests-disabled": (None, "boot_mode"),
     **{case: (None, None) for case in FAULT_RESULTS},
     "smp-unsupported": (None, "cpu_single_processor_required"),
     "heap-oom": (None, None),
@@ -518,6 +519,19 @@ def validate_thread_guard(returncode, output):
 
 
 def validate_result(case, returncode, output):
+    if case == "guest-tests-disabled":
+        lines = output.splitlines()
+        expected = "E1000_MAC_FAIL stage=boot_mode code=-25"
+        if returncode != 3 or not lines or lines[-1] != expected:
+            raise AssertionError("feature-off kernel did not explicitly reject guest test mode")
+        if [line for line in lines if line.startswith("KUTOX_BOOT")] != [f"KUTOX_BOOT linux={REVISION}"]:
+            raise AssertionError("missing pinned-source feature-off boot marker")
+        if [line for line in lines if line.startswith("E1000_")] != [expected] or any(
+            line.startswith(("BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "THREAD_", "Bail out!"))
+            for line in lines
+        ):
+            raise AssertionError("feature-off test mode reached initialization or guest fixtures")
+        return
     if case in KERNEL_SUITE_CASES:
         validate_kernel_suite(case, returncode, output)
         return
@@ -1083,13 +1097,14 @@ def qemu_command(args, case, capture=None, net_fd=None):
         mode = {
             "eeprom-timeout": "eeprom-timeout",
             "invalid-mode": "unsupported",
+            "guest-tests-disabled": "kernel-tests",
             "heap-oom": "heap-oom",
             "thread-stack-guard": "thread-stack-guard",
             **{case: case for case in FAULT_RESULTS},
             **KERNEL_SUITE_CASES,
         }.get(case, "probe")
         command += ["-fw_cfg", f"name=opt/kutox/test-mode,string={mode}"]
-    if case not in ("missing", "smp-unsupported", "heap-oom", "thread-stack-guard") and case not in FAULT_RESULTS and case not in KERNEL_SUITE_CASES:
+    if case not in ("missing", "smp-unsupported", "heap-oom", "thread-stack-guard", "guest-tests-disabled") and case not in FAULT_RESULTS and case not in KERNEL_SUITE_CASES:
         model = "e1000e" if case == "unsupported" else "e1000"
         mac = CASES[case][0] or "52:54:00:12:34:56"
         command += [

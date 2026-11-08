@@ -74,6 +74,9 @@ pub fn collect() -> Result<BootInfo, Failure> {
     let configured =
         fw_cfg::read_mode(|selector| io::write16(0x510, selector), || io::read8(0x511))
             .map_err(|error| Failure::new("boot_mode", error as i32))?;
+    let mode = configured.unwrap_or(BootMode::Probe);
+    mode.validate_build()
+        .map_err(|error| Failure::new("boot_mode", error as i32))?;
     unsafe extern "C" {
         static _kernel_start: u8;
         static _kernel_end: u8;
@@ -94,7 +97,7 @@ pub fn collect() -> Result<BootInfo, Failure> {
             .get_response()
             .expect("missing memory map")
             .entries(),
-        mode: configured.unwrap_or(BootMode::Probe),
+        mode,
         mode_configured: configured.is_some(),
         rsdp_physical: RSDP
             .get_response()

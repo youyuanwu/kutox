@@ -1,3 +1,5 @@
+//! Guest-only acceptance fixtures; not production driver code.
+
 use super::*;
 use crate::{
     Failure,
@@ -94,7 +96,7 @@ fn basic(_: usize) {
     X86Cpu::enable_interrupts();
     context_errors(SwitchError::InterruptsEnabled);
     X86Cpu::disable_interrupts();
-    exceptions::test_thread_context(|| context_errors(SwitchError::InterruptContext))
+    exceptions::tests::test_thread_context(|| context_errors(SwitchError::InterruptContext))
         .unwrap_or_else(|error| {
             panic!(
                 "mutex context probe stage={} code={}",

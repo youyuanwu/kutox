@@ -6,33 +6,128 @@ extern crate alloc;
 mod boot;
 mod completion;
 mod cpu;
-mod device_irq;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod dma;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod driver_memory;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod driver_platform;
-mod driver_service_tests;
-mod e1000;
 mod exceptions;
+#[cfg(feature = "guest-tests")]
+mod guest_tests;
 mod heap;
 mod io;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod irq;
-mod kernel_tests;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod linux_deferred;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod linux_dma;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod linux_driver;
-mod linux_driver_tests;
-mod linux_hardening;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod linux_irq;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod linux_runtime;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod memory;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod mutex;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod pci;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod platform;
 mod serial;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Kernel service API retained before boot integration"
+    )
+)]
 mod threads;
 mod time;
 
 use core::{arch::asm, ffi::CStr, panic::PanicInfo};
+#[cfg(feature = "guest-tests")]
 use kutox::fw_cfg::BootMode;
 
 macro_rules! println {
@@ -110,20 +205,24 @@ fn probe() -> Result<[u8; 6], Failure> {
             "default"
         }
     );
+    #[cfg(feature = "guest-tests")]
     if matches!(boot.mode, BootMode::KernelTests | BootMode::KernelTestsFail) {
-        kernel_tests::run(&boot);
+        guest_tests::run(&boot);
     }
+    #[cfg(feature = "guest-tests")]
     if boot.mode.is_fault_test() {
-        match exceptions::run_fault_test(boot.mode)? {}
+        match exceptions::tests::run_fault_test(boot.mode)? {}
     }
     let mut memory_storage = memory::MemoryStorage::new();
     let allocator = memory::initialize(&boot, &mut memory_storage)?;
     let heap = heap::initialize(&boot, allocator)?;
+    #[cfg(feature = "guest-tests")]
     if boot.mode == BootMode::HeapOom {
-        heap::fatal_oom();
+        heap::tests::fatal_oom();
     }
+    #[cfg(feature = "guest-tests")]
     if boot.mode == BootMode::ThreadStackGuard {
-        match threads::run_guard_test(&boot, allocator)? {}
+        match threads::tests::run_guard_test(&boot, allocator)? {}
     }
     let stats = allocator.stats();
     let managed_bytes = stats.total_pages * moss_libkernel::memory::PAGE_SIZE;
@@ -170,7 +269,16 @@ fn probe() -> Result<[u8; 6], Failure> {
             device.vendor,
             device.device,
             device.revision,
-            u8::from(boot.mode == BootMode::EepromTimeout),
+            {
+                #[cfg(feature = "guest-tests")]
+                {
+                    u8::from(boot.mode == BootMode::EepromTimeout)
+                }
+                #[cfg(not(feature = "guest-tests"))]
+                {
+                    0
+                }
+            },
             &mut result,
         );
     }

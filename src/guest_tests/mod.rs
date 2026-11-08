@@ -1,13 +1,25 @@
-use crate::linux_driver;
+//! Guest-only acceptance fixtures; not production driver code.
+
+mod device_irq;
+mod driver_services;
+pub(crate) mod e1000_irq;
+pub(crate) mod linux_e1000;
+mod linux_execution;
+pub(crate) mod linux_hardening;
+
+use self::{
+    driver_services as driver_service_tests, linux_e1000 as linux_driver,
+    linux_execution as linux_driver_tests,
+};
 use crate::{
     Failure,
     boot::BootInfo,
     completion,
     cpu::{self, X86Cpu},
-    device_irq, dma, exceptions, heap, io, irq, linux_deferred, linux_dma, linux_driver_tests,
-    linux_irq, linux_runtime, memory, mutex, pci, serial, threads,
+    dma, exceptions, heap, io, irq, linux_deferred, linux_dma, linux_irq, linux_runtime, memory,
+    mutex, pci, serial, threads,
 };
-use crate::{driver_memory, driver_platform, driver_service_tests};
+use crate::{driver_memory, driver_platform};
 use kutox::fw_cfg::BootMode;
 use moss_libkernel::CpuOps;
 
@@ -19,77 +31,79 @@ struct TestCase {
 static TESTS: &[TestCase] = &[
     TestCase {
         name: "cpu.irq_lock_restore",
-        run: |_, _| exceptions::test_locks(),
+        run: |_, _| exceptions::tests::test_locks(),
     },
     TestCase {
         name: "cpu.breakpoint_return",
-        run: |_, _| exceptions::test_breakpoint(),
+        run: |_, _| exceptions::tests::test_breakpoint(),
     },
     TestCase {
         name: "memory.alignment_reservations",
-        run: memory::test_alignment_reservations,
+        run: memory::tests::test_alignment_reservations,
     },
     TestCase {
         name: "memory.exhaustion_reuse",
-        run: |_, _| memory::test_exhaustion_reuse(),
+        run: |_, _| memory::tests::test_exhaustion_reuse(),
     },
     TestCase {
         name: "memory.buddy_split_coalesce",
-        run: |_, allocator| memory::test_buddy_split_coalesce(allocator),
+        run: |_, allocator| memory::tests::test_buddy_split_coalesce(allocator),
     },
     TestCase {
         name: "memory.buddy_exhaustion",
-        run: |_, allocator| memory::test_buddy_exhaustion(allocator),
+        run: |_, allocator| memory::tests::test_buddy_exhaustion(allocator),
     },
     TestCase {
         name: "heap.bootstrap_once",
-        run: heap::test_bootstrap_once,
+        run: heap::tests::test_bootstrap_once,
     },
     TestCase {
         name: "heap.box_vec",
-        run: |_, _| heap::test_box_vec(),
+        run: |_, _| heap::tests::test_box_vec(),
     },
     TestCase {
         name: "heap.layouts_zero_realloc",
-        run: |_, _| heap::test_layouts_zero_realloc(),
+        run: |_, _| heap::tests::test_layouts_zero_realloc(),
     },
     TestCase {
         name: "heap.exhaustion_recovery",
-        run: heap::test_exhaustion_recovery,
+        run: heap::tests::test_exhaustion_recovery,
     },
     TestCase {
         name: "threads.switching",
-        run: threads::test_switching,
+        run: threads::tests::test_switching,
     },
     TestCase {
         name: "threads.lock_exclusion",
-        run: threads::test_exclusion,
+        run: threads::tests::test_exclusion,
     },
     TestCase {
         name: "threads.spawn_rollback",
-        run: threads::test_allocation_failure,
+        run: threads::tests::test_allocation_failure,
     },
     TestCase {
         name: "memory.mmio_cleanup",
         // Test only the mapping machinery: this PCI-hole address is never
         // dereferenced, so the suite needs no NIC or device ownership.
-        run: |boot, allocator| memory::test_mapping_reuse(boot, 0xf000_0000, allocator).map(|_| ()),
+        run: |boot, allocator| {
+            memory::tests::test_mapping_reuse(boot, 0xf000_0000, allocator).map(|_| ())
+        },
     },
     TestCase {
         name: "irq.timer_delivery",
-        run: irq::test_delivery,
+        run: irq::tests::test_delivery,
     },
     TestCase {
         name: "irq.register_restore",
-        run: irq::test_register_restore,
+        run: irq::tests::test_register_restore,
     },
     TestCase {
         name: "irq.masking_cleanup",
-        run: irq::test_masking_cleanup,
+        run: irq::tests::test_masking_cleanup,
     },
     TestCase {
         name: "irq.mapping_rollback",
-        run: irq::test_mapping_rollback,
+        run: irq::tests::test_mapping_rollback,
     },
     TestCase {
         name: "threads.wait_queues",
@@ -129,7 +143,7 @@ static TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "linux.thread_execution",
-        run: linux_runtime::test_execution,
+        run: linux_runtime::tests::test_execution,
     },
     TestCase {
         name: "sync.irq_completion",
@@ -141,7 +155,7 @@ static TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "linux.irq_completion",
-        run: linux_runtime::test_irq_completion,
+        run: linux_runtime::tests::test_irq_completion,
     },
     TestCase {
         name: "irq.platform_discovery",
@@ -149,7 +163,7 @@ static TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "pci.hierarchy",
-        run: pci::test_hierarchy,
+        run: pci::tests::test_hierarchy,
     },
     TestCase {
         name: "irq.device_delivery",
@@ -169,7 +183,7 @@ static TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "linux.coherent_dma",
-        run: linux_dma::test,
+        run: linux_dma::tests::test,
     },
     TestCase {
         name: "linux.driver_atomics",

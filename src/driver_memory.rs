@@ -4,10 +4,9 @@ use crate::{
     cpu::{self, X86Cpu},
     exceptions, io, linux_deferred, linux_runtime, memory, serial, threads,
 };
-use core::{
-    cell::UnsafeCell,
-    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
-};
+use core::cell::UnsafeCell;
+#[cfg(feature = "guest-tests")]
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 use moss_libkernel::{CpuOps, memory::allocators::phys::PageAllocation};
 
@@ -47,14 +46,20 @@ static STATE: Registry = Registry(UnsafeCell::new(State {
     allocations: [const { None }; CAPACITY],
     maps: [None; MAPS],
 }));
+#[cfg(feature = "guest-tests")]
 static FAIL_AFTER: AtomicUsize = AtomicUsize::new(usize::MAX);
+#[cfg(feature = "guest-tests")]
 static FAIL_KIND: AtomicU32 = AtomicU32::new(u32::MAX);
+#[cfg(feature = "guest-tests")]
 static MAP_FAIL_DIRECTION: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "guest-tests")]
 static MAP_FAIL_AFTER: AtomicUsize = AtomicUsize::new(usize::MAX);
+#[cfg(feature = "guest-tests")]
 pub fn fault(kind: u32, after: usize) {
     FAIL_KIND.store(kind, Ordering::Relaxed);
     FAIL_AFTER.store(after, Ordering::Relaxed);
 }
+#[cfg(feature = "guest-tests")]
 pub fn map_fault(direction: u32, after: usize) {
     MAP_FAIL_DIRECTION.store(direction, Ordering::Relaxed);
     MAP_FAIL_AFTER.store(after, Ordering::Relaxed);
@@ -180,16 +185,19 @@ extern "C" fn kutox_driver_alloc(size: usize, flags: u32, kind: u32) -> usize {
         if state.hhdm == 0 || size == 0 || size > 4 * 1024 * 1024 || kind > 3 {
             return Err(-22);
         }
-        let remaining = FAIL_AFTER.load(Ordering::Relaxed);
-        if remaining != usize::MAX
-            && (FAIL_KIND.load(Ordering::Relaxed) == u32::MAX
-                || FAIL_KIND.load(Ordering::Relaxed) == kind)
+        #[cfg(feature = "guest-tests")]
         {
-            if remaining == 0 {
-                crate::linux_driver::record_fault();
-                return Err(-12);
+            let remaining = FAIL_AFTER.load(Ordering::Relaxed);
+            if remaining != usize::MAX
+                && (FAIL_KIND.load(Ordering::Relaxed) == u32::MAX
+                    || FAIL_KIND.load(Ordering::Relaxed) == kind)
+            {
+                if remaining == 0 {
+                    crate::guest_tests::linux_e1000::record_fault();
+                    return Err(-12);
+                }
+                FAIL_AFTER.store(remaining - 1, Ordering::Relaxed);
             }
-            FAIL_AFTER.store(remaining - 1, Ordering::Relaxed);
         }
         let index = state
             .allocations
@@ -312,6 +320,7 @@ extern "C" fn kutox_driver_dma_map(
         if direction != 1 && direction != 2 {
             return Err(-95);
         }
+        #[cfg(feature = "guest-tests")]
         if direction == MAP_FAIL_DIRECTION.load(Ordering::Relaxed) {
             let remaining = MAP_FAIL_AFTER.load(Ordering::Relaxed);
             if remaining == 0 {
@@ -479,6 +488,7 @@ pub fn quiescent() -> bool {
         && INGRESS.lock_save_irq().count == 0
         && !linux_deferred::atomic_context()
 }
+#[cfg(feature = "guest-tests")]
 #[unsafe(no_mangle)]
 extern "C" fn kutox_driver_fail_after(count: usize) {
     FAIL_KIND.store(u32::MAX, Ordering::Relaxed);

@@ -1,3 +1,5 @@
+//! Guest-only acceptance fixtures; not production driver code.
+
 use super::*;
 use moss_libkernel::memory::{PAGE_SIZE, allocators::frame::Frame};
 
@@ -70,7 +72,7 @@ pub fn allocation(
         .alloc_frames(2)
         .map_err(|error| Failure::new("dma_donate", error as i32))?;
     let mut metadata = [const { Frame::EMPTY }; 4];
-    let limited = memory::donated_allocator(donated.region(), &mut metadata)?;
+    let limited = memory::tests::donated_allocator(donated.region(), &mut metadata)?;
     let bounded = Device::bind(&limited, device.inner.profile.clone());
     let before = limited.stats();
     let mut buffers: [Option<Buffer<'_, '_>>; 4] =
