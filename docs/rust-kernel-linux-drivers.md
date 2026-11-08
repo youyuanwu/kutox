@@ -1042,9 +1042,11 @@ they do not replace this roadmap's driver-execution gates.
 
 ### Planned Moss-style driver infrastructure
 
-The next integration milestone is **planned, not implemented**. The existing
-e1000 backend works in kernel fixtures, but normal boot still reads the MAC
-and exits; it does not retain a network device or run a general driver manager.
+The next integration milestone has **Phase 1 implemented; the remaining phases
+are planned**. The native [registry policy](../src/driver_registry.rs) and
+[owned manager boundary](../src/drivers.rs) are portable-tested foundations.
+The existing e1000 backend works in kernel fixtures, but normal boot still
+reads the MAC and exits; the manager is not yet wired into driver startup.
 
 Follow pinned Moss's
 [built-in initialization](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/init.rs)
@@ -1065,6 +1067,7 @@ The planned phases are:
 
 1. **Native registry and ownership:** bounded driver/device registrations,
    generation-checked handles, matching, dependency/error state and retirement.
+   Implemented and portable-tested; kernel startup wiring is still subsequent.
 2. **PCI hierarchy:** read-only assigned-bus discovery, parent/window validation
    and INTx swizzling through each bridge into the existing PIIX/APIC route.
 3. **Built-in startup:** retained linker initializer records and deterministic
@@ -1084,6 +1087,25 @@ Do not copy Moss's global IRQ-lock callback boundary for Linux's sleepable
 probe/open/remove: reserve identity, release locks/borrows, execute on a kernel
 thread, then commit or unwind. Shared workers and parent resources outlive
 dependent bindings. Linux still owns all e1000 packet/descriptor algorithms.
+
+Phase 1 provides explicit initializer/probe/readiness/stop contracts, retained
+native device objects and non-transferable probe/consumer/stop reservations.
+Callbacks and object destruction occur outside the reused Moss IRQ-saving
+lock. Dependency publication versions prevent lost readiness during an unlocked
+probe; failed or abandoned probes and failed stops remain diagnosed states.
+Reverse dependency teardown retains backing until consumers/callbacks retire.
+Production registries reject synthetic/test fallback drivers.
+
+The manager has 16 driver slots, 256 discovery slots, 32 active bindings,
+32 consumer operations and four dependencies per driver/device. Its measured
+x86_64 size is 50,096 bytes, below the 64-KiB infrastructure budget; later PCI
+inventory storage must fit the remaining budget too. Use boot-owned/static
+storage rather than constructing it on a 16-KiB worker stack. Thirty-seven portable
+policy/manager tests cover ownership, matching, failures, capacity, generation
+exhaustion, dependency progress/cycles and unlocked callback reentry. These
+tests do not claim real kernel-thread startup or PCI hierarchy support.
+The new registry/manager is kutox code following Moss's model, not a wholesale
+copy of Moss's FDT/VFS driver subsystem.
 
 Initial infrastructure is bounded; the actual Linux backend retains its
 one-e1000-instance limit while native synthetic drivers prove generic registry

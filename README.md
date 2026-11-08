@@ -94,6 +94,10 @@ teardown are tested. All eight driver-reuse phases are complete for the
 [selected QEMU/BSP profile](docs/rust-kernel-linux-drivers.md#as-built-support-statement);
 this is not generic LinuxKPI, physical-hardware or network-stack support.
 
+Moss-style native driver registration and owned-device policy foundations now
+have portable tests. [Persistent boot integration](docs/rust-kernel-linux-drivers.md#planned-moss-style-driver-infrastructure)
+is still being implemented; the normal default remains the boot MAC proof.
+
 ## Requirements
 
 - Linux host with rustup; the repository pins Rust `1.99.1` and the
