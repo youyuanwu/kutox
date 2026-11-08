@@ -21,6 +21,7 @@ uintptr_t kutox_driver_device(void);
 void kutox_driver_gate(void);
 int kutox_driver_retire(uintptr_t, size_t);
 void kutox_driver_diag(const char *, int);
+void kutox_net_wake(void);
 void kutox_c_tx_mapped(uintptr_t, u64, size_t, unsigned int);
 void kutox_c_tx_unmapped(u64, size_t, unsigned int);
 void kutox_c_tx_mmio(uintptr_t, u32, bool);

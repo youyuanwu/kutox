@@ -48,6 +48,16 @@ fn nested() -> (Config, Inventory, PciAddress) {
 }
 
 #[test]
+fn e1000_selection_rejects_multiple_endpoints_before_resource_access() {
+    let mut config = Config::default();
+    assert_eq!(config.scan().unwrap().e1000(), Ok(None));
+    config.device(address(0, 3, 0), 0, 0x020000);
+    assert_eq!(config.scan().unwrap().e1000(), Ok(Some(address(0, 3, 0))));
+    config.device(address(0, 4, 0), 0, 0x020000);
+    assert_eq!(config.scan().unwrap().e1000(), Err(Error::Ambiguous));
+}
+
+#[test]
 fn mechanism_one_carries_full_bdf_and_rejects_other_segments_or_offsets() {
     assert_eq!(
         configuration_address(address(0, 3, 0), 0x10),

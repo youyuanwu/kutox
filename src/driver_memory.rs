@@ -96,6 +96,8 @@ unsafe extern "C" fn kutox_driver_ingress(pointer: usize, size: usize) -> i32 {
     }
     ingress.lengths[index] = size;
     ingress.count += 1;
+    drop(ingress);
+    crate::net_device::wake();
     0
 }
 #[unsafe(no_mangle)]
@@ -121,6 +123,13 @@ unsafe extern "C" fn kutox_driver_receive(pointer: *mut u8, capacity: usize) -> 
 
 pub fn receive(output: &mut [u8; 1514]) -> usize {
     unsafe { kutox_driver_receive(output.as_mut_ptr(), output.len()) }
+}
+
+pub fn discard_ingress() {
+    let mut ingress = INGRESS.lock_save_irq();
+    ingress.lengths.fill(0);
+    ingress.head = 0;
+    ingress.count = 0;
 }
 
 pub fn context(atomic: bool) -> Result<(), i32> {

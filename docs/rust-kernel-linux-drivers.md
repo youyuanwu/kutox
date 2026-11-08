@@ -663,7 +663,7 @@ free; unchanged source need not call kutox destruction extensions.
 
 The independent source-plus-services closure resolves driver APIs to actual C
 providers, optional-profile errors or three existing Rust primitives
-(`memcpy`, `memset`, elapsed jiffies). Its 51 remaining platform symbols have an
+(`memcpy`, `memset`, elapsed jiffies). Its 52 remaining platform symbols have an
 explicit exact allowlist; missing, stale or changed providers fail evidence
 verification. The compile-only barrier remains present. All four unchanged
 source units, callbacks and default 256-ring layouts remain audited; resolving
@@ -940,7 +940,7 @@ one pinned configuration, not support for every retained optional callback.
 | Lifecycle evidence | Ring wrap, BUSY/stop/wake/retry, allocation/map failures, repeated lifecycle and cooperative pending IRQ/work/NAPI/TX/RX teardown with callback joins and serialized reopen. |
 | Excluded | Generic LinuxKPI or internal/module binary ABI, `.ko` loading, Kbuild/Linux boot, all ethtool controls, Linux applications, IP/GRO stack, offloads/fragments/jumbo/VLAN, PM/hotplug, SMP/preemption/NMI, general shared IRQs, physical NICs, IOMMU/bounce buffers and hardware performance guarantees. |
 
-The independent audit records 209 source-only APIs and 51 explicit platform
+The independent audit records 209 source-only APIs and 52 explicit platform
 symbols, while current-ELF callback identity, exact packets and source cleanup
 establish execution. Ten targeted CTest entries passed at the final code
 milestone: 55 normal cases at 128/32 MiB, deliberate-failure rejection, 539 exact
@@ -1045,13 +1045,13 @@ they do not replace this roadmap's driver-execution gates.
 
 ### Planned Moss-style driver infrastructure
 
-The next integration milestone has **Phases 1-2 implemented; the remaining phases
+The next integration milestone has **Phases 1-5 implemented; the remaining phases
 are planned**. The native [registry policy](../src/driver_registry.rs) and
 [owned manager boundary](../src/drivers.rs) have portable and guarded-thread
 guest tests, including retained built-in initializers and probe coordination.
-The existing e1000 backend works in kernel fixtures, but normal boot still
-reads the MAC and exits; production e1000 registration and persistent boot
-startup are subsequent phases.
+The e1000 backend now works behind retained native network handles in the
+managed runtime, but normal boot still reads the MAC and exits. Default
+persistent boot startup remains Phase 6.
 
 Follow pinned Moss's
 [built-in initialization](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/init.rs)
@@ -1084,6 +1084,7 @@ The planned phases are:
    Implemented through the common service scope and explicit no-NIC tests.
 5. **Managed e1000:** original Linux lifecycle behind native network-device
    discovery, link/MAC/MTU, owned-byte TX/RX and diagnosed client errors.
+   Implemented, including exact managed packets and retained-client lifetime.
 6. **Normal boot:** runtime default, explicit MAC/fault compatibility and exact
    root/one-bridge/nested-bridge packet acceptance at 128/32 MiB.
 7. **Hardening:** dependency progress, failures/capacity, consumer lifetime and
@@ -1171,9 +1172,10 @@ cycles/unavailable providers and two balanced manager epochs. Seven additional
 portable manager tests cover metadata, initialization rollback, coordination,
 readiness failures, instance limits and stale identities.
 
-The production table is explicitly empty in this phase: no synthetic
-initializer runs at normal boot, and no no-op/fallback e1000 driver is
-registered. Managed original-Linux e1000 registration remains Phase 5.
+Phase 3 originally retained an empty production table. Phase 5 now registers
+one real e1000 initializer, separate from its later module/probe/open callbacks.
+Synthetic initializers still cannot run in the production scope, and no
+no-op/fallback driver is registered.
 The [ELF profile check](../scripts/guest_build_check.py) verifies actual
 read-only section contents, scopes, ordering keys and callback symbols in
 both build profiles; compile-only Linux source rejection and exact original
@@ -1200,8 +1202,8 @@ manager initialization, and their return does not stop the services.
 `wait_probes` waits for the completed coordinator batch, not NIC readiness.
 Callback waits for their own control/coordinator completion are rejected,
 without preventing ordinary timed sleeping or unlocked metadata reentry.
-Production initializer records remain empty until Phase 5, so no-NIC startup
-retains a real unclaimed inventory rather than fabricating a bound device.
+The production table now contains the e1000 descriptor; no-NIC startup retains
+real unclaimed inventory and zero bindings rather than fabricating a device.
 
 The [scheduler idle policy](../src/run_queue.rs) is explicit: finite calls retain
 their previous completion/deadlock/deadline/armed-IRQ behavior; persistent calls
@@ -1232,9 +1234,71 @@ peak/lifetime/resource thresholds.
 
 The conservative service-resource/control/dispatcher/client allowance adds
 2,080 bytes to the phase-three bound, including owned APIC metadata. Combined
-infrastructure is now **59,960 bytes**, below 64 KiB; the peak test/runtime task
+Phase 4 infrastructure was **59,960 bytes**, below 64 KiB; the peak test/runtime task
 count is six of eight 16-KiB slots. Normal boot still reads the MAC and exits.
-Persistent e1000 binding and default runtime boot remain Phases 5 and 6.
+The Phase 5 additions bring the combined bound to **60,376 bytes**. Default
+runtime boot remains Phase 6.
+
+#### Managed native network interface
+
+[linux_driver.rs](../src/linux_driver.rs) registers production driver ID 1,
+priority 10, for the selected `8086:100e` Ethernet profile. It declares one
+instance and named platform/shared-worker dependencies. The runtime checks the
+completed inventory for multiple matching endpoints before BAR sizing, MMIO,
+IRQ claims or any original module callback. The selected full BDF and immutable
+ancestor inventory reach the existing source-facing PCI adapter; source ID-table
+matching remains authoritative within that selected backend.
+
+`Resources::start` accepts the kernel's static physical-frame allocator and
+copies the small boot description. `Resources::run` scopes the selected
+platform owner and IRQ claim around the entire dispatcher. These parents remain
+owned until manager close/remove and worker/client joins complete; no movable
+self-reference or leaked allocation is used. Probe executes original module
+initialization, probe and open on the control task outside registry locks.
+Link transitions and real packet notifications wake the coordinator to refresh
+source-derived manager readiness and retry eligible dependencies, not a
+fabricated polling worker.
+
+[net_device.rs](../src/net_device.rs) exposes epoch-checked native handles;
+[portable packet values](../src/net_state.rs) contain no Linux-private layouts:
+
+- `enumerate(runtime)` returns bound network handles even while link readiness
+  is still pending. `info()` returns actual MAC, full BDF, link, MTU and source
+  TX/RX/queue statistics.
+- `Frame::from_bytes` fallibly copies, while `Frame::from_owned` reuses bounded
+  owned storage. Ethernet II sizes are 14-1514 bytes; LLC, VLAN/QinQ and other
+  offload profiles are explicitly unsupported. Heap-backed frame values avoid
+  large return-value copies on the existing 16-KiB guarded stacks.
+- `submit(&frame)` retains its own copied linear skb and returns a checked
+  receipt. Linux's original `eth_skb_pad` produces zero-padded 60-byte short
+  packets, including safe backing-pointer updates when padding reallocates.
+  Completion byte counts describe the actual padded wire frame.
+- `progress` returns BUSY/in-flight/completed/consumed-drop state; `wait`
+  suspends without retaining a manager reservation. A timeout or native
+  frame/handle drop does not release an accepted skb. `finish` rejects pending
+  packets and releases only completed or consumed-drop receipts.
+- `receive` and `wait_receive` return owned, full-L2 FIFO bytes without FCS.
+  Destination storage is allocated before consuming a FIFO entry. The existing
+  eight RX slots and one outstanding production TX remain unchanged.
+- Errors distinguish not-ready, stale, BUSY, timeout, allocation, consumed drop,
+  closed, unsupported and context failures. Stop rejects new operations, wakes
+  waiters, stops observation before source RX teardown, invokes original close/
+  remove once, retires pending receipts only after source stop/drain, and purges
+  copied ingress before releasing the parent owners.
+
+The guest-only [managed acceptance](../src/guest_tests/network.rs) runs in
+explicit `driver-network-tests` mode, not normal boot. At 128/32 MiB, two
+managed epochs each exchange exact 14/42/60/252/253/1514-byte TX inputs and full
+RX frames, with real original xmit/IRQ/NAPI/RX callbacks, 2,199 source bytes
+each direction, padding/FCS/copybreak evidence, allocation/drop recovery,
+retained ownership after BUSY/timeout, clients returning, stop-woken RX waiters,
+stale handles and complete resource restoration. Peak concurrency is six of
+eight guarded stacks. A two-NIC scenario proves pre-probe singleton rejection.
+[Host tests](../tests/test_network_runtime.py) reject incorrect bytes, source
+symbols, ready identities, error outcomes, task bounds or joins.
+The original 539-TX/304-hard-RX acceptance remains independent and unchanged.
+No new Linux algorithm, network stack, arbitrary hardware support or default
+boot migration is claimed.
 
 Bridge timing also exposed two fixture assumptions: an earlier link IRQ's
 queued NAPI may legitimately clean a new TX before its TXDW interrupt, and

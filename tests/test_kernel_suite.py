@@ -26,9 +26,9 @@ def native_log(name, case):
     if name == "native.initializers":
         functions = 6 + len(pci_layout(case)[2])
         return [
-            f"# NATIVE_TABLE production=0 test=4 record_bytes=24 functions={functions}",
+            f"# NATIVE_TABLE production=1 test=4 record_bytes=24 functions={functions}",
             *inits(0),
-            f"# NATIVE_INITIALIZERS initialized=4 production_attempts=0 unclaimed={functions} profile_rejected=2 duplicate_rejected=1",
+            f"# NATIVE_INITIALIZERS initialized=4 production_attempts=0 waiting=1 unclaimed={functions - 1} profile_rejected=2 duplicate_rejected=1",
         ]
     lines = []
     for epoch in (3,) if name == "native.dependencies" else (1, 2):

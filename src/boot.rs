@@ -39,6 +39,7 @@ static STACK: StackSizeRequest = StackSizeRequest::new().with_size(64 * 1024);
 #[unsafe(link_section = ".requests_end_marker")]
 static END: RequestsEndMarker = RequestsEndMarker::new();
 
+#[derive(Clone)]
 pub struct BootInfo {
     pub hhdm_offset: u64,
     pub kernel_physical_start: u64,

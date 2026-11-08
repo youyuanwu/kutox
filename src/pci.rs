@@ -254,6 +254,17 @@ pub fn enumerate() -> Result<Arc<Inventory>, Failure> {
     ))
 }
 
+pub fn selected(inventory: &Arc<Inventory>, address: PciAddress) -> Result<Device, Failure> {
+    let entry = inventory.find(address).map_err(policy_error)?;
+    Ok(Device {
+        address,
+        vendor: entry.vendor,
+        device: entry.device,
+        revision: entry.revision(),
+        inventory: Arc::clone(inventory),
+    })
+}
+
 pub fn discover() -> Result<Device, Failure> {
     let inventory = enumerate()?;
     let mut found = None;

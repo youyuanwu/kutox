@@ -120,6 +120,12 @@ pub fn check_device(key: usize) -> Result<(), i32> {
         Ok(())
     }
 }
+pub fn selected_location() -> Result<(u8, u8, u8), i32> {
+    driver_memory::context(false)?;
+    unsafe { (&*BINDING.0.get()).as_ref() }
+        .map(|binding| binding.device.location())
+        .ok_or(-19)
+}
 #[unsafe(no_mangle)]
 extern "C" fn kutox_driver_device() -> usize {
     KEY.load(Ordering::Acquire)

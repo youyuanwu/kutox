@@ -22,6 +22,7 @@ pub enum Error {
     Window = -185,
     Route = -186,
     NoMemory = -187,
+    Ambiguous = -188,
 }
 
 pub fn configuration_address(address: PciAddress, offset: u16) -> Result<u32, Error> {
@@ -77,6 +78,21 @@ pub const INFRASTRUCTURE_METADATA_BYTES: usize =
 const _: () = assert!(INFRASTRUCTURE_METADATA_BYTES <= 64 * 1024);
 
 impl Inventory {
+    pub fn e1000(&self) -> Result<Option<PciAddress>, Error> {
+        let mut selected = None;
+        for entry in &self.functions {
+            if entry.vendor == 0x8086 && entry.device == 0x100e {
+                if selected.replace(entry.address).is_some() {
+                    return Err(Error::Ambiguous);
+                }
+                if entry.header & 0x7f != 0 || entry.class() != 0x020000 {
+                    return Err(Error::Header);
+                }
+            }
+        }
+        Ok(selected)
+    }
+
     pub fn scan(mut read: impl FnMut(PciAddress, u8) -> Result<u32, Error>) -> Result<Self, Error> {
         let mut inventory = Self {
             functions: Vec::new(),

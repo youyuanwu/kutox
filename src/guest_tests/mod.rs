@@ -286,6 +286,8 @@ pub fn run(boot: &BootInfo) -> ! {
     let inject = boot.mode == BootMode::KernelTestsFail;
     let tests = if boot.mode == BootMode::DriverRuntimeTests {
         crate::kernel_runtime::tests::TESTS
+    } else if boot.mode == BootMode::DriverNetworkTests {
+        crate::linux_driver::tests::TESTS
     } else {
         TESTS
     };

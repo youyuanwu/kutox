@@ -3,7 +3,7 @@ use crate::{
     boot::BootInfo,
     driver_init::{self, KernelManager},
     irq::{self, LocalApic, external::IoApic},
-    linux_deferred, linux_irq, linux_runtime, memory, pci, serial, threads,
+    linux_deferred, linux_driver, linux_irq, linux_runtime, memory, pci, serial, threads,
 };
 use alloc::sync::Arc;
 use core::{
@@ -93,6 +93,37 @@ fn notify(queue: &'static threads::WaitQueue) -> Result<(), Failure> {
         .notify_without_switch(true)
         .map(|_| ())
         .map_err(|error| Failure::new("runtime_notify", error as i32))
+}
+
+pub(crate) fn source_progress() {
+    if CLAIMED.load(Ordering::Acquire)
+        && CONTROL.running.load(Ordering::Acquire)
+        && !CONTROL.stopping.load(Ordering::Acquire)
+    {
+        CONTROL.probe_pending.store(true, Ordering::Release);
+        notify(&CONTROL.event).expect("source readiness notification");
+    }
+}
+
+fn refresh_ready() -> Result<(), Failure> {
+    for index in 0..kutox::driver_registry::MAX_DEVICES {
+        let Some((device, snapshot)) = MANAGER
+            .device_at(index)
+            .map_err(|error| Failure::new("runtime_ready_enumeration", error.code()))?
+        else {
+            continue;
+        };
+        if matches!(
+            snapshot.state,
+            kutox::driver_registry::DeviceState::Bound { .. }
+        ) {
+            MANAGER
+                .operation(device)
+                .and_then(|operation| operation.ready())
+                .map_err(|error| Failure::new("runtime_device_ready", error.code()))?;
+        }
+    }
+    Ok(())
 }
 
 impl Handle {
@@ -234,7 +265,8 @@ impl Drop for Claim {
                 && MANAGER.quiescent()
                 && linux_deferred::quiescent()
                 && linux_irq::quiescent()
-                && linux_runtime::quiescent(),
+                && linux_runtime::quiescent()
+                && linux_driver::managed_quiescent(),
             "runtime owners must join before resource release"
         );
         CONTROL.epoch.store(0, Ordering::Release);
@@ -263,38 +295,44 @@ fn checkpoint(_stage: Stage) -> Result<(), Failure> {
     Ok(())
 }
 
-pub struct Resources<'a, 'storage> {
-    space: memory::StackSpace<'a, 'storage>,
-    timer: irq::Timer<'a, 'storage>,
-    _controller: IoApic<'a, 'storage>,
-    _apic: LocalApic<'a, 'storage>,
+pub struct Resources<'a> {
+    space: memory::StackSpace<'a, 'static>,
+    timer: irq::Timer<'a, 'static>,
+    _controller: IoApic<'a, 'static>,
+    _apic: LocalApic<'a, 'static>,
     inventory: Arc<Inventory>,
     _topology: Topology,
+    boot: BootInfo,
+    frames: &'static memory::PhysicalFrames<'static>,
     ran: Cell<bool>,
     _claim: Claim,
 }
 
-pub const METADATA_BYTES: usize = core::mem::size_of::<Resources<'static, 'static>>()
+pub const METADATA_BYTES: usize = core::mem::size_of::<Resources<'static>>()
     + core::mem::size_of::<Clients>()
     + core::mem::size_of::<Control>()
     + core::mem::size_of::<threads::Scheduler<'static, 'static, 'static>>()
     + core::mem::size_of::<threads::RunStats>()
     + core::mem::size_of::<linux_deferred::WorkerTasks>()
-    + irq::APIC_METADATA_BYTES;
+    + irq::APIC_METADATA_BYTES
+    + linux_driver::METADATA_BYTES
+    + crate::net_device::METADATA_BYTES
+    + core::mem::size_of::<crate::driver_platform::Owner>()
+    + core::mem::size_of::<linux_irq::BoundIrq<'static, 'static, 'static>>();
 const _: () =
     assert!(kutox::pci_state::INFRASTRUCTURE_METADATA_BYTES + METADATA_BYTES <= 64 * 1024);
 
-impl<'a, 'storage> Resources<'a, 'storage> {
+impl<'a> Resources<'a> {
     pub fn start(
         boot: &BootInfo,
-        frames: &'a memory::PhysicalFrames<'storage>,
+        frames: &'static memory::PhysicalFrames<'static>,
     ) -> Result<Self, Failure> {
         Self::start_inner(boot, frames).inspect_err(report)
     }
 
     fn start_inner(
         boot: &BootInfo,
-        frames: &'a memory::PhysicalFrames<'storage>,
+        frames: &'static memory::PhysicalFrames<'static>,
     ) -> Result<Self, Failure> {
         if !threads::is_quiescent()
             || !irq::is_quiescent()
@@ -302,6 +340,7 @@ impl<'a, 'storage> Resources<'a, 'storage> {
             || !linux_irq::quiescent()
             || !linux_runtime::quiescent()
             || !MANAGER.quiescent()
+            || !linux_driver::managed_quiescent()
         {
             return Err(Failure::new("runtime_services_live", -204));
         }
@@ -332,6 +371,9 @@ impl<'a, 'storage> Resources<'a, 'storage> {
         let topology = crate::platform::discover(boot, frames)?;
         checkpoint(Stage::Platform)?;
         let inventory = pci::enumerate()?;
+        inventory
+            .e1000()
+            .map_err(|error| Failure::new("runtime_e1000_inventory", error as i32))?;
         checkpoint(Stage::Inventory)?;
         let apic = LocalApic::start(boot, frames)?;
         checkpoint(Stage::Apic)?;
@@ -348,6 +390,8 @@ impl<'a, 'storage> Resources<'a, 'storage> {
             _apic: apic,
             inventory,
             _topology: topology,
+            boot: boot.clone(),
+            frames,
             ran: Cell::new(false),
             _claim: claim,
         })
@@ -370,6 +414,35 @@ impl<'a, 'storage> Resources<'a, 'storage> {
         if self.ran.replace(true) {
             return Err(Failure::new("runtime_already_run", -206));
         }
+        // These scoped parents outlive every manager binding and suspended callback.
+        let platform = if let Some(address) = self
+            .inventory
+            .e1000()
+            .map_err(|error| Failure::new("runtime_e1000_inventory", error as i32))?
+        {
+            let device = pci::selected(&self.inventory, address)?;
+            Some(crate::driver_platform::Owner::bind(
+                &self.boot,
+                self.frames,
+                unsafe { linux_driver::kutox_c_driver_device() },
+                device,
+            )?)
+        } else {
+            None
+        };
+        let binding = if platform.is_some() {
+            let address = self
+                .inventory
+                .e1000()
+                .map_err(|error| Failure::new("runtime_e1000_inventory", error as i32))?
+                .ok_or(Failure::new("runtime_e1000_selection", -19))?;
+            let gsi = pci::selected(&self.inventory, address)?.interrupt_route(&self._topology)?;
+            let binding = linux_irq::BoundIrq::bind(&self._controller, gsi)?;
+            unsafe { linux_driver::kutox_c_linux_bind_irq(gsi) };
+            Some(binding)
+        } else {
+            None
+        };
         let mut scheduler = threads::Scheduler::new(&self.space);
         let workers = linux_deferred::start_owned(&mut scheduler)?;
         let admission = (|| {
@@ -410,6 +483,8 @@ impl<'a, 'storage> Resources<'a, 'storage> {
         if error != 0 {
             return Err(Failure::new("runtime_start", error));
         }
+        drop(binding);
+        drop(platform);
         Ok(stats)
     }
 }
@@ -425,7 +500,7 @@ fn client_entry(address: usize) {
     }
 }
 
-fn initialize(resources: &Resources<'_, '_>) -> Result<(), Failure> {
+fn initialize(resources: &Resources<'_>) -> Result<(), Failure> {
     if MANAGER
         .snapshot()
         .map_err(|error| Failure::new("runtime_manager", error.code()))?
@@ -441,6 +516,19 @@ fn initialize(resources: &Resources<'_, '_>) -> Result<(), Failure> {
     MANAGER
         .discover_inventory(&resources.inventory)
         .map_err(|error| Failure::new("runtime_inventory", error.code()))?;
+    MANAGER
+        .publish_service(linux_driver::WORKERS)
+        .map_err(|error| Failure::new("runtime_worker_service", error.code()))?;
+    if resources
+        .inventory
+        .e1000()
+        .map_err(|error| Failure::new("runtime_e1000_inventory", error as i32))?
+        .is_some()
+    {
+        MANAGER
+            .publish_service(linux_driver::PLATFORM)
+            .map_err(|error| Failure::new("runtime_platform_service", error.code()))?;
+    }
     MANAGER
         .coordinate_probes(|event| serial::print(format_args!("# RUNTIME_PROBE {event:?}\n")))
         .map_err(|error| Failure::new("runtime_probe", error.code()))?;
@@ -471,7 +559,7 @@ fn coordinator(address: usize) {
             .ticket(),
         Ordering::Release,
     );
-    let resources = unsafe { &*(address as *const Resources<'_, '_>) };
+    let resources = unsafe { &*(address as *const Resources<'_>) };
     if let Err(error) = initialize(resources) {
         report(&error);
         CONTROL.start_error.store(error.code, Ordering::Release);
@@ -504,10 +592,13 @@ fn coordinator(address: usize) {
             CONTROL.probe_running.store(true, Ordering::Release);
             #[cfg(feature = "guest-tests")]
             tests::check_control_waits(true);
-            if let Err(error) = MANAGER.coordinate_probes(|event| {
-                serial::print(format_args!("# RUNTIME_PROBE {event:?}\n"))
+            if let Err(error) = refresh_ready().and_then(|()| {
+                MANAGER
+                    .coordinate_probes(|event| {
+                        serial::print(format_args!("# RUNTIME_PROBE {event:?}\n"))
+                    })
+                    .map_err(|error| Failure::new("runtime_probe", error.code()))
             }) {
-                let error = Failure::new("runtime_probe", error.code());
                 report(&error);
                 CONTROL.probe_error.store(error.code, Ordering::Release);
             }

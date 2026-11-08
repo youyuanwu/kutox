@@ -271,12 +271,15 @@ pub fn initializers(
         .map_err(|error| Failure::new("native_records", error.code()))?;
     let tests = driver_init::linked(Scope::Test)
         .map_err(|error| Failure::new("native_records", error.code()))?;
-    if !production.is_empty() || tests.len() != 4 {
+    if production.len() != 1
+        || production[0].id() != crate::linux_driver::DRIVER_ID.value()
+        || tests.len() != 4
+    {
         return Err(Failure::new("native_record_counts", -1));
     }
     let inventory = pci::enumerate()?;
     serial::print(format_args!(
-        "# NATIVE_TABLE production=0 test=4 record_bytes={} functions={}\n",
+        "# NATIVE_TABLE production=1 test=4 record_bytes={} functions={}\n",
         kutox::drivers::INIT_RECORD_BYTES,
         inventory.functions().len(),
     ));
@@ -311,10 +314,19 @@ fn initializer_worker(inventory: usize) {
     driver_init::initialize(&PRODUCTION, Scope::Production).unwrap();
     PRODUCTION.discover_inventory(inventory).unwrap();
     let summary = PRODUCTION
-        .coordinate_probes(|_| panic!("empty production table probed"))
+        .coordinate_probes(|event| {
+            assert!(matches!(
+                event,
+                ProbeDiagnostic::Unresolved {
+                    status: DependencyStatus::Waiting(_),
+                    ..
+                }
+            ))
+        })
         .unwrap();
     assert_eq!(summary.attempts, 0);
-    assert_eq!(summary.unclaimed, inventory.functions().len());
+    assert_eq!(summary.unclaimed, inventory.functions().len() - 1);
+    assert_eq!(summary.waiting, 1);
     assert_eq!(
         PRODUCTION.discover(DeviceInfo::Synthetic {
             identity: 1,
@@ -335,7 +347,7 @@ fn initializer_worker(inventory: usize) {
     );
     MANAGER.shutdown().unwrap();
     serial::print(format_args!(
-        "# NATIVE_INITIALIZERS initialized=4 production_attempts=0 unclaimed={} profile_rejected=2 duplicate_rejected=1\n",
+        "# NATIVE_INITIALIZERS initialized=4 production_attempts=0 waiting=1 unclaimed={} profile_rejected=2 duplicate_rejected=1\n",
         summary.unclaimed,
     ));
 }

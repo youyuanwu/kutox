@@ -86,7 +86,7 @@ hardware, parameter and ethtool units. It records original registration/callback
 parameter arrays, layouts, headers and **209 unresolved runtime dependencies**.
 These objects are explicitly rejected by the runtime linker. A second
 source-plus-services relocatable closure now checks every driver API has a
-C provider or an explicitly listed Rust primitive; its remaining 51 platform
+C provider or an explicitly listed Rust primitive; its remaining 52 platform
 symbols are recorded, not hidden by success stubs.
 The marked check objects remain excluded from the runtime image. Runtime
 objects are compiled separately against the same selected source profile.
@@ -103,10 +103,12 @@ this is not generic LinuxKPI, physical-hardware or network-stack support.
 
 Moss-style native registration, retained initializer records and kernel-thread
 probe coordination now have portable and real guest tests, including PCI
-hierarchy/routing and persistent service lifetime. [Persistent boot integration](docs/rust-kernel-linux-drivers.md#planned-moss-style-driver-infrastructure)
-is still being implemented; the production initializer table is explicitly
-empty until managed e1000 integration, and the normal default remains the boot
-MAC proof.
+hierarchy/routing, persistent service lifetime and managed Linux e1000.
+The production initializer registers one supported e1000 backend, with native
+[network handles](src/net_device.rs) for real MAC/link/MTU/statistics, owned
+Ethernet frames, checked TX receipts and FIFO RX. Linux remains the only packet
+driver. [Persistent boot integration](docs/rust-kernel-linux-drivers.md#planned-moss-style-driver-infrastructure)
+is still being implemented: normal boot remains the MAC proof until Phase 6.
 
 ## Requirements
 
@@ -142,7 +144,7 @@ For a feature-off build of the same image:
 cmake -S . -B build -G Ninja -DKUTOX_GUEST_TESTS=OFF
 cmake --build build --target images --parallel 1
 ctest --test-dir build --output-on-failure --parallel 1 \
-  -R '^(kernel-build-profile|guest-tests-disabled|driver-runtime-tests-disabled|mac-known)$'
+  -R '^(kernel-build-profile|guest-tests-disabled|driver-runtime-tests-disabled|driver-network-tests-disabled|mac-known)$'
 ```
 
 This omits guest fixtures, C test objects, fault injection, checkpoints and
@@ -211,6 +213,7 @@ The runner selects a mode at launch through QEMU's `fw_cfg` file
 | `kernel-tests` | Run all registered nonfatal kernel tests in one boot and emit KTAP results. |
 | `kernel-tests-fail` | Run the same suite with an additional intentionally failing case to test host rejection. |
 | `driver-runtime-tests` | Run five bounded no-NIC service-lifetime, idle/wake, startup/admission rollback and deliberate shutdown tests. |
+| `driver-network-tests` | Exercise the managed e1000 runtime with exact packets, retained clients, typed errors and joined shutdown; reject two matching NICs before probing. |
 | `heap-oom` | Attempt an oversized `Vec` allocation and verify Rust's fatal allocation-failure panic. |
 | `thread-stack-guard` | Read a thread's unmapped lower guard and verify the hardware page fault came from its mapped stack. |
 | `page-fault` | Read a deliberately unmapped address and verify the fatal exception diagnostics. |
@@ -256,9 +259,38 @@ partial worker admission rollback, real one-shot IRQ wake/dependency publication
 worker callbacks after a client returns, and shutdown retry while a source work
 object is still live. Three service stacks plus up to three clients use at most
 six of eight guarded stack slots. The combined conservative infrastructure
-metadata bound is 59,960 bytes, below 64 KiB. This does not bind e1000 or claim
-network readiness; managed NIC integration remains subsequent work. Feature-off
+metadata bound is 60,376 bytes, below 64 KiB. These no-NIC cases do not bind
+e1000 or claim network readiness. Feature-off
 builds omit these fixtures and reject `driver-runtime-tests` before allocation.
+
+Managed NIC acceptance uses the same image and an owned isolated socket:
+
+```sh
+python3 scripts/qemu_test.py --case driver-network-tests --build-dir build
+python3 scripts/qemu_test.py --case driver-network-tests-low-memory --build-dir build
+python3 scripts/qemu_test.py --case driver-network-tests-ambiguous --build-dir build
+```
+
+Two managed epochs each exchange six arbitrary-EtherType frames. TX input sizes
+are 14/42/60/252/253/1514 bytes; original Linux skb padding makes the first two
+exactly 60 bytes on the wire, with zero padding. RX returns complete copied L2
+frames without FCS and preserves the original copybreak/build-skb boundary.
+Both socket bytes and PCAP, actual ELF callback identities, source statistics,
+BUSY/timeout ownership, allocation/consumed-drop recovery, client return, stop
+wakeups and balanced shutdown are required. The NIC and shared workers survive
+the first client; three service tasks and three clients peak at six stacks.
+Two matching e1000 endpoints fail admission before either acquires backing.
+Feature-off builds omit these fixtures and reject the mode with `-25`.
+
+Native clients use `net_device::enumerate(runtime)` and `Handle::info`.
+`Frame::from_bytes` and `Frame::from_owned` admit bounded Ethernet II frames;
+`submit(&frame)` copies into the retained Linux skb and returns a checked
+`TxTicket`. `progress` retries BUSY, `wait` observes completion or a timeout, and
+`finish` releases only completed or consumed-drop receipts. Dropping the native
+frame/handle or timing out does **not** free an accepted skb. `receive`/
+`wait_receive` return owned FIFO frames; stop wakes waiters with `Closed`, and
+owner retirement makes later handles `Stale`. No IP stack or default boot
+migration is included in this phase.
 
 Run the same 59 registered cases with 32 MiB of guest RAM:
 

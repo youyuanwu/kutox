@@ -94,6 +94,11 @@ RUNTIME_TEST_NAMES = (
     "runtime.startup_rollback", "runtime.admission_rollback",
     "runtime.no_nic_idle", "runtime.client_return", "runtime.shutdown_busy",
 )
+NETWORK_SUITE_CASES = {
+    "driver-network-tests": "driver-network-tests",
+    "driver-network-tests-low-memory": "driver-network-tests",
+    "driver-network-tests-ambiguous": "driver-network-tests",
+}
 FAULT_RESULTS = {
     "page-fault": "CPU_TEST_OK test=page-fault vector=14 address=0x600000000000 error=0x0",
     "general-protection": "CPU_TEST_OK test=general-protection vector=13 error=0xfff8",
@@ -112,12 +117,14 @@ CASES = {
     "invalid-mode": (None, "boot_mode"),
     "guest-tests-disabled": (None, "boot_mode"),
     "driver-runtime-tests-disabled": (None, "boot_mode"),
+    "driver-network-tests-disabled": (None, "boot_mode"),
     **{case: (None, None) for case in FAULT_RESULTS},
     "smp-unsupported": (None, "cpu_single_processor_required"),
     "heap-oom": (None, None),
     "thread-stack-guard": (None, None),
     **{case: (None, None) for case in KERNEL_SUITE_CASES},
     **{case: (None, None) for case in RUNTIME_SUITE_CASES},
+    **{case: (None, None) for case in NETWORK_SUITE_CASES},
 }
 
 
@@ -378,9 +385,9 @@ def validate_native_drivers(lines, case, symbols=None):
     functions = 6 + len(pci_layout(case)[2])
     expected = {
         "native.initializers": [
-            f"# NATIVE_TABLE production=0 test=4 record_bytes=24 functions={functions}",
+            f"# NATIVE_TABLE production=1 test=4 record_bytes=24 functions={functions}",
             *inits(0),
-            f"# NATIVE_INITIALIZERS initialized=4 production_attempts=0 unclaimed={functions} profile_rejected=2 duplicate_rejected=1",
+            f"# NATIVE_INITIALIZERS initialized=4 production_attempts=0 waiting=1 unclaimed={functions - 1} profile_rejected=2 duplicate_rejected=1",
         ],
         "native.probes": [],
         "native.dependencies": [],
@@ -428,6 +435,69 @@ def runtime_symbols(nm="nm"):
     text = subprocess.check_output([nm, "--defined-only", str(elf)], text=True)
     return {parts[-1]: int(parts[0], 16) for line in text.splitlines()
             if len(parts := line.split()) >= 3}
+
+def validate_callback_symbol(event, function, obj, symbols):
+    if event in DRIVER_CALLBACK_NAMES:
+        if not function or symbols is not None and function not in {
+            symbols.get(symbol) for symbol in DRIVER_CALLBACK_NAMES[event]
+        }:
+            raise AssertionError("callback did not point to the linked original Linux function")
+    elif event not in (14, 16, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 32, *range(36, 50)) or function != 0:
+        raise AssertionError("unknown original callback kind")
+    if event not in (1, 2) and obj == 0:
+        raise AssertionError("callback backing identity is missing")
+
+def validate_callback_lifetime(events, symbols):
+    work, napi, irq, xmit = set(), set(), set(), set()
+    active_poll = active_irq = last_work = None
+    counts = Counter(event for event, _, _, _ in events)
+    for event, function, obj, result in events:
+        if event == 1:
+            work, napi, irq, xmit = set(), set(), set(), set()
+        if event in (1, 6):
+            last_work = None
+        validate_callback_symbol(event, function, obj, symbols)
+        pair = (function, obj)
+        if event == 10:
+            work.add(pair)
+        elif event == 11 and pair not in work:
+            raise AssertionError("unregistered work callback ran")
+        elif event == 11:
+            last_work = function
+        elif event == 12:
+            napi.add(pair)
+        elif event == 13 and (pair not in napi or result != 64):
+            raise AssertionError("unregistered or unbudgeted NAPI poll ran")
+        elif event == 13:
+            if active_poll is not None:
+                raise AssertionError("nested source NAPI poll")
+            active_poll = pair
+        elif event == 26:
+            if active_poll != pair or not 0 <= result <= 64:
+                raise AssertionError("unmatched source NAPI poll return")
+            active_poll = None
+        elif event == 33:
+            xmit.add(function)
+        elif event in (17, 18) and function not in xmit:
+            raise AssertionError("unregistered original xmit ran")
+        elif event == 8:
+            irq.add(pair)
+        elif event in (9, 15) and (pair not in irq or (event == 15 and result not in (0, 1))):
+            raise AssertionError("unregistered IRQ handler or invalid return")
+        elif event == 9:
+            if active_irq is not None or active_poll is not None:
+                raise AssertionError("nested original IRQ or IRQ inside NAPI")
+            active_irq = pair
+        elif event == 15:
+            if active_irq != pair:
+                raise AssertionError("unmatched original IRQ return")
+            active_irq = None
+        elif event == 14 and (last_work is None or (
+            symbols is not None and last_work != symbols.get("e1000_watchdog")
+        )):
+            raise AssertionError("link readiness did not come from original watchdog work")
+    if active_irq is not None or active_poll is not None or counts[13] != counts[26]:
+        raise AssertionError("incomplete original NAPI poll")
 
 
 def validate_linux_callbacks(output, symbols=None):
@@ -487,66 +557,7 @@ def validate_linux_callbacks(output, symbols=None):
         minimum_ready = expected[6] if name.endswith(("_wrap", "_teardown")) else 4 if name.endswith("lifecycle") else 2 if name.endswith(("_tx", "_rx", "_backpressure")) else 1
         if counts[14] < minimum_ready:
             raise AssertionError("each successful lifecycle did not establish source-derived readiness")
-        work, napi, irq, xmit = set(), set(), set(), set()
-        active_poll = active_irq = None
-        last_work = None
-        for event, function, obj, result in events:
-            if event == 1:
-                work, napi, irq, xmit = set(), set(), set(), set()
-            if event in (1, 6):
-                last_work = None
-            if event in DRIVER_CALLBACK_NAMES:
-                if function == 0:
-                    raise AssertionError("null original callback")
-                if symbols is not None and function not in {
-                    symbols.get(symbol) for symbol in DRIVER_CALLBACK_NAMES[event]
-                }:
-                    raise AssertionError("callback did not point to the linked original Linux function")
-            elif event not in (14, 16, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 32, *range(36, 50)) or function != 0:
-                raise AssertionError("unknown original callback kind")
-            if event not in (1, 2) and obj == 0:
-                raise AssertionError("callback backing identity is missing")
-            pair = (function, obj)
-            if event == 10:
-                work.add(pair)
-            elif event == 11 and pair not in work:
-                raise AssertionError("unregistered work callback ran")
-            elif event == 11:
-                last_work = function
-            elif event == 12:
-                napi.add(pair)
-            elif event == 13 and (pair not in napi or result != 64):
-                raise AssertionError("unregistered or unbudgeted NAPI poll ran")
-            elif event == 13:
-                if active_poll is not None:
-                    raise AssertionError("nested source NAPI poll")
-                active_poll = pair
-            elif event == 26:
-                if active_poll != pair or not 0 <= result <= 64:
-                    raise AssertionError("unmatched source NAPI poll return")
-                active_poll = None
-            elif event == 33:
-                xmit.add(function)
-            elif event in (17, 18) and function not in xmit:
-                raise AssertionError("unregistered original xmit ran")
-            elif event == 8:
-                irq.add(pair)
-            elif event in (9, 15) and (pair not in irq or (event == 15 and result not in (0, 1))):
-                raise AssertionError("unregistered IRQ handler or invalid return")
-            elif event == 9:
-                if active_irq is not None or active_poll is not None:
-                    raise AssertionError("nested original IRQ or IRQ inside NAPI")
-                active_irq = pair
-            elif event == 15:
-                if active_irq != pair:
-                    raise AssertionError("unmatched original IRQ return")
-                active_irq = None
-            elif event == 14 and (last_work is None or (
-                symbols is not None and last_work != symbols.get("e1000_watchdog")
-            )):
-                raise AssertionError("link readiness did not come from original watchdog work")
-        if active_irq is not None or active_poll is not None or counts[13] != counts[26]:
-            raise AssertionError("incomplete original NAPI poll")
+        validate_callback_lifetime(events, symbols)
         if name.endswith("_tx"):
             validate_linux_tx_events(events)
         elif name.endswith(("_wrap", "_backpressure", "_teardown")):
@@ -692,7 +703,7 @@ def validate_thread_guard(returncode, output):
 
 
 def validate_result(case, returncode, output):
-    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled"):
+    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled"):
         lines = output.splitlines()
         expected = "E1000_MAC_FAIL stage=boot_mode code=-25"
         if returncode != 3 or not lines or lines[-1] != expected:
@@ -708,6 +719,9 @@ def validate_result(case, returncode, output):
         return
     if case in KERNEL_SUITE_CASES:
         validate_kernel_suite(case, returncode, output)
+        return
+    if case in NETWORK_SUITE_CASES:
+        validate_network_suite(case, returncode, output)
         return
     if case in RUNTIME_SUITE_CASES:
         validate_runtime_suite(case, returncode, output)
@@ -853,7 +867,7 @@ def linux_tx_packet(sequence, size):
     return bytes(packet)
 
 
-def validate_tx_capture(data):
+def validate_tx_capture(data, expected=None):
     if len(data) < 24 or len(data) > 1024 * 1024:
         raise AssertionError("missing, truncated, or oversized TX capture")
     endian = {b"\xd4\xc3\xb2\xa1": "<", b"\xa1\xb2\xc3\xd4": ">"}.get(bytes(data[:4]))
@@ -863,7 +877,7 @@ def validate_tx_capture(data):
     if (major, minor, link) != (2, 4, 1) or snaplen < max(LINUX_TX_LENGTHS):
         raise AssertionError("invalid Ethernet pcap header")
     packets = []
-    expected = expected_tx_packets()
+    expected = expected_tx_packets() if expected is None else expected
     offset = 24
     while offset < len(data):
         if len(data) - offset < 16:
@@ -1177,13 +1191,199 @@ def validate_linux_rx_events(events):
         raise AssertionError("incomplete original RX source callback evidence")
 
 
+NETWORK_LENGTHS = (14, 42, 60, 252, 253, 1514)
+
+
+def network_packet(epoch, sequence, incoming=False):
+    size = NETWORK_LENGTHS[sequence - 1]
+    if incoming:
+        size = max(size, 60)
+    mac, host = bytes.fromhex("525400123456"), bytes.fromhex("02aabbccdd01")
+    data = bytearray((index * 17 + sequence * 13 + epoch * 7) & 255 for index in range(size))
+    data[:6], data[6:12] = (mac, host) if incoming else (host, mac)
+    data[12:14] = bytes((0x88, 0xb0 + sequence))
+    return bytes(data) if incoming else bytes(data).ljust(max(size, 60), b"\0")
+
+
+class NetworkProtocol:
+    def __init__(self, send=None, ambiguous=False):
+        self.send, self.ambiguous = send, ambiguous
+        self.epoch, self.sequence, self.pending = 1, 0, False
+        self.frames = []
+
+    def observe(self, line):
+        if line.startswith("# NETWORK_RX_READY"):
+            match = re.fullmatch(r"# NETWORK_RX_READY epoch=([12]) seq=([1-6]) bytes=(\d+)", line)
+            if self.ambiguous or match is None or self.pending:
+                raise AssertionError("invalid or concurrent managed RX offer")
+            epoch, sequence, size = map(int, match.groups())
+            if (epoch, sequence, size) != (self.epoch, self.sequence + 1, max(NETWORK_LENGTHS[sequence - 1], 60)):
+                raise AssertionError("reordered or incorrect managed RX offer")
+            self.sequence, self.pending = sequence, True
+            packet = network_packet(epoch, sequence, True)
+            if self.send:
+                self.send(struct.pack("!I", len(packet)) + packet)
+        elif line.startswith("# NETWORK_RX "):
+            match = re.fullmatch(r"# NETWORK_RX epoch=([12]) seq=([1-6]) bytes=(\d+) path=(copy|build) data=([0-9a-f]+)", line)
+            if self.ambiguous or match is None or not self.pending:
+                raise AssertionError("managed RX without a matching host offer")
+            epoch, sequence, size = map(int, match.groups()[:3])
+            packet = network_packet(epoch, sequence, True)
+            if (epoch, sequence, size, match[4], bytes.fromhex(match[5])) != (
+                self.epoch, self.sequence, len(packet), "copy" if len(packet) <= 252 else "build", packet,
+            ):
+                raise AssertionError("managed RX bytes, FCS removal or copybreak path mismatch")
+            self.frames.append((epoch, sequence))
+            self.pending = False
+        elif line.startswith("# NETWORK_JOIN"):
+            if self.ambiguous or self.pending or self.sequence != 6:
+                raise AssertionError("managed scope joined before completing exact packets")
+            self.epoch += 1
+            self.sequence = 0
+
+    def finish(self):
+        expected = [] if self.ambiguous else [(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)]
+        if self.pending or self.frames != expected:
+            raise AssertionError("missing managed full-frame receipts")
+
+
+def validate_network_suite(case, returncode, output, symbols=None):
+    lines = output.splitlines()
+    validate_boot_preamble(lines, "driver-network-tests")
+    failures = validate_ktap(lines, returncode, ("network.integration",))
+    if failures:
+        raise KernelSuiteFailure("managed network integration failed")
+    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "BOOT_MEMORY", "FRAME_ALLOCATOR",
+                            "HEAP_", "THREAD_", "Bail out!", "# NATIVE_", "# LINUX_FAULT")) for line in lines):
+        raise AssertionError("managed network aborted or used unrelated fixture evidence")
+    ambiguous = case.endswith("ambiguous")
+    protocol = NetworkProtocol(ambiguous=ambiguous)
+    for line in lines:
+        protocol.observe(line)
+    protocol.finish()
+    network = [line for line in lines if line.startswith("# NETWORK_")]
+    errors = [line for line in lines if line.startswith("# RUNTIME_ERROR")]
+    callbacks = [line for line in lines if line.startswith("# LINUX_CALLBACK")]
+    if ambiguous:
+        if network != ["# NETWORK_REJECT matches=2 code=-188 probes=0 backing=0 balanced=1"] or callbacks or errors != [
+            "# RUNTIME_ERROR stage=runtime_e1000_inventory code=-188"
+        ]:
+            raise AssertionError("singleton rejection occurred after probing or leaked backing")
+        return
+    if errors or any(line.startswith("# RUNTIME_PROBE") for line in lines):
+        raise AssertionError("managed probe or shutdown failed")
+    identities, metadata = [], set()
+    cursor = 0
+    for epoch in (1, 2):
+        if cursor >= len(network):
+            raise AssertionError("missing managed device scope")
+        match = re.fullmatch(
+            rf"# NETWORK_DEVICE epoch={epoch} identity=(\d+) bdf=0000:00:([0-9a-f]{{2}})\.0 mac=52:54:00:12:34:56 mtu=1500 link=1 registry_ready=1 workers=2",
+            network[cursor],
+        )
+        if match is None or not int(match[1]) or int(match[2], 16) != pci_layout(case)[1]:
+            raise AssertionError("wrong managed identity, MAC, link or selected BDF")
+        identity = int(match[1])
+        identities.append(identity)
+        cursor += 1
+        for sequence, size in enumerate(NETWORK_LENGTHS, 1):
+            if sequence == 4:
+                expected = f"# NETWORK_RETAIN epoch={epoch} identity={identity} first_returned=1 workers=2"
+                if network[cursor:cursor + 1] != [expected]:
+                    raise AssertionError("device or workers did not survive the first client")
+                cursor += 1
+            if sequence == 1:
+                expected = f"# NETWORK_OWNERSHIP epoch={epoch} busy=1 timeout=1 accepted_map=1 stale_receipt=1 retained=1"
+                if network[cursor:cursor + 1] != [expected]:
+                    raise AssertionError("BUSY/timeout released accepted packet ownership")
+                cursor += 1
+            wire = max(size, 60)
+            if network[cursor:cursor + 2] != [
+                f"# NETWORK_TX epoch={epoch} seq={sequence} input={size} wire={wire} complete=1",
+                f"# NETWORK_RX_READY epoch={epoch} seq={sequence} bytes={wire}",
+            ] or cursor + 2 >= len(network) or not network[cursor + 2].startswith(f"# NETWORK_RX epoch={epoch} seq={sequence} "):
+                raise AssertionError("missing or reordered managed packet evidence")
+            cursor += 3
+        if network[cursor:cursor + 1] != [
+            f"# NETWORK_STATS epoch={epoch} tx=6/2199 rx=6/2199 queued=6 completed=6 queue_busy=1 allocation=1 consumed_drop=1"
+        ]:
+            raise AssertionError("source packet/byte accounting or failure recovery mismatch")
+        cursor += 1
+        if network[cursor:cursor + 1] != [f"# NETWORK_WAITER epoch={epoch} closed=1 wake=stop"]:
+            raise AssertionError("native receive waiter did not wake on stop")
+        cursor += 1
+        match = re.fullmatch(
+            rf"# NETWORK_JOIN epoch={epoch} finished=6 peak=6 workers=0 stale=1 balanced=1 metadata=(\d+)",
+            network[cursor] if cursor < len(network) else "",
+        )
+        if match is None or not 59960 < int(match[1]) <= 65536:
+            raise AssertionError("missing joined stacks, resource restoration or metadata bound")
+        metadata.add(int(match[1]))
+        cursor += 1
+    if cursor != len(network) or identities[0] == identities[1] or len(metadata) != 1:
+        raise AssertionError("unexpected evidence, reused lifecycle identity or inconsistent metadata")
+    net_errors = Counter()
+    for line in lines:
+        if line.startswith("# NET_ERROR"):
+            match = re.fullmatch(r"# NET_ERROR operation=([a-z]+) error=([A-Za-z]+)", line)
+            if match is None:
+                raise AssertionError("unclassified native network error")
+            net_errors[(match[1], match[2])] += 1
+    not_ready = net_errors.pop(("submit", "NotReady"), 0)
+    expected_errors = Counter({
+        ("submit", "Busy"): 8, ("finish", "Busy"): 8, ("wait", "TimedOut"): 2,
+        ("progress", "Stale"): 4, ("submit", "NoMemory"): 4,
+        ("info", "Closed"): 2, ("info", "Stale"): 2,
+        ("receive", "Closed"): 2,
+    })
+    if net_errors != expected_errors or not_ready > 1200:
+        raise AssertionError("missing or unexpected native lifetime/backpressure errors")
+    driver_errors = Counter(line for line in lines if line.startswith("# driver operation="))
+    if driver_errors != Counter({"# driver operation=allocate code=-12": 2, "# driver operation=map code=-12": 2}):
+        raise AssertionError("unexpected source allocation/map failure")
+    events, scopes = [], []
+    for line in lines:
+        if line.startswith("# LINUX_CALLBACK"):
+            match = re.fullmatch(r"# LINUX_CALLBACK event=(\d+) function=([0-9a-f]+) object=([0-9a-f]+) result=(-?\d+)", line)
+            if match is None:
+                raise AssertionError("malformed managed Linux callback")
+            event, function, obj, result = (int(value, 16 if index in (1, 2) else 10) for index, value in enumerate(match.groups()))
+            validate_callback_symbol(event, function, obj, symbols)
+            events.append((event, function, obj, result))
+        elif line.startswith("# NETWORK_JOIN"):
+            scopes.append(events)
+            events = []
+    if events or len(scopes) != 2:
+        raise AssertionError("source callbacks outlived managed scope")
+    for events in scopes:
+        validate_callback_lifetime(events, symbols)
+        counts = Counter(event for event, _, _, _ in events)
+        required = {1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1, 7: 1, 8: 1,
+                    17: 7, 18: 7, 19: 6, 20: 6, 21: 6, 22: 6, 24: 6, 25: 6,
+                    28: 1, 31: 7, 32: 1, 33: 1, 34: 1, 35: 1, 41: 6, 42: 6}
+        if any(counts[event] != count for event, count in required.items()):
+            raise AssertionError("original managed lifecycle, TX/RX or drop callbacks missing")
+        if not all(counts[event] for event in (9, 10, 11, 12, 13, 14, 15, 26)) or counts[9] != counts[15] or counts[13] != counts[26]:
+            raise AssertionError("missing or unmatched original IRQ/NAPI/work callbacks")
+        lengths = [max(size, 60) for size in NETWORK_LENGTHS]
+        for event in (19, 20, 22, 24, 25, 41):
+            if [result for observed, _, _, result in events if observed == event] != lengths:
+                raise AssertionError("Linux source completion or full RX byte sizes mismatch")
+        for event, expected in ((17, list(NETWORK_LENGTHS) + [60]), (36, [64, 64, 64, 256]),
+                                (38, [64, 64, 64, 256]), (37, [1920, 1920]), (39, [1522, 1522])):
+            if [result for observed, _, _, result in events if observed == event] != expected:
+                raise AssertionError("original padding/copybreak/FCS/backing profile mismatch")
+
+
 def execute_suite(args, case, capture):
     deadline = time.monotonic() + args.timeout
     output = bytearray()
     serial_pending = bytearray()
     network_pending = bytearray()
     transmitted = []
-    expected = expected_tx_packets()
+    network = case in NETWORK_SUITE_CASES
+    ambiguous = case.endswith("ambiguous")
+    expected = [] if network and ambiguous else [network_packet(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)] if network else expected_tx_packets()
     host, peer = socket.socketpair()
     with host, peer:
         command = qemu_command(args, case, capture, peer.fileno())
@@ -1193,8 +1393,7 @@ def execute_suite(args, case, capture):
         ) as process:
             peer.close()
             host.settimeout(min(args.timeout, 2))
-            protocol = RXProtocol(host.sendall)
-            hard = HardProtocol(host.sendall)
+            protocols = (NetworkProtocol(host.sendall, ambiguous),) if network else (RXProtocol(host.sendall), HardProtocol(host.sendall))
             try:
                 with selectors.DefaultSelector() as selector:
                     selector.register(process.stdout, selectors.EVENT_READ, "serial")
@@ -1217,8 +1416,8 @@ def execute_suite(args, case, capture):
                                     line, _, rest = serial_pending.partition(b"\n")
                                     serial_pending = bytearray(rest)
                                     decoded = line.decode("utf-8", errors="replace").rstrip("\r")
-                                    protocol.observe(decoded)
-                                    hard.observe(decoded)
+                                    for protocol in protocols:
+                                        protocol.observe(decoded)
                                 if len(serial_pending) > 8192:
                                     raise AssertionError("oversized unterminated guest line")
                             else:
@@ -1241,8 +1440,8 @@ def execute_suite(args, case, capture):
                         raise AssertionError("truncated guest serial/socket output")
                     if transmitted != expected:
                         raise AssertionError("isolated socket did not carry the exact Linux TX frames")
-                    protocol.finish()
-                    hard.finish()
+                    for protocol in protocols:
+                        protocol.finish()
             except subprocess.TimeoutExpired as error:
                 raise subprocess.TimeoutExpired(command, args.timeout, output=bytes(output)) from error
             except OSError as error:
@@ -1276,14 +1475,16 @@ def qemu_command(args, case, capture=None, net_fd=None):
             "invalid-mode": "unsupported",
             "guest-tests-disabled": "kernel-tests",
             "driver-runtime-tests-disabled": "driver-runtime-tests",
+            "driver-network-tests-disabled": "driver-network-tests",
             "heap-oom": "heap-oom",
             "thread-stack-guard": "thread-stack-guard",
             **{case: case for case in FAULT_RESULTS},
             **KERNEL_SUITE_CASES,
             **RUNTIME_SUITE_CASES,
+            **NETWORK_SUITE_CASES,
         }.get(case, "probe")
         command += ["-fw_cfg", f"name=opt/kutox/test-mode,string={mode}"]
-    if case not in ("missing", "smp-unsupported", "heap-oom", "thread-stack-guard", "guest-tests-disabled", "driver-runtime-tests-disabled") and case not in FAULT_RESULTS and case not in KERNEL_SUITE_CASES and case not in RUNTIME_SUITE_CASES:
+    if case not in ("missing", "smp-unsupported", "heap-oom", "thread-stack-guard", "guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled") and case not in FAULT_RESULTS and case not in KERNEL_SUITE_CASES and case not in RUNTIME_SUITE_CASES and case not in NETWORK_SUITE_CASES:
         model = "e1000e" if case == "unsupported" else "e1000"
         mac = CASES[case][0] or "52:54:00:12:34:56"
         command += [
@@ -1295,7 +1496,7 @@ def qemu_command(args, case, capture=None, net_fd=None):
             "-netdev", "user,id=second,restrict=on",
             "-device", "e1000,netdev=second,mac=52:54:00:00:00:02",
         ]
-    if case in KERNEL_SUITE_CASES:
+    if case in KERNEL_SUITE_CASES or case in NETWORK_SUITE_CASES:
         if net_fd is None or net_fd < 0:
             raise AssertionError("kernel suite requires an owned RX socket")
         root, leaf, parents = pci_layout(case)
@@ -1308,6 +1509,8 @@ def qemu_command(args, case, capture=None, net_fd=None):
             "-netdev", f"socket,id=irqtest,fd={net_fd}",
             "-device", f"e1000,netdev=irqtest{bus},addr={leaf:x},mac=52:54:00:12:34:56",
         ]
+        if case == "driver-network-tests-ambiguous":
+            command += ["-device", "e1000,addr=4,mac=52:54:00:00:00:02"]
         if capture is not None:
             # QEMU key/value options escape literal commas by doubling them.
             filename = str(capture).replace(",", ",,")
@@ -1321,7 +1524,7 @@ def qemu_command(args, case, capture=None, net_fd=None):
 def run_case(args, case, index=0):
     log = args.build_dir / "test-logs" / f"{args.case}-{index}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
-    capture = log.with_suffix(".pcap") if case in KERNEL_SUITE_CASES else None
+    capture = log.with_suffix(".pcap") if case in KERNEL_SUITE_CASES or case in NETWORK_SUITE_CASES else None
     if capture is not None:
         capture.unlink(missing_ok=True)
     command = qemu_command(args, case) if capture is None else None
@@ -1344,10 +1547,16 @@ def run_case(args, case, index=0):
             if not capture.is_file():
                 raise AssertionError("QEMU did not produce the required TX capture")
             with capture.open("rb") as stream:
-                validate_tx_capture(stream.read(1024 * 1024 + 1))
+                expected = None
+                if case in NETWORK_SUITE_CASES:
+                    expected = [] if case.endswith("ambiguous") else [network_packet(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)]
+                validate_tx_capture(stream.read(1024 * 1024 + 1), expected)
             symbols = runtime_symbols(getattr(args, "nm", "nm"))
-            validate_linux_callbacks(output, symbols)
-            validate_native_drivers(output.splitlines(), case, symbols)
+            if case in NETWORK_SUITE_CASES:
+                validate_network_suite(case, completed.returncode, output, symbols)
+            else:
+                validate_linux_callbacks(output, symbols)
+                validate_native_drivers(output.splitlines(), case, symbols)
         validate_result(case, completed.returncode, output)
     except KernelSuiteFailure as error:
         raise KernelSuiteFailure(f"{error}\nlog: {log}\n{output}") from error

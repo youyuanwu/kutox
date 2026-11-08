@@ -17,7 +17,7 @@ class InputTests(unittest.TestCase):
         names = check.lines(check.DECLARATIONS / "service-ffi.txt")
         self.assertEqual(names, sorted(names))
         self.assertTrue({"memcpy", "memset", "kutox_jiffies", "kutox_driver_dma_map",
-                         "kutox_driver_gate", "kutox_driver_pci"} <= set(names))
+                         "kutox_driver_gate", "kutox_driver_pci", "kutox_net_wake"} <= set(names))
         with self.assertRaises(ValueError):
             check.verify_service_closure(Path("unused"), None)
         with self.assertRaises(ValueError):

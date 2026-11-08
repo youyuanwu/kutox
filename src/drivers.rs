@@ -132,6 +132,9 @@ pub const INIT_METADATA_BYTES: usize = 16
 
 pub trait NativeDevice: Send + Sync {
     fn ready(&self) -> Result<bool, i32>;
+    fn network(&self) -> Option<&dyn crate::net_state::NetworkDevice> {
+        None
+    }
     /// Success confirms that callbacks and device activity no longer use backing.
     fn stop(&self) -> Result<(), i32>;
 }
@@ -648,6 +651,18 @@ pub struct DeviceOperation<'a, CPU: CpuOps> {
 }
 
 impl<CPU: CpuOps> DeviceOperation<'_, CPU> {
+    pub fn network(&self) -> Result<&dyn crate::net_state::NetworkDevice, Error> {
+        self.manager.context().inspect_err(|&error| {
+            (self.manager.hooks.report_error)("driver-network-context", error)
+        })?;
+        self.device
+            .network()
+            .ok_or(Error::Profile)
+            .inspect_err(|&error| {
+                (self.manager.hooks.report_error)("driver-network-profile", error)
+            })
+    }
+
     pub fn ready(&self) -> Result<bool, Error> {
         if let Err(error) = self.manager.context() {
             (self.manager.hooks.report_error)("driver-ready-context", error);

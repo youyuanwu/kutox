@@ -19,19 +19,21 @@ GUEST_SYMBOLS = {
     "kutox_thread_register_probe", "kutox_irq_register_probe",
     "kutox_guest_native_probe",
     "kutox_guest_runtime_work",
+    "kutox_guest_network_client",
 } | NATIVE_INIT_SYMBOLS
 RUNTIME_SYMBOLS = {
     "e1000_probe", "e1000_open", "e1000_close", "e1000_xmit_frame",
     "e1000_intr", "e1000_clean", "kutox_driver_alloc", "kutox_driver_free",
     "kutox_driver_dma_map", "kutox_driver_dma_operation",
     "kutox_linux_request_irq", "kutox_linux_work_init", "kutox_linux_napi_init",
+    "kutox_e1000_init", "kutox_net_wake",
 }
 GUEST_ONLY_PATTERN = re.compile(
     r"::(?:guest_tests|tests|wait_tests|irq_tests)::|"
     r"::(?:FAIL_AFTER|FAIL_KIND|MAP_FAIL_AFTER|MAP_FAIL_DIRECTION|FAIL_OPERATION|FAIL_REQUEST)$|"
     r"^(?:kutox_c_execution_|kutox_c_irq_|kutox_c_services_|kutox_c_dma_)|"
     r"^(?:kutox_driver_fail_after|kutox_linux_test_now_us|deny_eeprom_grant|denied_grants)$|"
-    r"^kutox_c_linux_(?:counts|indices|kick|live_ring_free|rx_state|rx_failures)$"
+    r"^kutox_c_linux_(?:counts|indices|kick|queue|live_ring_free|rx_state|rx_failures)$"
 )
 
 
@@ -71,14 +73,15 @@ def validate_native_metadata(data, address, bounds, functions, enabled):
             ids.add(identity)
             if not bounds["_kernel_text_start"] <= factory < bounds["_kernel_text_end"] or factory not in functions.values():
                 raise AssertionError("native initializer is not an actual linked function")
+            if scope == 0 and (identity, priority, factory) != (1, 10, functions.get("kutox_e1000_init")):
+                raise AssertionError("wrong production e1000 initializer or ordering key")
             if scope == 1 and (
                 factory != functions.get(f"kutox_guest_native_init_{identity}")
                 or priority != {10: 10, 20: 10, 30: 20, 40: 30}.get(identity)
             ):
                 raise AssertionError("wrong synthetic initializer identity or ordering key")
         counts.append(count)
-    # Production e1000 registration is phase 5; an empty production table is explicit.
-    if counts != [0, 4 if enabled else 0]:
+    if counts != [1, 4 if enabled else 0]:
         raise AssertionError("missing or unexpected native initializer registrations")
     return counts
 

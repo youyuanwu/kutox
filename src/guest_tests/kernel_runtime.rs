@@ -228,10 +228,11 @@ fn client(_: usize) {
         token.wait(None).unwrap();
     }
     let manager = handle.manager().unwrap();
+    assert!(crate::net_device::enumerate(handle).unwrap().is_empty());
     let snapshot = manager.snapshot().unwrap();
     assert_eq!(
         (snapshot.drivers, snapshot.bound, snapshot.discovered),
-        (0, 0, 5)
+        (1, 0, 5)
     );
     assert!(handle.publish_service(ServiceId::new(3).unwrap()).unwrap());
     handle.wait_probes().unwrap();

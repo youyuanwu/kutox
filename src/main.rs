@@ -119,6 +119,14 @@ mod mutex;
     not(feature = "guest-tests"),
     allow(
         dead_code,
+        reason = "Persistent runtime boot is enabled in integration phase 6"
+    )
+)]
+mod net_device;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
         reason = "Kernel service API retained before boot integration"
     )
 )]
@@ -226,7 +234,10 @@ fn probe() -> Result<[u8; 6], Failure> {
     #[cfg(feature = "guest-tests")]
     if matches!(
         boot.mode,
-        BootMode::KernelTests | BootMode::KernelTestsFail | BootMode::DriverRuntimeTests
+        BootMode::KernelTests
+            | BootMode::KernelTestsFail
+            | BootMode::DriverRuntimeTests
+            | BootMode::DriverNetworkTests
     ) {
         guest_tests::run(&boot);
     }

@@ -45,6 +45,7 @@ kutox_linux_spin_owner
 kutox_linux_wait_completion
 kutox_linux_work
 kutox_linux_work_init
+kutox_net_wake
 kutox_platform_fail
 kutox_serial_byte
 memcpy
