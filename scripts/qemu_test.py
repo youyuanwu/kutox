@@ -2,6 +2,7 @@
 """Bounded QEMU kernel-suite and hardware-scenario tests."""
 
 import argparse
+from collections import Counter
 import os
 from pathlib import Path
 import re
@@ -68,6 +69,9 @@ KERNEL_TEST_NAMES = (
     "linux.e1000_failures",
     "linux.e1000_tx",
     "linux.e1000_rx",
+    "linux.e1000_wrap",
+    "linux.e1000_backpressure",
+    "linux.e1000_teardown",
 )
 KERNEL_SUITE_CASES = {
     "kernel-tests": "kernel-tests",
@@ -220,10 +224,10 @@ def validate_linux_callbacks(output, symbols=None):
             elif events or faults:
                 raise AssertionError("original driver ran in a native/synthetic case")
             events, faults = [], []
-    if events or faults or set(batches) != {"linux.e1000_lifecycle", "linux.e1000_failures", "linux.e1000_tx", "linux.e1000_rx"}:
+    if events or faults or set(batches) != {name for name in KERNEL_TEST_NAMES if name.startswith("linux.e1000_")}:
         raise AssertionError("incomplete original-driver callback batches")
     for name, (events, faults) in batches.items():
-        counts = {event: sum(item[0] == event for item in events) for event in range(1, 48)}
+        counts = {event: sum(item[0] == event for item in events) for event in range(1, 50)}
         expected = {1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 4, 7: 4, 33: 2} if name.endswith("lifecycle") else {
             1: 4, 2: 1, 3: 4, 4: 4, 5: 1, 6: 5, 7: 2,
             33: 1,
@@ -232,6 +236,9 @@ def validate_linux_callbacks(output, symbols=None):
             expected = {1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 2, 33: 2}
         elif name.endswith("_rx"):
             expected = {1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 2, 33: 2, 34: 2, 35: 2}
+        elif name.endswith(("_wrap", "_backpressure", "_teardown")):
+            opens = 1 if name.endswith("_wrap") else 3 if name.endswith("_backpressure") else 5
+            expected = {1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: opens, 7: opens, 33: 1, 34: 1, 35: 1}
         if any(counts[event] != count for event, count in expected.items()):
             raise AssertionError("original lifecycle callbacks missing, duplicated, or bypassed")
         expected_faults = list(range(1, 8)) if name.endswith("failures") else []
@@ -247,7 +254,7 @@ def validate_linux_callbacks(output, symbols=None):
             raise AssertionError("original IRQ returns are missing or invalid")
         if not any(event == 16 and result == 4 for event, _, _, result in events):
             raise AssertionError("original open did not generate an LSC IRQ")
-        minimum_ready = 4 if name.endswith("lifecycle") else 2 if name.endswith(("_tx", "_rx")) else 1
+        minimum_ready = expected[6] if name.endswith(("_wrap", "_teardown")) else 4 if name.endswith("lifecycle") else 2 if name.endswith(("_tx", "_rx", "_backpressure")) else 1
         if counts[14] < minimum_ready:
             raise AssertionError("each successful lifecycle did not establish source-derived readiness")
         work, napi, irq, xmit = set(), set(), set(), set()
@@ -265,7 +272,7 @@ def validate_linux_callbacks(output, symbols=None):
                     symbols.get(symbol) for symbol in DRIVER_CALLBACK_NAMES[event]
                 }:
                     raise AssertionError("callback did not point to the linked original Linux function")
-            elif event not in (14, 16, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 32, *range(36, 48)) or function != 0:
+            elif event not in (14, 16, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 32, *range(36, 50)) or function != 0:
                 raise AssertionError("unknown original callback kind")
             if event not in (1, 2) and obj == 0:
                 raise AssertionError("callback backing identity is missing")
@@ -312,16 +319,22 @@ def validate_linux_callbacks(output, symbols=None):
             raise AssertionError("incomplete original NAPI poll")
         if name.endswith("_tx"):
             validate_linux_tx_events(events)
+        elif name.endswith(("_wrap", "_backpressure", "_teardown")):
+            validate_hard_callbacks(name,events)
         elif any(17 <= event <= 32 and event != 26 for event, _, _, _ in events):
             raise AssertionError("packet submission ran outside the Linux TX case")
         if name.endswith("_rx"):
             validate_linux_rx_events(events)
-        elif any(34 <= event <= 47 for event, _, _, _ in events):
+        elif not name.endswith(("_wrap", "_backpressure", "_teardown")) and any(34 <= event <= 49 for event, _, _, _ in events):
             raise AssertionError("RX evidence ran outside the original RX case")
     protocol = RXProtocol()
     for line in output.splitlines():
         protocol.observe(line)
     protocol.finish()
+    hard = HardProtocol()
+    for line in output.splitlines():
+        hard.observe(line)
+    hard.finish()
 
 
 def validate_linux_tx_events(events):
@@ -603,8 +616,7 @@ def validate_tx_capture(data):
     if (major, minor, link) != (2, 4, 1) or snaplen < max(LINUX_TX_LENGTHS):
         raise AssertionError("invalid Ethernet pcap header")
     packets = []
-    expected = [linux_tx_packet(sequence, size)
-                for sequence, size in enumerate(LINUX_TX_LENGTHS, 1)]
+    expected = expected_tx_packets()
     offset = 24
     while offset < len(data):
         if len(data) - offset < 16:
@@ -628,6 +640,151 @@ RX_ACTIONS = ("deliver", "deliver", "deliver", "deliver", "pressure", "deliver",
 RX_RESIDENT = (256, 256, 255, 255, 254, 256, 256, 256)
 RX_MAPS = (1, 0, 0, 1, 0, 2, 0, 0)
 RX_TAILS = (255, 0, 1, 2, None, 4, 5, 6)
+
+def hard_packet(kind, sequence, size, receiving=False):
+    header = bytes.fromhex("52540012345602000000000788b9") if receiving else b"\xff" * 6 + bytes.fromhex("52540012345688b8")
+    packet = bytearray(header + bytes((kind + sequence + index) & 255 for index in range(14,size)))
+    packet[14:22] = b"KUTOX-HR" if receiving else b"KUTOX-HT"
+    packet[22:26] = struct.pack("!I",sequence)
+    packet[26] = kind
+    return bytes(packet)
+
+def expected_tx_packets():
+    return ([linux_tx_packet(sequence,size) for sequence,size in enumerate(LINUX_TX_LENGTHS,1)]
+            + [hard_packet(1,sequence,60) for sequence in range(1,301)]
+            + [hard_packet(2,sequence,60) for sequence in range(1,234)]
+            + [hard_packet(3,sequence,60) for sequence in (1,2)])
+
+def validate_hard_callbacks(name, events):
+    counts = {kind: sum(event == kind for event,_,_,_ in events) for kind in range(1,50)}
+    polling = closing = False
+    for event, _, _, result in events:
+        if event == 13: polling = True
+        if event == 7: closing = True
+        if event == 6: closing = False
+        if event in (22,23,24,36,37,38,39,40,41,42,43,44,45,46,49) and not polling:
+            if not (event == 22 and closing and name.endswith("_teardown")):
+                raise AssertionError("hardening cleanup ran outside original NAPI")
+        if event == 23 and result != 64:
+            raise AssertionError("hardening skb consumption lost NAPI budget")
+        if event == 26: polling = False
+    if name.endswith("_wrap"):
+        required = {17:300,18:300,19:300,20:300,21:300,22:300,23:300,24:300,25:300,
+                    31:300,36:150,37:150,38:150,39:150,40:300,41:300,42:300,43:150,45:300}
+        if any(counts[key] != value for key,value in required.items()):
+            raise AssertionError("ring wrap source packet/cleanup accounting incomplete")
+        for kind, expected in (
+            (21,[sequence % 256 for sequence in range(1,301)]),
+            (45,[(sequence + 254) % 256 for sequence in range(1,301)]),
+            (41,[60 if sequence % 2 else 300 for sequence in range(1,301)]),
+        ):
+            if [result for event,_,_,result in events if event == kind] != expected:
+                raise AssertionError("original ring doorbells or RX bytes did not wrap correctly")
+    elif name.endswith("_backpressure"):
+        if counts[17] != 234 or counts[18] != 234 or counts[28] != 1 or counts[48] != 233:
+            raise AssertionError("original backpressure/drop/xmit accounting disagrees")
+        if sum(result for event,_,_,result in events if event == 49) != 233 or counts[41] != 3:
+            raise AssertionError("original bulk completion or RX recovery did not execute")
+    elif counts[30] != 2 or counts[17] != 2 or counts[47] == 0:
+        raise AssertionError("pending TX/RX/IRQ teardown did not execute")
+
+class HardProtocol:
+    def __init__(self, send=None):
+        self.send = send
+        self.sequence = {"wrap":0,"errors":0,"pending":0}
+        self.pending = {}
+        self.stopped = set()
+        self.states = 0
+        self.markers = []
+
+    def observe(self,line):
+        if not line.startswith(("# LINUX_HARD", "# LINUX_CONTROL")): return
+        if match := re.fullmatch(r"# LINUX_HARD_READY kind=(wrap|errors|pending) seq=([0-9]+) bytes=([0-9]+)",line):
+            name, sequence, size = match[1],int(match[2]),int(match[3])
+            limit = {"wrap":300,"errors":3,"pending":1}[name]
+            expected_size = (60 if sequence % 2 else 300) if name == "wrap" else (60 if sequence == 1 else 300)
+            if (name in self.stopped or name in self.pending or sequence != self.sequence[name] + 1
+                    or not 1 <= sequence <= limit or size != expected_size):
+                raise AssertionError("unready, duplicate, or malformed hardening RX request")
+            self.pending[name] = (sequence,size)
+            if self.send is not None:
+                kind = {"wrap":1,"errors":4,"pending":3}[name]
+                packet = hard_packet(kind,sequence,size,True)
+                self.send(struct.pack("!I",len(packet)) + packet)
+            return
+        if match := re.fullmatch(r"# LINUX_HARD_FRAME kind=(wrap|errors|pending) seq=([0-9]+) bytes=([0-9]+) data=([0-9a-f]+)",line):
+            name, sequence, size = match[1],int(match[2]),int(match[3])
+            kind = {"wrap":1,"errors":4,"pending":3}[name]
+            if self.pending.get(name) != (sequence,size) or match[4] != hard_packet(kind,sequence,size,True).hex():
+                raise AssertionError("hardening RX bytes, order or ownership mismatch")
+            del self.pending[name]
+            self.sequence[name] = sequence
+            return
+        if match := re.fullmatch(r"# LINUX_HARD_STATE kind=wrap seq=([0-9]+) tx=([0-9]+) rx=([0-9]+) resident=([0-9]+)",line):
+            sequence,tx,rx,resident = map(int,match.groups())
+            if (sequence != self.sequence["wrap"] or sequence != self.states + 1
+                    or tx != sequence % 256 or rx != tx or resident != (256 if sequence % 2 else 255)):
+                raise AssertionError("source wrap indices or memory leases disagree")
+            self.states += 1
+            return
+        if match := re.fullmatch(r"# LINUX_HARD_STOP kind=(wrap|errors|pending) seq=([0-9]+)",line):
+            name, sequence = match[1],int(match[2])
+            expected = {"wrap":300,"errors":3,"pending":1}[name]
+            if name in self.stopped or sequence != expected or (name != "pending" and self.sequence[name] != expected):
+                raise AssertionError("hardening stop before complete offers")
+            if name == "pending" and self.pending.get(name) != (1,60):
+                raise AssertionError("pending RX was not queued before close")
+            self.stopped.add(name)
+            return
+        self.markers.append(line)
+
+    def finish(self):
+        if self.sequence != {"wrap":300,"errors":3,"pending":1} or self.pending or self.states != 300 or self.stopped != {"wrap","errors","pending"}:
+            raise AssertionError("incomplete wrap, error recovery or pending RX offers")
+        expected = [
+            "# LINUX_HARD_FAULT name=rx-open-map recovered=1",
+            "# LINUX_HARD_FAULT name=tx-skb recovered=1",
+            "# LINUX_HARD_FAULT name=tx-map consumed=1 captured=0",
+            "# LINUX_HARD_BUSY accepted=232 held=1 stopped=1",
+            "# LINUX_HARD_WAKE completed=233 held=0 balanced=1",
+            "# LINUX_HARD_FAULT name=rx-skb retained=1 recovered=1",
+            "# LINUX_HARD_FAULT name=rx-map recovered=1 resident=255",
+            "# LINUX_HARD_IRQ pending=1 tx=1 watchdog=queued",
+            "# LINUX_HARD_PAUSE kind=2 state=reserved-running",
+            "# LINUX_HARD_JOIN kind=2 backing=live",
+            "# LINUX_HARD_FREE kind=2 errno=-16 engines=disabled",
+            "# LINUX_CONTROL_WAIT op=open",
+            "# LINUX_CONTROL_REJECT op=close errno=-58",
+            "# LINUX_HARD_REENTRY errno=-58 unchanged=1",
+            "# LINUX_HARD_CONCURRENT kind=2 reopened=1",
+            "# LINUX_HARD_PAUSE kind=1 state=reserved-running",
+            "# LINUX_HARD_JOIN kind=1 backing=live",
+            "# LINUX_HARD_FREE kind=1 errno=-16 engines=disabled",
+            "# LINUX_CONTROL_WAIT op=open",
+            "# LINUX_HARD_CONCURRENT kind=1 reopened=1",
+            "# LINUX_HARD_TEARDOWN joined=2 serialized=2 stale=1",
+        ]
+        if Counter(self.markers) != Counter(expected):
+            raise AssertionError("hardening fault/join/concurrent lifecycle evidence disagrees")
+        positions = []
+        for kind in (2,1):
+            chain = [
+                f"# LINUX_HARD_PAUSE kind={kind} state=reserved-running",
+                f"# LINUX_HARD_JOIN kind={kind} backing=live",
+                f"# LINUX_HARD_FREE kind={kind} errno=-16 engines=disabled",
+                f"# LINUX_HARD_CONCURRENT kind={kind} reopened=1",
+            ]
+            indices = [self.markers.index(line) for line in chain]
+            if indices != sorted(indices):
+                raise AssertionError("callback backing released before its real join")
+            positions.append((indices[2],indices[3]))
+        waits = [i for i,line in enumerate(self.markers) if line == "# LINUX_CONTROL_WAIT op=open"]
+        if len(waits) != 2 or any(not first < index < last for index,(first,last) in zip(waits,positions)):
+            raise AssertionError("concurrent open was not serialized behind close")
+        reject = self.markers.index("# LINUX_CONTROL_REJECT op=close errno=-58")
+        reentry = self.markers.index("# LINUX_HARD_REENTRY errno=-58 unchanged=1")
+        if not positions[0][0] < reject < reentry < positions[0][1]:
+            raise AssertionError("atomic callback control reentry was not rejected")
 
 
 def rx_packet(epoch, sequence, size):
@@ -779,6 +936,7 @@ def execute_suite(args, case, capture):
     serial_pending = bytearray()
     network_pending = bytearray()
     transmitted = []
+    expected = expected_tx_packets()
     host, peer = socket.socketpair()
     with host, peer:
         command = qemu_command(args, case, capture, peer.fileno())
@@ -789,6 +947,7 @@ def execute_suite(args, case, capture):
             peer.close()
             host.settimeout(min(args.timeout, 2))
             protocol = RXProtocol(host.sendall)
+            hard = HardProtocol(host.sendall)
             try:
                 with selectors.DefaultSelector() as selector:
                     selector.register(process.stdout, selectors.EVENT_READ, "serial")
@@ -804,13 +963,15 @@ def execute_suite(args, case, capture):
                                 continue
                             if key.data == "serial":
                                 output.extend(chunk)
-                                if len(output) > 1024 * 1024:
+                                if len(output) > 4 * 1024 * 1024:
                                     raise AssertionError("oversized guest journal")
                                 serial_pending.extend(chunk)
                                 while b"\n" in serial_pending:
                                     line, _, rest = serial_pending.partition(b"\n")
                                     serial_pending = bytearray(rest)
-                                    protocol.observe(line.decode("utf-8", errors="replace").rstrip("\r"))
+                                    decoded = line.decode("utf-8", errors="replace").rstrip("\r")
+                                    protocol.observe(decoded)
+                                    hard.observe(decoded)
                                 if len(serial_pending) > 8192:
                                     raise AssertionError("oversized unterminated guest line")
                             else:
@@ -823,7 +984,7 @@ def execute_suite(args, case, capture):
                                         break
                                     transmitted.append(bytes(network_pending[4:size + 4]))
                                     del network_pending[:size + 4]
-                                    if len(transmitted) > 4:
+                                    if len(transmitted) > len(expected):
                                         raise AssertionError("unexpected guest packet on isolated socket")
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
@@ -831,11 +992,10 @@ def execute_suite(args, case, capture):
                     returncode = process.wait(timeout=remaining)
                     if serial_pending or network_pending:
                         raise AssertionError("truncated guest serial/socket output")
-                    expected = [linux_tx_packet(sequence, size)
-                                for sequence, size in enumerate(LINUX_TX_LENGTHS, 1)]
                     if transmitted != expected:
                         raise AssertionError("isolated socket did not carry the exact Linux TX frames")
                     protocol.finish()
+                    hard.finish()
             except subprocess.TimeoutExpired as error:
                 raise subprocess.TimeoutExpired(command, args.timeout, output=bytes(output)) from error
             except OSError as error:
@@ -945,7 +1105,7 @@ def main():
     parser.add_argument("--build-dir", required=True, type=Path)
     parser.add_argument("--qemu", default="qemu-system-x86_64")
     parser.add_argument("--nm", default="nm")
-    parser.add_argument("--timeout", type=float, default=40)
+    parser.add_argument("--timeout", type=float, default=80)
     parser.add_argument(
         "--expect-test-failure", action="store_true",
         help="Verify rejection of a complete intentional-failure suite (kernel-tests-fail only)",

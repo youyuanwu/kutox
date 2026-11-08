@@ -217,7 +217,8 @@ in separate lifecycle cases. Original xmit, TXDW IRQ and NAPI TX cleanup now
 have exact four-frame packet acceptance with no native TX implementation.
 Controlled original RX now verifies copybreak/build-skb delivery, FCS handling,
 replacement-buffer pressure/recovery and explicit unsupported-packet drops.
-Ring/backpressure/pending-teardown hardening is next. Upstream open requires RX
+Ring/backpressure/pending-teardown hardening now passes for the selected QEMU/
+BSP profile. Final as-built documentation is next. Upstream open requires RX
 setup and link work even for TX-first
 testing; declarations or constant-success substitutes do not satisfy it.
 

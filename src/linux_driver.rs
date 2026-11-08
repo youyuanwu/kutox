@@ -12,6 +12,47 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 static TRACING: AtomicBool = AtomicBool::new(false);
 static FAULT: AtomicU32 = AtomicU32::new(0);
 static FAULT_SEEN: AtomicBool = AtomicBool::new(false);
+static CONTROL: crate::mutex::Mutex<()> = crate::mutex::Mutex::new(());
+
+pub(crate) fn control(operation: &str, call: impl FnOnce() -> i32) -> i32 {
+    if let Err(error) = threads::check_thread_context() {
+        serial::print(format_args!(
+            "# LINUX_CONTROL_REJECT op={operation} errno={}\n",
+            error as i32
+        ));
+        return error as i32;
+    }
+    if linux_deferred::control_reentry() {
+        serial::print(format_args!(
+            "# LINUX_CONTROL_REJECT op={operation} errno=-58\n"
+        ));
+        return -58;
+    }
+    let attempt = CONTROL.try_lock();
+    let guard = match attempt {
+        Ok(Some(guard)) => Ok(guard),
+        Ok(None) => {
+            serial::print(format_args!("# LINUX_CONTROL_WAIT op={operation}\n"));
+            CONTROL.lock()
+        }
+        Err(error) => Err(error),
+    };
+    let _guard = match guard {
+        Ok(guard) => guard,
+        Err(error) => {
+            serial::print(format_args!(
+                "# driver control={operation} error={error:?}\n"
+            ));
+            return match error {
+                crate::mutex::Error::Context(error) => error as i32,
+                crate::mutex::Error::State(_) => -16,
+                crate::mutex::Error::TimedOut => -110,
+                crate::mutex::Error::Cancelled => -125,
+            };
+        }
+    };
+    call()
+}
 pub fn record_fault() {
     let fault = FAULT.load(Ordering::Acquire);
     if fault != 0 {
@@ -82,46 +123,51 @@ unsafe extern "C" {
     ) -> i32;
 }
 
-struct DriverHandle(u64);
+pub(crate) struct DriverHandle(pub(crate) u64);
 impl DriverHandle {
-    fn bind() -> Result<Self, i32> {
+    pub(crate) fn bind() -> Result<Self, i32> {
         threads::check_thread_context().map_err(|error| error as i32)?;
         let mut ticket = 0;
-        let result = unsafe { kutox_c_linux_bind(&mut ticket) };
+        let result = control("bind", || unsafe { kutox_c_linux_bind(&mut ticket) });
         if result < 0 {
             return Err(result);
         }
         assert_ne!(ticket, 0, "module bind returned no handle");
         Ok(Self(ticket))
     }
-    fn open(&self) -> i32 {
-        unsafe { kutox_c_linux_open(self.0) }
+    pub(crate) fn open(&self) -> i32 {
+        control("open", || unsafe { kutox_c_linux_open(self.0) })
     }
-    fn ready(&self) -> bool {
-        let result = unsafe { kutox_c_linux_ready(self.0) };
+    pub(crate) fn ready(&self) -> bool {
+        let result = control("ready", || unsafe { kutox_c_linux_ready(self.0) });
         assert!(
             (0..=1).contains(&result),
             "invalid Linux link handle or result"
         );
         result == 1
     }
-    fn close(&self) -> i32 {
-        unsafe { kutox_c_linux_close(self.0) }
+    pub(crate) fn close(&self) -> i32 {
+        control("close", || unsafe { kutox_c_linux_close(self.0) })
     }
-    fn packet(&self, bytes: &[u8]) -> i32 {
+    pub(crate) fn packet(&self, bytes: &[u8]) -> i32 {
         let size = u32::try_from(bytes.len()).expect("packet exceeds C size range");
-        unsafe { kutox_c_linux_tx_begin(self.0, bytes.as_ptr(), size) }
+        control("packet", || unsafe {
+            kutox_c_linux_tx_begin(self.0, bytes.as_ptr(), size)
+        })
     }
-    fn transmit(&self) -> i32 {
-        unsafe { kutox_c_linux_tx(self.0, true) }
+    pub(crate) fn transmit(&self) -> i32 {
+        control("transmit", || unsafe { kutox_c_linux_tx(self.0, true) })
     }
-    fn tx_status(&self) -> i32 {
-        unsafe { kutox_c_linux_tx(self.0, false) }
+    pub(crate) fn tx_status(&self) -> i32 {
+        control("tx-state", || unsafe { kutox_c_linux_tx(self.0, false) })
     }
-    fn release_packet(&self) {
-        assert_eq!(unsafe { kutox_c_linux_tx_release(self.0) }, 0);
+    pub(crate) fn release_packet(&self) {
+        assert_eq!(
+            control("tx-release", || unsafe { kutox_c_linux_tx_release(self.0) }),
+            0
+        );
     }
-    fn wait_ready(&self) {
+    pub(crate) fn wait_ready(&self) {
         for _ in 0..300 {
             if self.ready() {
                 return;
@@ -130,7 +176,7 @@ impl DriverHandle {
         }
         panic!("original watchdog did not establish link readiness");
     }
-    fn wait_transmitted(&self) -> Result<(), Failure> {
+    pub(crate) fn wait_transmitted(&self) -> Result<(), Failure> {
         for _ in 0..300 {
             match self.tx_status() {
                 0 => match self.transmit() {
@@ -145,8 +191,37 @@ impl DriverHandle {
         }
         Err(Failure::new("linux_tx_timeout", -110))
     }
-    fn unbind(self) {
-        assert_eq!(unsafe { kutox_c_linux_unbind(self.0) }, 0);
+    pub(crate) fn rx_start(&self) -> i32 {
+        control("rx-start", || unsafe { kutox_c_linux_rx_start(self.0) })
+    }
+    pub(crate) fn rx_stop(&self) -> i32 {
+        control("rx-stop", || unsafe { kutox_c_linux_rx_stop(self.0) })
+    }
+    pub(crate) fn rx_path(&self) -> i32 {
+        control("rx-path", || unsafe { kutox_c_linux_rx_path(self.0) })
+    }
+    pub(crate) fn rx_state(
+        &self,
+        packets: u32,
+        bytes: u32,
+        dropped: u32,
+        failures: u32,
+        replenished: bool,
+    ) -> i32 {
+        control("rx-state", || unsafe {
+            kutox_c_linux_rx_state(self.0, packets, bytes, dropped, failures, replenished)
+        })
+    }
+    pub(crate) fn rx_failure_seen(&self) -> bool {
+        control("rx-failure", || {
+            i32::from(unsafe { kutox_c_linux_rx_failure_seen(self.0) })
+        }) == 1
+    }
+    pub(crate) fn unbind(self) {
+        assert_eq!(
+            control("unbind", || unsafe { kutox_c_linux_unbind(self.0) }),
+            0
+        );
         assert_eq!(
             unsafe { kutox_c_linux_ready(self.0) },
             -116,
@@ -182,6 +257,12 @@ fn worker(which: usize) {
         unsafe { kutox_linux_workers_stop() };
         return;
     }
+    if which >= 4 {
+        crate::linux_hardening::worker(which);
+        TRACING.store(false, Ordering::Release);
+        unsafe { kutox_linux_workers_stop() };
+        return;
+    }
     for _ in 0..2 {
         let handle = DriverHandle::bind().expect("original Linux probe failed");
         for _ in 0..2 {
@@ -212,11 +293,15 @@ fn run(
     let mut scheduler = threads::Scheduler::new(&space);
     linux_deferred::start(&mut scheduler)?;
     scheduler.spawn(worker, which)?;
-    if scheduler.run_with_timer(&timer)?.finished != 3
+    if which == 6 {
+        scheduler.spawn(crate::linux_hardening::actor, 0)?;
+    }
+    if scheduler.run_with_timer(&timer)?.finished != if which == 6 { 4 } else { 3 }
         || !driver_memory::quiescent()
         || !linux_runtime::quiescent()
         || !linux_deferred::quiescent()
         || !unsafe { kutox_c_linux_empty() }
+        || CONTROL.snapshot() != kutox::mutex_state::MutexState::new()
     {
         return Err(Failure::new("linux_driver_cleanup", -1));
     }
@@ -253,7 +338,7 @@ fn fault_worker() {
                 result, 0,
                 "original open accepts initial RX-buffer exhaustion"
             );
-            assert!(unsafe { kutox_c_linux_rx_failure_seen(handle.0) });
+            assert!(handle.rx_failure_seen());
             assert_eq!(handle.close(), 0);
         } else {
             assert!(result < 0, "original open did not propagate failure");
@@ -297,6 +382,24 @@ pub fn receive(
     frames: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
     run(boot, frames, 3)
+}
+pub fn wrap(
+    boot: &BootInfo,
+    frames: &'static memory::PhysicalFrames<'static>,
+) -> Result<(), Failure> {
+    run(boot, frames, 4)
+}
+pub fn backpressure(
+    boot: &BootInfo,
+    frames: &'static memory::PhysicalFrames<'static>,
+) -> Result<(), Failure> {
+    run(boot, frames, 5)
+}
+pub fn teardown(
+    boot: &BootInfo,
+    frames: &'static memory::PhysicalFrames<'static>,
+) -> Result<(), Failure> {
+    run(boot, frames, 6)
 }
 
 fn tx_packet(sequence: u8, size: usize) -> [u8; 1514] {
@@ -396,9 +499,9 @@ fn rx_worker() {
         let handle = DriverHandle::bind().expect("original RX probe failed");
         assert_eq!(handle.open(), 0);
         handle.wait_ready();
-        assert_eq!(unsafe { kutox_c_linux_rx_start(handle.0) }, 0);
+        assert_eq!(handle.rx_start(), 0);
         let baseline = driver_memory::snapshot();
-        let initial = unsafe { kutox_c_linux_rx_state(handle.0, 0, 0, 0, 0, true) };
+        let initial = handle.rx_state(0, 0, 0, 0, true);
         assert_eq!(initial, 255, "original posted RX buffers");
         assert_eq!(wait_rx(&mut output, 2).unwrap_err().code, -110);
         assert_eq!(driver_memory::snapshot(), baseline);
@@ -418,7 +521,7 @@ fn rx_worker() {
                     Ok(size) => size,
                     Err(error) => {
                         driver_memory::fault(u32::MAX, usize::MAX);
-                        assert_eq!(unsafe { kutox_c_linux_rx_stop(handle.0) }, 0);
+                        assert_eq!(handle.rx_stop(), 0);
                         assert_eq!(handle.close(), 0);
                         handle.unbind();
                         panic!("Linux RX failed: {} {}", error.stage, error.code);
@@ -430,7 +533,7 @@ fn rx_worker() {
                     &rx_packet(epoch, sequence as u8, size)[..size],
                     "original RX changed packet bytes"
                 );
-                let path = unsafe { kutox_c_linux_rx_path(handle.0) };
+                let path = handle.rx_path();
                 assert_eq!(path, if size <= 252 { 1 } else { 2 });
                 serial::print(format_args!(
                     "# LINUX_RX_FRAME epoch={epoch} seq={sequence} bytes={size} path={} data=",
@@ -447,16 +550,8 @@ fn rx_worker() {
             let failures = u32::from(sequence >= 5);
             let mut resident = -11;
             for _ in 0..300 {
-                resident = unsafe {
-                    kutox_c_linux_rx_state(
-                        handle.0,
-                        sequence as u32,
-                        bytes,
-                        dropped,
-                        failures,
-                        sequence != 5,
-                    )
-                };
+                resident =
+                    handle.rx_state(sequence as u32, bytes, dropped, failures, sequence != 5);
                 if resident != -11 {
                     break;
                 }
@@ -492,7 +587,7 @@ fn rx_worker() {
             }
         }
         serial::print(format_args!("# LINUX_RX_STOP epoch={epoch} seq=8\n"));
-        assert_eq!(unsafe { kutox_c_linux_rx_stop(handle.0) }, 0);
+        assert_eq!(handle.rx_stop(), 0);
         assert_eq!(handle.close(), 0);
         handle.unbind();
     }

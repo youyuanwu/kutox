@@ -19,8 +19,8 @@ Linux application environment. All four unchanged
 e1000 units now execute original lifecycle and TX/RX/IRQ/NAPI cleanup through the
 source-facing environment. The earlier native Rust TX scaffold has been removed:
 Linux is the only packet driver, while Rust supplies kernel/platform services.
-Controlled original RX delivery is tested; asynchronous ring/backpressure
-hardening is the next milestone.
+Controlled original RX and selected ring/backpressure/lifetime hardening are
+tested; the final as-built support statement is next.
 The [third-party notice](../THIRDPARTY-NOTICES.md) records the source revision,
 MIT license, and adaptation boundaries.
 
@@ -735,10 +735,10 @@ The test transmits 60/128/512/1514-byte no-offload, untagged frames across two
 probe/open/close/remove sessions. It checks retained BUSY ownership/cancellation,
 no completion before deferred IRQ/NAPI progress, one live TX mapping and two
 packet allocations, and exact snapshot recovery per completion at 128/32 MiB.
-Fresh capture requires only the four distinct exact Linux frames;
+Baseline capture requires its four distinct exact Linux frames;
 intentional-failure mode cannot skip packet checks.
-Ring-wrap/backpressure/map-failure/pending teardown hardening remains a
-subsequent phase.
+Ring-wrap/backpressure/map-failure/pending teardown is tested below. The fresh
+capture includes baseline TX plus every accepted hardening submission.
 
 ### Original Linux RX execution
 
@@ -782,6 +782,48 @@ source buffer ownership exactly, with no live skb allocations or stale CPU
 grants after publication. Source close cancels/joins, disables/masks/drains and
 releases every mapping and allocation at 128/32 MiB.
 
+### Selected ring and lifecycle hardening
+
+[The hardening tests](../src/linux_hardening.rs) drive 300 accepted packets
+through each original 256-entry ring, verify wrapped source indices, mixed
+copybreak/build-skb bytes and exact resource balance. The C boundary accepts
+TDT zero on wrap. Receipt tracking stops matching retired TX skb addresses:
+original RX may immediately reuse an address after TX cleanup.
+
+A bounded bulk skb adapter lets Linux stop/wake its own queue. After 232
+submissions the next skb remains BUSY/owned; original NAPI completes the batch
+and wakes the queue, then retry completes submission 233. Source sent/completed
+packet and byte accounting and exact captures must agree. The adapter contains
+no descriptor algorithm and cannot treat an OK consumed drop as transmission.
+
+Failure tests exercise skb admission, original TX DMA-error consumption,
+RX-open mapping unwind, both copybreak/build-skb metadata allocation failures,
+and RX replacement-map recovery. One failed copybreak attempt plus a failed
+build attempt increments the source allocation counter twice. Original
+polling resumes the retained RX descriptor after memory becomes available.
+Ring allocation/probe/IRQ error cases remain independently tested.
+
+Native control operations are serialized with a kernel mutex, not a C registry
+object. Original Linux callbacks never acquire that mutex, so source cancellation
+and disable joins can progress while native close holds it. Callback-context
+reentry rejects control mutation; a concurrent open blocks until close returns.
+Closed RX state queries reject before touching freed ring buffer-info.
+
+With pending IRQ/TX and queued RX, close joins reserved-running original work/
+NAPI callbacks before releasing backing. Checkpoints are outside C invocation,
+and before NAPI atomic context; no sleeping or preemption of atomic C code is
+claimed. An attempted coherent-ring free with disabled engines still rejects
+retained callbacks. Resumed original callbacks complete safely; owned RX bytes
+survive close and native concurrent reopen is serialized. Requeued watchdog and
+queued reset work are cancelled/drained through original source shutdown.
+
+Host tests verify 539 exact Linux TX frames and 304 hardening RX frames, plus
+baseline RX. Causal join/free/reopen ordering is required, without imposing
+incidental scheduling order on independent rejection/wait events. The same
+tests pass at 128/32 MiB and in intentional-failure mode. These are selected
+QEMU/BSP/profile guarantees, not IOMMU, physical hardware, SMP, general GRO/IP
+or offload support.
+
 ### Source-facing dependency and lifetime requirements
 
 The next dependency audit must distinguish compile/link closure from the
@@ -793,10 +835,10 @@ Each retained API needs an explicit provider or an enforced unsupported contract
 | --- | --- |
 | Module/PCI/net-device registration and object lifetimes | Original module/probe/open/close/remove now execute with generation-checked handles. |
 | MMIO in driver threads and hardware IRQs | Owned source MMIO and the selected reset I/O BAR are integrated separately from boot MAC. |
-| Driver allocation and packet buffers | Original TX and RX copybreak/build-skb/owned ingress are tested; broader pressure/backpressure hardening follows. |
+| Driver allocation and packet buffers | Original TX/RX, admission/map failure and retained BUSY recovery are tested; broader hardware/feature profiles remain unsupported. |
 | Coherent descriptor sharing and streaming map/sync/unmap | Original TX completion unmap is tested; mapping failures and pending abort/reopen hardening follow. |
 | Delayed work, jiffies, lifecycle locking and cancellation | Original watchdog and real lifecycle cancellation execute; packet-triggered reset hardening follows. |
-| IRQ registration and NAPI scheduling/budget/disable | Original IRQ/NAPI TX/RX cleanup is tested; pending-callback teardown hardening follows. |
+| IRQ registration and NAPI scheduling/budget/disable | Original IRQ/NAPI cleanup and reserved-running callback joins are tested; C-code preemption/SMP remain unsupported. |
 | Probe/open/error/close/remove cleanup | Original repeated lifecycle/error unwind is tested; pending packet/injection/reopen hardening follows. |
 
 Three ordering constraints shape the environment:
@@ -946,6 +988,7 @@ phases replace a native-RX-first roadmap:
    allocation/map failures and close/remove with pending IRQ, work, poll and
    packet state. Retire callbacks and prove the relevant hardware drain before
    memory release; fail explicitly if quiescence cannot be established.
+   This phase is complete for the selected QEMU/BSP profile.
 8. **As-built documentation.** Record executed original units/callbacks,
    source/configuration/provider inventory, verification and limitations.
    Only then describe the selected Linux packet driver as operational.
@@ -956,8 +999,9 @@ symbols or native DD/IRQ success alone are not sufficient. Retain isolated
 kernel/platform tests and exact KTAP/pcap validation, one ISO, fw_cfg selectors,
 and sequential low-memory regression runs.
 
-Phases 1-6 are complete, including original lifecycle and TX/RX/IRQ/NAPI cleanup.
-The next item is **phase 7: failure, backpressure and teardown hardening**. Integration with a native network
+Phases 1-7 are complete, including original lifecycle, packet paths and selected
+ring/lifetime hardening. The next item is **phase 8: as-built documentation and
+support statement**. Integration with a native network
 stack and extraction for a second Linux driver follow this roadmap; they do not
 replace its driver-execution gates.
 

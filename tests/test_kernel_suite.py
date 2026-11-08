@@ -133,6 +133,150 @@ def callback_log(failures=False, transmit=False, receive=False):
     return lines
 
 
+def hard_log(name):
+    lines = []
+    def event(kind, function=None, obj=0x1000, result=0):
+        address = CALLBACK_SYMBOLS[function] if function else 0
+        lines.append(f"# LINUX_CALLBACK event={kind} function={address:x} object={obj:x} result={result}")
+    def opened():
+        event(6,"e1000_open")
+        event(8,"e1000_intr")
+        event(16,result=4)
+        irq()
+        event(11,"e1000_watchdog")
+        event(14)
+        event(13,"e1000_clean",result=64)
+        event(26,"e1000_clean")
+    def irq(rx=False):
+        event(9,"e1000_intr")
+        if rx: event(47,result=128)
+        event(15,"e1000_intr",result=1)
+    def rx_register():
+        event(34,"e1000_clean_rx_irq")
+        event(35,"e1000_alloc_rx_buffers")
+    def tx(sequence, bulk=False, drop=False):
+        if not bulk: event(31,obj=0x4000,result=60)
+        event(17,"e1000_xmit_frame",obj=0x4000,result=60)
+        if drop:
+            event(28,obj=0x4000)
+        elif bulk:
+            event(48,result=60)
+        else:
+            for kind,value in ((19,60),(20,60),(21,sequence % 256)):
+                event(kind,obj=0x4000,result=value)
+        event(18,"e1000_xmit_frame",obj=0x4000)
+    def rx(sequence,size):
+        copied=size<=252
+        event(36 if copied else 37,obj=0x5000,result=size+4 if copied else 1920)
+        event(38 if copied else 39,obj=0x5000,result=size+4 if copied else 1522)
+        event(40,obj=0x5000,result=0x88b9)
+        event(41,obj=0x5000,result=size)
+        event(42,obj=0x5000,result=0 if copied else 1)
+        if copied: event(43,obj=0x5000,result=1522)
+        event(45,obj=0x5000,result=(sequence+254)%256)
+    def marker(text): lines.append("# " + text)
+    def frame(kind,sequence,size):
+        code={"wrap":1,"errors":4,"pending":3}[kind]
+        marker(f"LINUX_HARD_FRAME kind={kind} seq={sequence} bytes={size} data={qemu_test.hard_packet(code,sequence,size,True).hex()}")
+    event(1,"e1000_init_module",obj=0)
+    event(3,"e1000_probe")
+    event(12,"e1000_clean")
+    for function in qemu_test.DRIVER_WORK_CALLBACKS: event(10,function)
+    event(4,"e1000_probe")
+    event(33,"e1000_xmit_frame")
+    opened()
+    if name == "wrap":
+        rx_register()
+        for sequence in range(1,301):
+            tx(sequence)
+            size=60 if sequence%2 else 300
+            marker(f"LINUX_HARD_READY kind=wrap seq={sequence} bytes={size}")
+            irq(True)
+            event(13,"e1000_clean",result=64)
+            for kind,value in ((22,60),(23,64),(24,60)): event(kind,obj=0x4000,result=value)
+            rx(sequence,size)
+            event(26,"e1000_clean",result=1)
+            event(25,obj=0x4000,result=60)
+            frame("wrap",sequence,size)
+            marker(f"LINUX_HARD_STATE kind=wrap seq={sequence} tx={sequence%256} rx={sequence%256} resident={256 if sequence%2 else 255}")
+        marker("LINUX_HARD_STOP kind=wrap seq=300")
+    elif name == "backpressure":
+        event(7,"e1000_close")
+        marker("LINUX_HARD_FAULT name=rx-open-map recovered=1")
+        opened()
+        marker("LINUX_HARD_FAULT name=tx-skb recovered=1")
+        tx(2,drop=True)
+        marker("LINUX_HARD_FAULT name=tx-map consumed=1 captured=0")
+        for sequence in range(1,233): tx(sequence,bulk=True)
+        marker("LINUX_HARD_BUSY accepted=232 held=1 stopped=1")
+        irq()
+        event(13,"e1000_clean",result=64)
+        event(49,result=232)
+        event(26,"e1000_clean")
+        tx(233,bulk=True)
+        irq()
+        event(13,"e1000_clean",result=64)
+        event(49,result=1)
+        event(26,"e1000_clean")
+        marker("LINUX_HARD_WAKE completed=233 held=0 balanced=1")
+        event(7,"e1000_close")
+        opened()
+        rx_register()
+        for sequence,size in ((1,60),(2,300),(3,300)):
+            marker(f"LINUX_HARD_READY kind=errors seq={sequence} bytes={size}")
+            irq(True)
+            event(13,"e1000_clean",result=64)
+            rx(sequence,size)
+            event(26,"e1000_clean",result=1)
+            frame("errors",sequence,size)
+            if sequence == 1: marker("LINUX_HARD_FAULT name=rx-skb retained=1 recovered=1")
+        marker("LINUX_HARD_FAULT name=rx-map recovered=1 resident=255")
+        marker("LINUX_HARD_STOP kind=errors seq=3")
+    else:
+        tx(1)
+        marker("LINUX_HARD_IRQ pending=1 tx=1 watchdog=queued")
+        event(30,obj=0x4000)
+        event(7,"e1000_close")
+        event(22,obj=0x4000,result=60)
+        event(28,obj=0x4000)
+        opened()
+        rx_register()
+        marker("LINUX_HARD_READY kind=pending seq=1 bytes=60")
+        irq(True)
+        marker("LINUX_HARD_PAUSE kind=2 state=reserved-running")
+        tx(2)
+        marker("LINUX_HARD_STOP kind=pending seq=1")
+        event(30,obj=0x4000)
+        event(7,"e1000_close")
+        marker("LINUX_HARD_JOIN kind=2 backing=live")
+        marker("LINUX_HARD_FREE kind=2 errno=-16 engines=disabled")
+        marker("LINUX_CONTROL_REJECT op=close errno=-58")
+        marker("LINUX_HARD_REENTRY errno=-58 unchanged=1")
+        event(13,"e1000_clean",result=64)
+        event(22,obj=0x4000,result=60)
+        event(28,obj=0x4000)
+        event(26,"e1000_clean",result=1)
+        marker("LINUX_CONTROL_WAIT op=open")
+        opened()
+        marker("LINUX_HARD_CONCURRENT kind=2 reopened=1")
+        frame("pending",1,60)
+        event(7,"e1000_close")
+        opened()
+        event(11,"e1000_watchdog")
+        marker("LINUX_HARD_PAUSE kind=1 state=reserved-running")
+        event(7,"e1000_close")
+        marker("LINUX_HARD_JOIN kind=1 backing=live")
+        marker("LINUX_HARD_FREE kind=1 errno=-16 engines=disabled")
+        marker("LINUX_CONTROL_WAIT op=open")
+        opened()
+        marker("LINUX_HARD_CONCURRENT kind=1 reopened=1")
+        marker("LINUX_HARD_TEARDOWN joined=2 serialized=2 stale=1")
+    event(7,"e1000_close")
+    event(2,"e1000_exit_module",obj=0)
+    event(5,"e1000_remove")
+    return lines
+
+
 def suite_log(case="kernel-tests"):
     names = KERNEL_TEST_NAMES
     if case == "kernel-tests-fail":
@@ -147,7 +291,10 @@ def suite_log(case="kernel-tests"):
     ]
     for index, name in enumerate(names, 1):
         if name.startswith("linux.e1000_"):
-            lines.extend(callback_log(name.endswith("failures"), name.endswith("_tx"), name.endswith("_rx")))
+            if name.endswith(("_wrap","_backpressure","_teardown")):
+                lines.extend(hard_log(name.rsplit("_",1)[1]))
+            else:
+                lines.extend(callback_log(name.endswith("failures"), name.endswith("_tx"), name.endswith("_rx")))
         status = "not ok" if name == "harness.intentional_failure" else "ok"
         lines.append(f"{status} {index} {name}")
     failures = int(case == "kernel-tests-fail")
@@ -159,6 +306,7 @@ class KernelSuiteTests(unittest.TestCase):
     def test_requires_original_driver_lifecycle_cases(self):
         self.assertEqual(KERNEL_TEST_NAMES[48:], (
             "linux.e1000_lifecycle", "linux.e1000_failures", "linux.e1000_tx", "linux.e1000_rx",
+            "linux.e1000_wrap", "linux.e1000_backpressure", "linux.e1000_teardown",
         ))
 
     def test_original_callback_addresses_match_actual_symbols(self):
@@ -444,8 +592,7 @@ class KernelSuiteTests(unittest.TestCase):
 
 def tx_pcap(packets=None, endian="<"):
     if packets is None:
-        packets = [qemu_test.linux_tx_packet(sequence, size)
-                   for sequence, size in enumerate(qemu_test.LINUX_TX_LENGTHS, 1)]
+        packets = qemu_test.expected_tx_packets()
     magic = b"\xd4\xc3\xb2\xa1" if endian == "<" else b"\xa1\xb2\xc3\xd4"
     data = magic + struct.pack(endian + "HHIIII", 2, 4, 0, 0, 65536, 1)
     for packet in packets:
@@ -601,14 +748,15 @@ class RxHarnessTests(unittest.TestCase):
 
     def test_interactive_transport_handles_serial_and_network_framing(self):
         journal = suite_log()
-        tx = b"".join(struct.pack("!I", len(packet)) + packet for packet in (
-            qemu_test.linux_tx_packet(sequence, size)
-            for sequence, size in enumerate(qemu_test.LINUX_TX_LENGTHS, 1)
-        ))
+        tx = b"".join(struct.pack("!I", len(packet)) + packet for packet in qemu_test.expected_tx_packets())
         expected = {
             f"{epoch}:{sequence}": qemu_test.rx_packet(epoch, sequence, size)
             for epoch in (1, 2) for sequence, size in enumerate(qemu_test.RX_LENGTHS, 1)
         }
+        for name,kind,limit in (("wrap",1,300),("errors",4,3),("pending",3,1)):
+            for sequence in range(1,limit+1):
+                size = (60 if sequence % 2 else 300) if name == "wrap" else (60 if sequence == 1 else 300)
+                expected[f"{name}:{sequence}"] = qemu_test.hard_packet(kind,sequence,size,True)
         script = f"""
 import socket, struct, sys
 sock = socket.socket(fileno=int(sys.argv[1]))
@@ -630,12 +778,20 @@ for line in {journal!r}.splitlines():
         key = parts[2].split('=')[1] + ':' + parts[3].split('=')[1]
         size = struct.unpack('!I', read(4))[0]
         assert read(size) == expected[key]
+    elif line.startswith('# LINUX_HARD_READY'):
+        parts = line.split()
+        key = parts[2].split('=')[1] + ':' + parts[3].split('=')[1]
+        size = struct.unpack('!I', read(4))[0]
+        assert read(size) == expected[key]
 """
-        args = SimpleNamespace(qemu="unused", build_dir=Path("build"), timeout=5)
-        def command(args, case, capture, fd):
-            return [sys.executable, "-c", script, str(fd)]
-        with patch.object(qemu_test, "qemu_command", side_effect=command):
-            completed = qemu_test.execute_suite(args, "kernel-tests", None)
+        args = SimpleNamespace(qemu="unused", build_dir=Path("build"), timeout=10)
+        with tempfile.TemporaryDirectory() as directory:
+            helper = Path(directory) / "peer.py"
+            helper.write_text(script,encoding="utf-8")
+            def command(args, case, capture, fd):
+                return [sys.executable, str(helper), str(fd)]
+            with patch.object(qemu_test, "qemu_command", side_effect=command):
+                completed = qemu_test.execute_suite(args, "kernel-tests", None)
         self.assertEqual(completed.returncode, 0)
         self.assertEqual(completed.stdout, journal.encode())
 
@@ -654,6 +810,61 @@ for line in {journal!r}.splitlines():
                 qemu_test.execute_suite(args, "kernel-tests", None)
         self.assertEqual(len(processes), 1)
         self.assertIsNotNone(processes[0].poll())
+
+
+class HardeningTests(unittest.TestCase):
+    def test_exact_accepted_capture_excludes_consumed_drops_and_unsent_candidates(self):
+        packets = qemu_test.expected_tx_packets()
+        self.assertEqual(len(packets),539)
+        self.assertEqual(len(set(packets)),539)
+        for kind,sequence in ((2,234),(2,256),(4,1),(4,2)):
+            self.assertNotIn(qemu_test.hard_packet(kind,sequence,60),packets)
+        qemu_test.validate_tx_capture(tx_pcap())
+        for invalid in (packets[:-1],packets + [qemu_test.hard_packet(4,2,60)],
+                        packets[:4] + packets[304:] + packets[4:304]):
+            with self.assertRaises(AssertionError):
+                qemu_test.validate_tx_capture(tx_pcap(invalid))
+
+    def test_rejects_missing_wrap_accounting_and_lifetime_evidence(self):
+        output = suite_log()
+        for original,replacement in (
+            ("LINUX_HARD_STATE kind=wrap seq=256 tx=0 rx=0","LINUX_HARD_STATE kind=wrap seq=256 tx=256 rx=256"),
+            ("LINUX_HARD_BUSY accepted=232 held=1 stopped=1","LINUX_HARD_BUSY accepted=232 held=0 stopped=1"),
+            ("LINUX_HARD_WAKE completed=233 held=0 balanced=1","LINUX_HARD_WAKE completed=232 held=0 balanced=1"),
+            ("LINUX_HARD_FREE kind=2 errno=-16 engines=disabled","LINUX_HARD_FREE kind=2 errno=0 engines=disabled"),
+            ("LINUX_HARD_JOIN kind=1 backing=live","LINUX_HARD_JOIN kind=1 backing=freed"),
+            ("LINUX_CONTROL_WAIT op=open","LINUX_CONTROL_WAIT op=ready"),
+            ("LINUX_HARD_REENTRY errno=-58 unchanged=1","LINUX_HARD_REENTRY errno=0 unchanged=1"),
+        ):
+            with self.subTest(original=original),self.assertRaises(AssertionError):
+                qemu_test.validate_linux_callbacks(output.replace(original,replacement,1),CALLBACK_SYMBOLS)
+
+    def test_rejects_join_or_reopen_before_callback_backing_is_retained(self):
+        lines = hard_log("wrap") + hard_log("backpressure") + hard_log("teardown")
+        for first,second in (
+            ("# LINUX_HARD_JOIN kind=2 backing=live","# LINUX_HARD_FREE kind=2 errno=-16 engines=disabled"),
+            ("# LINUX_HARD_FREE kind=1 errno=-16 engines=disabled","# LINUX_HARD_CONCURRENT kind=1 reopened=1"),
+        ):
+            bad = lines[:]
+            a,b=bad.index(first),bad.index(second)
+            bad[a],bad[b]=bad[b],bad[a]
+            protocol=qemu_test.HardProtocol()
+            with self.assertRaises(AssertionError):
+                for line in bad: protocol.observe(line)
+                protocol.finish()
+
+    def test_pending_rx_requires_offer_before_stop_and_exact_delivery_after_close(self):
+        protocol=qemu_test.HardProtocol()
+        with self.assertRaises(AssertionError):
+            protocol.observe("# LINUX_HARD_STOP kind=pending seq=1")
+        protocol.observe("# LINUX_HARD_READY kind=pending seq=1 bytes=60")
+        protocol.observe("# LINUX_HARD_STOP kind=pending seq=1")
+        with self.assertRaises(AssertionError):
+            protocol.observe("# LINUX_HARD_READY kind=pending seq=1 bytes=60")
+        packet=qemu_test.hard_packet(3,1,60,True).hex()
+        protocol.observe(f"# LINUX_HARD_FRAME kind=pending seq=1 bytes=60 data={packet}")
+        with self.assertRaises(AssertionError):
+            protocol.observe(f"# LINUX_HARD_FRAME kind=pending seq=1 bytes=60 data={packet}")
 
 
 if __name__ == "__main__":

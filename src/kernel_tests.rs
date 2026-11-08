@@ -227,6 +227,18 @@ static TESTS: &[TestCase] = &[
         name: "linux.e1000_rx",
         run: linux_driver::receive,
     },
+    TestCase {
+        name: "linux.e1000_wrap",
+        run: linux_driver::wrap,
+    },
+    TestCase {
+        name: "linux.e1000_backpressure",
+        run: linux_driver::backpressure,
+    },
+    TestCase {
+        name: "linux.e1000_teardown",
+        run: linux_driver::teardown,
+    },
 ];
 
 static INTENTIONAL_FAILURE: TestCase = TestCase {

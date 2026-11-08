@@ -114,6 +114,7 @@ int kutox_c_linux_rx_state(uint64_t ticket, unsigned int packets, unsigned int b
                           unsigned int dropped, unsigned int failures, bool replenished)
 {
     if (!ticket || ticket != generation || !loaded || !device) return -ESTALE;
+    if (!netif_running(device)) return -ENODEV;
     struct e1000_adapter *adapter = netdev_priv(device);
     if (device->stats.rx_packets != packets || device->stats.rx_bytes != bytes ||
         device->stats.rx_dropped != dropped) return -EAGAIN;
@@ -138,3 +139,72 @@ int kutox_c_linux_unbind(uint64_t ticket)
     return 0;
 }
 bool kutox_c_linux_empty(void) { return !loaded && !device && kutox_c_packet_empty() && kutox_c_deferred_empty(); }
+
+int kutox_c_linux_many(uint64_t ticket, const void *bytes, unsigned int count)
+{
+    if (!loaded || !ticket || ticket != generation || !device) return -ESTALE;
+    return kutox_c_tx_many(device,bytes,count,60);
+}
+int kutox_c_linux_many_retry(uint64_t ticket)
+{
+    if (!loaded || !ticket || ticket != generation || !device) return -ESTALE;
+    return kutox_c_tx_many_retry(device);
+}
+int kutox_c_linux_many_finish(uint64_t ticket)
+{
+    if (!loaded || !ticket || ticket != generation || !device) return -ESTALE;
+    kutox_c_tx_many_finish(device); return 0;
+}
+int kutox_c_linux_counts(uint64_t ticket, unsigned int sent, unsigned int completed,
+                        unsigned int tx_stats, unsigned int rx_stats, unsigned int rx_bytes)
+{
+    if (!loaded || !ticket || ticket != generation || !device) return -ESTALE;
+    return device->sent_packets == sent && device->completed_packets == completed &&
+        device->sent_bytes == sent * 60UL && device->completed_bytes == completed * 60UL &&
+        device->stats.tx_packets == tx_stats && device->stats.tx_bytes == tx_stats * 60UL &&
+        device->stats.rx_packets == rx_stats && device->stats.rx_bytes == rx_bytes ? 0 : -EAGAIN;
+}
+int kutox_c_linux_indices(uint64_t ticket, unsigned int tx, unsigned int rx)
+{
+    if (!loaded || !ticket || ticket != generation || !device) return -ESTALE;
+    if (!netif_running(device)) return -ENODEV;
+    struct e1000_adapter *adapter = netdev_priv(device);
+    return adapter->tx_ring->next_to_use == tx && adapter->tx_ring->next_to_clean == tx &&
+        adapter->rx_ring->next_to_clean == rx &&
+        adapter->rx_ring->next_to_use == (rx + 255) % 256 ? 0 : -EAGAIN;
+}
+int kutox_c_linux_kick(uint64_t ticket, unsigned int operation)
+{
+    if (!loaded || !ticket || ticket != generation || !device) return -ESTALE;
+    if (!netif_running(device)) return -ENODEV;
+    struct e1000_adapter *adapter = netdev_priv(device);
+    if (operation == 0) return schedule_delayed_work(&adapter->watchdog_task,2 * HZ);
+    if (operation == 1) {
+        cancel_delayed_work_sync(&adapter->watchdog_task);
+        return schedule_delayed_work(&adapter->watchdog_task,0);
+    }
+    if (operation == 2) {
+        if (napi_schedule_prep(&adapter->napi)) __napi_schedule(&adapter->napi);
+        return 0;
+    }
+    if (operation == 3) return schedule_work(&adapter->reset_task);
+    return -EINVAL;
+}
+int kutox_c_linux_live_ring_free(uint64_t ticket)
+{
+    extern int kutox_linux_dma_free(uintptr_t,size_t,uintptr_t,u64);
+    if (!loaded || !ticket || ticket != generation || !device) return -ESTALE;
+    struct e1000_adapter *adapter = netdev_priv(device);
+    struct e1000_tx_ring *ring = adapter->tx_ring;
+    if (!ring->desc) return -ENODEV;
+    if ((readl(adapter->hw.hw_addr + E1000_RCTL) & E1000_RCTL_EN) ||
+        (readl(adapter->hw.hw_addr + E1000_TCTL) & E1000_TCTL_EN)) return -EINVAL;
+    return kutox_linux_dma_free((uintptr_t)&adapter->pdev->dev,ring->size,(uintptr_t)ring->desc,ring->dma);
+}
+int kutox_c_linux_rx_failures(uint64_t ticket)
+{
+    if (!loaded || !ticket || ticket != generation || !device) return -ESTALE;
+    struct e1000_adapter *adapter = netdev_priv(device);
+    if (adapter->alloc_rx_buff_failed > 0x7fffffff) return -ERANGE;
+    return adapter->alloc_rx_buff_failed;
+}

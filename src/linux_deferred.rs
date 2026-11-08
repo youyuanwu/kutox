@@ -112,6 +112,12 @@ static WORKERS: AtomicUsize = AtomicUsize::new(0);
 pub fn atomic_context() -> bool {
     CURRENT_NAPI.load(Ordering::Acquire) != 0 || BH_DEPTH.load(Ordering::Acquire) != 0
 }
+pub fn control_reentry() -> bool {
+    atomic_context()
+        || (CURRENT_WORK.load(Ordering::Acquire) != 0
+            && threads::current_task_handle()
+                .is_ok_and(|task| task.ticket() == WORK_OWNER.load(Ordering::Acquire)))
+}
 
 fn fail(operation: &str, error: i32) -> ! {
     serial::print(format_args!(
@@ -224,6 +230,7 @@ fn work(address: usize, key: Key, operation: u32, delay: u64) -> Result<bool, Er
                 if linux_runtime::holds_mutex() {
                     return Err(Error::Context);
                 }
+                crate::linux_hardening::source_join(1);
             }
             let pending = { SERVICES.lock_save_irq().state.cancel_begin(key, address)? };
             notify(&WORK_READY);
@@ -308,6 +315,7 @@ fn napi(address: usize, key: Key, operation: u32, done: i32) -> Result<bool, Err
                 if !SERVICES.lock_save_irq().state.running(key, address)? {
                     break;
                 }
+                crate::linux_hardening::source_join(2);
                 token.wait(None).map_err(|_| Error::Context)?;
             }
             SERVICES
@@ -397,12 +405,15 @@ fn worker(which: usize) {
                         invocation.address,
                         0,
                     );
+                    crate::linux_hardening::pause_source(1);
                     unsafe { callback(invocation.address as *mut c_void) };
                     CURRENT_WORK.store(0, Ordering::Release);
                     0
                 }
                 Callback::Napi(callback) => {
+                    crate::linux_hardening::pause_source(2);
                     CURRENT_NAPI.store(invocation.key.raw(), Ordering::Release);
+                    crate::linux_hardening::atomic_reentry();
                     crate::linux_driver::kutox_driver_trace(
                         13,
                         callback as usize,

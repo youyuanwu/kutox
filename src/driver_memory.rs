@@ -49,9 +49,15 @@ static STATE: Registry = Registry(UnsafeCell::new(State {
 }));
 static FAIL_AFTER: AtomicUsize = AtomicUsize::new(usize::MAX);
 static FAIL_KIND: AtomicU32 = AtomicU32::new(u32::MAX);
+static MAP_FAIL_DIRECTION: AtomicU32 = AtomicU32::new(0);
+static MAP_FAIL_AFTER: AtomicUsize = AtomicUsize::new(usize::MAX);
 pub fn fault(kind: u32, after: usize) {
     FAIL_KIND.store(kind, Ordering::Relaxed);
     FAIL_AFTER.store(after, Ordering::Relaxed);
+}
+pub fn map_fault(direction: u32, after: usize) {
+    MAP_FAIL_DIRECTION.store(direction, Ordering::Relaxed);
+    MAP_FAIL_AFTER.store(after, Ordering::Relaxed);
 }
 struct Ingress {
     frames: [[u8; 1514]; 8],
@@ -305,6 +311,15 @@ extern "C" fn kutox_driver_dma_map(
         crate::driver_platform::check_device(device)?;
         if direction != 1 && direction != 2 {
             return Err(-95);
+        }
+        if direction == MAP_FAIL_DIRECTION.load(Ordering::Relaxed) {
+            let remaining = MAP_FAIL_AFTER.load(Ordering::Relaxed);
+            if remaining == 0 {
+                return Err(-12);
+            }
+            if remaining != usize::MAX {
+                MAP_FAIL_AFTER.store(remaining - 1, Ordering::Relaxed);
+            }
         }
         let index = range_index(state, pointer, size)?;
         if state.allocations[index].as_ref().ok_or(-22)?.kind == 3 {

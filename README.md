@@ -67,8 +67,8 @@ The earlier native Rust TX implementation and descriptor helper have been
 removed. The unchanged Linux e1000 implementation is the only packet driver:
 it owns descriptor programming, submission and IRQ/NAPI cleanup. Rust still
 provides PCI, MMIO, IRQ, DMA, scheduling and allocation services. Controlled
-original RX delivery now passes; ring hardening and a networking stack remain
-subsequent work.
+original RX delivery and selected ring/lifetime hardening now pass; a networking
+stack remains subsequent work.
 
 All four original driver units are linked for Linux lifecycle and TX
 execution. See the
@@ -89,8 +89,8 @@ now has tested execution/object, workqueue, NAPI/IRQ and PCI/skb/streaming-DMA
 services. Original module/probe/open/close, PHY/reset/options, IRQ, watchdog
 and NAPI callbacks now execute on real kernel stacks. Original Linux TX/RX
 transmits and delivers exact frames through those callbacks; Rust supplies OS
-services, not descriptor algorithms. Ring/backpressure/pending-teardown
-hardening is next, not a native Rust RX driver.
+services, not descriptor algorithms. Ring wrap, backpressure and pending
+teardown are tested; the final as-built support statement is next.
 
 ## Requirements
 
@@ -213,7 +213,7 @@ hardware-configuration cases still use separate boots of the same ISO.
 
 ```text
 KTAP version 1
-1..52
+1..55
 ok 1 cpu.irq_lock_restore
 ok 2 cpu.breakpoint_return
 ok 3 memory.alignment_reservations
@@ -267,7 +267,10 @@ ok 49 linux.e1000_lifecycle
 ok 50 linux.e1000_failures
 ok 51 linux.e1000_tx
 ok 52 linux.e1000_rx
-# Totals: pass:52 fail:0 skip:0 total:52
+ok 53 linux.e1000_wrap
+ok 54 linux.e1000_backpressure
+ok 55 linux.e1000_teardown
+# Totals: pass:55 fail:0 skip:0 total:55
 ```
 
 Tests run sequentially with interrupts disabled at case boundaries. After
@@ -816,7 +819,7 @@ as original probe requires. NMI, SMP, PM, other NICs and a general shared-IRQ
 controller remain unsupported.
 
 The one ISO now includes all four unchanged driver units. Guest suites have a
-40-second limit for the driver's real sleeping lifecycle calls; execution
+80-second limit for real lifecycle and full ring-hardening calls; execution
 remains cooperative. Successful open/close alone does not establish packet
 acceptance; the separate original TX case below does.
 
@@ -837,11 +840,11 @@ then original NAPI unmap, skb consumption, completed-queue accounting and poll
 return before native acceptance. Packet/byte statistics and exact allocation/
 mapping snapshots must recover after every completion.
 
-The fresh pcap must contain only the four exact Linux frames (`KUTOX-LX`,
+The fresh pcap starts with four exact Linux frames (`KUTOX-LX`,
 EtherType `0x88b6`). Missing, reordered, duplicate or wrong bytes fail, including
 intentional-failure mode. Provenance rejects the removed native descriptor
-helper; there is no fallback. Ring wrap/backpressure/pending-teardown hardening
-and an IP stack are later work.
+helper; there is no fallback. The hardening cases append the exact packets
+described below. An IP stack is later work.
 
 ### Original Linux RX acceptance
 
@@ -872,8 +875,44 @@ publishes RDT, before a reused buffer can be handed back to the device. Tests
 check exact live allocation/mapping counts, a failed replacement allocation and
 subsequent replenishment, no retained CPU grants, and complete teardown at
 128/32 MiB. A no-packet wait explicitly times out before each injection epoch.
-The same Linux-only four-frame TX capture remains mandatory in normal,
-low-memory and intentional-failure runs.
+The same baseline Linux TX frames remain mandatory in normal, low-memory and
+intentional-failure runs, along with all accepted hardening submissions.
+
+### Original Linux ring and lifetime hardening
+
+[The hardening fixture](src/linux_hardening.rs) wraps both 256-entry rings with
+**300 TX and 300 RX packets**, mixing short copied and larger handed-off RX.
+It checks exact bytes, original cleanup, source producer/consumer indices and
+per-packet resource balance. Zero is a valid wrapped Linux TDT value.
+
+A bounded bulk adapter invokes registered original xmit without constructing
+descriptors. Linux stops its queue after 232 accepted packets; the adapter
+retains the next BUSY skb. Original NAPI wakes the queue, the retained packet
+retries successfully, and all 233 completions balance DMA/skb/byte accounting.
+Captured packets exclude unsubmitted candidates and consumed DMA-error drops.
+Real skb, RX-open map, TX map, RX skb and RX replacement-map failures have
+source unwind/recovery tests; existing ring/probe failure cases remain mandatory.
+
+Native control calls use a separate kernel mutex that Linux callbacks never
+acquire. Concurrent open waits for close instead of modifying live lifecycle
+fields; callback-context control reentry is rejected. The mutex is not a
+source-facing C object and cannot be retired by module synchronization cleanup.
+
+Pending teardown tests keep TX/RX/IRQ and requeued watchdog state live. Test
+checkpoints reserve original work/NAPI invocations as running **before C
+invocation**; NAPI does not sleep inside its atomic C callback. Close must join
+them before reclamation. A ring-free attempt with engines already disabled
+still returns busy while the callback is retained. Original callbacks then
+execute/return, queued RX bytes remain owned, and a serialized reopen succeeds.
+This does not claim SMP or preemption of running C code.
+
+Every fresh capture must contain exactly **539 Linux TX frames**: four baseline,
+300 wrap, 233 backpressure and two pending-teardown submissions. All 304
+hardening RX frames are checked, including delivery after a joined close.
+Missing/extra/wrong frames, fabricated joins, premature reopen or success-shaped
+allocation/map errors fail even in intentional-failure mode. The selected
+QEMU disabled-RX/callback-drain contract remains required; physical hardware,
+IOMMU, offloads and a complete network stack remain outside this acceptance.
 
 The build and provenance test require Linux `v7.3.1`, commit
 `79a907609d53d5cd645b42c11550d295d43abf99`, with no submodule modifications.
