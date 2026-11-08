@@ -212,8 +212,8 @@ scaffolding rather than execution of Linux's packet driver.
 
 The isolated original-source compile/dependency check and synthetic
 execution/object/deferred and PCI/packet/DMA service contracts are now complete.
-Next,
-execute original module/probe/open/close callbacks. Packet acceptance must
+Original module/probe/open/close, IRQ, watchdog and NAPI callbacks now execute
+in separate lifecycle cases. Next, packet acceptance must
 exercise Linux's xmit, IRQ/NAPI and RX
 cleanup paths. Upstream open requires RX setup and link work even for TX-first
 testing; declarations or constant-success substitutes do not satisfy it.

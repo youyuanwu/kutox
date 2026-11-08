@@ -14,12 +14,13 @@ static u32 denied_grants;
 static u32 eeprom_reads;
 static bool probe_active;
 extern bool kutox_driver_mmio(uintptr_t, u32, bool);
+extern int kutox_vprint(const char *, va_list);
 
 _Static_assert(sizeof(struct e1000_tx_desc) == 16, "TX descriptor size");
 _Static_assert(offsetof(struct e1000_tx_desc, upper) == 12, "TX status offset");
 
 int kutox_e1000_tx_descriptor(void *ring, size_t ring_bytes,
-                             u64 packet_dma, u16 packet_bytes)
+                             uint64_t packet_dma, u16 packet_bytes)
 {
     if (!ring || ((uintptr_t)ring & 15) || ring_bytes != 128 ||
         packet_bytes < 60 || packet_bytes > 1514 ||
@@ -82,7 +83,7 @@ struct net_device *e1000_get_hw_dev(struct e1000_hw *hw)
 
 void kutox_debug(const struct net_device *dev, const char *format, ...)
 {
-    if (!dev || !dev->name)
+    if (!dev || !dev->name[0])
         kutox_platform_fail("log_context");
     printk("LINUX_E1000 %s: ", dev->name);
     va_list arguments;
@@ -108,7 +109,8 @@ void iowrite16_rep(volatile void *address, const void *buffer, unsigned long cou
 
 void outl(u32 value, unsigned long port)
 {
-    kutox_platform_fail("outl");
+    extern void kutox_driver_outl(u32, unsigned long);
+    kutox_driver_outl(value,port);
 }
 
 void memcpy_fromio(void *destination, const volatile void *source, size_t count)

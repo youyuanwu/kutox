@@ -7,6 +7,7 @@ static char location[16];
 static bool wakeup;
 static bool bound;
 static bool probed;
+extern void kutox_driver_trace(unsigned int,uintptr_t,uintptr_t,int);
 void kutox_c_pci_clear_data(void *data) { if (driver_data == data) driver_data = NULL; }
 
 uintptr_t kutox_c_driver_device(void) { return (uintptr_t)&endpoint.dev; }
@@ -47,7 +48,9 @@ int pci_register_driver(struct pci_driver *candidate)
             (id->subvendor != PCI_ANY_ID && id->subvendor != endpoint.subsystem_vendor) ||
             (id->subdevice != PCI_ANY_ID && id->subdevice != endpoint.subsystem_device) ||
             ((0x020000 ^ id->class) & id->class_mask)) continue;
+        kutox_driver_trace(3,(uintptr_t)candidate->probe,(uintptr_t)&endpoint,0);
         int result = candidate->probe(&endpoint, id);
+        kutox_driver_trace(4,(uintptr_t)candidate->probe,(uintptr_t)&endpoint,result);
         if (result < 0) { driver = NULL; kutox_driver_diag("pci_probe", result); }
         else probed = true;
         return result;
@@ -57,7 +60,10 @@ int pci_register_driver(struct pci_driver *candidate)
 void pci_unregister_driver(struct pci_driver *candidate)
 {
     if (driver != candidate) kutox_platform_fail("pci_unregister_identity");
-    if (probed) candidate->remove(&endpoint);
+    if (probed) {
+        kutox_driver_trace(5,(uintptr_t)candidate->remove,(uintptr_t)&endpoint,0);
+        candidate->remove(&endpoint);
+    }
     probed = false;
     driver = NULL;
 }
@@ -69,7 +75,7 @@ void kutox_c_driver_endpoint_release(void)
 int pci_enable_device(struct pci_dev *device) { check_pci(device); return kutox_driver_pci(0,0,0); }
 int pci_enable_device_mem(struct pci_dev *device) { return pci_enable_device(device); }
 void pci_disable_device(struct pci_dev *device) { check_pci(device); driver_check(kutox_driver_pci(1,0,0), "pci_disable"); }
-int pci_select_bars(struct pci_dev *device, unsigned long flags) { check_pci(device); return flags & IORESOURCE_MEM ? 1 : 0; }
+int pci_select_bars(struct pci_dev *device, unsigned long flags) { check_pci(device); return (flags & IORESOURCE_MEM ? 1 : 0) | (flags & IORESOURCE_IO ? 2 : 0); }
 int pci_request_selected_regions(struct pci_dev *device, int bars, const char *name)
 {
     check_pci(device); if (!name) return -EINVAL;
@@ -82,9 +88,9 @@ int pci_save_state(struct pci_dev *device) { check_pci(device); return kutox_dri
 void pci_set_drvdata(struct pci_dev *device, void *data) { check_pci(device); driver_data = data; }
 void *pci_get_drvdata(const struct pci_dev *device) { check_pci(device); return driver_data; }
 const char *pci_name(const struct pci_dev *device) { check_pci(device); return location; }
-unsigned long pci_resource_len(struct pci_dev *device, int bar) { check_pci(device); return bar == 0 ? kutox_driver_pci_value(1) : 0; }
-unsigned long pci_resource_flags(struct pci_dev *device, int bar) { check_pci(device); return bar == 0 ? IORESOURCE_MEM : 0; }
-resource_size_t pci_resource_start(struct pci_dev *device, int bar) { check_pci(device); return bar == 0 ? kutox_driver_pci_value(0) : 0; }
+unsigned long pci_resource_len(struct pci_dev *device, int bar) { check_pci(device); return bar == 0 ? kutox_driver_pci_value(1) : bar == 1 ? 64 : 0; }
+unsigned long pci_resource_flags(struct pci_dev *device, int bar) { check_pci(device); return bar == 0 ? IORESOURCE_MEM : bar == 1 ? IORESOURCE_IO : 0; }
+resource_size_t pci_resource_start(struct pci_dev *device, int bar) { check_pci(device); return bar == 0 ? kutox_driver_pci_value(0) : bar == 1 ? kutox_driver_pci_value(4) : 0; }
 void *pci_ioremap_bar(struct pci_dev *device, int bar)
 {
     check_pci(device);
@@ -102,6 +108,7 @@ void *ioremap(resource_size_t address, unsigned long size)
 }
 void iounmap(volatile void *address)
 {
+    if (!address) return;
     if ((uintptr_t)address != kutox_driver_pci_value(2)) kutox_platform_fail("iounmap_identity");
     driver_check(kutox_driver_pci(7,0,0), "iounmap");
 }

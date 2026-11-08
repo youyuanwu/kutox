@@ -493,6 +493,36 @@ pub fn can_retire_range(base: usize, size: usize) -> Result<(), i32> {
         if key < base || key >= end {
             continue;
         }
+
+        #[unsafe(no_mangle)]
+        extern "C" fn kutox_linux_static_objects_retire() {
+            context().unwrap_or_else(|error| fatal("static_retire_context", error));
+            if MUTEXES.iter().any(|slot| {
+                slot.object.snapshot() != MutexState::new()
+                    || unsafe { (&*slot.guard.get()).is_some() }
+            }) || COMPLETIONS
+                .iter()
+                .any(|slot| slot.object.snapshot() != CompletionState::new())
+            {
+                fatal("static_objects_live", BUSY);
+            }
+            for slot in &MUTEXES {
+                let key = slot.key.swap(0, Ordering::AcqRel);
+                if key != 0 {
+                    unsafe {
+                        ((key + 8) as *mut u64).write(0);
+                    }
+                }
+            }
+            for slot in &COMPLETIONS {
+                let key = slot.key.swap(0, Ordering::AcqRel);
+                if key != 0 {
+                    unsafe {
+                        ((key + 8) as *mut u64).write(0);
+                    }
+                }
+            }
+        }
         if slot.object.snapshot() != MutexState::new() || unsafe { (&*slot.guard.get()).is_some() }
         {
             return Err(BUSY);

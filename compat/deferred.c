@@ -8,6 +8,7 @@ extern int64_t kutox_linux_napi_init(uintptr_t, int (*)(struct napi_struct *, in
 extern int kutox_linux_napi(uintptr_t, u64, unsigned int, int);
 static struct napi_struct *napi_bindings[4];
 static struct napi_struct *queue_bindings[4][2];
+extern void kutox_driver_trace(unsigned int,uintptr_t,uintptr_t,int);
 
 static int checked(int value, const char *operation)
 {
@@ -24,6 +25,7 @@ void init_work(struct work_struct *work, void (*callback)(struct work_struct *))
     if (generation <= 0) kutox_platform_fail("work_init");
     work->function = callback;
     work->generation = (u64)generation;
+    kutox_driver_trace(10,(uintptr_t)callback,(uintptr_t)work,0);
 }
 
 void init_delayed_work(struct delayed_work *work, void (*callback)(struct work_struct *))
@@ -70,6 +72,7 @@ void netif_napi_add(struct net_device *device, struct napi_struct *napi,
     if (generation <= 0) kutox_platform_fail("napi_init");
     *napi = (struct napi_struct){ .poll = poll, .generation = (u64)generation, .device = device };
     napi_bindings[slot] = napi;
+    kutox_driver_trace(12,(uintptr_t)poll,(uintptr_t)napi,0);
 }
 void netif_napi_set_irq(struct napi_struct *napi, unsigned int irq)
 {

@@ -569,14 +569,13 @@ fake-provider-resolved APIs fail the check.
 These objects carry `.kutox.compile_only`; the kernel linker retains/rejects
 that section even with section GC. A real negative-link test verifies the guard.
 Shared execution types now have compiler-verified identical source/runtime
-sizes, alignment and field offsets. The remaining compile-profile structs/layouts
-are not a validated runtime ABI and cannot
-be mixed with the current boot-only C structs or eight-slot GFP-tag DMA adapter.
-The bridge has a checked single-provider switch for `e1000_get_hw_dev`, but
-shared MMIO/context/type integration is still required before full-driver link.
-The existing image continues to include only the upstream hardware helper
-translation unit, with additional synthetic execution-service cases; original
-MAC/IRQ/DMA/native-TX acceptance remains intact.
+sizes, alignment and field offsets. The full-source structs form a C-only
+source API, not Linux's binary kernel ABI. The separately typed eight-slot boot
+DMA fixture is accessed through primitive FFI, not reinterpreted as Linux devices.
+The bridge uses the checked full-source `e1000_get_hw_dev` provider and constructs
+the original adapter/netdev types even for boot MAC. All four unchanged units
+now link separately as runtime objects. The boot MAC, native IRQ/DMA/TX and
+synthetic-service cases remain isolated from explicit original module startup.
 
 ### Tested execution-service profile
 
@@ -617,9 +616,9 @@ IRQ, poll or packet algorithms.
   admitted. Shutdown requires no registered work/poll objects and wakes both
   workers to normal return; tests require allocator/registry/IRQ recovery.
 
-The unchanged original driver remains compile-only, with all 209 dependencies
-unresolved in that isolated closure. Shared execution layouts do not authorize
-mixing its PCI/netdev/skb/GFP/DMA types with the boot-only runtime.
+The isolated original-source check retains all 209 unresolved dependencies.
+Runtime uses separately compiled full-source objects and providers; shared
+execution layouts do not authorize reinterpreting the boot DMA fixture's types.
 
 Capture the original `module_init` initializer and `pci_driver` registration,
 then invoke original probe and registered `net_device_ops`. The selected
@@ -634,8 +633,8 @@ or replace Linux cleanup with native descriptor observation.
 Phase 3 supplies [C providers](../compat/driver_services.h) using the same
 source-facing PCI/netdev/skb types as the compile check. Rust retains physical
 allocation/MMIO/PCI ownership; C owns its structs and original callback tables.
-The normal image still links only the upstream hardware helper, not the
-original packet driver.
+The normal image now links all four original driver units for lifecycle
+acceptance; Linux packet submission/delivery acceptance follows separately.
 
 [Memory ownership](../src/driver_memory.rs) consists of 2048 registered
 buddy-backed allocations and 1024 streaming map slots. Original allocation
@@ -698,11 +697,53 @@ free; unchanged source need not call kutox destruction extensions.
 
 The independent source-plus-services closure resolves driver APIs to actual C
 providers, optional-profile errors or three existing Rust primitives
-(`memcpy`, `memset`, elapsed jiffies). Its 48 remaining platform symbols have an
+(`memcpy`, `memset`, elapsed jiffies). Its 51 remaining platform symbols have an
 explicit exact allowlist; missing, stale or changed providers fail evidence
 verification. The compile-only barrier remains present. All four unchanged
 source units, callbacks and default 256-ring layouts remain audited; resolving
-providers is not execution of original lifecycle or packets.
+providers alone is not execution of original lifecycle or packets.
+
+### Original lifecycle execution
+
+[The lifecycle C adapter](../compat/driver_lifecycle.c) invokes retained module
+metadata explicitly, then original PCI probe/remove and registered open/stop
+callbacks. Its source structs match all four runtime units, including the boot
+MAC bridge. Generation-checked control handles reject use after unbind; no
+vendor-private counters are reset between probes.
+
+Original EEPROM checksum/MAC, default options, reset/PHY and both 256-entry rings
+execute without native field initialization or forced link/TX enable. A real
+LSC IRQ invokes original `e1000_intr`; original delayed watchdog work establishes
+carrier/queue readiness and source NAPI polling invokes `e1000_clean` with budget
+64. The OS supplies execution/ownership, not replacement driver algorithms.
+
+Serial evidence records actual function/object addresses at registration and
+invocation. The host verifies these against the current ELF's original symbols,
+checks complete module/probe/open/close/remove counts, registered IRQ/work/NAPI
+identity, IRQ returns, LSC generation, budgets and watchdog-derived link readiness.
+Native/synthetic cases may not emit this original-driver evidence.
+
+82540's unconditional reset workaround uses PCI I/O BAR index/data writes.
+The OS validates/claims that 64-byte BAR while initially quiescent and permits
+only its CTRL reset pair, applying the same DMA/IRQ lifetime gate before reset.
+Other port accesses remain unsupported. Original probe's pre-request
+`synchronize_irq` is valid for the owned masked route, even without a handler.
+
+The normal lifecycle case executes two probe/remove sessions with two open/close
+cycles per probe. Failure injection covers PCI regions, MMIO, netdev allocation,
+TX/RX coherent rings, RX fragments and IRQ registration. Upstream initial RX
+fragment exhaustion is a successful open with a failure counter, not an error
+return; acceptance checks that behavior and close/recovery. Each failure is
+observed and allocation/mapping counts return to the probe baseline.
+
+The driver's module exit/close/remove cancels/joins its asynchronous work,
+disables NAPI, retires IRQ backing and releases rings/packets/private objects.
+The OS then retires idle source-facing static synchronization registrations,
+clearing only shim generation metadata, not Linux private counters. Kernel test
+boundaries require exact allocator and registry recovery at 128/32 MiB.
+
+This is lifecycle/IRQ/deferred execution, not Linux TX/RX packet acceptance.
+No `.ko` loader, Kbuild, Linux kernel boot, PM/SMP or general Linux ABI is added.
 
 ### Source-facing dependency and lifetime requirements
 
@@ -713,13 +754,13 @@ Each retained API needs an explicit provider or an enforced unsupported contract
 
 | Required surface | Gap in the current implementation |
 | --- | --- |
-| Module/PCI/net-device registration and object lifetimes | Source-facing providers exist; original module/probe callbacks are not invoked yet. |
-| MMIO in driver threads and hardware IRQs | An owned source-service window exists separately from boot MAC; original-driver integration remains. |
+| Module/PCI/net-device registration and object lifetimes | Original module/probe/open/close/remove now execute with generation-checked handles. |
+| MMIO in driver threads and hardware IRQs | Owned source MMIO and the selected reset I/O BAR are integrated separately from boot MAC. |
 | Driver allocation and packet buffers | Synthetic linear/RX fragment/ingress services exist; no original packet-path acceptance yet. |
 | Coherent descriptor sharing and streaming map/sync/unmap | Standard per-region contracts and failed-open gate exist; original completion/abort/reopen paths need integration tests. |
-| Delayed work, jiffies, lifecycle locking and cancellation | Synthetic execution providers exist; original watchdog/reset and lifecycle ordering are not yet integrated. |
-| IRQ registration and NAPI scheduling/budget/disable | Tested C handler/dev-id and budgeted poll lifetimes exist; original e1000 callbacks are not yet invoked. |
-| Probe/open/error/close/remove cleanup | The native TX stop proof is not the RX-capable original driver lifecycle. |
+| Delayed work, jiffies, lifecycle locking and cancellation | Original watchdog and real lifecycle cancellation execute; packet-triggered reset hardening follows. |
+| IRQ registration and NAPI scheduling/budget/disable | Original e1000 IRQ and poll callbacks now execute; packet cleanup acceptance follows. |
+| Probe/open/error/close/remove cleanup | Original repeated lifecycle/error unwind is tested; pending packet/injection/reopen hardening follows. |
 
 Three ordering constraints shape the environment:
 
@@ -854,6 +895,7 @@ phases replace a native-RX-first roadmap:
    original module/probe/open/close/remove, option/EEPROM/reset/PHY code,
    watchdog link work and IRQ/NAPI setup. Verify error unwind and resource
    cleanup at 128/32 MiB; do not fake carrier-ready or skip RX setup.
+   This phase is complete for the selected profile.
 5. **Original Linux TX.** Submit a linear skb through `ndo_start_xmit`, receive
    the original IRQ, and complete through original NAPI DD/unmap/free/queue
    accounting. Verify exact captured bytes and zero native-TX fallback calls.
@@ -875,9 +917,8 @@ symbols or native DD/IRQ success alone are not sufficient. Keep native scaffold
 cases separate and retain exact KTAP/pcap validation, one ISO, fw_cfg selectors,
 and sequential low-memory regression runs.
 
-Phases 1-3 are complete as compile/provider and synthetic-service progress.
-The next item is **phase 4: original probe/open/close**, not a claim that the
-driver runs. Integration with a native network
+Phases 1-4 are complete, including original lifecycle/IRQ/deferred execution.
+The next item is **phase 5: original Linux TX and completion**. Integration with a native network
 stack and extraction for a second Linux driver follow this roadmap; they do not
 replace its driver-execution gates.
 

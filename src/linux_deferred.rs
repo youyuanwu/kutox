@@ -391,12 +391,24 @@ fn worker(which: usize) {
             let done = match callback {
                 Callback::Work(callback) => {
                     CURRENT_WORK.store(invocation.key.raw(), Ordering::Release);
+                    crate::linux_driver::kutox_driver_trace(
+                        11,
+                        callback as usize,
+                        invocation.address,
+                        0,
+                    );
                     unsafe { callback(invocation.address as *mut c_void) };
                     CURRENT_WORK.store(0, Ordering::Release);
                     0
                 }
                 Callback::Napi(callback) => {
                     CURRENT_NAPI.store(invocation.key.raw(), Ordering::Release);
+                    crate::linux_driver::kutox_driver_trace(
+                        13,
+                        callback as usize,
+                        invocation.address,
+                        BUDGET,
+                    );
                     let done = unsafe { callback(invocation.address as *mut c_void, BUDGET) };
                     CURRENT_NAPI.store(0, Ordering::Release);
                     done

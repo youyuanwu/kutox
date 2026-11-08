@@ -20,6 +20,7 @@ mod irq;
 mod kernel_tests;
 mod linux_deferred;
 mod linux_dma;
+mod linux_driver;
 mod linux_driver_tests;
 mod linux_irq;
 mod linux_runtime;

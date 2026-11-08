@@ -4,7 +4,7 @@ use crate::{
 };
 use core::{
     cell::UnsafeCell,
-    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 
 struct Binding {
@@ -13,6 +13,8 @@ struct Binding {
     mapping: memory::MmioMapping<'static, 'static>,
     enabled: bool,
     regions: bool,
+    bars: u64,
+    io_selected: Option<u32>,
     mapped: bool,
     saved: Option<u16>,
 }
@@ -23,6 +25,10 @@ static KEY: AtomicUsize = AtomicUsize::new(0);
 static MMIO: AtomicUsize = AtomicUsize::new(0);
 static MASK: AtomicU64 = AtomicU64::new(0);
 static GATED: AtomicBool = AtomicBool::new(true);
+static FAIL_OPERATION: AtomicU32 = AtomicU32::new(u32::MAX);
+pub fn fail_operation(operation: u32) {
+    FAIL_OPERATION.store(operation, Ordering::Release);
+}
 
 pub struct Owner;
 impl Owner {
@@ -55,6 +61,8 @@ impl Owner {
                 mapping,
                 enabled: false,
                 regions: false,
+                bars: 0,
+                io_selected: None,
                 mapped: false,
                 saved: None,
             })
@@ -121,6 +129,14 @@ extern "C" fn kutox_driver_known(key: usize) -> bool {
 pub extern "C" fn kutox_driver_pci(operation: u32, first: u64, second: u64) -> i32 {
     let result = (|| {
         driver_memory::context(false)?;
+        if FAIL_OPERATION.load(Ordering::Acquire) != u32::MAX
+            && FAIL_OPERATION
+                .compare_exchange(operation, u32::MAX, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        {
+            crate::linux_driver::record_fault();
+            return Err(-12);
+        }
         let binding = unsafe { (&mut *BINDING.0.get()).as_mut() }.ok_or(-19)?;
         match operation {
             0 => {
@@ -129,7 +145,7 @@ pub extern "C" fn kutox_driver_pci(operation: u32, first: u64, second: u64) -> i
                 }
                 binding
                     .device
-                    .set_command((binding.device.read_word(4).map_err(|_| -5)? | 2) & !4)
+                    .set_command((binding.device.read_word(4).map_err(|_| -5)? | 3) & !4)
                     .map_err(|_| -5)?;
                 binding.enabled = true;
             }
@@ -148,20 +164,22 @@ pub extern "C" fn kutox_driver_pci(operation: u32, first: u64, second: u64) -> i
                 binding.enabled = false;
             }
             2 => {
-                if !binding.enabled || binding.regions || first != 1 {
+                if !binding.enabled || binding.regions || (first != 1 && first != 3) {
                     return Err(-16);
                 }
                 binding.regions = true;
+                binding.bars = first;
             }
             3 => {
                 if !binding.regions
                     || binding.mapped
                     || driver_memory::has_resources()
-                    || first != 1
+                    || first != binding.bars
                 {
                     return Err(-16);
                 }
                 binding.regions = false;
+                binding.bars = 0;
             }
             4 => {
                 if !binding.enabled || !binding.regions {
@@ -246,6 +264,7 @@ extern "C" fn kutox_driver_pci_value(operation: u32) -> u64 {
             let (slot, function) = binding.device.location();
             (u64::from(slot) << 8) | u64::from(function)
         }
+        4 => u64::from(binding.bar.io_port),
         _ => fail(Failure::new("driver_pci_query", -22)),
     }
 }
@@ -275,6 +294,9 @@ extern "C" fn kutox_driver_mmio(address: usize, value: u32, writing: bool) -> bo
     if writing && address == base + 0xd0 && value != 0 && GATED.load(Ordering::Acquire) {
         linux_irq::resume().unwrap_or_else(|error| fail(error));
         GATED.store(false, Ordering::Release);
+    }
+    if writing && address == base + 0xc8 {
+        crate::linux_driver::kutox_driver_trace(16, 0, KEY.load(Ordering::Acquire), value as i32);
     }
     true
 }
@@ -318,4 +340,31 @@ pub fn ring_release(_dma: u64) -> Result<(), i32> {
 }
 pub fn quiescent() -> bool {
     KEY.load(Ordering::Acquire) == 0 && unsafe { (&*BINDING.0.get()).is_none() }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn kutox_driver_outl(value: u32, port: usize) {
+    driver_memory::context(false)
+        .unwrap_or_else(|error| fail(Failure::new("driver_pio_context", error)));
+    let is_reset = {
+        let binding = unsafe { (&mut *BINDING.0.get()).as_mut() }
+            .unwrap_or_else(|| fail(Failure::new("driver_pio_unbound", -19)));
+        let base = usize::from(binding.bar.io_port);
+        if !binding.enabled || !binding.regions || binding.bars & 2 == 0 || !binding.mapped {
+            fail(Failure::new("driver_pio_unowned", -22));
+        }
+        if port == base && value == 0 {
+            binding.io_selected = Some(value);
+            false
+        } else if port == base + 4 && binding.io_selected == Some(0) && value & (1 << 26) != 0 {
+            binding.io_selected = None;
+            true
+        } else {
+            fail(Failure::new("driver_pio_profile", -95));
+        }
+    };
+    if is_reset {
+        gate();
+    }
+    io::write32(port as u16, value);
 }

@@ -295,7 +295,7 @@ void kutox_c_driver_irq(void)
     check(kutox_linux_irq_pending(), "driver_irq_pending_observed");
     nic_write(0xd8, UINT32_MAX);
     free_irq(irq_number, &fixture);
-    check(fixture.calls == 3 && kutox_linux_irq(irq_number, 0, 0) == -6, "driver_irq_free_drains");
+    check(fixture.calls == 3 && kutox_linux_irq(irq_number, 0, 0) == 0, "driver_irq_free_drains");
     cancel_work_sync(&fixture.work); napi_disable(&fixture.napi);
     kutox_destroy_work(&fixture.work); netif_napi_del(&fixture.napi);
     irq_owner = NULL;

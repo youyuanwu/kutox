@@ -1,3 +1,4 @@
+use crate::linux_driver;
 use crate::{
     Failure,
     boot::BootInfo,
@@ -221,6 +222,14 @@ static TESTS: &[TestCase] = &[
     TestCase {
         name: "linux.driver_failed_open",
         run: driver_service_tests::failed_open,
+    },
+    TestCase {
+        name: "linux.e1000_lifecycle",
+        run: linux_driver::lifecycle,
+    },
+    TestCase {
+        name: "linux.e1000_failures",
+        run: linux_driver::failures,
     },
 ];
 

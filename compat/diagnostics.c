@@ -3,11 +3,17 @@
 #include "diagnostics_services.h"
 extern void kutox_serial_byte(u8);
 extern void kutox_platform_fail(const char *) __attribute__((noreturn));
+extern bool kutox_driver_tracing(void);
+static bool beginning = true;
 
 static void emit(char value, unsigned int *count)
 {
     if (*count == 4096) kutox_platform_fail("diagnostic_length");
+    if (beginning && kutox_driver_tracing()) {
+        kutox_serial_byte('#'); kutox_serial_byte(' ');
+    }
     kutox_serial_byte((u8)value);
+    beginning = value == '\n';
     (*count)++;
 }
 static size_t length(const char *text)

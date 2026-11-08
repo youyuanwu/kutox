@@ -6,7 +6,7 @@ use crate::{
 };
 use core::{
     cell::UnsafeCell,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
 };
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 use moss_libkernel::{CpuOps, memory::allocators::phys::PageAllocation};
@@ -48,6 +48,11 @@ static STATE: Registry = Registry(UnsafeCell::new(State {
     maps: [None; MAPS],
 }));
 static FAIL_AFTER: AtomicUsize = AtomicUsize::new(usize::MAX);
+static FAIL_KIND: AtomicU32 = AtomicU32::new(u32::MAX);
+pub fn fault(kind: u32, after: usize) {
+    FAIL_KIND.store(kind, Ordering::Relaxed);
+    FAIL_AFTER.store(after, Ordering::Relaxed);
+}
 struct Ingress {
     frames: [[u8; 1514]; 8],
     lengths: [usize; 8],
@@ -166,8 +171,12 @@ extern "C" fn kutox_driver_alloc(size: usize, flags: u32, kind: u32) -> usize {
             return Err(-22);
         }
         let remaining = FAIL_AFTER.load(Ordering::Relaxed);
-        if remaining != usize::MAX {
+        if remaining != usize::MAX
+            && (FAIL_KIND.load(Ordering::Relaxed) == u32::MAX
+                || FAIL_KIND.load(Ordering::Relaxed) == kind)
+        {
             if remaining == 0 {
+                crate::linux_driver::record_fault();
                 return Err(-12);
             }
             FAIL_AFTER.store(remaining - 1, Ordering::Relaxed);
@@ -453,7 +462,22 @@ pub fn quiescent() -> bool {
 }
 #[unsafe(no_mangle)]
 extern "C" fn kutox_driver_fail_after(count: usize) {
+    FAIL_KIND.store(u32::MAX, Ordering::Relaxed);
     FAIL_AFTER.store(count, Ordering::Relaxed);
+}
+
+pub fn snapshot() -> (usize, usize, usize) {
+    let state = unsafe { &*STATE.0.get() };
+    (
+        state.allocations.iter().flatten().count(),
+        state
+            .allocations
+            .iter()
+            .flatten()
+            .map(|allocation| allocation.size)
+            .sum(),
+        state.maps.iter().flatten().count(),
+    )
 }
 
 #[unsafe(no_mangle)]

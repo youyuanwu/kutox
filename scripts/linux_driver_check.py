@@ -303,7 +303,7 @@ def check_bridge_guard(args, output):
         present = any(symbol["name"] == "e1000_get_hw_dev" and symbol["owner"] for symbol in symbols)
         if present == full:
             raise ValueError("boot/full-source helper provider guard is incorrect")
-    return "boot helper present normally; omitted with KUTOX_E1000_FULL_SOURCE; device/MMIO runtime ABI still pending"
+    return "boot helper present normally; omitted with KUTOX_E1000_FULL_SOURCE; runtime bridge uses source-facing structs"
 
 
 def check_runtime_exclusion(args, flags, output):

@@ -9,10 +9,13 @@ kutox_driver_free
 kutox_driver_gate
 kutox_driver_ingress
 kutox_driver_mmio
+kutox_driver_outl
 kutox_driver_pci
 kutox_driver_pci_value
 kutox_driver_range
 kutox_driver_size
+kutox_driver_trace
+kutox_driver_tracing
 kutox_jiffies
 kutox_linux_bh
 kutox_linux_completion

@@ -71,8 +71,6 @@ fn main() {
         .include(&include)
         .include("compat")
         .include(&driver)
-        .file(driver.join("e1000_hw.c"))
-        .file("compat/bridge.c")
         .file("compat/runtime.c")
         .file("compat/execution_ops.c")
         .file("compat/deferred.c")
@@ -84,7 +82,7 @@ fn main() {
     for flag in flags.lines() {
         build.flag(flag);
     }
-    build.compile("linux_e1000");
+    build.compile("kutox_runtime");
     let source_include = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("source-include");
     let extra = fs::read_to_string("compat/driver-check/headers.txt").expect("source header list");
     for header in headers.lines().chain(extra.lines()) {
@@ -102,13 +100,12 @@ fn main() {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, format!("#include <uapi/{target}>\n")).unwrap();
     }
-    // These providers/tests use source-facing types; original packet units stay
-    // in the isolated compile check until the lifecycle integration milestone.
     let mut source = cc::Build::new();
     source
         .compiler("clang")
         .include(&source_include)
         .include("compat")
+        .include(&driver)
         .include("linux/include")
         .include("linux/include/uapi")
         .include("linux/arch/x86/include/uapi")
@@ -117,10 +114,17 @@ fn main() {
         .file("compat/driver_packet.c")
         .file("compat/driver_optional.c")
         .file("compat/driver_services_test.c")
+        .file("compat/bridge.c")
+        .file(driver.join("e1000_main.c"))
+        .file(driver.join("e1000_hw.c"))
+        .file(driver.join("e1000_param.c"))
+        .file(driver.join("e1000_ethtool.c"))
+        .file("compat/driver_lifecycle.c")
+        .define("KUTOX_E1000_FULL_SOURCE", "1")
         .warnings_into_errors(true);
     for flag in flags.lines() {
         source.flag(flag);
     }
     source.flag("-Wno-pointer-sign").flag("-Wno-sign-compare");
-    source.compile("linux_driver_services");
+    source.compile("linux_e1000");
 }

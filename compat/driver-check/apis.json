@@ -182,6 +182,7 @@
     }
   ],
   "overrides": {
+    "outl": {"contexts": ["thread", "worker"], "policy": "required", "contract": "82540 reset unconditionally uses owned PCI I/O BAR index/data writes. Validate the bound non-legacy 64-byte BAR and CTRL reset pair; gate DMA/callback lifetime before forwarding reset. Other port accesses are rejected.", "test": "linux.e1000_lifecycle and linux.e1000_failures (original reset path)"},
     "init_work": {"contexts": ["thread", "worker"]},
     "init_delayed_work": {"contexts": ["thread", "worker"]},
     "cancel_work_sync": {"contexts": ["thread", "worker"]},

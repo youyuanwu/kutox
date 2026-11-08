@@ -7,7 +7,7 @@ use crate::{
 };
 use core::{
     ffi::c_void,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 
@@ -25,6 +25,10 @@ struct Registration {
 static BINDING: SpinLockIrq<Option<Registration>, X86Cpu> = SpinLockIrq::new(None);
 static HANDLED: AtomicU64 = AtomicU64::new(0);
 static UNHANDLED: AtomicU64 = AtomicU64::new(0);
+static FAIL_REQUEST: AtomicBool = AtomicBool::new(false);
+pub fn fail_request(fail: bool) {
+    FAIL_REQUEST.store(fail, Ordering::Release);
+}
 
 pub struct BoundIrq<'controller, 'a, 'storage> {
     claim: ClaimedIrq<'controller, 'a, 'storage>,
@@ -87,11 +91,23 @@ fn dispatch() -> Result<(), Failure> {
     };
     // The original-signature handler owns the read-to-clear device cause.
     let result = unsafe {
+        crate::linux_driver::kutox_driver_trace(
+            9,
+            registration.handler.expect("IRQ handler missing") as usize,
+            registration.device,
+            0,
+        );
         registration.handler.expect("IRQ handler missing")(
             registration.number as i32,
             registration.device as *mut c_void,
         )
     };
+    crate::linux_driver::kutox_driver_trace(
+        15,
+        registration.handler.expect("IRQ handler missing") as usize,
+        registration.device,
+        result,
+    );
     BINDING
         .lock_save_irq()
         .as_mut()
@@ -120,6 +136,10 @@ extern "C" fn kutox_linux_request_irq(
     if threads::check_boot_or_thread_context().is_err() {
         return -106;
     }
+    if FAIL_REQUEST.swap(false, Ordering::AcqRel) {
+        crate::linux_driver::record_fault();
+        return -12;
+    }
     if handler.is_none() || device == 0 || number > i32::MAX as u32 {
         return -22;
     }
@@ -136,6 +156,12 @@ extern "C" fn kutox_linux_request_irq(
         }
         binding.handler = handler;
         binding.device = device;
+        crate::linux_driver::kutox_driver_trace(
+            8,
+            handler.expect("IRQ handler missing") as usize,
+            device,
+            0,
+        );
         binding.token
     };
     external::set_bound_mask(token, false).unwrap_or_else(|error| fail(error.stage, error.code));
@@ -154,7 +180,7 @@ extern "C" fn kutox_linux_irq(number: u32, device: usize, free: u32) -> i32 {
         let binding = BINDING.lock_save_irq();
         let Some(binding) = binding
             .as_ref()
-            .filter(|binding| binding.number == number && binding.handler.is_some())
+            .filter(|binding| binding.number == number && (free == 0 || binding.handler.is_some()))
         else {
             return -6;
         };

@@ -251,3 +251,11 @@ remain in the pinned submodule. The compile-only C declaration environment,
 metadata hooks, ELF/provenance audit and API classifications are kutox code.
 They neither copy the driver's packet algorithms nor provide a runnable Linux
 environment; the generated objects are excluded by the runtime linker.
+
+The runtime now separately compiles all four unchanged e1000 units:
+`e1000_main.c`, `e1000_hw.c`, `e1000_param.c`, and `e1000_ethtool.c`. Original
+notices remain in the pinned Linux submodule. Original module/PCI/netdev,
+IRQ/watchdog/NAPI callbacks execute through kutox's native source-facing services;
+no Linux kernel image, Kbuild or copied vendor-private algorithms are added.
+The lifecycle adapter, owned I/O BAR reset gate and callback-address acceptance
+are kutox implementations. The original compile-only objects remain excluded.

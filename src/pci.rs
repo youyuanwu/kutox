@@ -77,6 +77,19 @@ impl Device {
             return Err(Failure::new("pci_bus_master_active", -1));
         }
         self.command(saved_command & !7);
+        let io_raw = self.read(0x14);
+        if io_raw & 3 != 1 || io_raw & !3 < 0x1000 || io_raw & !3 > 0xffc0 {
+            self.command(saved_command);
+            return Err(Failure::new("pci_io_bar", -1));
+        }
+        self.write(0x14, u32::MAX);
+        let io_mask = self.read(0x14) & !3;
+        self.write(0x14, io_raw);
+        let io_length = (!io_mask).wrapping_add(1);
+        if io_length != 64 || (io_raw & !3) & 63 != 0 {
+            self.command(saved_command);
+            return Err(Failure::new("pci_io_length", -1));
+        }
         self.write(0x10, u32::MAX);
         let mask = self.read(0x10) & !0xf;
         self.write(0x10, raw);
@@ -99,6 +112,7 @@ impl Device {
             device: self,
             saved_command,
             base,
+            io_port: (io_raw & !3) as u16,
         })
     }
 
@@ -163,6 +177,7 @@ pub struct Bar {
     device: Device,
     saved_command: u16,
     pub base: u64,
+    pub io_port: u16,
 }
 
 impl Bar {

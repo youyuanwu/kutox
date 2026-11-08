@@ -26,8 +26,8 @@ same pinned source attribution and MIT notice.
 The kernel also has bounded, single-CPU cooperative kernel threads: owned
 guarded stacks, native x86_64 context switching, FIFO yields, and off-stack
 reclamation after a thread returns. Native wait queues, cancellation, and timed
-sleep can now suspend these stacks. This is not timer preemption or a complete
-sleep-capable Linux driver runtime.
+sleep can now suspend these stacks. This is not timer preemption, SMP or a
+general Linux binary ABI.
 
 Native counting completions remember signals before a wait, support a persistent
 `complete_all` latch, and preserve credits across timeout/cancellation. Their
@@ -69,9 +69,10 @@ bytes in QEMU. Timeout and pending-IRQ teardown stop/drain the device before
 reclaiming buffers. This is QEMU-only TX test scaffolding, not the target Linux packet driver,
 RX, or a networking stack.
 
-This is hardware-helper reuse, not a complete Linux driver port or LinuxKPI
-implementation. TX descriptor construction uses the original Linux driver header;
-the full Linux network driver is not linked. See the
+These native proofs remain scaffolding, not a LinuxKPI implementation or
+Linux packet-path acceptance. TX descriptor construction uses the original header.
+All four original driver units are now linked for separately tested Linux
+lifecycle execution. See the
 [milestone design](docs/linux-e1000-mac.md) for its scope and acceptance goals.
 
 An isolated compile-only target now compiles unchanged `e1000_main.c` with its
@@ -79,14 +80,16 @@ hardware, parameter and ethtool units. It records original registration/callback
 parameter arrays, layouts, headers and **209 unresolved runtime dependencies**.
 These objects are explicitly rejected by the runtime linker. A second
 source-plus-services relocatable closure now checks every driver API has a
-C provider or an explicitly listed Rust primitive; its remaining 48 platform
+C provider or an explicitly listed Rust primitive; its remaining 51 platform
 symbols are recorded, not hidden by success stubs.
-This is not a running Linux packet driver.
+The marked check objects remain excluded from the runtime image. Runtime
+objects are compiled separately against the same selected source profile.
 
 The [driver-reuse roadmap](docs/rust-kernel-linux-drivers.md#linux-e1000-driver-reuse-roadmap)
 now has tested execution/object, workqueue, NAPI/IRQ and PCI/skb/streaming-DMA
-services. Next is executing the original module/probe/open/close lifecycle.
-Linux must own probe/open, packet submission
+services. Original module/probe/open/close, PHY/reset/options, IRQ, watchdog
+and NAPI callbacks now execute on real kernel stacks. Next is Linux-owned TX
+submission and completion. Linux must own probe/open, packet submission
 and cleanup; Rust supplies OS services. Native RX is not the next milestone.
 
 ## Requirements
@@ -136,8 +139,9 @@ per-API source/ELF callers, contexts, contracts, planned phase/tests, compiler
 arguments, header/source/object hashes, effective macros, parameter/callback
 metadata and compile-profile sizes. Verification rejects stale/missing evidence
 and fake runtime-provider substitutions. `linux-driver-compile-check` also runs
-as a standalone CTest entry. The current kernel's provenance rules remain
-hardware-helper-only.
+as a standalone CTest entry. Kernel provenance now positively requires original
+full-driver symbols and matches live registered/invoked callback addresses
+against that ELF; linking names alone cannot satisfy lifecycle acceptance.
 
 Run one case without rebuilding:
 
@@ -209,7 +213,7 @@ hardware-configuration cases still use separate boots of the same ISO.
 
 ```text
 KTAP version 1
-1..51
+1..53
 ok 1 cpu.irq_lock_restore
 ok 2 cpu.breakpoint_return
 ok 3 memory.alignment_reservations
@@ -262,7 +266,9 @@ ok 48 linux.driver_streaming_dma
 ok 49 linux.driver_packets
 ok 50 linux.driver_capacity
 ok 51 linux.driver_failed_open
-# Totals: pass:51 fail:0 skip:0 total:51
+ok 52 linux.e1000_lifecycle
+ok 53 linux.e1000_failures
+# Totals: pass:53 fail:0 skip:0 total:53
 ```
 
 Tests run sequentially with interrupts disabled at case boundaries. After
@@ -298,7 +304,7 @@ intentional-failure acceptance check. QEMU's backend `queue=rx` captures the NIC
 TX direction, excluding traffic sent toward the guest.
 
 The intentional-failure mode reports a failing `harness.intentional_failure`
-before the fifty-one normal cases and exits with guest failure. This command
+before the fifty-three normal cases and exits with guest failure. This command
 **must return nonzero**:
 
 ```sh
@@ -798,10 +804,41 @@ padding/BUSY ownership, copybreak/build-skb ingress, failed-open gating and
 256 RX plus 256 TX mappings together at 32 MiB. No original Linux
 probe/open/IRQ/NAPI/packet callback executes in these cases.
 
+### Original Linux lifecycle acceptance
+
+[The lifecycle adapter](compat/driver_lifecycle.c) calls the captured original
+module initializer and registered PCI/net-device callbacks explicitly. It uses
+generation-checked handles, original EEPROM/options/PHY/reset behavior, default
+256-entry TX/RX rings and legitimate zero-offload feature negotiation. Metadata
+does not auto-start the driver in boot MAC, native TX or synthetic cases.
+
+The lifecycle case performs two probe/remove sessions, each with two open/close
+cycles. Link readiness comes from original `e1000_watchdog`; real LSC/device IRQs
+invoke `e1000_intr`, and a budgeted executor runs original `e1000_clean`. The
+host requires registered/invoked callback identity, IRQ returns, budgets and
+LSC/link evidence, matched to original function addresses in the current ELF.
+
+The failure case injects PCI-region, MMIO, netdev, TX/RX coherent-ring, RX-buffer
+and IRQ failures, validates upstream resource unwinds and reopens successfully.
+Initial RX-buffer exhaustion legitimately returns success from upstream open;
+its failure counter is checked, then close/recovery are tested rather than
+inventing an open error. Vendor-private static counters are not reset on reprobe.
+
+82540 reset uses the validated 64-byte PCI I/O BAR index/data pair, not only
+MMIO. Its CTRL reset path receives the same QEMU lifetime gate. IRQ
+synchronization also supports an owned masked route before handler registration,
+as original probe requires. NMI, SMP, PM, other NICs and a general shared-IRQ
+controller remain unsupported.
+
+The one ISO now includes all four unchanged driver units. Guest suites have a
+40-second limit for the driver's real sleeping lifecycle calls; execution
+remains cooperative. Linux TX/RX packet acceptance and a native IP stack are
+subsequent phases, not claims made by successful open/close.
+
 The build and provenance test require Linux `v7.3.1`, commit
 `79a907609d53d5cd645b42c11550d295d43abf99`, with no submodule modifications.
-The whole Linux e1000 network driver and embclox's native NIC implementation
-are not linked.
+The whole selected Linux e1000 source closure is linked. Embclox's native NIC
+implementation is not linked; the kutox native TX scaffold is separately tested.
 
 ## Prior work and licensing
 

@@ -5,6 +5,13 @@ static struct net_device *netdev;
 struct netdev_queue { struct net_device *device; };
 static struct netdev_queue tx_queue;
 static void *fragments[512];
+struct net_device *kutox_c_registered_netdev(void) { return netdev && netdev->registered ? netdev : NULL; }
+int kutox_c_netdev_close(struct net_device *device)
+{
+    if (device != netdev || !device->registered || !device->running) return -EINVAL;
+    device->running = false;
+    return device->netdev_ops->ndo_stop(device);
+}
 extern int kutox_driver_ingress(uintptr_t, size_t);
 extern void kutox_c_retire_napi_device(struct net_device *);
 extern void kutox_c_pci_clear_data(void *);
@@ -84,7 +91,10 @@ void unregister_netdev(struct net_device *device)
     device->registered = false;
 }
 void netif_carrier_off(struct net_device *device) { netdev_check(device); device->carrier = false; }
-void netif_carrier_on(struct net_device *device) { netdev_check(device); device->carrier = true; }
+void netif_carrier_on(struct net_device *device) {
+    extern void kutox_driver_trace(unsigned int,uintptr_t,uintptr_t,int);
+    netdev_check(device); device->carrier = true; kutox_driver_trace(14,0,(uintptr_t)device,0);
+}
 bool netif_carrier_ok(const struct net_device *device) { netdev_check(device); return device->carrier; }
 bool netif_running(const struct net_device *device) { netdev_check(device); return device->running; }
 void netif_device_detach(struct net_device *device) { netdev_check(device); device->detached = true; device->stopped = true; }

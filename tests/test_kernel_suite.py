@@ -11,6 +11,58 @@ import qemu_test
 from qemu_test import KERNEL_SUITE_CASES, KERNEL_TEST_NAMES, KernelSuiteFailure, REVISION, validate_result
 
 FOUNDATION = "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled"
+CALLBACK_SYMBOLS = {name: 0xffffffff80001000 + index * 16 for index, name in enumerate(
+    sorted({name for names in qemu_test.DRIVER_CALLBACK_NAMES.values() for name in names})
+)}
+
+
+def callback_log(failures=False):
+    lines = []
+    def event(kind, name=None, obj=0x1000, result=0):
+        function = CALLBACK_SYMBOLS[name] if name else 0
+        lines.append(f"# LINUX_CALLBACK event={kind} function={function:x} object={obj:x} result={result}")
+    def probe(success=True):
+        event(1, "e1000_init_module", 0)
+        event(3, "e1000_probe")
+        if success:
+            event(12, "e1000_clean")
+            for name in qemu_test.DRIVER_WORK_CALLBACKS:
+                event(10, name)
+        event(4, "e1000_probe", result=0 if success else -12)
+    def opened(ready=True):
+        event(6, "e1000_open")
+        if ready:
+            event(8, "e1000_intr")
+            event(16, result=4)
+            event(9, "e1000_intr")
+            event(15, "e1000_intr", result=1)
+            event(11, "e1000_watchdog")
+            event(14)
+            event(13, "e1000_clean", result=64)
+    def removed():
+        event(2, "e1000_exit_module", 0)
+        event(5, "e1000_remove")
+    if failures:
+        for fault in range(1, 4):
+            probe(False)
+            lines.append(f"# LINUX_FAULT kind={fault}")
+        probe()
+        for fault in range(4, 8):
+            opened(False)
+            lines.append(f"# LINUX_FAULT kind={fault}")
+            if fault == 6:
+                event(7, "e1000_close")
+        opened()
+        event(7, "e1000_close")
+        removed()
+    else:
+        for _ in range(2):
+            probe()
+            for _ in range(2):
+                opened()
+                event(7, "e1000_close")
+            removed()
+    return lines
 
 
 def suite_log(case="kernel-tests"):
@@ -26,6 +78,8 @@ def suite_log(case="kernel-tests"):
         "# linux format=-7/0000002A/4294967296/12:34:56:78:9a:bc/end",
     ]
     for index, name in enumerate(names, 1):
+        if name in ("linux.e1000_lifecycle", "linux.e1000_failures"):
+            lines.extend(callback_log(name.endswith("failures")))
         status = "not ok" if name == "harness.intentional_failure" else "ok"
         lines.append(f"{status} {index} {name}")
     failures = int(case == "kernel-tests-fail")
@@ -34,6 +88,29 @@ def suite_log(case="kernel-tests"):
 
 
 class KernelSuiteTests(unittest.TestCase):
+    def test_requires_original_driver_lifecycle_cases(self):
+        self.assertEqual(KERNEL_TEST_NAMES[51:], ("linux.e1000_lifecycle", "linux.e1000_failures"))
+
+    def test_original_callback_addresses_match_actual_symbols(self):
+        qemu_test.validate_linux_callbacks(suite_log(), CALLBACK_SYMBOLS)
+        wrong = dict(CALLBACK_SYMBOLS)
+        wrong["e1000_open"] += 1
+        with self.assertRaises(AssertionError):
+            qemu_test.validate_linux_callbacks(suite_log(), wrong)
+
+    def test_rejects_missing_driver_callbacks_budget_and_faults(self):
+        output = suite_log()
+        first_work = next(line for line in output.splitlines() if "LINUX_CALLBACK event=11 " in line)
+        for replacement in (
+            output.replace("event=13 ", "event=99 "),
+            output.replace("result=64", "result=0"),
+            output.replace("# LINUX_FAULT kind=7\n", ""),
+            output.replace("event=15 ", "event=9 "),
+            output.replace(first_work + "\n", "", 1),
+            "\n".join(line for line in output.splitlines() if "LINUX_CALLBACK" not in line),
+        ):
+            with self.subTest(replacement=replacement[:100]), self.assertRaises(AssertionError):
+                qemu_test.validate_linux_callbacks(replacement, CALLBACK_SYMBOLS)
     def test_checks_exact_driver_diagnostic_format(self):
         marker = "# linux format=-7/0000002A/4294967296/12:34:56:78:9a:bc/end"
         for replacement in ("", marker + "\n" + marker, marker.replace("0000002A", "2a")):
@@ -111,7 +188,7 @@ class KernelSuiteTests(unittest.TestCase):
         ))
 
     def test_requires_driver_memory_packet_contracts(self):
-        self.assertEqual(KERNEL_TEST_NAMES[46:], (
+        self.assertEqual(KERNEL_TEST_NAMES[46:51], (
             "linux.driver_allocation",
             "linux.driver_streaming_dma",
             "linux.driver_packets",
@@ -348,7 +425,9 @@ class TxCaptureTests(unittest.TestCase):
                 Path(filename).write_bytes(tx_pcap())
                 return SimpleNamespace(returncode=3, stdout=suite_log(args.case).encode())
 
-            with patch.object(qemu_test.subprocess, "run", side_effect=execute):
+            with patch.object(qemu_test.subprocess, "run", side_effect=execute), patch.object(
+                qemu_test, "runtime_symbols", return_value=CALLBACK_SYMBOLS
+            ):
                 with self.assertRaises(KernelSuiteFailure):
                     qemu_test.run_case(args, args.case)
 

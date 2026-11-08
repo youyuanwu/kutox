@@ -63,6 +63,8 @@ KERNEL_TEST_NAMES = (
     "linux.driver_packets",
     "linux.driver_capacity",
     "linux.driver_failed_open",
+    "linux.e1000_lifecycle",
+    "linux.e1000_failures",
 )
 KERNEL_SUITE_CASES = {
     "kernel-tests": "kernel-tests",
@@ -154,6 +156,7 @@ def validate_kernel_suite(case, returncode, output):
         results.append((name, status == "ok"))
     if len(results) != len(expected_names):
         raise AssertionError("kernel suite did not execute every expected test")
+    validate_linux_callbacks(output)
     failures = {name for name, passed in results if not passed}
     passed, failed, total = map(int, summary.groups())
     if (passed, failed, total) != (len(results) - len(failures), len(failures), len(results)):
@@ -165,6 +168,114 @@ def validate_kernel_suite(case, returncode, output):
         raise AssertionError("intentional failure did not fire or another test failed")
     if failures:
         raise KernelSuiteFailure(f"kernel suite failed: {', '.join(sorted(failures))}")
+
+DRIVER_WORK_CALLBACKS = (
+    "e1000_watchdog", "e1000_update_phy_info_task",
+    "e1000_82547_tx_fifo_stall_task", "e1000_reset_task",
+)
+DRIVER_CALLBACK_NAMES = {
+    1: ("e1000_init_module",), 2: ("e1000_exit_module",),
+    3: ("e1000_probe",), 4: ("e1000_probe",), 5: ("e1000_remove",),
+    6: ("e1000_open",), 7: ("e1000_close",),
+    8: ("e1000_intr",), 9: ("e1000_intr",), 15: ("e1000_intr",),
+    10: DRIVER_WORK_CALLBACKS, 11: DRIVER_WORK_CALLBACKS,
+    12: ("e1000_clean",), 13: ("e1000_clean",),
+}
+
+
+def runtime_symbols(nm="nm"):
+    elf = ROOT / "target/x86_64-unknown-none/release/kutox"
+    text = subprocess.check_output([nm, "--defined-only", str(elf)], text=True)
+    return {parts[-1]: int(parts[0], 16) for line in text.splitlines()
+            if len(parts := line.split()) >= 3}
+
+
+def validate_linux_callbacks(output, symbols=None):
+    batches = {}
+    events, faults = [], []
+    for line in output.splitlines():
+        if line.startswith("# LINUX_CALLBACK"):
+            match = re.fullmatch(r"# LINUX_CALLBACK event=([0-9]+) function=([0-9a-f]+) object=([0-9a-f]+) result=(-?[0-9]+)", line)
+            if match is None:
+                raise AssertionError("malformed original-driver callback evidence")
+            events.append(tuple(int(value, 16 if index in (1, 2) else 10)
+                                for index, value in enumerate(match.groups())))
+        elif line.startswith("# LINUX_FAULT"):
+            match = re.fullmatch(r"# LINUX_FAULT kind=([1-7])", line)
+            if match is None:
+                raise AssertionError("unknown original-driver fault evidence")
+            faults.append(int(match[1]))
+        elif match := re.fullmatch(r"(?:ok|not ok) [0-9]+ ([a-z0-9_.]+)", line):
+            name = match[1]
+            if name.startswith("linux.e1000_"):
+                if name in batches:
+                    raise AssertionError("duplicate original-driver callback batch")
+                batches[name] = (events, faults)
+            elif events or faults:
+                raise AssertionError("original driver ran in a native/synthetic case")
+            events, faults = [], []
+    if events or faults or set(batches) != {"linux.e1000_lifecycle", "linux.e1000_failures"}:
+        raise AssertionError("incomplete original-driver callback batches")
+    for name, (events, faults) in batches.items():
+        counts = {event: sum(item[0] == event for item in events) for event in range(1, 17)}
+        expected = {1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 4, 7: 4} if name.endswith("lifecycle") else {
+            1: 4, 2: 1, 3: 4, 4: 4, 5: 1, 6: 5, 7: 2,
+        }
+        if any(counts[event] != count for event, count in expected.items()):
+            raise AssertionError("original lifecycle callbacks missing, duplicated, or bypassed")
+        expected_faults = list(range(1, 8)) if name.endswith("failures") else []
+        if sorted(faults) != expected_faults:
+            raise AssertionError("original error-unwind coverage is incomplete")
+        expected_errors = 3 if name.endswith("failures") else 0
+        if sum(event == 4 and result < 0 for event, _, _, result in events) != expected_errors:
+            raise AssertionError("original probe results disagree with failure coverage")
+        for event in (8, 9, 10, 11, 12, 13, 14, 15):
+            if counts[event] == 0:
+                raise AssertionError("original IRQ/work/NAPI/link behavior did not execute")
+        if counts[9] != counts[15] or not any(event == 15 and result == 1 for event, _, _, result in events):
+            raise AssertionError("original IRQ returns are missing or invalid")
+        if not any(event == 16 and result == 4 for event, _, _, result in events):
+            raise AssertionError("original open did not generate an LSC IRQ")
+        minimum_ready = 4 if name.endswith("lifecycle") else 1
+        if counts[14] < minimum_ready:
+            raise AssertionError("each successful lifecycle did not establish source-derived readiness")
+        work, napi, irq = set(), set(), set()
+        last_work = None
+        for event, function, obj, result in events:
+            if event == 1:
+                work, napi, irq = set(), set(), set()
+            if event in (1, 6):
+                last_work = None
+            if event in DRIVER_CALLBACK_NAMES:
+                if function == 0:
+                    raise AssertionError("null original callback")
+                if symbols is not None and function not in {
+                    symbols.get(symbol) for symbol in DRIVER_CALLBACK_NAMES[event]
+                }:
+                    raise AssertionError("callback did not point to the linked original Linux function")
+            elif event not in (14, 16) or function != 0:
+                raise AssertionError("unknown original callback kind")
+            if event not in (1, 2) and obj == 0:
+                raise AssertionError("callback backing identity is missing")
+            pair = (function, obj)
+            if event == 10:
+                work.add(pair)
+            elif event == 11 and pair not in work:
+                raise AssertionError("unregistered work callback ran")
+            elif event == 11:
+                last_work = function
+            elif event == 12:
+                napi.add(pair)
+            elif event == 13 and (pair not in napi or result != 64):
+                raise AssertionError("unregistered or unbudgeted NAPI poll ran")
+            elif event == 8:
+                irq.add(pair)
+            elif event in (9, 15) and (pair not in irq or (event == 15 and result not in (0, 1))):
+                raise AssertionError("unregistered IRQ handler or invalid return")
+            elif event == 14 and (last_work is None or (
+                symbols is not None and last_work != symbols.get("e1000_watchdog")
+            )):
+                raise AssertionError("link readiness did not come from original watchdog work")
 
 
 def validate_fault_result(case, returncode, output):
@@ -349,9 +460,12 @@ def check_provenance(nm):
                    "kutox_jiffies", "memcpy", "memset"):
         if symbol not in names:
             raise AssertionError(f"upstream function not linked: {symbol}")
-    for symbol in ("e1000_probe", "e1000_open", "e1000_xmit_frame"):
-        if symbol in names:
-            raise AssertionError(f"out-of-scope full-driver symbol: {symbol}")
+    for symbol in {name for values in DRIVER_CALLBACK_NAMES.values() for name in values} | {
+        "e1000_xmit_frame", "e1000_check_options", "e1000_set_ethtool_ops",
+        "kutox_module_init", "kutox_module_exit",
+    }:
+        if symbol not in names:
+            raise AssertionError(f"original full-driver source/callback symbol missing: {symbol}")
     if "kutox_e1000_tx_descriptor" not in names:
         raise AssertionError("native C descriptor helper using the upstream header not linked")
 
@@ -464,6 +578,7 @@ def run_case(args, case, index=0):
                 raise AssertionError("QEMU did not produce the required TX capture")
             with capture.open("rb") as stream:
                 validate_tx_capture(stream.read(1024 * 1024 + 1))
+            validate_linux_callbacks(output, runtime_symbols(getattr(args, "nm", "nm")))
         validate_result(case, completed.returncode, output)
     except KernelSuiteFailure as error:
         raise KernelSuiteFailure(f"{error}\nlog: {log}\n{output}") from error
@@ -478,7 +593,7 @@ def main():
     parser.add_argument("--build-dir", required=True, type=Path)
     parser.add_argument("--qemu", default="qemu-system-x86_64")
     parser.add_argument("--nm", default="nm")
-    parser.add_argument("--timeout", type=float, default=20)
+    parser.add_argument("--timeout", type=float, default=40)
     parser.add_argument(
         "--expect-test-failure", action="store_true",
         help="Verify rejection of a complete intentional-failure suite (kernel-tests-fail only)",
