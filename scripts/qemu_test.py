@@ -2,9 +2,15 @@
 """Bounded QEMU kernel-suite and hardware-scenario tests."""
 
 import argparse
+from collections import Counter
+import os
 from pathlib import Path
 import re
+import selectors
+import socket
+import struct
 import subprocess
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 REVISION = "79a907609d53d5cd645b42c11550d295d43abf99"
@@ -25,6 +31,47 @@ KERNEL_TEST_NAMES = (
     "threads.lock_exclusion",
     "threads.spawn_rollback",
     "memory.mmio_cleanup",
+    "irq.timer_delivery",
+    "irq.register_restore",
+    "irq.masking_cleanup",
+    "irq.mapping_rollback",
+    "threads.wait_queues",
+    "threads.timed_sleep",
+    "threads.wait_cancel",
+    "sync.completion_counting",
+    "sync.completion_broadcast",
+    "sync.completion_timeout_cancel",
+    "sync.mutex_exclusion",
+    "sync.mutex_timeout_cancel",
+    "sync.mutex_deadline_retry",
+    "linux.thread_execution",
+    "sync.irq_completion",
+    "threads.irq_wait_races",
+    "linux.irq_completion",
+    "irq.platform_discovery",
+    "irq.device_delivery",
+    "irq.device_masking_cleanup",
+    "dma.coherent_allocation",
+    "dma.ownership",
+    "linux.coherent_dma",
+    "linux.driver_atomics",
+    "linux.driver_lifecycle",
+    "linux.driver_work",
+    "linux.driver_napi",
+    "linux.driver_irq",
+    "linux.driver_worker_rollback",
+    "linux.driver_allocation",
+    "linux.driver_streaming_dma",
+    "linux.driver_packets",
+    "linux.driver_capacity",
+    "linux.driver_failed_open",
+    "linux.e1000_lifecycle",
+    "linux.e1000_failures",
+    "linux.e1000_tx",
+    "linux.e1000_rx",
+    "linux.e1000_wrap",
+    "linux.e1000_backpressure",
+    "linux.e1000_teardown",
 )
 KERNEL_SUITE_CASES = {
     "kernel-tests": "kernel-tests",
@@ -101,6 +148,8 @@ def validate_kernel_suite(case, returncode, output):
     if summary is None:
         raise AssertionError("missing or nonterminal KTAP summary")
     results = []
+    if protocol.count("# linux format=-7/0000002A/4294967296/12:34:56:78:9a:bc/end") != 1:
+        raise AssertionError("missing, duplicate, or incorrect driver diagnostic formatting")
     for line in protocol[1:-1]:
         if line.startswith("# ") and not line.startswith("# Totals"):
             continue
@@ -114,6 +163,7 @@ def validate_kernel_suite(case, returncode, output):
         results.append((name, status == "ok"))
     if len(results) != len(expected_names):
         raise AssertionError("kernel suite did not execute every expected test")
+    validate_linux_callbacks(output)
     failures = {name for name, passed in results if not passed}
     passed, failed, total = map(int, summary.groups())
     if (passed, failed, total) != (len(results) - len(failures), len(failures), len(results)):
@@ -125,6 +175,230 @@ def validate_kernel_suite(case, returncode, output):
         raise AssertionError("intentional failure did not fire or another test failed")
     if failures:
         raise KernelSuiteFailure(f"kernel suite failed: {', '.join(sorted(failures))}")
+
+DRIVER_WORK_CALLBACKS = (
+    "e1000_watchdog", "e1000_update_phy_info_task",
+    "e1000_82547_tx_fifo_stall_task", "e1000_reset_task",
+)
+DRIVER_CALLBACK_NAMES = {
+    1: ("e1000_init_module",), 2: ("e1000_exit_module",),
+    3: ("e1000_probe",), 4: ("e1000_probe",), 5: ("e1000_remove",),
+    6: ("e1000_open",), 7: ("e1000_close",),
+    8: ("e1000_intr",), 9: ("e1000_intr",), 15: ("e1000_intr",),
+    10: DRIVER_WORK_CALLBACKS, 11: DRIVER_WORK_CALLBACKS,
+    12: ("e1000_clean",), 13: ("e1000_clean",),
+    17: ("e1000_xmit_frame",), 18: ("e1000_xmit_frame",),
+    26: ("e1000_clean",), 33: ("e1000_xmit_frame",),
+    34: ("e1000_clean_rx_irq",), 35: ("e1000_alloc_rx_buffers",),
+}
+
+
+def runtime_symbols(nm="nm"):
+    elf = ROOT / "target/x86_64-unknown-none/release/kutox"
+    text = subprocess.check_output([nm, "--defined-only", str(elf)], text=True)
+    return {parts[-1]: int(parts[0], 16) for line in text.splitlines()
+            if len(parts := line.split()) >= 3}
+
+
+def validate_linux_callbacks(output, symbols=None):
+    batches = {}
+    events, faults = [], []
+    for line in output.splitlines():
+        if line.startswith("# LINUX_CALLBACK"):
+            match = re.fullmatch(r"# LINUX_CALLBACK event=([0-9]+) function=([0-9a-f]+) object=([0-9a-f]+) result=(-?[0-9]+)", line)
+            if match is None:
+                raise AssertionError("malformed original-driver callback evidence")
+            events.append(tuple(int(value, 16 if index in (1, 2) else 10)
+                                for index, value in enumerate(match.groups())))
+        elif line.startswith("# LINUX_FAULT"):
+            match = re.fullmatch(r"# LINUX_FAULT kind=([1-7])", line)
+            if match is None:
+                raise AssertionError("unknown original-driver fault evidence")
+            faults.append(int(match[1]))
+        elif match := re.fullmatch(r"(?:ok|not ok) [0-9]+ ([a-z0-9_.]+)", line):
+            name = match[1]
+            if name.startswith("linux.e1000_"):
+                if name in batches:
+                    raise AssertionError("duplicate original-driver callback batch")
+                batches[name] = (events, faults)
+            elif events or faults:
+                raise AssertionError("original driver ran in a native/synthetic case")
+            events, faults = [], []
+    if events or faults or set(batches) != {name for name in KERNEL_TEST_NAMES if name.startswith("linux.e1000_")}:
+        raise AssertionError("incomplete original-driver callback batches")
+    for name, (events, faults) in batches.items():
+        counts = {event: sum(item[0] == event for item in events) for event in range(1, 50)}
+        expected = {1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 4, 7: 4, 33: 2} if name.endswith("lifecycle") else {
+            1: 4, 2: 1, 3: 4, 4: 4, 5: 1, 6: 5, 7: 2,
+            33: 1,
+        }
+        if name.endswith("_tx"):
+            expected = {1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 2, 33: 2}
+        elif name.endswith("_rx"):
+            expected = {1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 2, 33: 2, 34: 2, 35: 2}
+        elif name.endswith(("_wrap", "_backpressure", "_teardown")):
+            opens = 1 if name.endswith("_wrap") else 3 if name.endswith("_backpressure") else 5
+            expected = {1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: opens, 7: opens, 33: 1, 34: 1, 35: 1}
+        if any(counts[event] != count for event, count in expected.items()):
+            raise AssertionError("original lifecycle callbacks missing, duplicated, or bypassed")
+        expected_faults = list(range(1, 8)) if name.endswith("failures") else []
+        if sorted(faults) != expected_faults:
+            raise AssertionError("original error-unwind coverage is incomplete")
+        expected_errors = 3 if name.endswith("failures") else 0
+        if sum(event == 4 and result < 0 for event, _, _, result in events) != expected_errors:
+            raise AssertionError("original probe results disagree with failure coverage")
+        for event in (8, 9, 10, 11, 12, 13, 14, 15):
+            if counts[event] == 0:
+                raise AssertionError("original IRQ/work/NAPI/link behavior did not execute")
+        if counts[9] != counts[15] or not any(event == 15 and result == 1 for event, _, _, result in events):
+            raise AssertionError("original IRQ returns are missing or invalid")
+        if not any(event == 16 and result == 4 for event, _, _, result in events):
+            raise AssertionError("original open did not generate an LSC IRQ")
+        minimum_ready = expected[6] if name.endswith(("_wrap", "_teardown")) else 4 if name.endswith("lifecycle") else 2 if name.endswith(("_tx", "_rx", "_backpressure")) else 1
+        if counts[14] < minimum_ready:
+            raise AssertionError("each successful lifecycle did not establish source-derived readiness")
+        work, napi, irq, xmit = set(), set(), set(), set()
+        active_poll = active_irq = None
+        last_work = None
+        for event, function, obj, result in events:
+            if event == 1:
+                work, napi, irq, xmit = set(), set(), set(), set()
+            if event in (1, 6):
+                last_work = None
+            if event in DRIVER_CALLBACK_NAMES:
+                if function == 0:
+                    raise AssertionError("null original callback")
+                if symbols is not None and function not in {
+                    symbols.get(symbol) for symbol in DRIVER_CALLBACK_NAMES[event]
+                }:
+                    raise AssertionError("callback did not point to the linked original Linux function")
+            elif event not in (14, 16, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 32, *range(36, 50)) or function != 0:
+                raise AssertionError("unknown original callback kind")
+            if event not in (1, 2) and obj == 0:
+                raise AssertionError("callback backing identity is missing")
+            pair = (function, obj)
+            if event == 10:
+                work.add(pair)
+            elif event == 11 and pair not in work:
+                raise AssertionError("unregistered work callback ran")
+            elif event == 11:
+                last_work = function
+            elif event == 12:
+                napi.add(pair)
+            elif event == 13 and (pair not in napi or result != 64):
+                raise AssertionError("unregistered or unbudgeted NAPI poll ran")
+            elif event == 13:
+                if active_poll is not None:
+                    raise AssertionError("nested source NAPI poll")
+                active_poll = pair
+            elif event == 26:
+                if active_poll != pair or not 0 <= result <= 64:
+                    raise AssertionError("unmatched source NAPI poll return")
+                active_poll = None
+            elif event == 33:
+                xmit.add(function)
+            elif event in (17, 18) and function not in xmit:
+                raise AssertionError("unregistered original xmit ran")
+            elif event == 8:
+                irq.add(pair)
+            elif event in (9, 15) and (pair not in irq or (event == 15 and result not in (0, 1))):
+                raise AssertionError("unregistered IRQ handler or invalid return")
+            elif event == 9:
+                if active_irq is not None or active_poll is not None:
+                    raise AssertionError("nested original IRQ or IRQ inside NAPI")
+                active_irq = pair
+            elif event == 15:
+                if active_irq != pair:
+                    raise AssertionError("unmatched original IRQ return")
+                active_irq = None
+            elif event == 14 and (last_work is None or (
+                symbols is not None and last_work != symbols.get("e1000_watchdog")
+            )):
+                raise AssertionError("link readiness did not come from original watchdog work")
+        if active_irq is not None or active_poll is not None or counts[13] != counts[26]:
+            raise AssertionError("incomplete original NAPI poll")
+        if name.endswith("_tx"):
+            validate_linux_tx_events(events)
+        elif name.endswith(("_wrap", "_backpressure", "_teardown")):
+            validate_hard_callbacks(name,events)
+        elif any(17 <= event <= 32 and event != 26 for event, _, _, _ in events):
+            raise AssertionError("packet submission ran outside the Linux TX case")
+        if name.endswith("_rx"):
+            validate_linux_rx_events(events)
+        elif not name.endswith(("_wrap", "_backpressure", "_teardown")) and any(34 <= event <= 49 for event, _, _, _ in events):
+            raise AssertionError("RX evidence ran outside the original RX case")
+    protocol = RXProtocol()
+    for line in output.splitlines():
+        protocol.observe(line)
+    protocol.finish()
+    hard = HardProtocol()
+    for line in output.splitlines():
+        hard.observe(line)
+    hard.finish()
+
+
+def validate_linux_tx_events(events):
+    transaction = []
+    packet = None
+    lengths = []
+    cancelled = 0
+    in_irq = False
+    tx_irq = False
+    tx_cause = False
+    in_poll = False
+    poll_returned = False
+    for event, function, obj, result in events:
+        if event == 31:
+            if packet is not None:
+                raise AssertionError("overlapping Linux packet ownership")
+            packet = obj
+            transaction = []
+            tx_irq = poll_returned = False
+        if event == 9:
+            in_irq = True
+            tx_cause = False
+        elif event == 15:
+            if tx_cause:
+                if result != 1:
+                    raise AssertionError("original TX IRQ did not return HANDLED")
+                tx_irq = True
+            in_irq = False
+        elif event == 27:
+            if not in_irq or obj != packet:
+                raise AssertionError("TX cause did not come from original IRQ read")
+            if transaction and transaction[-1][0] == 18 and result & 1:
+                tx_cause = True
+        elif event == 13:
+            in_poll = True
+        elif event == 26:
+            in_poll = False
+            if transaction and transaction[-1][0] == 24:
+                poll_returned = True
+        if event not in (17, 18, 19, 20, 21, 22, 23, 24, 25, 28, 29, 30, 31, 32):
+            continue
+        if packet is None or obj != packet or event == 30:
+            raise AssertionError("invalid, unowned, or aborted Linux TX evidence")
+        if event in (22, 23, 24) and (not tx_irq or not in_poll):
+            raise AssertionError("completion preceded original TX IRQ/NAPI cleanup")
+        if event == 25 and (not poll_returned or in_poll):
+            raise AssertionError("native acceptance preceded original poll return")
+        transaction.append((event, result))
+        if event == 28:
+            if transaction != [(31, 60), (32, 16), (29, 0), (28, 0)]:
+                raise AssertionError("BUSY cancellation lost skb ownership")
+            cancelled += 1
+            packet = None
+        elif event == 25:
+            size = LINUX_TX_LENGTHS[len(lengths)] if len(lengths) < 4 else 0
+            expected = [(31, size), (17, size), (19, size), (20, size),
+                        (21, 1 + len(lengths) % 2), (18, 0),
+                        (22, size), (23, 64), (24, size), (25, size)]
+            if transaction != expected:
+                raise AssertionError("Linux xmit/map/doorbell/unmap/free/accounting disagree")
+            lengths.append(size)
+            packet = None
+    if packet is not None or lengths != list(LINUX_TX_LENGTHS) or cancelled != 2:
+        raise AssertionError("incomplete Linux TX or BUSY ownership coverage")
 
 
 def validate_fault_result(case, returncode, output):
@@ -305,15 +579,441 @@ def check_provenance(nm):
     elf = ROOT / "target/x86_64-unknown-none/release/kutox"
     symbols = subprocess.check_output([nm, "--defined-only", str(elf)], text=True)
     names = {line.split()[-1] for line in symbols.splitlines() if line.split()}
-    for symbol in ("e1000_set_mac_type", "e1000_init_eeprom_params", "e1000_read_mac_addr"):
+    for symbol in ("e1000_set_mac_type", "e1000_init_eeprom_params", "e1000_read_mac_addr",
+                   "kutox_jiffies", "memcpy", "memset"):
         if symbol not in names:
             raise AssertionError(f"upstream function not linked: {symbol}")
-    for symbol in ("e1000_probe", "e1000_open", "e1000_xmit_frame"):
-        if symbol in names:
-            raise AssertionError(f"out-of-scope full-driver symbol: {symbol}")
+    for symbol in {name for values in DRIVER_CALLBACK_NAMES.values() for name in values} | {
+        "e1000_xmit_frame", "e1000_check_options", "e1000_set_ethtool_ops",
+        "kutox_module_init", "kutox_module_exit",
+    }:
+        if symbol not in names:
+            raise AssertionError(f"original full-driver source/callback symbol missing: {symbol}")
+    if "kutox_e1000_tx_descriptor" in names:
+        raise AssertionError("removed native TX descriptor helper was linked")
 
 
-def qemu_command(args, case):
+LINUX_TX_LENGTHS = (60, 128, 512, 1514)
+
+
+def linux_tx_packet(sequence, size):
+    packet = bytearray(
+        b"\xff" * 6 + bytes.fromhex("52540012345688b6")
+        + bytes((sequence + index) & 255 for index in range(14, size))
+    )
+    packet[14:22] = b"KUTOX-LX"
+    packet[22] = sequence
+    return bytes(packet)
+
+
+def validate_tx_capture(data):
+    if len(data) < 24 or len(data) > 1024 * 1024:
+        raise AssertionError("missing, truncated, or oversized TX capture")
+    endian = {b"\xd4\xc3\xb2\xa1": "<", b"\xa1\xb2\xc3\xd4": ">"}.get(bytes(data[:4]))
+    if endian is None:
+        raise AssertionError("unsupported pcap format")
+    major, minor, _, _, snaplen, link = struct.unpack_from(endian + "HHIIII", data, 4)
+    if (major, minor, link) != (2, 4, 1) or snaplen < max(LINUX_TX_LENGTHS):
+        raise AssertionError("invalid Ethernet pcap header")
+    packets = []
+    expected = expected_tx_packets()
+    offset = 24
+    while offset < len(data):
+        if len(data) - offset < 16:
+            raise AssertionError("truncated pcap record header")
+        _, usec, captured, original = struct.unpack_from(endian + "IIII", data, offset)
+        offset += 16
+        if (len(packets) >= len(expected) or usec >= 1_000_000
+                or captured != len(expected[len(packets)]) or original != captured
+                or captured > len(data) - offset):
+            raise AssertionError("truncated or unexpected TX packet length")
+        packets.append(data[offset:offset + captured])
+        offset += captured
+    if packets != expected:
+        raise AssertionError("TX capture has missing, reordered, duplicate, or incorrect packet bytes")
+
+
+RX_LENGTHS = (60, 252, 253, 1514, 1514, 60, 60, 60)
+RX_BUFFER_SIZE = 1522
+RX_FRAGMENT_SIZE = 1920
+RX_ACTIONS = ("deliver", "deliver", "deliver", "deliver", "pressure", "deliver", "llc", "vlan")
+RX_RESIDENT = (256, 256, 255, 255, 254, 256, 256, 256)
+RX_MAPS = (1, 0, 0, 1, 0, 2, 0, 0)
+RX_TAILS = (255, 0, 1, 2, None, 4, 5, 6)
+
+def hard_packet(kind, sequence, size, receiving=False):
+    header = bytes.fromhex("52540012345602000000000788b9") if receiving else b"\xff" * 6 + bytes.fromhex("52540012345688b8")
+    packet = bytearray(header + bytes((kind + sequence + index) & 255 for index in range(14,size)))
+    packet[14:22] = b"KUTOX-HR" if receiving else b"KUTOX-HT"
+    packet[22:26] = struct.pack("!I",sequence)
+    packet[26] = kind
+    return bytes(packet)
+
+def expected_tx_packets():
+    return ([linux_tx_packet(sequence,size) for sequence,size in enumerate(LINUX_TX_LENGTHS,1)]
+            + [hard_packet(1,sequence,60) for sequence in range(1,301)]
+            + [hard_packet(2,sequence,60) for sequence in range(1,234)]
+            + [hard_packet(3,sequence,60) for sequence in (1,2)])
+
+def validate_hard_callbacks(name, events):
+    counts = {kind: sum(event == kind for event,_,_,_ in events) for kind in range(1,50)}
+    polling = closing = False
+    for event, _, _, result in events:
+        if event == 13: polling = True
+        if event == 7: closing = True
+        if event == 6: closing = False
+        if event in (22,23,24,36,37,38,39,40,41,42,43,44,45,46,49) and not polling:
+            if not (event == 22 and closing and name.endswith("_teardown")):
+                raise AssertionError("hardening cleanup ran outside original NAPI")
+        if event == 23 and result != 64:
+            raise AssertionError("hardening skb consumption lost NAPI budget")
+        if event == 26: polling = False
+    if name.endswith("_wrap"):
+        required = {17:300,18:300,19:300,20:300,21:300,22:300,23:300,24:300,25:300,
+                    31:300,36:150,37:150,38:150,39:150,40:300,41:300,42:300,43:150,45:300}
+        if any(counts[key] != value for key,value in required.items()):
+            raise AssertionError("ring wrap source packet/cleanup accounting incomplete")
+        for kind, expected in (
+            (21,[sequence % 256 for sequence in range(1,301)]),
+            (45,[(sequence + 254) % 256 for sequence in range(1,301)]),
+            (41,[60 if sequence % 2 else 300 for sequence in range(1,301)]),
+        ):
+            if [result for event,_,_,result in events if event == kind] != expected:
+                raise AssertionError("original ring doorbells or RX bytes did not wrap correctly")
+    elif name.endswith("_backpressure"):
+        if counts[17] != 234 or counts[18] != 234 or counts[28] != 1 or counts[48] != 233:
+            raise AssertionError("original backpressure/drop/xmit accounting disagrees")
+        if sum(result for event,_,_,result in events if event == 49) != 233 or counts[41] != 3:
+            raise AssertionError("original bulk completion or RX recovery did not execute")
+    elif counts[30] != 2 or counts[17] != 2 or counts[47] == 0:
+        raise AssertionError("pending TX/RX/IRQ teardown did not execute")
+
+class HardProtocol:
+    def __init__(self, send=None):
+        self.send = send
+        self.sequence = {"wrap":0,"errors":0,"pending":0}
+        self.pending = {}
+        self.stopped = set()
+        self.states = 0
+        self.markers = []
+
+    def observe(self,line):
+        if not line.startswith(("# LINUX_HARD", "# LINUX_CONTROL")): return
+        if match := re.fullmatch(r"# LINUX_HARD_READY kind=(wrap|errors|pending) seq=([0-9]+) bytes=([0-9]+)",line):
+            name, sequence, size = match[1],int(match[2]),int(match[3])
+            limit = {"wrap":300,"errors":3,"pending":1}[name]
+            expected_size = (60 if sequence % 2 else 300) if name == "wrap" else (60 if sequence == 1 else 300)
+            if (name in self.stopped or name in self.pending or sequence != self.sequence[name] + 1
+                    or not 1 <= sequence <= limit or size != expected_size):
+                raise AssertionError("unready, duplicate, or malformed hardening RX request")
+            self.pending[name] = (sequence,size)
+            if self.send is not None:
+                kind = {"wrap":1,"errors":4,"pending":3}[name]
+                packet = hard_packet(kind,sequence,size,True)
+                self.send(struct.pack("!I",len(packet)) + packet)
+            return
+        if match := re.fullmatch(r"# LINUX_HARD_FRAME kind=(wrap|errors|pending) seq=([0-9]+) bytes=([0-9]+) data=([0-9a-f]+)",line):
+            name, sequence, size = match[1],int(match[2]),int(match[3])
+            kind = {"wrap":1,"errors":4,"pending":3}[name]
+            if self.pending.get(name) != (sequence,size) or match[4] != hard_packet(kind,sequence,size,True).hex():
+                raise AssertionError("hardening RX bytes, order or ownership mismatch")
+            del self.pending[name]
+            self.sequence[name] = sequence
+            return
+        if match := re.fullmatch(r"# LINUX_HARD_STATE kind=wrap seq=([0-9]+) tx=([0-9]+) rx=([0-9]+) resident=([0-9]+)",line):
+            sequence,tx,rx,resident = map(int,match.groups())
+            if (sequence != self.sequence["wrap"] or sequence != self.states + 1
+                    or tx != sequence % 256 or rx != tx or resident != (256 if sequence % 2 else 255)):
+                raise AssertionError("source wrap indices or memory leases disagree")
+            self.states += 1
+            return
+        if match := re.fullmatch(r"# LINUX_HARD_STOP kind=(wrap|errors|pending) seq=([0-9]+)",line):
+            name, sequence = match[1],int(match[2])
+            expected = {"wrap":300,"errors":3,"pending":1}[name]
+            if name in self.stopped or sequence != expected or (name != "pending" and self.sequence[name] != expected):
+                raise AssertionError("hardening stop before complete offers")
+            if name == "pending" and self.pending.get(name) != (1,60):
+                raise AssertionError("pending RX was not queued before close")
+            self.stopped.add(name)
+            return
+        self.markers.append(line)
+
+    def finish(self):
+        if self.sequence != {"wrap":300,"errors":3,"pending":1} or self.pending or self.states != 300 or self.stopped != {"wrap","errors","pending"}:
+            raise AssertionError("incomplete wrap, error recovery or pending RX offers")
+        expected = [
+            "# LINUX_HARD_FAULT name=rx-open-map recovered=1",
+            "# LINUX_HARD_FAULT name=tx-skb recovered=1",
+            "# LINUX_HARD_FAULT name=tx-map consumed=1 captured=0",
+            "# LINUX_HARD_BUSY accepted=232 held=1 stopped=1",
+            "# LINUX_HARD_WAKE completed=233 held=0 balanced=1",
+            "# LINUX_HARD_FAULT name=rx-skb retained=1 recovered=1",
+            "# LINUX_HARD_FAULT name=rx-map recovered=1 resident=255",
+            "# LINUX_HARD_IRQ pending=1 tx=1 watchdog=queued",
+            "# LINUX_HARD_PAUSE kind=2 state=reserved-running",
+            "# LINUX_HARD_JOIN kind=2 backing=live",
+            "# LINUX_HARD_FREE kind=2 errno=-16 engines=disabled",
+            "# LINUX_CONTROL_WAIT op=open",
+            "# LINUX_CONTROL_REJECT op=close errno=-58",
+            "# LINUX_HARD_REENTRY errno=-58 unchanged=1",
+            "# LINUX_HARD_CONCURRENT kind=2 reopened=1",
+            "# LINUX_HARD_PAUSE kind=1 state=reserved-running",
+            "# LINUX_HARD_JOIN kind=1 backing=live",
+            "# LINUX_HARD_FREE kind=1 errno=-16 engines=disabled",
+            "# LINUX_CONTROL_WAIT op=open",
+            "# LINUX_HARD_CONCURRENT kind=1 reopened=1",
+            "# LINUX_HARD_TEARDOWN joined=2 serialized=2 stale=1",
+        ]
+        if Counter(self.markers) != Counter(expected):
+            raise AssertionError("hardening fault/join/concurrent lifecycle evidence disagrees")
+        positions = []
+        for kind in (2,1):
+            chain = [
+                f"# LINUX_HARD_PAUSE kind={kind} state=reserved-running",
+                f"# LINUX_HARD_JOIN kind={kind} backing=live",
+                f"# LINUX_HARD_FREE kind={kind} errno=-16 engines=disabled",
+                f"# LINUX_HARD_CONCURRENT kind={kind} reopened=1",
+            ]
+            indices = [self.markers.index(line) for line in chain]
+            if indices != sorted(indices):
+                raise AssertionError("callback backing released before its real join")
+            positions.append((indices[2],indices[3]))
+        waits = [i for i,line in enumerate(self.markers) if line == "# LINUX_CONTROL_WAIT op=open"]
+        if len(waits) != 2 or any(not first < index < last for index,(first,last) in zip(waits,positions)):
+            raise AssertionError("concurrent open was not serialized behind close")
+        reject = self.markers.index("# LINUX_CONTROL_REJECT op=close errno=-58")
+        reentry = self.markers.index("# LINUX_HARD_REENTRY errno=-58 unchanged=1")
+        if not positions[0][0] < reject < reentry < positions[0][1]:
+            raise AssertionError("atomic callback control reentry was not rejected")
+
+
+def rx_packet(epoch, sequence, size):
+    packet = bytearray(
+        bytes.fromhex("52540012345602000000000688b7")
+        + bytes((epoch + sequence + index) & 255 for index in range(14, size))
+    )
+    packet[14:22] = b"KUTOX-RX"
+    packet[22:24] = bytes((sequence, epoch))
+    if sequence == 7:
+        packet[12:14] = b"\x00\x01"
+    elif sequence == 8:
+        packet[12:18] = bytes.fromhex("8100000188b7")
+    return bytes(packet)
+
+
+class RXProtocol:
+    """One requested frame at a time; no timer-driven injection or reopen races."""
+
+    def __init__(self, send=None):
+        self.send = send
+        self.epoch = 0
+        self.sequence = 0
+        self.closed = True
+        self.pending = None
+        self.receipt = self.state = False
+
+    def observe(self, line):
+        if line.startswith("# LINUX_CALLBACK event=7 ") and not self.closed:
+            raise AssertionError("original close preceded host injection stop")
+        if not line.startswith("# LINUX_RX"):
+            return
+        if match := re.fullmatch(r"# LINUX_RX_IDLE epoch=([12]) timeout=1", line):
+            if not self.closed or self.pending is not None or int(match[1]) != self.epoch + 1:
+                raise AssertionError("invalid RX epoch or missing no-packet timeout")
+            self.epoch += 1
+            self.sequence = 0
+            self.closed = False
+            return
+        if match := re.fullmatch(r"# LINUX_RX_STOP epoch=([12]) seq=8", line):
+            if self.closed or self.pending is not None or int(match[1]) != self.epoch or self.sequence != 8:
+                raise AssertionError("RX injection stopped before all packets completed")
+            self.closed = True
+            return
+        if match := re.fullmatch(r"# LINUX_RX_READY epoch=([12]) seq=([1-8]) bytes=([0-9]+) action=([a-z]+)", line):
+            epoch, sequence, size = map(int, match.groups()[:3])
+            if (self.closed or self.pending is not None or epoch != self.epoch
+                    or sequence != self.sequence + 1 or size != RX_LENGTHS[sequence - 1]
+                    or match[4] != RX_ACTIONS[sequence - 1]):
+                raise AssertionError("unexpected, duplicate, or unready RX injection request")
+            self.pending = (sequence, size)
+            self.receipt = self.state = False
+            if self.send is not None:
+                packet = rx_packet(epoch, sequence, size)
+                self.send(struct.pack("!I", len(packet)) + packet)
+            return
+        if self.closed or self.pending is None:
+            raise AssertionError("RX result without a live injection request")
+        sequence, size = self.pending
+        if match := re.fullmatch(r"# LINUX_RX_FRAME epoch=([12]) seq=([1-8]) bytes=([0-9]+) path=(copy|build) data=([0-9a-f]+)", line):
+            if (self.receipt or sequence > 6 or tuple(map(int, match.groups()[:3])) != (self.epoch, sequence, size)
+                    or match[4] != ("copy" if size <= 252 else "build")
+                    or match[5] != rx_packet(self.epoch, sequence, size).hex()):
+                raise AssertionError("RX length/FCS, header, payload, or ownership path mismatch")
+            self.receipt = True
+        elif match := re.fullmatch(r"# LINUX_RX_DROP epoch=([12]) seq=([78]) bytes=60 errno=-95", line):
+            if self.receipt or tuple(map(int, match.groups())) != (self.epoch, sequence):
+                raise AssertionError("unsupported RX packet was not explicitly dropped")
+            self.receipt = True
+        elif match := re.fullmatch(r"# LINUX_RX_STATE epoch=([12]) seq=([1-8]) resident=([0-9]+) failures=([01]) dropped=([0-2])", line):
+            expected = (self.epoch, sequence, RX_RESIDENT[sequence - 1], int(sequence >= 5), max(sequence - 6, 0))
+            if self.state or tuple(map(int, match.groups())) != expected:
+                raise AssertionError("RX allocation pressure/replenishment/ownership accounting mismatch")
+            self.state = True
+        else:
+            raise AssertionError("malformed original RX evidence")
+        if self.receipt and self.state:
+            self.sequence = sequence
+            self.pending = None
+
+    def finish(self):
+        if self.epoch != 2 or not self.closed or self.pending is not None or self.sequence != 8:
+            raise AssertionError("incomplete RX injection, delivery, or stop handshake")
+
+
+def validate_linux_rx_events(events):
+    epoch = sequence = 0
+    packet = None
+    transaction = []
+    irq = None
+    cause = handled = polling = False
+    for event, _, obj, result in events:
+        if event == 34:
+            if packet is not None or (epoch and sequence != 8):
+                raise AssertionError("incomplete RX session before reprobe")
+            epoch += 1
+            sequence = 0
+            handled = False
+        elif event == 9:
+            irq = obj
+            cause = False
+        elif event == 47:
+            if irq != obj:
+                raise AssertionError("RX cause was not read inside original IRQ")
+            cause |= bool(result & 0x80)
+        elif event == 15:
+            if cause:
+                if result != 1:
+                    raise AssertionError("original RX IRQ did not return HANDLED")
+                handled = True
+            irq = None
+        elif event == 13:
+            polling = True
+        elif event in (36, 37):
+            if not polling or not handled or packet is not None or sequence >= 8:
+                raise AssertionError("RX allocation preceded original receive IRQ/NAPI")
+            packet = obj
+            transaction = []
+        if 36 <= event <= 46:
+            if packet != obj or not polling:
+                raise AssertionError("RX buffer service ran outside original poll or packet")
+            transaction.append((event, result))
+        if event == 26:
+            polling = False
+            if packet is None:
+                continue
+            size = RX_LENGTHS[sequence]
+            copied = size <= 252
+            protocol = 1 if sequence == 6 else 0x8100 if sequence == 7 else 0x88b7
+            expected = [(36, size + 4), (38, size + 4)] if copied else [(37, RX_FRAGMENT_SIZE), (39, RX_BUFFER_SIZE)]
+            expected += [(40, protocol), (41, size) if sequence < 6 else (44, -95), (42, 0 if copied else 1)]
+            expected += [(43, RX_BUFFER_SIZE)] * RX_MAPS[sequence]
+            if sequence == 4:
+                expected.append((46, -12))
+            else:
+                expected.append((45, RX_TAILS[sequence]))
+            if transaction != expected or result != 1:
+                raise AssertionError("original copybreak/build/unmap/drop/replenishment sequence disagrees")
+            sequence += 1
+            packet = None
+            handled = False
+    if epoch != 2 or sequence != 8 or packet is not None:
+        raise AssertionError("incomplete original RX source callback evidence")
+
+
+def execute_suite(args, case, capture):
+    deadline = time.monotonic() + args.timeout
+    output = bytearray()
+    serial_pending = bytearray()
+    network_pending = bytearray()
+    transmitted = []
+    expected = expected_tx_packets()
+    host, peer = socket.socketpair()
+    with host, peer:
+        command = qemu_command(args, case, capture, peer.fileno())
+        with subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL, pass_fds=(peer.fileno(),),
+        ) as process:
+            peer.close()
+            host.settimeout(min(args.timeout, 2))
+            protocol = RXProtocol(host.sendall)
+            hard = HardProtocol(host.sendall)
+            try:
+                with selectors.DefaultSelector() as selector:
+                    selector.register(process.stdout, selectors.EVENT_READ, "serial")
+                    selector.register(host, selectors.EVENT_READ, "network")
+                    while selector.get_map():
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise subprocess.TimeoutExpired(command, args.timeout, output=bytes(output))
+                        for key, _ in selector.select(min(remaining, 0.1)):
+                            chunk = os.read(key.fd, 4096)
+                            if not chunk:
+                                selector.unregister(key.fileobj)
+                                continue
+                            if key.data == "serial":
+                                output.extend(chunk)
+                                if len(output) > 4 * 1024 * 1024:
+                                    raise AssertionError("oversized guest journal")
+                                serial_pending.extend(chunk)
+                                while b"\n" in serial_pending:
+                                    line, _, rest = serial_pending.partition(b"\n")
+                                    serial_pending = bytearray(rest)
+                                    decoded = line.decode("utf-8", errors="replace").rstrip("\r")
+                                    protocol.observe(decoded)
+                                    hard.observe(decoded)
+                                if len(serial_pending) > 8192:
+                                    raise AssertionError("oversized unterminated guest line")
+                            else:
+                                network_pending.extend(chunk)
+                                while len(network_pending) >= 4:
+                                    size = struct.unpack_from("!I", network_pending)[0]
+                                    if not 60 <= size <= 1514:
+                                        raise AssertionError("invalid guest TX socket record")
+                                    if len(network_pending) < size + 4:
+                                        break
+                                    transmitted.append(bytes(network_pending[4:size + 4]))
+                                    del network_pending[:size + 4]
+                                    if len(transmitted) > len(expected):
+                                        raise AssertionError("unexpected guest packet on isolated socket")
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(command, args.timeout, output=bytes(output))
+                    returncode = process.wait(timeout=remaining)
+                    if serial_pending or network_pending:
+                        raise AssertionError("truncated guest serial/socket output")
+                    if transmitted != expected:
+                        raise AssertionError("isolated socket did not carry the exact Linux TX frames")
+                    protocol.finish()
+                    hard.finish()
+            except subprocess.TimeoutExpired as error:
+                raise subprocess.TimeoutExpired(command, args.timeout, output=bytes(output)) from error
+            except OSError as error:
+                raise AssertionError(f"RX harness I/O failed: {error}\n{output.decode('utf-8', errors='replace')}") from error
+            except AssertionError as error:
+                raise AssertionError(f"{error}\n{output.decode('utf-8', errors='replace')}") from error
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+        return subprocess.CompletedProcess(command, returncode, bytes(output))
+
+
+def qemu_command(args, case, capture=None, net_fd=None):
     command = [
         args.qemu, "-machine", "pc", "-accel", "tcg", "-cpu", "qemu64",
         "-smp", "2,sockets=2,cores=1,threads=1" if case == "smp-unsupported" else "1",
@@ -345,15 +1045,33 @@ def qemu_command(args, case):
             "-netdev", "user,id=second,restrict=on",
             "-device", "e1000,netdev=second,mac=52:54:00:00:00:02",
         ]
+    if case in KERNEL_SUITE_CASES:
+        if net_fd is None or net_fd < 0:
+            raise AssertionError("kernel suite requires an owned RX socket")
+        slot = "5" if case == "kernel-tests-low-memory" else "3"
+        command += [
+            "-netdev", f"socket,id=irqtest,fd={net_fd}",
+            "-device", f"e1000,netdev=irqtest,addr={slot},mac=52:54:00:12:34:56",
+        ]
+        if capture is not None:
+            # QEMU key/value options escape literal commas by doubling them.
+            filename = str(capture).replace(",", ",,")
+            command += [
+                # Directions are relative to the backend: its RX is the NIC's TX.
+                "-object", f"filter-dump,id=txcapture,netdev=irqtest,queue=rx,file={filename}",
+            ]
     return command
 
 
 def run_case(args, case, index=0):
-    command = qemu_command(args, case)
     log = args.build_dir / "test-logs" / f"{args.case}-{index}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
+    capture = log.with_suffix(".pcap") if case in KERNEL_SUITE_CASES else None
+    if capture is not None:
+        capture.unlink(missing_ok=True)
+    command = qemu_command(args, case) if capture is None else None
     try:
-        completed = subprocess.run(
+        completed = execute_suite(args, case, capture) if capture is not None else subprocess.run(
             command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             timeout=args.timeout, check=False,
         )
@@ -361,9 +1079,18 @@ def run_case(args, case, index=0):
         output = (error.output or b"").decode("utf-8", errors="replace")
         log.write_text(output, encoding="utf-8")
         raise AssertionError(f"QEMU timed out after {args.timeout}s; log: {log}\n{output}") from error
+    except AssertionError as error:
+        log.write_text(str(error), encoding="utf-8")
+        raise AssertionError(f"{error}\nlog: {log}") from error
     output = completed.stdout.decode("utf-8", errors="replace")
     log.write_text(output, encoding="utf-8")
     try:
+        if capture is not None:
+            if not capture.is_file():
+                raise AssertionError("QEMU did not produce the required TX capture")
+            with capture.open("rb") as stream:
+                validate_tx_capture(stream.read(1024 * 1024 + 1))
+            validate_linux_callbacks(output, runtime_symbols(getattr(args, "nm", "nm")))
         validate_result(case, completed.returncode, output)
     except KernelSuiteFailure as error:
         raise KernelSuiteFailure(f"{error}\nlog: {log}\n{output}") from error
@@ -378,7 +1105,7 @@ def main():
     parser.add_argument("--build-dir", required=True, type=Path)
     parser.add_argument("--qemu", default="qemu-system-x86_64")
     parser.add_argument("--nm", default="nm")
-    parser.add_argument("--timeout", type=float, default=20)
+    parser.add_argument("--timeout", type=float, default=80)
     parser.add_argument(
         "--expect-test-failure", action="store_true",
         help="Verify rejection of a complete intentional-failure suite (kernel-tests-fail only)",

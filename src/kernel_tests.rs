@@ -1,15 +1,19 @@
+use crate::linux_driver;
 use crate::{
     Failure,
     boot::BootInfo,
+    completion,
     cpu::{self, X86Cpu},
-    exceptions, heap, io, memory, serial, threads,
+    device_irq, dma, exceptions, heap, io, irq, linux_deferred, linux_dma, linux_driver_tests,
+    linux_irq, linux_runtime, memory, mutex, serial, threads,
 };
+use crate::{driver_memory, driver_platform, driver_service_tests};
 use kutox::fw_cfg::BootMode;
 use moss_libkernel::CpuOps;
 
 struct TestCase {
     name: &'static str,
-    run: fn(&BootInfo, &memory::PhysicalFrames<'static>) -> Result<(), Failure>,
+    run: fn(&BootInfo, &'static memory::PhysicalFrames<'static>) -> Result<(), Failure>,
 }
 
 static TESTS: &[TestCase] = &[
@@ -71,6 +75,170 @@ static TESTS: &[TestCase] = &[
         // dereferenced, so the suite needs no NIC or device ownership.
         run: |boot, allocator| memory::test_mapping_reuse(boot, 0xf000_0000, allocator).map(|_| ()),
     },
+    TestCase {
+        name: "irq.timer_delivery",
+        run: irq::test_delivery,
+    },
+    TestCase {
+        name: "irq.register_restore",
+        run: irq::test_register_restore,
+    },
+    TestCase {
+        name: "irq.masking_cleanup",
+        run: irq::test_masking_cleanup,
+    },
+    TestCase {
+        name: "irq.mapping_rollback",
+        run: irq::test_mapping_rollback,
+    },
+    TestCase {
+        name: "threads.wait_queues",
+        run: threads::wait_tests::queues,
+    },
+    TestCase {
+        name: "threads.timed_sleep",
+        run: threads::wait_tests::timed_sleep,
+    },
+    TestCase {
+        name: "threads.wait_cancel",
+        run: threads::wait_tests::cancellation,
+    },
+    TestCase {
+        name: "sync.completion_counting",
+        run: completion::tests::counting,
+    },
+    TestCase {
+        name: "sync.completion_broadcast",
+        run: completion::tests::broadcast,
+    },
+    TestCase {
+        name: "sync.completion_timeout_cancel",
+        run: completion::tests::timeout_cancel,
+    },
+    TestCase {
+        name: "sync.mutex_exclusion",
+        run: mutex::tests::exclusion,
+    },
+    TestCase {
+        name: "sync.mutex_timeout_cancel",
+        run: mutex::tests::timeout_cancel,
+    },
+    TestCase {
+        name: "sync.mutex_deadline_retry",
+        run: mutex::tests::deadline_retry,
+    },
+    TestCase {
+        name: "linux.thread_execution",
+        run: linux_runtime::test_execution,
+    },
+    TestCase {
+        name: "sync.irq_completion",
+        run: threads::irq_tests::completions,
+    },
+    TestCase {
+        name: "threads.irq_wait_races",
+        run: threads::irq_tests::wait_races,
+    },
+    TestCase {
+        name: "linux.irq_completion",
+        run: linux_runtime::test_irq_completion,
+    },
+    TestCase {
+        name: "irq.platform_discovery",
+        run: device_irq::discovery,
+    },
+    TestCase {
+        name: "irq.device_delivery",
+        run: device_irq::delivery,
+    },
+    TestCase {
+        name: "irq.device_masking_cleanup",
+        run: device_irq::masking_cleanup,
+    },
+    TestCase {
+        name: "dma.coherent_allocation",
+        run: dma::tests::allocation,
+    },
+    TestCase {
+        name: "dma.ownership",
+        run: dma::tests::ownership,
+    },
+    TestCase {
+        name: "linux.coherent_dma",
+        run: linux_dma::test,
+    },
+    TestCase {
+        name: "linux.driver_atomics",
+        run: linux_driver_tests::atomics,
+    },
+    TestCase {
+        name: "linux.driver_lifecycle",
+        run: linux_driver_tests::lifecycle,
+    },
+    TestCase {
+        name: "linux.driver_work",
+        run: linux_driver_tests::work,
+    },
+    TestCase {
+        name: "linux.driver_napi",
+        run: linux_driver_tests::napi,
+    },
+    TestCase {
+        name: "linux.driver_irq",
+        run: linux_driver_tests::irq,
+    },
+    TestCase {
+        name: "linux.driver_worker_rollback",
+        run: linux_driver_tests::worker_rollback,
+    },
+    TestCase {
+        name: "linux.driver_allocation",
+        run: driver_service_tests::allocation,
+    },
+    TestCase {
+        name: "linux.driver_streaming_dma",
+        run: driver_service_tests::dma,
+    },
+    TestCase {
+        name: "linux.driver_packets",
+        run: driver_service_tests::packets,
+    },
+    TestCase {
+        name: "linux.driver_capacity",
+        run: driver_service_tests::capacity,
+    },
+    TestCase {
+        name: "linux.driver_failed_open",
+        run: driver_service_tests::failed_open,
+    },
+    TestCase {
+        name: "linux.e1000_lifecycle",
+        run: linux_driver::lifecycle,
+    },
+    TestCase {
+        name: "linux.e1000_failures",
+        run: linux_driver::failures,
+    },
+    TestCase {
+        name: "linux.e1000_tx",
+        run: linux_driver::transmit,
+    },
+    TestCase {
+        name: "linux.e1000_rx",
+        run: linux_driver::receive,
+    },
+    TestCase {
+        name: "linux.e1000_wrap",
+        run: linux_driver::wrap,
+    },
+    TestCase {
+        name: "linux.e1000_backpressure",
+        run: linux_driver::backpressure,
+    },
+    TestCase {
+        name: "linux.e1000_teardown",
+        run: linux_driver::teardown,
+    },
 ];
 
 static INTENTIONAL_FAILURE: TestCase = TestCase {
@@ -89,7 +257,19 @@ pub fn run(boot: &BootInfo) -> ! {
     serial::print(format_args!("KTAP version 1\n1..{total}\n"));
     if cpu::interrupts_enabled()
         || X86Cpu::irq_lock_depth() != 0
-        || !threads::is_idle()
+        || !threads::is_quiescent()
+        || !irq::is_quiescent()
+        || !completion::tests::quiescent()
+        || !threads::irq_tests::quiescent()
+        || !mutex::tests::quiescent()
+        || !linux_runtime::quiescent()
+        || !linux_deferred::quiescent()
+        || !linux_irq::quiescent()
+        || !driver_memory::quiescent()
+        || !driver_platform::quiescent()
+        || !device_irq::quiescent()
+        || !linux_dma::quiescent()
+        || !memory::apic_window_unused(boot)
         || !memory::stack_window_unused(boot)
         || !memory::mmio_window_unused(boot)
     {
@@ -147,7 +327,19 @@ pub fn run(boot: &BootInfo) -> ! {
             || heap_integrity.is_err()
             || heap_before != heap.stats()
             || X86Cpu::irq_lock_depth() != 0
-            || !threads::is_idle()
+            || !threads::is_quiescent()
+            || !irq::is_quiescent()
+            || !completion::tests::quiescent()
+            || !threads::irq_tests::quiescent()
+            || !mutex::tests::quiescent()
+            || !linux_runtime::quiescent()
+            || !linux_deferred::quiescent()
+            || !linux_irq::quiescent()
+            || !driver_memory::quiescent()
+            || !driver_platform::quiescent()
+            || !device_irq::quiescent()
+            || !linux_dma::quiescent()
+            || !memory::apic_window_unused(boot)
             || !memory::stack_window_unused(boot)
             || !memory::mmio_window_unused(boot);
         if interrupts_changed || memory_changed {

@@ -13,6 +13,16 @@ SECTIONS {
     .text : { *(.text .text.*) } :text
     . = ALIGN(4096);
     .rodata : { *(.rodata .rodata.*) } :rodata
+    .kutox.driver : {
+        KEEP(*(.kutox.module_init))
+        KEEP(*(.kutox.module_exit))
+        KEEP(*(.kutox.parameters))
+        KEEP(*(.kutox.parameter_descriptions))
+        KEEP(*(.kutox.device_tables))
+    } :rodata
+    .kutox.compile_only : { KEEP(*(.kutox.compile_only)) } :rodata
+    ASSERT(SIZEOF(.kutox.compile_only) == 0,
+           "compile-only Linux driver objects are not a runtime driver")
     . = ALIGN(4096);
     .data : {
         *(.data .data.*)

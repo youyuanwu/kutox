@@ -13,22 +13,35 @@ static bool deny_eeprom_grant;
 static u32 denied_grants;
 static u32 eeprom_reads;
 static bool probe_active;
+extern bool kutox_driver_mmio(uintptr_t, u32, bool);
+extern int kutox_vprint(const char *, va_list);
+#ifdef KUTOX_E1000_FULL_SOURCE
+extern void kutox_c_tx_mmio(uintptr_t, u32, bool);
+extern void kutox_c_rx_mmio(uintptr_t, u32, bool);
+#endif
 
-static void check_address(const volatile void *address)
+static void check_address(const volatile void *address, u32 value, bool writing)
 {
-    uintptr_t value = (uintptr_t)address;
-    if (!probe_active || value < mmio_base || value - mmio_base > mmio_length - 4 ||
-        (value & 3))
+    uintptr_t pointer = (uintptr_t)address;
+    if (!probe_active && kutox_driver_mmio(pointer, value, writing)) return;
+    if (!probe_active || pointer < mmio_base || pointer - mmio_base > mmio_length - 4 ||
+        (pointer & 3))
         kutox_platform_fail("mmio_bounds");
 }
 
 u32 readl(const volatile void *address)
 {
-    check_address(address);
+    check_address(address, 0, false);
     __asm__ volatile ("" ::: "memory");
     u32 value = *(const volatile u32 *)address;
     __asm__ volatile ("lfence" ::: "memory");
-    if ((uintptr_t)address == mmio_base + E1000_EECD) {
+#ifdef KUTOX_E1000_FULL_SOURCE
+    if (!probe_active) {
+        kutox_c_tx_mmio((uintptr_t)address,value,false);
+        kutox_c_rx_mmio((uintptr_t)address,value,false);
+    }
+#endif
+    if (probe_active && (uintptr_t)address == mmio_base + E1000_EECD) {
         eeprom_reads++;
         if (deny_eeprom_grant) {
             value &= ~E1000_EECD_GNT;
@@ -40,41 +53,21 @@ u32 readl(const volatile void *address)
 
 void writel(u32 value, volatile void *address)
 {
-    check_address(address);
+    check_address(address, value, true);
     __asm__ volatile ("" ::: "memory");
     *(volatile u32 *)address = value;
     __asm__ volatile ("" ::: "memory");
-}
-
-void kutox_lock(struct mutex *lock)
-{
-    kutox_check_boot_context();
-    if (__atomic_test_and_set(&lock->held, __ATOMIC_ACQUIRE))
-        kutox_platform_fail("lock_contention");
-}
-
-void kutox_unlock(struct mutex *lock)
-{
-    kutox_check_boot_context();
-    if (!__atomic_load_n(&lock->held, __ATOMIC_RELAXED))
-        kutox_platform_fail("unlock_unheld");
-    __atomic_clear(&lock->held, __ATOMIC_RELEASE);
+#ifdef KUTOX_E1000_FULL_SOURCE
+    if (!probe_active) {
+        kutox_c_tx_mmio((uintptr_t)address,value,true);
+        kutox_c_rx_mmio((uintptr_t)address,value,true);
+    }
+#endif
 }
 
 void udelay(unsigned long usec) { kutox_delay_us(usec); }
 
-void msleep(unsigned int msec)
-{
-    kutox_platform_fail("msleep_without_scheduler");
-}
-
-int cond_resched(void)
-{
-    /* No runnable tasks exist in the single-CPU, interrupt-disabled probe. */
-    kutox_check_boot_context();
-    return 0;
-}
-
+#ifndef KUTOX_E1000_FULL_SOURCE
 struct net_device *e1000_get_hw_dev(struct e1000_hw *hw)
 {
     struct e1000_adapter *adapter = hw->back;
@@ -82,55 +75,16 @@ struct net_device *e1000_get_hw_dev(struct e1000_hw *hw)
         kutox_platform_fail("log_context");
     return adapter->netdev;
 }
-
-static void print_string(const char *string)
-{
-    while (*string)
-        kutox_serial_byte((u8)*string++);
-}
-
-static void print_number(unsigned int value, unsigned int base)
-{
-    char digits[32];
-    unsigned int length = 0;
-    do {
-        digits[length++] = "0123456789abcdef"[value % base];
-        value /= base;
-    } while (value);
-    while (length)
-        kutox_serial_byte((u8)digits[--length]);
-}
+#endif
 
 void kutox_debug(const struct net_device *dev, const char *format, ...)
 {
-    if (!dev || !dev->name)
+    if (!dev || !dev->name[0])
         kutox_platform_fail("log_context");
-    print_string("LINUX_E1000 ");
-    print_string(dev->name);
-    print_string(": ");
+    printk("LINUX_E1000 %s: ", dev->name);
     va_list arguments;
     va_start(arguments, format);
-    for (; *format; format++) {
-        if (*format != '%') {
-            kutox_serial_byte((u8)*format);
-            continue;
-        }
-        format++;
-        switch (*format) {
-        case '%': kutox_serial_byte('%'); break;
-        case 's': print_string(va_arg(arguments, const char *)); break;
-        case 'u': print_number(va_arg(arguments, unsigned int), 10); break;
-        case 'x': print_number(va_arg(arguments, unsigned int), 16); break;
-        case 'd': {
-            int value = va_arg(arguments, int);
-            if (value < 0)
-                kutox_serial_byte('-');
-            print_number(value < 0 ? 0u - (unsigned int)value : (unsigned int)value, 10);
-            break;
-        }
-        default: kutox_platform_fail("unsupported_log_format");
-        }
-    }
+    kutox_vprint(format, arguments);
     va_end(arguments);
 }
 
@@ -151,7 +105,8 @@ void iowrite16_rep(volatile void *address, const void *buffer, unsigned long cou
 
 void outl(u32 value, unsigned long port)
 {
-    kutox_platform_fail("outl");
+    extern void kutox_driver_outl(u32, unsigned long);
+    kutox_driver_outl(value,port);
 }
 
 void memcpy_fromio(void *destination, const volatile void *source, size_t count)

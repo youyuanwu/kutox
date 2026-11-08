@@ -1,0 +1,13 @@
+--target=x86_64-unknown-none
+-std=gnu11
+-ffreestanding
+-fno-builtin
+-fno-stack-protector
+-fno-pic
+-fno-pie
+-mno-red-zone
+-mgeneral-regs-only
+-mcmodel=kernel
+-ffunction-sections
+-fdata-sections
+-Wno-unused-parameter

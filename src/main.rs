@@ -4,13 +4,30 @@
 extern crate alloc;
 
 mod boot;
+mod completion;
 mod cpu;
+mod device_irq;
+mod dma;
+mod driver_memory;
+mod driver_platform;
+mod driver_service_tests;
+mod e1000;
 mod exceptions;
 mod heap;
 mod io;
+mod irq;
 mod kernel_tests;
+mod linux_deferred;
+mod linux_dma;
+mod linux_driver;
+mod linux_driver_tests;
+mod linux_hardening;
+mod linux_irq;
+mod linux_runtime;
 mod memory;
+mod mutex;
 mod pci;
+mod platform;
 mod serial;
 mod threads;
 mod time;
@@ -175,25 +192,27 @@ fn probe() -> Result<[u8; 6], Failure> {
         return Err(Failure::new("heap_cleanup", -1));
     }
     println!("BOOT_MEMORY_TABLES allocated={table_count} released={table_count}");
-    let stage = match result.stage {
-        0 => "bridge_validate",
-        1 => "mac_type",
-        2 => "eeprom_params",
-        3 => "read_eeprom",
-        4 => "complete",
-        _ => return Err(Failure::new("bridge_stage", -1)),
-    };
-    if result.code != 0 {
-        return Err(Failure::new(stage, result.code));
+    result.permanent_mac()
+}
+
+impl ProbeResult {
+    fn permanent_mac(&self) -> Result<[u8; 6], Failure> {
+        let stage = match self.stage {
+            0 => "bridge_validate",
+            1 => "mac_type",
+            2 => "eeprom_params",
+            3 => "read_eeprom",
+            4 => "complete",
+            _ => return Err(Failure::new("bridge_stage", -1)),
+        };
+        if self.code != 0 {
+            return Err(Failure::new(stage, self.code));
+        }
+        if self.stage != 4 || self.mac == [0; 6] || self.mac[0] & 1 != 0 || self.eeprom_reads == 0 {
+            return Err(Failure::new("mac_validation", -1));
+        }
+        Ok(self.mac)
     }
-    if result.stage != 4
-        || result.mac == [0; 6]
-        || result.mac[0] & 1 != 0
-        || result.eeprom_reads == 0
-    {
-        return Err(Failure::new("mac_validation", -1));
-    }
-    Ok(result.mac)
 }
 
 #[unsafe(no_mangle)]
@@ -212,7 +231,7 @@ extern "C" fn kutox_check_boot_context() {
     unsafe { asm!("pushfq; pop {}", out(reg) flags, options(preserves_flags)) };
     assert!(flags & (1 << 9) == 0, "probe requires interrupts disabled");
     assert!(
-        threads::is_idle(),
+        threads::is_quiescent(),
         "Linux probe requires the boot dispatcher"
     );
 }

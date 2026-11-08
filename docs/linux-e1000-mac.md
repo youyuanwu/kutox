@@ -2,7 +2,10 @@
 
 ## Status and objective
 
-This is a proposed design, not an implemented driver or build interface.
+This is the historical design for the now-implemented boot-time MAC helper
+milestone. Its exclusions apply to that proof, not to the project's full
+Linux-driver reuse objective. The active direction is the
+[Linux e1000 driver-reuse roadmap](rust-kernel-linux-drivers.md#linux-e1000-driver-reuse-roadmap).
 
 Boot a small x86_64 Rust kernel in QEMU, execute Linux e1000 hardware code,
 and report the emulated NIC's permanent MAC address. The reported address
@@ -203,14 +206,26 @@ Do not benchmark throughput at this stage: there is no packet data path.
 
 ## Follow-on milestones
 
-After this goal is verified:
+The boot MAC helper is complete. Kernel scheduling, IRQ/DMA foundations and a
+source-facing DMA/packet tests validate the platform. The earlier native TX
+scaffold has been removed in favor of the original Linux packet driver.
 
-1. Transmit one Ethernet frame and verify its contents in a capture.
-2. Receive one known frame.
-3. Add interrupt-driven operation.
-4. Adapt packet ownership and readiness to the native NIC interface and
-   Embassy networking.
+The isolated original-source compile/dependency check and synthetic
+execution/object/deferred and PCI/packet/DMA service contracts are now complete.
+Original module/probe/open/close, IRQ, watchdog and NAPI callbacks now execute
+in separate lifecycle cases. Original xmit, TXDW IRQ and NAPI TX cleanup now
+have exact four-frame packet acceptance with no native TX implementation.
+Controlled original RX now verifies copybreak/build-skb delivery, FCS handling,
+replacement-buffer pressure/recovery and explicit unsupported-packet drops.
+Ring/backpressure/pending-teardown hardening now passes for the selected QEMU/
+BSP profile. All eight phases are complete, with an explicit
+[as-built support statement](rust-kernel-linux-drivers.md#as-built-support-statement).
+The selected packet driver is operational, but general LinuxKPI, physical NICs,
+offloads and a native network stack remain outside that profile. Upstream open
+requires RX setup and link work even for TX-first testing; declarations or
+constant-success substitutes do not satisfy it.
 
-Each step needs a new dependency review. Hardware-helper reuse does not imply
-that these later steps can run an unmodified complete Linux driver without
-additional subsystem support.
+Do not follow the earlier transmit/receive sequence by writing another native
+Rust NIC driver. The [current roadmap](rust-kernel-linux-drivers.md#linux-e1000-driver-reuse-roadmap)
+defines the phased source/configuration, environment, lifecycle, packet and
+cleanup gates. A native network stack/Embassy adapter is subsequent work.

@@ -6,6 +6,8 @@ find_program(CARGO cargo REQUIRED)
 find_program(XORRISO xorriso REQUIRED)
 find_program(QEMU qemu-system-x86_64 REQUIRED)
 find_program(NM nm REQUIRED)
+find_program(LINUX_DRIVER_CLANG clang REQUIRED)
+find_program(LINUX_DRIVER_LD ld REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 include(FetchContent)
@@ -34,6 +36,19 @@ add_custom_command(
 )
 add_custom_target(images DEPENDS "${CMAKE_BINARY_DIR}/kutox.iso")
 
+add_custom_target(linux-driver-check
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/linux_driver_check.py"
+        --build-dir "${CMAKE_BINARY_DIR}" --clang "${LINUX_DRIVER_CLANG}" --ld "${LINUX_DRIVER_LD}"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    USES_TERMINAL
+    VERBATIM
+)
+add_test(NAME linux-driver-compile-check
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/linux_driver_check.py"
+        --build-dir "${CMAKE_BINARY_DIR}" --clang "${LINUX_DRIVER_CLANG}" --ld "${LINUX_DRIVER_LD}"
+)
+set_tests_properties(linux-driver-compile-check PROPERTIES TIMEOUT 65 RUN_SERIAL TRUE)
+
 foreach(case IN ITEMS known alternate missing unsupported ambiguous eeprom-timeout low-memory default-mode invalid-mode page-fault general-protection double-fault unexpected-page-fault smp-unsupported repeat provenance)
     add_test(NAME "mac-${case}"
         COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
@@ -45,19 +60,19 @@ endforeach()
 add_test(NAME kernel-suite
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
         --case kernel-tests --build-dir "${CMAKE_BINARY_DIR}"
-        --qemu "${QEMU}" --timeout 20
+        --qemu "${QEMU}" --timeout 80
 )
 add_test(NAME kernel-suite-rejection
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
         --case kernel-tests-fail --expect-test-failure --build-dir "${CMAKE_BINARY_DIR}"
-        --qemu "${QEMU}" --timeout 20
+        --qemu "${QEMU}" --timeout 80
 )
 add_test(NAME kernel-suite-low-memory
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
         --case kernel-tests-low-memory --build-dir "${CMAKE_BINARY_DIR}"
-        --qemu "${QEMU}" --timeout 20
+        --qemu "${QEMU}" --timeout 80
 )
-set_tests_properties(kernel-suite kernel-suite-rejection kernel-suite-low-memory PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
+set_tests_properties(kernel-suite kernel-suite-rejection kernel-suite-low-memory PROPERTIES TIMEOUT 85 RUN_SERIAL TRUE)
 add_test(NAME heap-oom-rejection
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
         --case heap-oom --build-dir "${CMAKE_BINARY_DIR}"

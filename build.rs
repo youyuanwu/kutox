@@ -2,46 +2,6 @@ use std::{env, fs, path::PathBuf, process::Command};
 
 const LINUX_REVISION: &str = "79a907609d53d5cd645b42c11550d295d43abf99";
 
-const HEADERS: &[&str] = &[
-    "asm/byteorder.h",
-    "asm/io.h",
-    "asm/irq.h",
-    "linux/bitfield.h",
-    "linux/bitops.h",
-    "linux/capability.h",
-    "linux/delay.h",
-    "linux/dma-mapping.h",
-    "linux/errno.h",
-    "linux/etherdevice.h",
-    "linux/ethtool.h",
-    "linux/if_vlan.h",
-    "linux/in.h",
-    "linux/interrupt.h",
-    "linux/ioport.h",
-    "linux/ip.h",
-    "linux/ipv6.h",
-    "linux/kernel.h",
-    "linux/list.h",
-    "linux/mii.h",
-    "linux/mm.h",
-    "linux/module.h",
-    "linux/netdevice.h",
-    "linux/pagemap.h",
-    "linux/pci.h",
-    "linux/reboot.h",
-    "linux/skbuff.h",
-    "linux/slab.h",
-    "linux/stddef.h",
-    "linux/string.h",
-    "linux/tcp.h",
-    "linux/timer.h",
-    "linux/types.h",
-    "linux/udp.h",
-    "linux/vmalloc.h",
-    "net/checksum.h",
-    "net/pkt_sched.h",
-];
-
 fn main() {
     let target = env::var("TARGET").unwrap();
     // Portable library tests do not compile or link the kernel's C sources.
@@ -90,7 +50,8 @@ fn main() {
     }
     println!("cargo:rustc-env=KUTOX_LINUX_REVISION={LINUX_REVISION}");
     let include = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("include");
-    for header in HEADERS {
+    let headers = fs::read_to_string("compat/headers.txt").expect("cannot read C header allowlist");
+    for header in headers.lines() {
         let path = include.join(header);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, "#include <kutox_compat.h>\n").unwrap();
@@ -103,26 +64,67 @@ fn main() {
     ] {
         println!("cargo:rerun-if-changed={path}");
     }
-    cc::Build::new()
+    let flags = fs::read_to_string("compat/cflags.txt").expect("cannot read freestanding C flags");
+    let mut build = cc::Build::new();
+    build
         .compiler("clang")
         .include(&include)
         .include("compat")
         .include(&driver)
-        .file(driver.join("e1000_hw.c"))
+        .file("compat/runtime.c")
+        .file("compat/execution_ops.c")
+        .file("compat/deferred.c")
+        .file("compat/diagnostics.c")
+        .file("compat/driver_execution_test.c")
+        .file("compat/execution_test.c")
+        .file("compat/dma_test.c")
+        .warnings_into_errors(true);
+    for flag in flags.lines() {
+        build.flag(flag);
+    }
+    build.compile("kutox_runtime");
+    let source_include = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("source-include");
+    let extra = fs::read_to_string("compat/driver-check/headers.txt").expect("source header list");
+    for header in headers.lines().chain(extra.lines()) {
+        let path = source_include.join(header);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "#include <driver_services.h>\n").unwrap();
+    }
+    for (header, target) in [
+        ("asm/sockios.h", "asm-generic/sockios.h"),
+        ("asm/types.h", "asm-generic/types.h"),
+        ("linux/in6.h", "linux/in6.h"),
+        ("linux/if_ether.h", "linux/if_ether.h"),
+    ] {
+        let path = source_include.join(header);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, format!("#include <uapi/{target}>\n")).unwrap();
+    }
+    let mut source = cc::Build::new();
+    source
+        .compiler("clang")
+        .include(&source_include)
+        .include("compat")
+        .include(&driver)
+        .include("linux/include")
+        .include("linux/include/uapi")
+        .include("linux/arch/x86/include/uapi")
+        .file("compat/driver_memory.c")
+        .file("compat/driver_pci.c")
+        .file("compat/driver_packet.c")
+        .file("compat/driver_optional.c")
+        .file("compat/driver_services_test.c")
         .file("compat/bridge.c")
-        .flag("--target=x86_64-unknown-none")
-        .flag("-std=gnu11")
-        .flag("-ffreestanding")
-        .flag("-fno-builtin")
-        .flag("-fno-stack-protector")
-        .flag("-fno-pic")
-        .flag("-fno-pie")
-        .flag("-mno-red-zone")
-        .flag("-mgeneral-regs-only")
-        .flag("-mcmodel=kernel")
-        .flag("-ffunction-sections")
-        .flag("-fdata-sections")
-        .flag("-Wno-unused-parameter")
-        .warnings_into_errors(true)
-        .compile("linux_e1000");
+        .file(driver.join("e1000_main.c"))
+        .file(driver.join("e1000_hw.c"))
+        .file(driver.join("e1000_param.c"))
+        .file(driver.join("e1000_ethtool.c"))
+        .file("compat/driver_lifecycle.c")
+        .define("KUTOX_E1000_FULL_SOURCE", "1")
+        .warnings_into_errors(true);
+    for flag in flags.lines() {
+        source.flag(flag);
+    }
+    source.flag("-Wno-pointer-sign").flag("-Wno-sign-compare");
+    source.compile("linux_e1000");
 }

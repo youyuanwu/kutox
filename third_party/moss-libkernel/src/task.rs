@@ -6,6 +6,7 @@
 pub enum TaskState {
     Runnable,
     Running,
+    Sleeping,
     Finished,
 }
 
@@ -23,6 +24,14 @@ impl TaskState {
 
     pub fn finish(&mut self) -> Result<(), InvalidTransition> {
         self.transition(Self::Running, Self::Finished)
+    }
+
+    pub fn sleep(&mut self) -> Result<(), InvalidTransition> {
+        self.transition(Self::Running, Self::Sleeping)
+    }
+
+    pub fn wake(&mut self) -> Result<(), InvalidTransition> {
+        self.transition(Self::Sleeping, Self::Runnable)
     }
 
     fn transition(&mut self, from: Self, to: Self) -> Result<(), InvalidTransition> {
