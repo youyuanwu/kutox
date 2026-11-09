@@ -3,15 +3,7 @@
 
 extern crate alloc;
 
-#[allow(
-    dead_code,
-    reason = "Production async API awaits network boot integration"
-)]
 mod async_runtime;
-#[allow(
-    dead_code,
-    reason = "Production async API awaits network boot integration"
-)]
 mod async_sync;
 mod boot;
 mod completion;
@@ -20,7 +12,7 @@ mod cpu;
     not(feature = "guest-tests"),
     allow(
         dead_code,
-        reason = "Kernel service API retained before boot integration"
+        reason = "Additional kernel service APIs are available to native clients"
     )
 )]
 mod dma;
@@ -29,7 +21,7 @@ mod driver_init;
     not(feature = "guest-tests"),
     allow(
         dead_code,
-        reason = "Kernel service API retained before boot integration"
+        reason = "Additional kernel service APIs are available to native clients"
     )
 )]
 mod driver_memory;
@@ -37,7 +29,7 @@ mod driver_memory;
     not(feature = "guest-tests"),
     allow(
         dead_code,
-        reason = "Kernel service API retained before boot integration"
+        reason = "Additional kernel service APIs are available to native clients"
     )
 )]
 mod driver_platform;
@@ -50,7 +42,7 @@ mod io;
     not(feature = "guest-tests"),
     allow(
         dead_code,
-        reason = "Kernel service API retained before boot integration"
+        reason = "Additional kernel service APIs are available to native clients"
     )
 )]
 mod irq;
@@ -66,7 +58,7 @@ mod kernel_runtime;
     not(feature = "guest-tests"),
     allow(
         dead_code,
-        reason = "Kernel service API retained before boot integration"
+        reason = "Additional kernel service APIs are available to native clients"
     )
 )]
 mod linux_deferred;
@@ -74,7 +66,7 @@ mod linux_deferred;
     not(feature = "guest-tests"),
     allow(
         dead_code,
-        reason = "Kernel service API retained before boot integration"
+        reason = "Additional kernel service APIs are available to native clients"
     )
 )]
 mod linux_dma;
@@ -82,7 +74,7 @@ mod linux_dma;
     not(feature = "guest-tests"),
     allow(
         dead_code,
-        reason = "Kernel service API retained before boot integration"
+        reason = "Additional kernel service APIs are available to native clients"
     )
 )]
 mod linux_driver;
@@ -90,7 +82,7 @@ mod linux_driver;
     not(feature = "guest-tests"),
     allow(
         dead_code,
-        reason = "Kernel service API retained before boot integration"
+        reason = "Additional kernel service APIs are available to native clients"
     )
 )]
 mod linux_irq;
@@ -98,7 +90,7 @@ mod linux_irq;
     not(feature = "guest-tests"),
     allow(
         dead_code,
-        reason = "Kernel service API retained before boot integration"
+        reason = "Additional kernel service APIs are available to native clients"
     )
 )]
 mod linux_runtime;
@@ -106,7 +98,7 @@ mod linux_runtime;
     not(feature = "guest-tests"),
     allow(
         dead_code,
-        reason = "Kernel service API retained before boot integration"
+        reason = "Additional kernel service APIs are available to native clients"
     )
 )]
 mod memory;
@@ -114,14 +106,10 @@ mod memory;
     not(feature = "guest-tests"),
     allow(
         dead_code,
-        reason = "Kernel service API retained before boot integration"
+        reason = "Additional kernel service APIs are available to native clients"
     )
 )]
 mod mutex;
-#[allow(
-    dead_code,
-    reason = "Production packet broker awaits IP boot integration"
-)]
 mod net_async;
 #[cfg_attr(
     not(feature = "guest-tests"),
@@ -143,7 +131,7 @@ mod net_stack;
     not(feature = "guest-tests"),
     allow(
         dead_code,
-        reason = "Kernel service API retained before boot integration"
+        reason = "Additional kernel service APIs are available to native clients"
     )
 )]
 mod pci;
@@ -151,7 +139,7 @@ mod pci;
     not(feature = "guest-tests"),
     allow(
         dead_code,
-        reason = "Kernel service API retained before boot integration"
+        reason = "Additional kernel service APIs are available to native clients"
     )
 )]
 mod platform;
@@ -160,7 +148,7 @@ mod serial;
     not(feature = "guest-tests"),
     allow(
         dead_code,
-        reason = "Kernel service API retained before boot integration"
+        reason = "Additional kernel service APIs are available to native clients"
     )
 )]
 mod threads;

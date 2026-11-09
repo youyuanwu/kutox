@@ -11,6 +11,7 @@ mod linux_execution;
 pub(crate) mod linux_hardening;
 pub(crate) mod native_drivers;
 pub(crate) mod network_stack;
+pub(crate) mod support;
 
 use self::{
     driver_services as driver_service_tests, linux_e1000 as linux_driver,
@@ -31,6 +32,18 @@ use moss_libkernel::CpuOps;
 pub(crate) struct TestCase {
     pub(crate) name: &'static str,
     pub(crate) run: fn(&BootInfo, &'static memory::PhysicalFrames<'static>) -> Result<(), Failure>,
+}
+
+impl TestCase {
+    fn isolated(&self) -> bool {
+        matches!(
+            self.name,
+            "cpu.irq_lock_restore"
+                | "cpu.breakpoint_return"
+                | "memory.alignment_reservations"
+                | "heap.box_vec"
+        )
+    }
 }
 
 static TESTS: &[TestCase] = &[
@@ -278,7 +291,18 @@ static TESTS: &[TestCase] = &[
 
 static INTENTIONAL_FAILURE: TestCase = TestCase {
     name: "harness.intentional_failure",
-    run: |_, _| Err(Failure::new("intentional_failure", -1)),
+    run: |_, _| {
+        let mut context = support::Context::new();
+        context.expect_eq(false, true, file!(), line!());
+        support::assert_eq!(context.finish().err().map(|error| error.code), Some(-320));
+        let mut cleanup =
+            kutox::test_cleanup::Cleanup::<_, Failure, 1>::new((), support::cleanup_error);
+        cleanup
+            .add(|_| Err(Failure::new("intentional_cleanup", -321)))
+            .map_err(|_| Failure::new("test_cleanup_capacity", -321))?;
+        drop(cleanup);
+        Err(Failure::new("intentional_body", -320))
+    },
 };
 
 fn bail(stage: &str) -> ! {
@@ -288,29 +312,33 @@ fn bail(stage: &str) -> ! {
 
 pub fn run(boot: &BootInfo) -> ! {
     let inject = boot.mode == BootMode::KernelTestsFail;
-    if cpu::interrupts_enabled()
-        || X86Cpu::irq_lock_depth() != 0
-        || !threads::is_quiescent()
-        || !crate::async_runtime::quiescent()
-        || !crate::net_async::quiescent()
-        || !irq::is_quiescent()
-        || !completion::tests::quiescent()
-        || !threads::irq_tests::quiescent()
-        || !mutex::tests::quiescent()
-        || !linux_runtime::quiescent()
-        || !crate::kernel_runtime::quiescent()
-        || !crate::kernel_runtime::tests::quiescent()
-        || !linux_deferred::quiescent()
-        || !linux_irq::quiescent()
-        || !driver_memory::quiescent()
-        || !driver_platform::quiescent()
-        || !device_irq::quiescent()
-        || !linux_dma::quiescent()
-        || !memory::apic_window_unused(boot)
-        || !memory::stack_window_unused(boot)
-        || !memory::mmio_window_unused(boot)
-    {
+    if cpu::interrupts_enabled() || !support::quiescent(boot) {
         bail("invalid_suite_entry_state");
+    }
+    use kutox::test_selection::Selection;
+    if boot.test_selection == Selection::List {
+        for test in TESTS {
+            serial::print(format_args!(
+                "# TEST_CASE name={} suite={} speed={} isolated={}\n",
+                test.name,
+                test.name.split('.').next().unwrap(),
+                if test.isolated() { "normal" } else { "slow" },
+                u8::from(test.isolated()),
+            ));
+        }
+        serial::print(format_args!("# TEST_LIST total={}\n", TESTS.len()));
+        io::finish(true);
+    }
+    if let Selection::Filter(filter) = boot.test_selection {
+        let selected = TESTS.iter().filter(|test| filter.matches(test.name));
+        let total = selected.clone().count();
+        if total == 0 || selected.clone().any(|test| !test.isolated()) {
+            bail("test_filter_dependencies");
+        }
+        serial::print(format_args!(
+            "# TEST_SELECTION filter={} total={total} acceptance=debug\n",
+            filter.as_str(),
+        ));
     }
     let mut storage = memory::MemoryStorage::new();
     let allocator = match memory::initialize(boot, &mut storage) {
@@ -323,8 +351,8 @@ pub fn run(boot: &BootInfo) -> ! {
             bail("memory_initialization");
         }
     };
-    let heap = match heap::initialize(boot, allocator) {
-        Ok(heap) => heap,
+    match heap::initialize(boot, allocator) {
+        Ok(_) => (),
         Err(error) => {
             serial::print(format_args!(
                 "# stage={} code={}\n",
@@ -359,58 +387,33 @@ pub fn run(boot: &BootInfo) -> ! {
     } else {
         TESTS
     };
-    let total = tests.len() + usize::from(inject);
+    let selected = tests.iter().filter(|test| match boot.test_selection {
+        Selection::Filter(filter) => filter.matches(test.name),
+        _ => true,
+    });
+    let total = selected.clone().count() + usize::from(inject);
     serial::print(format_args!("KTAP version 1\n1..{total}\n"));
     let cases = core::iter::once(&INTENTIONAL_FAILURE)
         .filter(|_| inject)
-        .chain(tests);
+        .chain(selected);
     let mut failed = 0;
     for (index, test) in cases.enumerate() {
-        let before = memory::allocation_snapshot(allocator);
-        let heap_before = heap.stats();
-        let result = (test.run)(boot, allocator);
+        let fixture = support::Fixture::new(boot, allocator);
+        let mut result = (test.run)(boot, allocator);
         let interrupts_changed = cpu::interrupts_enabled();
         if interrupts_changed {
             X86Cpu::disable_interrupts();
         }
-        let integrity = allocator.check_invariants();
-        if let Err(error) = integrity {
-            serial::print(format_args!(
-                "# stage=frame_allocator_invariants code={}\n",
-                error as i32
-            ));
+        if fixture.cleanup_failed() {
+            if let Err(error) = &result {
+                serial::print(format_args!(
+                    "# TEST_BODY_ERROR stage={} code={}\n",
+                    error.stage, error.code
+                ));
+            }
+            result = Err(Failure::new("test_fixture_cleanup", -321));
         }
-        let heap_integrity = heap.check_invariants();
-        if let Err(error) = heap_integrity {
-            serial::print(format_args!(
-                "# stage=heap_invariants code={}\n",
-                error as i32
-            ));
-        }
-        let memory_changed = before != memory::allocation_snapshot(allocator)
-            || integrity.is_err()
-            || heap_integrity.is_err()
-            || heap_before != heap.stats()
-            || X86Cpu::irq_lock_depth() != 0
-            || !threads::is_quiescent()
-            || !crate::async_runtime::quiescent()
-            || !crate::net_async::quiescent()
-            || !irq::is_quiescent()
-            || !completion::tests::quiescent()
-            || !threads::irq_tests::quiescent()
-            || !mutex::tests::quiescent()
-            || !linux_runtime::quiescent()
-            || !crate::kernel_runtime::quiescent()
-            || !crate::kernel_runtime::tests::quiescent()
-            || !linux_deferred::quiescent()
-            || !linux_irq::quiescent()
-            || !driver_memory::quiescent()
-            || !driver_platform::quiescent()
-            || !device_irq::quiescent()
-            || !linux_dma::quiescent()
-            || !memory::apic_window_unused(boot)
-            || !memory::stack_window_unused(boot)
-            || !memory::mmio_window_unused(boot);
+        let memory_changed = !fixture.balanced();
         if interrupts_changed || memory_changed {
             serial::print(format_args!(
                 "not ok {} {}\n# interrupts_changed={interrupts_changed} memory_changed={memory_changed}\n",

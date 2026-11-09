@@ -1,0 +1,72 @@
+name: Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: Guest validation tier
+        type: choice
+        options: [smoke, full, soak]
+        default: full
+  schedule:
+    - cron: '17 8 * * 0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  portable:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Initialize pinned driver source
+        run: git submodule update --init --depth 1 linux
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.99.1'
+          targets: x86_64-unknown-none
+          components: rustfmt, clippy
+      - run: python3 scripts/check.py fast
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: results-portable
+          path: build/test-logs/
+
+  guest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ['ON', 'OFF']
+    steps:
+      - uses: actions/checkout@v6
+      - name: Initialize pinned driver source
+        run: git submodule update --init --depth 1 linux
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.99.1'
+          targets: x86_64-unknown-none
+          components: rustfmt, clippy
+      - name: Install build and guest tools
+        run: sudo apt-get update && sudo apt-get install -y clang cmake ninja-build xorriso qemu-system-x86 binutils
+      - name: Run serial profile checks
+        env:
+          PROFILE: ${{ matrix.profile }}
+          TIER: ${{ github.event_name == 'schedule' && 'full' || inputs.tier || 'smoke' }}
+        run: python3 scripts/check.py "$TIER" --profiles "$PROFILE" --scope guest
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: results-${{ matrix.profile }}
+          path: |
+            build/test-logs/
+            build/kutox.iso.manifest.json

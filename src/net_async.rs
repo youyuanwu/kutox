@@ -213,6 +213,10 @@ impl Packet {
         packet.buffer_mut().fill(0);
         Ok(packet)
     }
+    #[cfg_attr(
+        not(feature = "guest-tests"),
+        allow(dead_code, reason = "Native client packet construction")
+    )]
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
         kutox::net_state::Frame::validate(bytes)?;
         let mut packet = Self::empty()?;
@@ -302,6 +306,10 @@ impl Session {
         self.check()?;
         CONTROL.lock_save_irq().info.ok_or(Error::NotReady)
     }
+    #[cfg_attr(
+        not(feature = "guest-tests"),
+        allow(dead_code, reason = "Native client readiness future")
+    )]
     pub fn ready(self) -> Ready {
         Ready {
             session: self,
@@ -330,6 +338,10 @@ impl Session {
         })
     }
     /// On failed admission the caller retains its owned copy.
+    #[cfg_attr(
+        not(feature = "guest-tests"),
+        allow(dead_code, reason = "Native client packet submission")
+    )]
     pub fn submit(self, packet: Packet) -> Result<TxFuture, (Error, Packet)> {
         if let Err(error) = copy_context().and_then(|()| {
             self.check()
@@ -464,6 +476,10 @@ impl Drop for TxFuture {
 }
 
 impl TxFuture {
+    #[cfg_attr(
+        not(feature = "guest-tests"),
+        allow(dead_code, reason = "Native client timeout future")
+    )]
     pub fn timeout(self, usec: u64) -> Result<TimedTx, Error> {
         let sleep = async_sync::sleep_us(usec).map_err(|error| Error::from_code(error.code()))?;
         Ok(TimedTx {
@@ -473,6 +489,10 @@ impl TxFuture {
     }
 }
 
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(dead_code, reason = "Native client timeout future")
+)]
 pub struct TimedTx {
     tx: Option<TxFuture>,
     sleep: async_sync::Sleep,
@@ -505,6 +525,10 @@ pub struct Acquiring {
 pub fn session() -> Acquiring {
     Acquiring { wait: None }
 }
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(dead_code, reason = "Native client readiness future")
+)]
 pub struct Ready {
     session: Session,
     wait: Option<async_sync::EventFuture>,
@@ -584,6 +608,10 @@ impl Future for Receive {
     }
 }
 
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(dead_code, reason = "Native client broker diagnostics")
+)]
 pub fn counts() -> (usize, usize, usize) {
     let control = CONTROL.lock_save_irq();
     (
@@ -592,6 +620,10 @@ pub fn counts() -> (usize, usize, usize) {
         control.rx.count(),
     )
 }
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(dead_code, reason = "Native client broker diagnostics")
+)]
 pub fn stats() -> Stats {
     CONTROL.lock_save_irq().stats
 }

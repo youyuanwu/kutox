@@ -49,6 +49,8 @@ pub struct BootInfo {
     pub mode_configured: bool,
     pub ipv4: kutox::network_config::Config,
     pub rsdp_physical: Option<u64>,
+    #[cfg(feature = "guest-tests")]
+    pub test_selection: kutox::test_selection::Selection,
 }
 
 pub fn processor_count() -> Result<usize, Failure> {
@@ -79,6 +81,12 @@ pub fn collect() -> Result<BootInfo, Failure> {
     let mode = BootMode::selected(configured);
     mode.validate_build()
         .map_err(|error| Failure::new("boot_mode", error as i32))?;
+    let _test_selection = fw_cfg::read_test_options(
+        |selector| io::write16(0x510, selector),
+        || io::read8(0x511),
+        mode,
+    )
+    .map_err(|error| Failure::new("boot_test_options", error as i32))?;
     let ipv4 = if mode.uses_ipv4() {
         fw_cfg::read_ipv4(|selector| io::write16(0x510, selector), || io::read8(0x511))
             .map_err(|error| Failure::new("boot_ipv4", error as i32))?
@@ -107,6 +115,8 @@ pub fn collect() -> Result<BootInfo, Failure> {
             .entries(),
         mode,
         mode_configured: configured.is_some(),
+        #[cfg(feature = "guest-tests")]
+        test_selection: _test_selection,
         ipv4,
         rsdp_physical: RSDP
             .get_response()

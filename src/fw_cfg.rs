@@ -124,6 +124,9 @@ pub enum Error {
     DuplicateIpv4File = -26,
     InvalidIpv4Length = -27,
     InvalidIpv4 = -28,
+    DuplicateTestOptions = -29,
+    InvalidTestOptions = -30,
+    TestOptionsMode = -31,
 }
 
 fn read_bytes<const N: usize>(read: &mut impl FnMut() -> u8) -> [u8; N] {
@@ -139,7 +142,7 @@ pub fn read_mode(
     mut select: impl FnMut(u16),
     mut read: impl FnMut() -> u8,
 ) -> Result<Option<BootMode>, Error> {
-    let Some((bytes, size)) = read_file(
+    let Some((bytes, size)) = read_file::<MAX_MODE_BYTES>(
         &mut select,
         &mut read,
         MODE_FILE,
@@ -179,7 +182,7 @@ pub fn read_ipv4(
     mut select: impl FnMut(u16),
     mut read: impl FnMut() -> u8,
 ) -> Result<crate::network_config::Config, Error> {
-    let Some((bytes, size)) = read_file(
+    let Some((bytes, size)) = read_file::<MAX_MODE_BYTES>(
         &mut select,
         &mut read,
         IPV4_FILE,
@@ -192,13 +195,37 @@ pub fn read_ipv4(
     crate::network_config::Config::parse(&bytes[..size]).map_err(|_| Error::InvalidIpv4)
 }
 
-fn read_file(
+pub fn read_test_options(
+    mut select: impl FnMut(u16),
+    mut read: impl FnMut() -> u8,
+    mode: BootMode,
+) -> Result<crate::test_selection::Selection, Error> {
+    let Some((bytes, size)) = read_file::<64>(
+        &mut select,
+        &mut read,
+        b"opt/kutox/test-options",
+        Error::DuplicateTestOptions,
+        Error::InvalidTestOptions,
+    )?
+    else {
+        return Ok(Default::default());
+    };
+    if !cfg!(feature = "guest-tests") {
+        return Err(Error::TestsDisabled);
+    }
+    if mode != BootMode::KernelTests {
+        return Err(Error::TestOptionsMode);
+    }
+    crate::test_selection::Selection::parse(&bytes[..size]).ok_or(Error::InvalidTestOptions)
+}
+
+fn read_file<const N: usize>(
     select: &mut impl FnMut(u16),
     read: &mut impl FnMut() -> u8,
     filename: &[u8],
     duplicate: Error,
     length: Error,
-) -> Result<Option<([u8; MAX_MODE_BYTES], usize)>, Error> {
+) -> Result<Option<([u8; N], usize)>, Error> {
     select(0);
     if read_bytes::<4>(read) != *b"QEMU" {
         return Ok(None);
@@ -230,7 +257,7 @@ fn read_file(
         if selector < 0x20 || selector & 0xc000 != 0 {
             return Err(Error::MalformedDirectory);
         }
-        if size == 0 || size > MAX_MODE_BYTES {
+        if size == 0 || size > N {
             return Err(length);
         }
         found = Some((size, selector));
@@ -239,7 +266,7 @@ fn read_file(
         return Ok(None);
     };
     select(selector);
-    let mut bytes = [0; MAX_MODE_BYTES];
+    let mut bytes = [0; N];
     for byte in &mut bytes[..size] {
         *byte = read();
     }
@@ -428,6 +455,68 @@ mod tests {
                 value
             },
         )
+    }
+
+    #[test]
+    fn bounded_debug_controls_validate_profile_mode_and_directory() {
+        fn options(
+            files: &[(&str, &[u8])],
+            mode: BootMode,
+        ) -> Result<crate::test_selection::Selection, Error> {
+            let blobs = fixture(files);
+            let state = RefCell::new((0, 0));
+            read_test_options(
+                |selector| *state.borrow_mut() = (selector, 0),
+                || {
+                    let mut current = state.borrow_mut();
+                    let byte = blobs[&current.0][current.1];
+                    current.1 += 1;
+                    byte
+                },
+                mode,
+            )
+        }
+        use crate::test_selection::Selection;
+        const FILE: &str = "opt/kutox/test-options";
+        assert_eq!(options(&[], BootMode::Run), Ok(Selection::All));
+        assert_eq!(
+            options(&[(FILE, b"list")], BootMode::KernelTests),
+            if cfg!(feature = "guest-tests") {
+                Ok(Selection::List)
+            } else {
+                Err(Error::TestsDisabled)
+            }
+        );
+        assert_eq!(
+            options(&[(FILE, b"list")], BootMode::Run),
+            Err(if cfg!(feature = "guest-tests") {
+                Error::TestOptionsMode
+            } else {
+                Error::TestsDisabled
+            })
+        );
+        assert_eq!(
+            options(&[(FILE, b"list"), (FILE, b"list")], BootMode::KernelTests),
+            Err(Error::DuplicateTestOptions)
+        );
+        for value in [b"".as_slice(), &[b'x'; 65]] {
+            assert_eq!(
+                options(&[(FILE, value)], BootMode::KernelTests),
+                Err(Error::InvalidTestOptions)
+            );
+        }
+        if cfg!(feature = "guest-tests") {
+            for value in [b"filter=".as_slice(), b"filter=cpu.[ab]", b"list\0"] {
+                assert_eq!(
+                    options(&[(FILE, value)], BootMode::KernelTests),
+                    Err(Error::InvalidTestOptions)
+                );
+            }
+            assert!(matches!(
+                options(&[(FILE, b"filter=cpu.*")], BootMode::KernelTests),
+                Ok(Selection::Filter(_))
+            ));
+        }
     }
 
     #[test]

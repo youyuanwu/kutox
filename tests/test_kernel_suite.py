@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import qemu_test
+import qemu_process
 from qemu_test import KERNEL_SUITE_CASES, KERNEL_TEST_NAMES, KernelSuiteFailure, REVISION, pci_layout, validate_result
 
 FOUNDATION = "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled"
@@ -354,7 +355,15 @@ def suite_log(case="kernel-tests"):
             else:
                 lines.extend(callback_log(name.endswith("failures"), name.endswith("_tx"), name.endswith("_rx")))
         status = "not ok" if name == "harness.intentional_failure" else "ok"
+        if name == "harness.intentional_failure":
+            lines += [
+                "# TEST_EXPECT file=src/guest_tests/mod.rs line=288 actual=false expected=true",
+                "# TEST_CLEANUP_ERROR stage=intentional_cleanup code=-321",
+                "# TEST_BODY_ERROR stage=intentional_body code=-320",
+            ]
         lines.append(f"{status} {index} {name}")
+        if name == "harness.intentional_failure":
+            lines.append("# stage=test_fixture_cleanup code=-321")
     failures = int(case == "kernel-tests-fail")
     lines.append(f"# Totals: pass:{len(names) - failures} fail:{failures} skip:0 total:{len(names)}")
     return "\n".join(lines) + "\n"
@@ -684,20 +693,22 @@ class KernelSuiteTests(unittest.TestCase):
         )
 
     def test_expect_failure_only_catches_complete_suite_failure(self):
-        arguments = ["qemu_test.py", "--case", "kernel-tests-fail", "--expect-test-failure", "--build-dir", "build"]
-        with patch.object(sys, "argv", arguments):
-            with patch.object(qemu_test, "run_case", side_effect=KernelSuiteFailure("expected")):
-                qemu_test.main()
-            with patch.object(qemu_test, "run_case", side_effect=AssertionError("timeout")):
-                with self.assertRaises(AssertionError):
+        with tempfile.TemporaryDirectory() as directory:
+            arguments = ["qemu_test.py", "--case", "kernel-tests-fail", "--expect-test-failure", "--build-dir", directory]
+            with patch.object(sys, "argv", arguments):
+                with patch.object(qemu_test, "run_case", side_effect=KernelSuiteFailure("expected")):
                     qemu_test.main()
+                with patch.object(qemu_test, "run_case", side_effect=AssertionError("timeout")):
+                    with self.assertRaises(AssertionError):
+                        qemu_test.main()
 
     def test_normal_cli_does_not_swallow_suite_failures(self):
-        arguments = ["qemu_test.py", "--case", "kernel-tests-fail", "--build-dir", "build"]
-        with patch.object(sys, "argv", arguments):
-            with patch.object(qemu_test, "run_case", side_effect=KernelSuiteFailure("expected")):
-                with self.assertRaises(KernelSuiteFailure):
-                    qemu_test.main()
+        with tempfile.TemporaryDirectory() as directory:
+            arguments = ["qemu_test.py", "--case", "kernel-tests-fail", "--build-dir", directory]
+            with patch.object(sys, "argv", arguments):
+                with patch.object(qemu_test, "run_case", side_effect=KernelSuiteFailure("expected")):
+                    with self.assertRaises(KernelSuiteFailure):
+                        qemu_test.main()
 
 
 def tx_pcap(packets=None, endian="<"):
@@ -900,7 +911,7 @@ for line in {journal!r}.splitlines():
             helper.write_text(script,encoding="utf-8")
             def command(args, case, capture, fd):
                 return [sys.executable, str(helper), str(fd)]
-            with patch.object(qemu_test, "qemu_command", side_effect=command):
+            with patch.object(qemu_process, "qemu_command", side_effect=command):
                 completed = qemu_test.execute_suite(args, "kernel-tests", None)
         self.assertEqual(completed.returncode, 0)
         self.assertEqual(completed.stdout, journal.encode())
@@ -913,7 +924,7 @@ for line in {journal!r}.splitlines():
             processes.append(process)
             return process
         args = SimpleNamespace(qemu="unused", build_dir=Path("build"), timeout=0.2)
-        with patch.object(qemu_test, "qemu_command", return_value=[
+        with patch.object(qemu_process, "qemu_command", return_value=[
             sys.executable, "-c", "import time; time.sleep(5)",
         ]), patch.object(qemu_test.subprocess, "Popen", side_effect=record):
             with self.assertRaises(qemu_test.subprocess.TimeoutExpired):

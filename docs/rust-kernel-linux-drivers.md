@@ -1446,7 +1446,7 @@ temporarily corrupt and restore a real type-1 bus register; startup must reject
 the malformed hierarchy before platform backing or driver callbacks. No
 synthetic driver can satisfy the network proof.
 
-CTest replaces `mac-default-mode` with `driver-runtime-default`, adds explicit
+The Python test catalog replaces `mac-default-mode` with `driver-runtime-default`, adds explicit
 run and default no-NIC/unsupported liveness checks, and provides
 `driver-runtime-root`, `driver-runtime-bridge`, `driver-runtime-nested`,
 `driver-runtime-low-memory`, `driver-runtime-no-nic` and

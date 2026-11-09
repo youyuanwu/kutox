@@ -2,10 +2,60 @@
 """Build a Limine BIOS/UEFI ISO, following embclox's image layout."""
 
 import argparse
+import hashlib
+import json
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+
+
+def file_digest(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def manifest_path(image):
+    return Path(image).with_name(Path(image).name + ".manifest.json")
+
+
+def write_image_manifest(image, packaged_kernel, profile):
+    data = {
+        "schema": 1, "profile": profile,
+        "kernel_sha256": file_digest(packaged_kernel),
+        "image_sha256": file_digest(image),
+    }
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=Path(image).parent,
+                                         prefix="kutox-manifest-", delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(data, stream, indent=2)
+            stream.write("\n")
+        temporary.replace(manifest_path(image))
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def validate_image(image, kernel, profile):
+    with manifest_path(image).open("rb") as stream:
+        content = stream.read(4097)
+    if len(content) > 4096:
+        raise AssertionError("oversized image identity manifest")
+    actual = json.loads(content)
+    if not isinstance(actual, dict) or type(actual.get("schema")) is not int:
+        raise AssertionError("invalid image identity manifest schema")
+    expected = {
+        "schema": 1, "profile": profile,
+        "kernel_sha256": file_digest(kernel),
+        "image_sha256": file_digest(image),
+    }
+    if actual != expected:
+        raise AssertionError("packaged image, current ELF or selected profile differs from the build manifest; rebuild images")
 
 
 def main():
@@ -14,6 +64,7 @@ def main():
     parser.add_argument("--limine", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--xorriso", default="xorriso")
+    parser.add_argument("--profile", required=True, choices=("ON", "OFF"))
     args = parser.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="kutox-iso-", dir=args.output.parent) as temp:
@@ -45,6 +96,7 @@ def main():
             ],
             check=True,
         )
+        write_image_manifest(args.output, root / "boot" / "kernel", args.profile)
 
 
 if __name__ == "__main__":

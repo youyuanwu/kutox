@@ -215,8 +215,7 @@ use a fifth existing guarded-stack slot; the eight-slot limit is unchanged.
 With the shared image built using `KUTOX_GUEST_TESTS=ON`, run:
 
 ```sh
-ctest --test-dir build --output-on-failure --parallel 1 \
-  -R '^(async-core-tests|async-core-tests-low-memory)$'
+python3 scripts/check.py full --profiles ON --scope guest --no-build --select 'async-core-tests*'
 ```
 
 The separate five-case table proves real timer IRQ registration, zero IRQ
@@ -224,7 +223,7 @@ polls/C invocations/heap changes, tickless empty/pending waits, FIFO fairness,
 16/17 admission, 2,049-byte rejection, off-lock cancellation and balanced
 second-epoch old-waker release. A zero-sized failed future separately proves
 failed-runtime shutdown; byte counts alone are not retirement evidence.
-Host deadlines are 25 seconds and CTest deadlines are 30 seconds. An OFF image
+Host deadlines are 25 seconds and coordinator deadlines are 30 seconds. An OFF image
 retains the production executor but rejects `async-core-tests` before device
 admission; `async-core-tests-disabled` verifies that profile.
 
@@ -332,7 +331,7 @@ owned Ethernet socket/PCAP peer. Their three-case table proves all six packet
 sizes, sixteen real source TX transactions/fourteen full-L2 RX receipts, queued
 and accepted cancellation, accepted-source timeout, busy removal, original
 IRQ/NAPI or stopped-source retirement, and late-copy safety through same-parent
-rebind. Host/CTest deadlines are 35/40 seconds. OFF
+rebind. Host/coordinator deadlines are 35/40 seconds. OFF
 `async-network-tests-disabled` rejects before device admission while retaining
 the production broker. No host TAP/passthrough or IP protocol is involved.
 
@@ -422,7 +421,7 @@ acceptance and normal boot migration now pass.
 
 The separate `network-tests` table contains `net.configuration`, `net.exchange`
 and `net.shutdown`. Root/128 MiB, root/32 MiB, one bridge/128 MiB and nested
-bridges/32 MiB all use the same ISO and an owned socket/PCAP peer, with host/CTest
+bridges/32 MiB all use the same ISO and an owned socket/PCAP peer, with host/coordinator
 deadlines of 60/65 seconds.
 
 Each of two runtime epochs resolves ARP, then handles 16 serial echoes: payloads
@@ -453,8 +452,7 @@ The original 59-case kernel and 539-TX/304-hard-RX ledgers remain separate and
 unchanged; this table neither replaces nor inflates them.
 
 ```sh
-ctest --test-dir build --output-on-failure --parallel 1 \
-  -R '^(network-tests|network-tests-low-memory|network-tests-bridge|network-tests-nested-low-memory)$'
+python3 scripts/check.py full --profiles ON --scope guest --no-build --select 'network-tests*'
 ```
 
 An OFF image rejects `network-tests` before admission while retaining the
@@ -514,7 +512,7 @@ unexpected/truncated packets or terminal probe/KTAP output fails. Host terminati
 must positively identify the owned child; no-NIC/unsupported-NIC cases instead
 measure initialized unclaimed idle, and driver-only cases expect no packets.
 
-Production host/CTest deadlines are 30/35 seconds. ON and OFF profiles test normal,
+Production host/coordinator deadlines are 30/35 seconds. ON and OFF profiles test normal,
 explicit run/network-run, 32-MiB, no/unsupported-NIC and driver-only behavior.
 Malformed default/explicit CIDRs fail before allocation; an ambiguous two-NIC
 default rejects before source/service admission. OFF rejects async core/broker/IP/
@@ -540,7 +538,7 @@ accepted only with original IRQ/NAPI/unmap/consume/account evidence.
 
 `async-hardening-tests`, `async-hardening-tests-low-memory` and
 `async-hardening-tests-nested-low-memory` share the ON ISO and contain five cases:
-capacity, failures, cancel, pressure and retirement. Host/CTest deadlines are
+capacity, failures, cancel, pressure and retirement. Host/coordinator deadlines are
 90/95 seconds. Fourteen balanced scopes exercise:
 
 - Sixteen maximum-size captures/registrations/deadlines; explicit seventeenth
@@ -565,8 +563,7 @@ identities and all expected failures are independently validated; no guest-only
 Linux tracing is required. The original kernel/packet ledgers remain separate.
 
 ```sh
-ctest --test-dir build --output-on-failure --parallel 1 \
-  -R '^(async-hardening-tests|async-hardening-tests-low-memory|async-hardening-tests-nested-low-memory)$'
+python3 scripts/check.py full --profiles ON --scope guest --no-build --select 'async-hardening-tests*'
 ```
 
 ## Shutdown, cancellation and replacement
@@ -630,7 +627,7 @@ after successful exchange before terminating only its owned guest.
 Finite stack acceptance uses two epochs of 16 serial requests each: those five
 sizes repeated three times, then a final zero-payload request. Host deadlines
 are 60 seconds for finite network acceptance and 30 seconds for production live
-acceptance, with five additional seconds for each CTest wrapper.
+acceptance, with five additional seconds for each coordinator wrapper.
 
 Restricted QEMU user networking does not make the guest directly pingable from
 the host's normal IP network. The isolated socket peer is the acceptance path;

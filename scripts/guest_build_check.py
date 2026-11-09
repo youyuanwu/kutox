@@ -7,6 +7,7 @@ import re
 import struct
 import subprocess
 from linux_driver_check import Elf
+from make_iso import validate_image
 
 NATIVE_INIT_SYMBOLS = {f"kutox_guest_native_init_{identity}" for identity in (10, 20, 30, 40)}
 INIT_MAGIC = 0x4b44494e
@@ -39,7 +40,7 @@ RUNTIME_SYMBOLS = {
     "kutox::linux_driver::CALLBACKS",
 }
 GUEST_ONLY_PATTERN = re.compile(
-    r"::(?:guest_tests|tests|wait_tests|irq_tests)::|"
+    r"::(?:guest_tests|tests|wait_tests|irq_tests|test_cleanup)::|"
     r"::(?:FAIL_AFTER|FAIL_KIND|MAP_FAIL_AFTER|MAP_FAIL_DIRECTION|FAIL_OPERATION|FAIL_REQUEST)$|"
     r"^(?:kutox_c_execution_|kutox_c_irq_|kutox_c_services_|kutox_c_dma_)|"
     r"^(?:kutox_driver_fail_after|kutox_linux_test_now_us|deny_eeprom_grant|denied_grants)$|"
@@ -127,7 +128,10 @@ def main():
     parser.add_argument("--kernel", required=True, type=Path)
     parser.add_argument("--nm", default="nm")
     parser.add_argument("--guest-tests", required=True, choices=("enabled", "disabled"))
+    parser.add_argument("--image", type=Path)
     args = parser.parse_args()
+    if args.image is not None:
+        validate_image(args.image, args.kernel, "ON" if args.guest_tests == "enabled" else "OFF")
     output = subprocess.check_output(
         [args.nm, "-a", "-C", "--defined-only", str(args.kernel)], text=True,
     )
