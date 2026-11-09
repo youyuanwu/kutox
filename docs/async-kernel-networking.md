@@ -2,7 +2,7 @@
 
 ## Status, scope and outcome
 
-This is a **design with Phases 1-7 implemented and network-enabled normal boot**.
+This is the **as-built design and reference for the completed eight-phase milestone**.
 The baseline is merged driver integration at `ac637ab` (PR #7). Current normal
 boot retains Linux e1000, kernel workers, executor, packet broker and a smoltcp
 ARP/static IPv4/ICMP future, without application sockets or native clients;
@@ -25,8 +25,7 @@ build profiles; `driver-run` preserves the previous driver-only path.
 
 The milestone adds a bounded Moss-inspired Rust async runtime and
 ARP/static IPv4/ICMP echo over the existing unchanged Linux e1000. Explicit-mode
-acceptance, normal boot migration and hardening are complete. Final as-built
-documentation remains the last phase.
+acceptance, normal boot migration, hardening and as-built documentation are complete.
 
 The observable outcome is an isolated host peer resolving the kernel's MAC
 through ARP and receiving exact ICMP echo replies from a normal, persistent
@@ -83,15 +82,15 @@ drop-aware event registration. Preserve the existing synchronous task subset.
 | Adapt the required Moss mechanisms to kutox's bounded core (selected) | Preserves the reference model while fitting current checked identities, IRQ rules, guarded dispatcher and resource constraints. |
 | Replace the kernel dispatcher with an external async executor | Does not supply sleeping-C semantics and risks replacing tested Linux worker/stop contracts. Not selected. |
 
-The initial executor runs as one guarded cooperative thread. The Linux packet
+The executor runs as one guarded cooperative thread. The Linux packet
 broker runs as another. Network protocol work is a future, not a third service
 stack. Existing workers and the coordinator remain unchanged in responsibility.
 No preemption, per-CPU scheduler or userspace task system is imported.
 
 ### Network stack
 
-Pinned Moss declares smoltcp `0.13.0`; use an exact Cargo requirement
-`=0.13.0` and commit the implementation's lockfile. Its MSRV is Rust 1.91 and
+Pinned Moss declares smoltcp `0.13.0`; kutox uses the exact Cargo requirement
+`=0.13.0` with a committed lockfile. Its MSRV is Rust 1.91 and
 license is 0BSD; kutox's current Rust 1.99.1 meets that requirement.
 
 | Option | Trade-off |
@@ -100,7 +99,7 @@ license is 0BSD; kutox's current Rust 1.99.1 meets that requirement.
 | Use Moss-aligned smoltcp with a kutox device adapter (selected) | Reuses the IP implementation without those OS dependencies; requires an explicit synchronous-token/asynchronous-driver bridge. |
 | Write ARP/IP/ICMP or select latest smoltcp independently | Custom protocol code duplicates a maintained stack; a newer release widens the dependency/API audit without serving this milestone. |
 
-Disable default features. Enable only Ethernet, IPv4, automatic ICMP echo
+Default features are disabled. The enabled features provide only Ethernet, IPv4, automatic ICMP echo
 reply and bounded interface configuration: `medium-ethernet`, `proto-ipv4`,
 `auto-icmp-echo-reply`, `socket-icmp`, `iface-max-addr-count-1`,
 `iface-neighbor-cache-count-8` and `iface-max-route-count-1`.
@@ -110,17 +109,21 @@ no application sockets: automatic echo and borrowed empty socket storage
 provide this milestone. No TCP/UDP/DHCP, fragmentation, IPv6, host PHY, std,
 async socket or floating-point TCP features are needed.
 
-Record actual adapted Moss files and the smoltcp dependency notice when code is
-added; planning does not pretend those ports/dependencies are already present.
+The adapted async files are
+[task/async_state.rs](../third_party/moss-libkernel/src/task/async_state.rs) and
+[sync/waker_set.rs](../third_party/moss-libkernel/src/sync/waker_set.rs).
+The [package metadata](../third_party/moss-libkernel/Cargo.toml) records pinned
+upstream sources; [notices](../THIRDPARTY-NOTICES.md) distinguish these MIT
+adaptations, native kutox glue and the 0BSD smoltcp dependency.
 
 ## Async execution contract
 
 ### Admission and wakeups
 
-- Initially admit at most 16 live or retained async task records and 16 event
+- Admit at most 16 live or retained async task records and 16 event
   registrations/deadlines. Task and registration identities never wrap/reuse.
-- Keep future payloads pinned and executor-owned. Admit only bounded built-in
-  service futures initially; reject oversized payloads and failed allocations.
+- Keep future payloads pinned and executor-owned in the fixed arena; reject
+  oversized or over-aligned payloads and failed arena admission.
 - Wakes coalesce while runnable and preserve wake-during-poll. A wake between
   the condition check and sleeping must prevent sleep, not disappear.
 - Event futures register, recheck the condition and unregister on completion/
@@ -161,17 +164,17 @@ Do not disguise failed tasks as successful joins or turn required operations
 into defaults. Expected protocol/backpressure drops have explicit counters and
 reason summaries, not per-packet console flooding.
 
-### As-built Phase 2 kernel-client contract
+### Kernel-client async API
 
 The explicit production `Resources::run_async(Clients)` path admits one
 executor inside the existing resource scope and allows one additional native
 client. `Clients::add` still takes `fn(usize)` and caller-owned argument state;
-runtime handles are not implicitly passed. Default `Resources::run` remains
-driver-only. Protocol work remains subsequent; Phase 3 adds the separate broker path below.
+runtime handles are not implicitly passed. The scoped `Resources::run` API
+remains driver-only; normal boot instead selects `run_network`.
 
 - In an admitted client, `async_runtime::spawn` accepts a `Send + 'static`
   future returning `Result<(), TaskFailure>`. It rejects payloads larger than
-  2,048 bytes before allocation, uses fallible allocation and pins owned backing.
+  2,048 bytes or alignment greater than 2,048 bytes before touching an arena slot.
   Future payloads are not stored in IRQ-locked metadata.
 - `async_sync::Event::wait` snapshots the generation at construction, not first
   poll. Construct waits after executor admission; a pre-admission or old-epoch
@@ -201,10 +204,11 @@ future allocation. The same table survives epoch reopen, so old wakers cannot
 reach new work or create unbounded tombstones. This is BSP/cooperative support,
 not an SMP/preemptive executor.
 
-Measured Phase 2 storage is 4,202 bytes of executor/control metadata, one
+**Historical Phase 2 evidence:** the initial heap-backed executor measured
+4,202 bytes of executor/control metadata, one
 16,384-byte added guarded stack, a 40-byte event and at most 1,408 bytes of
 simultaneously owned acceptance future payloads: **22,034 bytes**. These
-measurements do not claim the final combined broker/stack budget has passed.
+measurements are superseded by the final frame-owned arena measurements below.
 Admission still limits sixteen maximum-sized payloads to 32 KiB. Test actors
 use a fifth existing guarded-stack slot; the eight-slot limit is unchanged.
 
@@ -264,13 +268,16 @@ available. Preserve existing raw native behavior when no session is held.
 This prevents the default IP service and raw clients stealing each other's RX.
 Raw async acceptance runs without the IP service.
 
-### As-built Phase 3 packet API and retirement
+### Native packet API and retirement
 
 `Resources::run_network(Clients)` adds the broker alongside the executor and
 three existing services. It accepts one additional native actor: six guarded
 stacks during acceptance, five service stacks without that actor. This explicit
-Ethernet path is available in both build profiles but is not selected by normal
-boot. It does not yet provide IPv4 or application sockets.
+Ethernet path is available in both build profiles. Normal `run`/`network-run`
+also admits the protocol future; `driver-run` plus an explicit `run_network`
+client scope provides the raw async Ethernet path without that protocol.
+Use one RX consumer per session: a raw client must not steal the protocol
+service's FIFO input. This API exposes no Linux structs or application sockets.
 
 - Await `net_async::session()` and `Session::ready()` for the actual source
   binding/link. `Session::info()` reads broker-cached native metadata and
@@ -289,7 +296,7 @@ boot. It does not yet provide IPv4 or application sockets.
 - `Session::reserve_tx()` reserves both request credit and mutable preallocated
   backing. `TxReservation::commit(length)` validates and stages it without
   allocation, blocking or C. Unused reservations return their credit. These
-  are the prerequisites for the later synchronous smoltcp token adapter.
+  are the prerequisites used by the synchronous smoltcp token adapter.
 - `TxFuture::timeout(usec)` returns an async timed wait. Timeout/drop detaches
   the consumer, not accepted source skb/DMA. Before source admission, the
   broker discards queued copies; afterward it retains the receipt through
@@ -311,11 +318,13 @@ are released.
 
 The packet arena is one fallible 24,224-byte allocation, measured as eight
 physical pages (**32 KiB**), avoiding extra per-vector slab reservations.
-Acceptance measures broker metadata 1,697, executor metadata 4,202, two added
+**Historical Phase 3 evidence:** acceptance measured broker metadata 1,697,
+executor metadata 4,202, two added
 stacks 32,768, packet arena 32,768 and peak future payloads 264:
 **71,699 bytes** charged new service storage. Driver metadata is separately
 60,473 bytes (88 bytes above the previous session-free baseline), below its
-64-KiB ceiling. Final IP-state/combined hardening budgets remain later gates.
+64-KiB ceiling. Final current storage is reported below; these earlier totals
+do not include the later protocol state, callback table or fixed future arena.
 
 The separate `async-network-tests`, `async-network-tests-low-memory` and
 `async-network-tests-nested-low-memory` cases use the shared ON image and an
@@ -588,11 +597,11 @@ through a replacement; copied RX may outlive the old source safely.
 
 ## Resource and verification contracts
 
-| Resource | Initial bound |
+| Resource | Implemented bound |
 | --- | --- |
 | Async task records, including retained retired records | 16 |
 | Event registrations / async deadline entries | 16 / 16 |
-| Future payload storage | At most 2 KiB per admitted built-in future; 32 KiB aggregate |
+| Future payload storage | Sixteen pinned 2-KiB slots in one owned 32-KiB arena; size/alignment at most 2 KiB |
 | Broker operation records / owned packet buffers | 4 / 16 |
 | Staged RX queue / source RX FIFO | 8 / existing 8 |
 | Stack TX credit / source outstanding TX | 1 / existing 1 |
@@ -606,8 +615,8 @@ both totals and do not relabel old storage to conceal overflow. The new
 128-KiB ceiling includes added stacks and owned service allocations, not
 existing Linux DMA/frame allocator backing. Opaque external future captures
 are not claimed to fit this workload budget; arbitrary application futures are
-outside the initial admission profile. Measure actual sizes/peaks during
-implementation and reject admission above the stated bounds.
+outside the built-in service profile. Actual sizes and physical frame/slab
+charges are measured; built-in admission rejects charges above the stated bound.
 
 Testing must combine portable state/packet tests, actual guarded guest/IRQ
 execution, original callback/source evidence, exact socket/PCAP bytes and
@@ -615,7 +624,7 @@ balanced frame/heap/task/registration recovery. Keep the original 59-case suite
 and 539-TX/304-hard-RX proof independent.
 
 The production host test uses an owned QEMU Ethernet socket peer: ARP followed
-by ICMP requests with payload lengths 0, 32, 64, 512 and 1472, exact replies and
+by ICMP requests with payload lengths 0 and 1472, exact replies and
 software checksum verification. It also measures at least three seconds alive
 after successful exchange before terminating only its owned guest.
 Finite stack acceptance uses two epochs of 16 serial requests each: those five
@@ -639,6 +648,25 @@ No host device passthrough, privileged TAP or unrelated clusters are required.
 7. Failure, pressure, cancellation, link/removal and shutdown hardening.
 8. As-built reference, public commands, source attribution and final bounds.
 
-The detailed implementation plan and research remain local-only workflow
-artifacts. This design is committed documentation; no phase is complete merely
-because it is described here.
+All eight phases are complete. The detailed plan, research and technical
+reference remain local-only workflow artifacts; this public guide describes
+the implemented system, not unexecuted acceptance criteria.
+
+## Validation record and limits
+
+Latest implementation validation was Phase 7 at `f4cce87`: 171 portable root
+tests per feature profile, 182 Python tests, strict host-library and both kernel
+Clippy profiles, formatting/whitespace, actual ON/OFF ELF checks and a regenerated/
+verified four-unit/209-API Linux source audit. Three hardening profiles passed,
+plus the original 59-case/539-TX/304-hard-RX kernel ledger, async core, low-memory
+broker, root/nested-low-memory IP acceptance and live default/root32 networking.
+OFF verified production networking, no/unsupported-NIC idle, driver-only behavior
+and all four early async-mode rejections. The final shared image was restored ON.
+
+Phase 8 validates documentation links, selectors, source/configuration references
+and measured arithmetic only. It does not rerun code builds or guest tests.
+No fresh full CTest suite or Moss suite is claimed; earlier Moss validation
+remains separate evidence. The support profile is BIOS QEMU i440FX/PIIX,
+BSP/TCG, one 82540EM, MTU 1500 and no offloads, not physical hardware or UEFI
+acceptance. Allocation inside arbitrary application futures, SMP/preemption,
+new drivers, DHCP/UDP/TCP, VFS and userspace are outside this milestone.

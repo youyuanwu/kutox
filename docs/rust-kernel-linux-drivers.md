@@ -24,8 +24,11 @@ tested. All eight driver-reuse phases are complete for the
 [as-built support profile](#as-built-support-statement), not arbitrary Linux
 drivers or physical hardware.
 Normal boot now retains the managed e1000 in the persistent kernel runtime;
-explicit `probe` preserves the finite boot-time MAC proof. No IP stack or Linux
-application environment is implied.
+explicit `probe` preserves the finite boot-time MAC proof. A separate Rust
+smoltcp service now supplies ARP/static IPv4/ICMP through that driver; no Linux
+IP stack or Linux application environment is imported. The completed
+[async milestone guide](async-kernel-networking.md) covers the mixed execution
+model, raw async clients, bounds and current validation.
 All eight [Moss-style integration phases](#moss-style-driver-infrastructure) are
 complete. The [kernel-client lifecycle](#kernel-client-lifecycle) describes how
 to admit native consumers and retain/retire their packet ownership.
@@ -1563,9 +1566,10 @@ ELF profile checks positively require real driver/service symbols and require
 or reject test symbols according to the selected build. Test-disabled boot and
 test-enabled guest regressions use the same image location sequentially.
 
-Normal boot remains the MAC helper while persistent service/managed-e1000
-integration is pending. Feature-off dormant-service dead-code allowances are scoped to those
-kernel modules only; strict type/lint checks and test-enabled warnings remain.
+Normal boot retains the network-enabled runtime in both profiles; only explicit
+`probe` runs the finite MAC helper. Feature-off native-client dead-code allowances
+are scoped to the relevant kernel modules; strict type/lint checks and
+test-enabled warnings remain.
 No KUnit runtime, Linux module loader or additional kernel dependency is imported.
 
 ### Rust OS and userspace track

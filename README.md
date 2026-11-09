@@ -130,6 +130,11 @@ Normal network boot also passes real exchange followed by sustained uptime in
 both guest-enabled and test-free images.
 Async/network hardening now covers bounded captures, allocation/IRQ/map failures,
 accepted cancellation, RX/TX starvation, link recovery and same-parent rebind.
+The completed milestone's [as-built guide](docs/async-kernel-networking.md)
+documents native async APIs, ownership and supported limits. Latest implementation
+validation passed 171 Rust tests per profile and 182 Python tests, targeted guests,
+strict lint and source/ELF checks. Documentation completion does not claim a new
+full test-suite run.
 
 ## Requirements
 
@@ -165,13 +170,14 @@ For a feature-off build of the same image:
 cmake -S . -B build -G Ninja -DKUTOX_GUEST_TESTS=OFF
 cmake --build build --target images --parallel 1
 ctest --test-dir build --output-on-failure --parallel 1 \
-  -R '^(kernel-build-profile|guest-tests-disabled|driver-runtime-tests-disabled|driver-network-tests-disabled|driver-hardening-tests-disabled|mac-known|driver-runtime-default|driver-runtime-run|driver-runtime-default-no-nic|driver-runtime-default-unsupported)$'
+  -R '^(kernel-build-profile|async-core-tests-disabled|async-network-tests-disabled|network-tests-disabled|async-hardening-tests-disabled|network-default|network-default-low-memory|network-default-no-nic|network-default-unsupported|network-run|driver-runtime-driver-only)$'
 ```
 
 This omits guest fixtures, C test objects, fault injection, checkpoints and
 test inspectors. Requested test modes fail before memory/device initialization.
 Real driver services, ownership checks and diagnostics remain, and normal boot
-retains the real NIC/runtime without running guest checkpoints or clients.
+retains the real NIC/runtime, executor, packet broker and protocol future without
+running guest checkpoints or native clients.
 Additional native client APIs retain scoped feature-off dead-code allowances,
 not missing-service fallbacks.
 

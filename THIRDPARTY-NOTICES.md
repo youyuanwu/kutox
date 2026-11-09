@@ -188,9 +188,10 @@ poll batches, event generation snapshots, async deadline registration and
 joined cancellation/failure are not copies of Moss's process-oriented executor
 or `Arc<Work>` waker. Hardware guest tests prove IRQ notification without
 polling or payload destruction and retained-waker safety across scoped epochs.
-The production executor is retained in both feature profiles before default
-activation; fixtures remain guest-only. No networking dependency or Linux
-packet algorithm is introduced by this phase.
+The production executor is active in normal boot in both feature profiles;
+fixtures remain guest-only. Its frame-owned pinned-future arena is native kutox
+ownership glue using the existing Moss frame guard, not a copied upstream
+executor. No Linux packet algorithm is replaced.
 
 [src/net_async.rs](src/net_async.rs) and
 [src/net_async_state.rs](src/net_async_state.rs) add native kutox owned request,
@@ -202,8 +203,9 @@ copied ingress implementation, avoiding packet allocation in future polling.
 The compatibility queue-wake shim now publishes an actual stopped-to-runnable
 transition; it does not replace any driver's queue/descriptor algorithm.
 Exclusive admission, CPU-copy loan lifetime and positive original source-ticket
-retirement are native kutox mechanisms. No smoltcp or other dependency is added
-in Phase 3; protocol integration remains subsequent.
+retirement are native kutox mechanisms. The completed milestone adds smoltcp
+through the separate adapter/service described above, not by importing Moss's
+socket/syscall subsystem or Linux's IP stack.
 
 Moss's reviewed run queue is deadline/virtual-clock based and its kernel work
 is future-based; it is not copied as a stackful scheduler. kutox's bounded FIFO
