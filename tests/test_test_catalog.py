@@ -179,8 +179,11 @@ class CoordinatorTests(unittest.TestCase):
                 check.run_command([sys.executable, "-c", script], 0.5)
             pid = int(pidfile.read_text())
             status = Path(f"/proc/{pid}/stat")
-            if status.exists():
-                self.assertEqual(status.read_text().split()[2], "Z")
+            try:
+                state = status.read_text().split()[2]
+            except FileNotFoundError:
+                return
+            self.assertEqual(state, "Z")
 
 
 if __name__ == "__main__":

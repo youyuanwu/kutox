@@ -9,9 +9,20 @@ find_program(XORRISO xorriso REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 include(FetchContent)
+set(LIMINE_URL https://github.com/Limine-Bootloader/Limine/releases/download/v12.0.2/limine-binary.tar.gz?download=1)
+set(LIMINE_SHA256 3ceded87b8edee7c61085a06b5d3afe8bf371bf639498165dcf0f4b89b05dbfc)
+set(LIMINE_ARCHIVE "${CMAKE_BINARY_DIR}/_deps/limine-binary.tar.gz")
+execute_process(
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/download.py"
+        --url "${LIMINE_URL}" --sha256 "${LIMINE_SHA256}" --output "${LIMINE_ARCHIVE}"
+    RESULT_VARIABLE LIMINE_DOWNLOAD_STATUS
+)
+if(NOT LIMINE_DOWNLOAD_STATUS EQUAL 0)
+    message(FATAL_ERROR "Cannot retrieve the verified Limine archive")
+endif()
 FetchContent_Declare(limine
-    URL https://github.com/Limine-Bootloader/Limine/releases/download/v12.0.2/limine-binary.tar.gz
-    URL_HASH SHA256=3ceded87b8edee7c61085a06b5d3afe8bf371bf639498165dcf0f4b89b05dbfc
+    URL "${LIMINE_ARCHIVE}"
+    URL_HASH "SHA256=${LIMINE_SHA256}"
     DOWNLOAD_EXTRACT_TIMESTAMP ON
 )
 FetchContent_MakeAvailable(limine)

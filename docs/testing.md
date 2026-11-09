@@ -54,6 +54,9 @@ checkout, and uploads reports, guest journals, PCAPs and image manifests even
 after failures. It does not build Linux or require a sibling repository.
 Portable CI calls `fast` once; profile jobs use `--scope guest` and never repeat
 the portable checks. `--scope host` selects shared checks only.
+Build archives use bounded curl retries for transient network failures, followed
+by pinned SHA256 verification. Cached archives are verified before reuse; a
+hash mismatch fails explicitly rather than accepting or substituting content.
 
 ## Scheduling and run-only checks
 
