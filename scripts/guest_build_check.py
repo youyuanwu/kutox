@@ -39,7 +39,7 @@ RUNTIME_SYMBOLS = {
     "kutox::linux_driver::CALLBACKS",
 }
 GUEST_ONLY_PATTERN = re.compile(
-    r"::(?:guest_tests|tests|wait_tests|irq_tests)::|"
+    r"::(?:guest_tests|tests|wait_tests|irq_tests|test_cleanup)::|"
     r"::(?:FAIL_AFTER|FAIL_KIND|MAP_FAIL_AFTER|MAP_FAIL_DIRECTION|FAIL_OPERATION|FAIL_REQUEST)$|"
     r"^(?:kutox_c_execution_|kutox_c_irq_|kutox_c_services_|kutox_c_dma_)|"
     r"^(?:kutox_driver_fail_after|kutox_linux_test_now_us|deny_eeprom_grant|denied_grants)$|"

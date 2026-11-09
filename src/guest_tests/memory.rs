@@ -10,6 +10,22 @@ pub fn test_alignment_reservations(
     let second = allocator.alloc_frames(1).map_err(frame_failure)?;
     let first_region = first.region();
     let second_region = second.region();
+    let mut cleanup = kutox::test_cleanup::Cleanup::<_, Failure, 2>::new(
+        (Some(first), Some(second)),
+        crate::guest_tests::support::cleanup_error,
+    );
+    cleanup
+        .add(|state| {
+            drop(state.0.take());
+            Ok(())
+        })
+        .map_err(|_| Failure::new("test_cleanup_capacity", -321))?;
+    cleanup
+        .add(|state| {
+            drop(state.1.take());
+            Ok(())
+        })
+        .map_err(|_| Failure::new("test_cleanup_capacity", -321))?;
     if first_region.start_address().value() % PAGE_SIZE != 0
         || second_region.start_address().value() % (2 * PAGE_SIZE) != 0
         || first_region.overlaps(second_region)
@@ -53,8 +69,7 @@ pub fn test_alignment_reservations(
             }
         }
     }
-    drop(second);
-    drop(first);
+    crate::guest_tests::support::assert_eq!(cleanup.finish(), true);
     let reused = allocator.alloc_frames(0).map_err(frame_failure)?;
     if reused.region() != first_region {
         return Err(Failure::new("memory_reuse", -1));

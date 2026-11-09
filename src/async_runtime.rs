@@ -24,7 +24,6 @@ use moss_libkernel::{sync::spinlock::SpinLockIrq, task::async_state::State};
 pub enum Error {
     State(StateError),
     Context(threads::SwitchError),
-    NoMemory,
     Closed,
     Busy,
     Service(i32),
@@ -34,7 +33,6 @@ impl Error {
     pub fn code(self) -> i32 {
         match self {
             Self::Context(error) => error as i32,
-            Self::NoMemory => -12,
             Self::Closed => -221,
             Self::Busy => -222,
             Self::State(_) => -220,
@@ -332,10 +330,18 @@ fn task_waker(task: TaskHandle) -> Waker {
 
 #[must_use]
 pub struct Task {
+    #[cfg_attr(
+        not(feature = "guest-tests"),
+        allow(dead_code, reason = "Native client task control")
+    )]
     handle: TaskHandle,
     lease: Option<WakerRecord>,
 }
 
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(dead_code, reason = "Native client task control")
+)]
 impl Task {
     pub fn handle(&self) -> TaskHandle {
         self.handle
@@ -470,6 +476,10 @@ where
 pub fn stats() -> Stats {
     CONTROL.lock_save_irq().stats
 }
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(dead_code, reason = "Native client executor diagnostics")
+)]
 pub fn counts() -> (usize, usize, usize) {
     let control = CONTROL.lock_save_irq();
     control.state.as_ref().map_or((0, 0, 0), |state| {

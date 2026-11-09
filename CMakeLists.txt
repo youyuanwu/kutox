@@ -20,6 +20,7 @@ FetchContent_MakeAvailable(limine)
 
 set(KERNEL "${CMAKE_SOURCE_DIR}/target/x86_64-unknown-none/release/kutox")
 option(KUTOX_GUEST_TESTS "Include guest acceptance fixtures in the reusable image" ON)
+option(KUTOX_SOAK_TESTS "Register opt-in extended traffic and lifecycle repetition" OFF)
 if(KUTOX_GUEST_TESTS)
     set(KERNEL_FEATURES --features guest-tests)
     set(GUEST_TEST_PROFILE enabled)
@@ -255,8 +256,76 @@ set_tests_properties(moss-libkernel-unit PROPERTIES
     RUN_SERIAL TRUE
 )
 add_test(NAME boot-config-unit
-    COMMAND ${CARGO} test --locked -p kutox --lib --target x86_64-unknown-linux-gnu
+    COMMAND ${CARGO} test --locked -p kutox --lib --target x86_64-unknown-linux-gnu --jobs 1 ${KERNEL_FEATURES}
 )
+if(KUTOX_GUEST_TESTS)
+    set(PORTABLE_OTHER_NAME portable-production-unit)
+    set(PORTABLE_OTHER_FEATURES --no-default-features)
+else()
+    set(PORTABLE_OTHER_NAME portable-guest-unit)
+    set(PORTABLE_OTHER_FEATURES --features guest-tests)
+endif()
+add_test(NAME "${PORTABLE_OTHER_NAME}"
+    COMMAND ${CARGO} test --locked -p kutox --lib --target x86_64-unknown-linux-gnu --jobs 1 ${PORTABLE_OTHER_FEATURES})
+set_tests_properties("${PORTABLE_OTHER_NAME}" PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" TIMEOUT 65 RUN_SERIAL TRUE)
+if(KUTOX_GUEST_TESTS)
+    add_test(NAME guest-test-list
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --list-tests --build-dir "${CMAKE_BINARY_DIR}" --qemu "${QEMU}" --timeout 20)
+    add_test(NAME guest-test-isolated
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --case kernel-tests-low-memory --filter "cpu.*" --run-isolated
+            --build-dir "${CMAKE_BINARY_DIR}" --qemu "${QEMU}" --timeout 20
+            --json "${CMAKE_BINARY_DIR}/test-logs/isolated.json"
+            --junit "${CMAKE_BINARY_DIR}/test-logs/isolated.xml")
+    set_tests_properties(guest-test-list guest-test-isolated PROPERTIES
+        TIMEOUT 65 RUN_SERIAL TRUE LABELS "debug")
+    set(TEST_CONTROL_REJECTION test-filter-dependencies)
+else()
+    set(TEST_CONTROL_REJECTION test-options-disabled)
+endif()
+add_test(NAME "${TEST_CONTROL_REJECTION}"
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+        --case "${TEST_CONTROL_REJECTION}" --build-dir "${CMAKE_BINARY_DIR}"
+        --qemu "${QEMU}" --timeout 20)
+set_tests_properties("${TEST_CONTROL_REJECTION}" PROPERTIES
+    TIMEOUT 25 RUN_SERIAL TRUE LABELS "smoke")
+if(KUTOX_SOAK_TESTS)
+    set_property(TEST kernel-build-profile APPEND PROPERTY LABELS soak)
+    add_test(NAME network-soak-low-memory
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --case network-default-low-memory --soak-seconds 30 --soak-exchanges 20
+            --build-dir "${CMAKE_BINARY_DIR}" --qemu "${QEMU}" --nm "${NM}" --timeout 90
+            --json "${CMAKE_BINARY_DIR}/test-logs/soak.json" --junit "${CMAKE_BINARY_DIR}/test-logs/soak.xml")
+    set_tests_properties(network-soak-low-memory PROPERTIES TIMEOUT 95 RUN_SERIAL TRUE LABELS "soak")
+    if(KUTOX_GUEST_TESTS)
+        add_test(NAME lifecycle-soak-low-memory
+            COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+                --case async-hardening-tests-nested-low-memory --iterations 3
+                --build-dir "${CMAKE_BINARY_DIR}" --qemu "${QEMU}" --nm "${NM}" --timeout 90
+                --json "${CMAKE_BINARY_DIR}/test-logs/lifecycle-soak.json"
+                --junit "${CMAKE_BINARY_DIR}/test-logs/lifecycle-soak.xml")
+        set_tests_properties(lifecycle-soak-low-memory PROPERTIES TIMEOUT 285 RUN_SERIAL TRUE LABELS "soak")
+    endif()
+endif()
+get_property(registered_tests DIRECTORY PROPERTY TESTS)
+foreach(test IN LISTS registered_tests)
+    if(test MATCHES "^(boot-config-unit|portable-.*-unit|moss-libkernel-unit|harness-unit)$")
+        set_property(TEST "${test}" APPEND PROPERTY LABELS fast)
+    elseif(NOT test MATCHES "soak")
+        set_property(TEST "${test}" APPEND PROPERTY LABELS full)
+    endif()
+    if(test MATCHES "^(kernel-build-profile|network-default|network-default-low-memory|network-default-no-nic|network-default-unsupported|driver-runtime-driver-only|network-invalid-default|network-invalid-run|network-invalid-explicit|network-default-ambiguous|.*-tests-disabled|guest-test-list|guest-test-isolated)$")
+        set_property(TEST "${test}" APPEND PROPERTY LABELS smoke)
+    endif()
+endforeach()
+foreach(tier IN ITEMS fast smoke full soak)
+    add_custom_target("check-${tier}"
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/check.py" "${tier}"
+            --build-dir "${CMAKE_BINARY_DIR}"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" USES_TERMINAL VERBATIM)
+endforeach()
 set_tests_properties(boot-config-unit PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     TIMEOUT 65

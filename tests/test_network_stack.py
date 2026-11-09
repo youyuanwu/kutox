@@ -9,6 +9,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import network_packets as p
 import qemu_test as q
+import qemu_process
 from unittest.mock import patch
 from test_network_runtime import SYMBOLS
 from test_runtime_boot import live_log, path_lines, ready, summary
@@ -120,7 +121,7 @@ time.sleep(10)
             return [sys.executable, "-u", "-c", script]
 
         started = time.monotonic()
-        with patch.object(q, "qemu_command", side_effect=command), patch.object(q, "runtime_symbols", return_value=SYMBOLS):
+        with patch.object(qemu_process, "qemu_command", side_effect=command), patch.object(qemu_process, "runtime_symbols", return_value=SYMBOLS):
             completed, elapsed = q.execute_live(args, "network-default")
         self.assertEqual(completed.returncode, -15)
         self.assertGreaterEqual(elapsed, 3)
@@ -130,7 +131,7 @@ time.sleep(10)
     def test_readiness_alone_and_late_service_errors_are_not_network_success(self):
         args = SimpleNamespace(qemu="unused", build_dir=Path("build"), timeout=0.3)
         command = [sys.executable, "-u", "-c", f"import time; print({live_log('network-default')!r}, end='', flush=True); time.sleep(5)"]
-        with patch.object(q, "qemu_command", return_value=command), patch.object(q, "runtime_symbols", return_value=SYMBOLS):
+        with patch.object(qemu_process, "qemu_command", return_value=command), patch.object(qemu_process, "runtime_symbols", return_value=SYMBOLS):
             with self.assertRaises(subprocess.TimeoutExpired):
                 q.execute_live(args, "network-default")
         for extra in ("# NETWORK_STACK_ERROR operation=transmit error=Dropped",

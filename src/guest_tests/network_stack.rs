@@ -77,8 +77,9 @@ fn configuration(
     boot: &BootInfo,
     _: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
-    assert_eq!(boot.ipv4, Config::default());
-    for value in [
+    super::support::assert_eq!(boot.ipv4, Config::default());
+    let mut context = super::support::Context::new();
+    for (index, value) in [
         b"10.0.2.0/24".as_slice(),
         b"10.0.2.255/24",
         b"127.0.0.1/8",
@@ -86,9 +87,16 @@ fn configuration(
         b"10.0.2.15/31",
         b"10.0.2.15/24\0",
         b"bad",
-    ] {
-        assert!(Config::parse(value).is_err());
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        context.expect_eq(Config::parse(value).is_err(), true, file!(), line!());
+        serial::print(format_args!(
+            "# TEST_PARAMETER case=net.configuration index={index}\n"
+        ));
     }
+    context.finish()?;
     serial::print(format_args!(
         "# NET_IP_CONFIG cidr={} rejected=7 allocation=0 source=0\n",
         boot.ipv4.cidr()

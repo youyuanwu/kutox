@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import qemu_test as runner
+import qemu_process
 from test_network_runtime import SYMBOLS, managed_log
 from test_runner import boot_log
 
@@ -196,7 +197,7 @@ class RuntimeBootTests(unittest.TestCase):
         args = SimpleNamespace(qemu="unused", build_dir=Path("build"), timeout=6)
         started = time.monotonic()
         command = [sys.executable, "-u", "-c", f"import time; print({live_log('driver-runtime-driver-only')!r}, end='', flush=True); time.sleep(10)"]
-        with patch.object(runner, "qemu_command", return_value=command), patch.object(runner, "runtime_symbols", return_value=SYMBOLS):
+        with patch.object(qemu_process, "qemu_command", return_value=command), patch.object(qemu_process, "runtime_symbols", return_value=SYMBOLS):
             completed, elapsed = runner.execute_live(args, "driver-runtime-driver-only")
         self.assertGreaterEqual(elapsed, 3)
         self.assertGreaterEqual(time.monotonic() - started, 3)
@@ -209,9 +210,9 @@ class RuntimeBootTests(unittest.TestCase):
             [sys.executable, "-u", "-c", f"print({live_log()!r}, end='', flush=True)"],
             [sys.executable, "-u", "-c", "import time; time.sleep(5)"],
         ]
-        with patch.object(runner, "runtime_symbols", return_value=SYMBOLS):
+        with patch.object(qemu_process, "runtime_symbols", return_value=SYMBOLS):
             for command, error in zip(commands, (AssertionError, subprocess.TimeoutExpired)):
-                with self.subTest(command=command), patch.object(runner, "qemu_command", return_value=command), self.assertRaises(error):
+                with self.subTest(command=command), patch.object(qemu_process, "qemu_command", return_value=command), self.assertRaises(error):
                     runner.execute_live(args, "driver-runtime-default")
 
 
