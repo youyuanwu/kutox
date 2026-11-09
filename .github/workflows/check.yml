@@ -55,12 +55,11 @@ jobs:
         env:
           PROFILE: ${{ matrix.profile }}
           TIER: ${{ github.event_name == 'schedule' && 'full' || inputs.tier || 'smoke' }}
-        run: python3 scripts/check.py "$TIER" --profiles "$PROFILE"
+        run: python3 scripts/check.py "$TIER" --profiles "$PROFILE" --scope guest
       - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: results-${{ matrix.profile }}
           path: |
-            build/ctest-*.xml
             build/test-logs/
-            build/Testing/Temporary/LastTest.log
+            build/kutox.iso.manifest.json

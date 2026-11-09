@@ -7,6 +7,7 @@ import re
 import struct
 import subprocess
 from linux_driver_check import Elf
+from make_iso import validate_image
 
 NATIVE_INIT_SYMBOLS = {f"kutox_guest_native_init_{identity}" for identity in (10, 20, 30, 40)}
 INIT_MAGIC = 0x4b44494e
@@ -127,7 +128,10 @@ def main():
     parser.add_argument("--kernel", required=True, type=Path)
     parser.add_argument("--nm", default="nm")
     parser.add_argument("--guest-tests", required=True, choices=("enabled", "disabled"))
+    parser.add_argument("--image", type=Path)
     args = parser.parse_args()
+    if args.image is not None:
+        validate_image(args.image, args.kernel, "ON" if args.guest_tests == "enabled" else "OFF")
     output = subprocess.check_output(
         [args.nm, "-a", "-C", "--defined-only", str(args.kernel)], text=True,
     )

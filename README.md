@@ -169,8 +169,7 @@ For a feature-off build of the same image:
 ```sh
 cmake -S . -B build -G Ninja -DKUTOX_GUEST_TESTS=OFF
 cmake --build build --target images --parallel 1
-ctest --test-dir build --output-on-failure --parallel 1 \
-  -R '^(kernel-build-profile|async-core-tests-disabled|async-network-tests-disabled|network-tests-disabled|async-hardening-tests-disabled|network-default|network-default-low-memory|network-default-no-nic|network-default-unsupported|network-run|driver-runtime-driver-only)$'
+python3 scripts/check.py smoke --profiles OFF --scope guest --no-build
 ```
 
 This omits guest fixtures, C test objects, fault injection, checkpoints and
@@ -189,16 +188,15 @@ This is one image per selected build profile, not separate images per test mode.
 
 ```sh
 git submodule update --init --depth 1 linux
-cmake -S . -B build -G Ninja
-cmake --build build --target images --parallel 1
-ctest --test-dir build --output-on-failure --parallel 1
+python3 scripts/check.py full
 ```
 
 The build produces:
 
 - `target/x86_64-unknown-none/release/kutox`: freestanding kernel ELF.
 - `build/kutox.iso`: one reusable Limine BIOS/UEFI image for every guest test.
-- `build/test-logs/`: serial output for each acceptance run.
+- `build/kutox.iso.manifest.json`: packaged ELF/ISO hashes and selected profile.
+- `build/test-logs/`: profile-separated reports and serial output for each run.
   Kernel suites also retain a `.pcap` capture of NIC-transmitted frames.
 
 The acceptance suite boots with the BIOS firmware supplied by QEMU. The ISO
@@ -221,7 +219,7 @@ per-API source/ELF callers, contexts, contracts, planned phase/tests, compiler
 arguments, header/source/object hashes, effective macros, parameter/callback
 metadata and compile-profile sizes. Verification rejects stale/missing evidence
 and fake runtime-provider substitutions. `linux-driver-compile-check` also runs
-as a standalone CTest entry. Kernel provenance now positively requires original
+in the Python scheduling catalog. Kernel provenance now positively requires original
 full-driver symbols and matches live registered/invoked callback addresses
 against that ELF; linking names alone cannot satisfy lifecycle acceptance.
 
@@ -358,8 +356,8 @@ by `driver-runtime-default`; all finite MAC cases explicitly select `probe`.
 Finite end-to-end checks select `driver-runtime-tests` with actual hardware:
 
 ```sh
-ctest --test-dir build --output-on-failure --parallel 1 \
-  -R '^(driver-runtime-root|driver-runtime-bridge|driver-runtime-nested|driver-runtime-low-memory|driver-runtime-bridge-low-memory|driver-runtime-nested-low-memory|driver-runtime-no-nic|driver-runtime-no-nic-low-memory|driver-runtime-unsupported|driver-runtime-unsupported-low-memory)$'
+python3 scripts/check.py full --profiles ON --scope guest --no-build \
+  --select 'driver-runtime-*'
 ```
 
 Root/one/two-bridge clients reuse the same `Resources::start/run` path and managed
@@ -398,8 +396,8 @@ configuration from real link readiness. No/unsupported NIC retains services
 without fabricating readiness.
 
 ```sh
-ctest --test-dir build --output-on-failure --parallel 1 \
-  -R '^(network-default|network-default-low-memory|network-default-no-nic|network-default-unsupported|network-run|driver-runtime-driver-only)$'
+python3 scripts/check.py smoke --profiles ON --scope guest --no-build \
+  --select 'network-default*' --select driver-runtime-driver-only
 ```
 
 These production smoke cases validate exact ARP, zero/1472-byte ICMP echo replies
@@ -411,8 +409,7 @@ packet acceptance uses an owned local Ethernet socket peer instead.
 ### Exact IPv4 guest acceptance
 
 ```sh
-ctest --test-dir build --output-on-failure --parallel 1 \
-  -R '^(network-tests|network-tests-low-memory|network-tests-bridge|network-tests-nested-low-memory)$'
+python3 scripts/check.py full --profiles ON --scope guest --no-build --select 'network-tests*'
 ```
 
 The [stdlib peer](scripts/network_packets.py) sends ARP and ICMP over an owned
@@ -430,8 +427,7 @@ is also the normal `run`/absent boot path.
 ### Async/network hardening
 
 ```sh
-ctest --test-dir build --output-on-failure --parallel 1 \
-  -R '^(async-hardening-tests|async-hardening-tests-low-memory|async-hardening-tests-nested-low-memory)$'
+python3 scripts/check.py full --profiles ON --scope guest --no-build --select 'async-hardening-tests*'
 ```
 
 Five separate cases run fourteen balanced scopes per hardware profile. They
@@ -452,8 +448,7 @@ allocations inside arbitrary futures are outside that built-in charge.
 ### Managed failure and teardown hardening
 
 ```sh
-ctest --test-dir build --output-on-failure --parallel 1 \
-  -R '^(driver-hardening-tests|driver-hardening-tests-low-memory|driver-hardening-tests-nested-low-memory)$'
+python3 scripts/check.py full --profiles ON --scope guest --no-build --select 'driver-hardening-tests*'
 ```
 
 The same image exercises five cases at root/128 MiB, root/32 MiB and nested
@@ -551,7 +546,7 @@ The isolated `heap-oom` case needs no NIC. It requests an 8 MiB `Vec`, above
 the buddy-backed heap's maximum block size, and must produce the exact
 `memory allocation of 8388608 bytes failed` terminal panic with guest failure.
 The host rejects unrelated panics, crashes, timeouts, missing diagnostics, and
-unexpected success; the CTest check does not use generic `WILL_FAIL`.
+unexpected success; the coordinator does not invert arbitrary failures.
 Fallible allocation exhaustion/recovery is covered separately in the nonfatal
 suite, including preservation of the old allocation when reallocation fails.
 

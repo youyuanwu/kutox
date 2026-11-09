@@ -31,7 +31,8 @@ def run_label(args):
 
 def run_case(args, case, index=0):
     started = time.monotonic()
-    log = args.build_dir / "test-logs" / f"{run_label(args)}-{index}.log"
+    log_dir = getattr(args, "log_dir", None) or args.build_dir / "test-logs"
+    log = log_dir / f"{run_label(args)}-{index}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     capture = log.with_suffix(".pcap") if SCENARIOS[case].capture and not (
         getattr(args, "filter", None) or getattr(args, "list_tests", False)
@@ -173,6 +174,7 @@ def main():
     parser.add_argument("--soak-exchanges", type=int, default=1)
     parser.add_argument("--json", type=Path)
     parser.add_argument("--junit", type=Path)
+    parser.add_argument("--log-dir", type=Path, help="Journal/capture directory; defaults to BUILD/test-logs")
     parser.add_argument(
         "--expect-test-failure", action="store_true",
         help="Verify rejection of a complete intentional-failure suite (kernel-tests-fail only)",
@@ -211,9 +213,9 @@ def main():
     if args.expect_test_failure and args.case != "kernel-tests-fail":
         parser.error("--expect-test-failure requires --case kernel-tests-fail")
     if args.json is None:
-        args.json = args.build_dir / "test-logs" / f"{run_label(args)}.json"
+        args.json = (args.log_dir or args.build_dir / "test-logs") / f"{run_label(args)}.json"
     if args.junit is None:
-        args.junit = args.build_dir / "test-logs" / f"{run_label(args)}.xml"
+        args.junit = (args.log_dir or args.build_dir / "test-logs") / f"{run_label(args)}.xml"
     results = []
     invocation = 0
     try:

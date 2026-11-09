@@ -4,6 +4,15 @@ kutox keeps portable policy tests, host harness tests and hardware-backed guest
 acceptance separate. The full suites remain mandatory: debug selection never
 substitutes for original Linux callback, DMA, wire-capture or resource proofs.
 
+## Ownership
+
+[check.py](../scripts/check.py) is the sole public test coordinator.
+[test_catalog.py](../scripts/test_catalog.py) defines scheduling names, tiers,
+profiles, commands and deadlines. Cargo executes Rust checks; CMake/Ninja only
+build the ELF and package Limine/ISO. Python owns QEMU lifecycle, independent
+acceptance and reports. CTest registrations and recursive CMake check targets
+have been removed; no additional test-management framework is required.
+
 ## Validation tiers
 
 ```sh
@@ -19,7 +28,7 @@ python3 scripts/check.py soak
 - `smoke`: build and kernel Clippy for each profile, actual ELF checks, normal
   networking at 128/32 MiB, no/unsupported NIC, driver-only operation, early
   configuration rejection and debug controls/disabled-selector checks.
-- `full`: fast checks plus every default CTest entry in each profile, including
+- `full`: shared fast checks once, then every applicable catalog entry in each profile, including
   the unchanged original driver ledgers and a regenerated source audit followed
   by manifest verification. It excludes opt-in soak entries.
 - `soak`: paced low-memory ARP/ICMP exchanges, then at least 30 seconds alive
@@ -30,20 +39,48 @@ python3 scripts/check.py soak
 Both-profile commands run OFF then ON, ending with the shared ON image restored.
 Use `--profiles ON` or `--profiles OFF` for targeted validation, and
 `--build-dir build` to select the existing build directory. Builds use one job;
-QEMU cases are serial. A failed command stops the tier immediately: restore ON
-explicitly if an OFF run failed before the final build.
-
-Equivalent CMake targets are `check-fast`, `check-smoke`, `check-full` and
-`check-soak`. CTest labels are `fast`, `smoke`, `full`, `debug` and `soak`.
-Plain CTest does not register soak cases unless configured with
-`-DKUTOX_SOAK_TESTS=ON`. Do not run simultaneous profile rebuilds: every mode
-uses the same image and kernel ELF.
+QEMU cases are serial. Restore ON
+explicitly if an OFF build or image verification failed before the final build.
+Ordinary check failures are collected and the run still fails; a failed image
+build or profile gate stops before starting any dependent guest. Soak selection
+is owned by Python, not a CMake option. Do not run simultaneous profile rebuilds:
+every mode uses the same image and kernel ELF.
 
 The checked-in [CI workflow](../.github/workflows/check.yml) runs portable and
 ON/OFF smoke checks on pull requests. A weekly schedule runs full validation;
 manual dispatch selects smoke, full or soak. Each hosted profile job has its own
-checkout, and uploads reports, guest journals, PCAPs and CTest failure logs even
+checkout, and uploads reports, guest journals, PCAPs and image manifests even
 after failures. It does not build Linux or require a sibling repository.
+Portable CI calls `fast` once; profile jobs use `--scope guest` and never repeat
+the portable checks. `--scope host` selects shared checks only.
+
+## Scheduling and run-only checks
+
+```sh
+python3 scripts/check.py full --profiles ON --scope guest --list
+python3 scripts/check.py full --profiles ON --scope guest --select 'network-tests*'
+python3 scripts/check.py smoke --profiles ON --no-build \
+  --select 'network-default*' --select driver-runtime-driver-only
+```
+
+`--select` matches catalog names and may be repeated. It does not filter guest
+KTAP tables or weaken their independent result/packet/callback expectations.
+`--list` shows the planned checks without building or executing anything.
+Each selected profile always begins with `kernel-build-profile`, even when a
+name selection omits it.
+
+`--no-build` requires one explicit ON or OFF profile, since one current image
+cannot represent both. It skips image building; selected portable or compile
+checks still use their normal executors. For pure run-only guest checks, use a
+guest scheduling selection as above.
+
+Packaging writes `kutox.iso.manifest.json`, binding the actual staged ELF and
+finished ISO SHA256 hashes to the selected profile. Before a guest starts, the
+coordinator verifies those hashes against the current ELF/ISO, then verifies
+actual ELF symbols and initializer metadata. Missing, stale, malformed or
+wrong-profile evidence fails explicitly and cannot launch a guest. Old images
+without a manifest require one normal image rebuild; they are not silently
+certified from ELF symbols alone.
 
 ## Listing, filtering and isolation
 
@@ -79,8 +116,13 @@ still require every original name, in order, with exact counts and exit status.
 
 ## Results and diagnostic helpers
 
-Every runner invocation writes JSON and JUnit XML beside its journals under
-`build/test-logs/`. Override paths with `--json PATH` and `--junit PATH`.
+Coordinator runs separate artifacts under `build/test-logs/{host,ON,OFF}/CHECK`.
+It writes aggregate JSON/JUnit reports, preserving individual validated guest
+results and whole-command portable check outcomes. Normal and soak checks sharing
+an underlying boot case have distinct journals/captures. Selected runs have distinct
+report names so they do not overwrite unfiltered evidence. Each runner invocation
+also writes its own JSON/JUnit beside its journals. Direct QEMU invocations
+default to `build/test-logs/`; override paths with `--log-dir`, `--json` and `--junit`.
 Validated KTAP results become individual report cases. Whole-scenario acceptance,
 socket/PCAP/provenance errors and crashes/timeouts remain distinct: an invalid
 partial journal never produces passed test results. Per-test timing is unknown,
@@ -91,7 +133,7 @@ JSON schema 1 contains a `results` array. Each row has `scenario`, `name`,
 zero-based `iteration`. JUnit groups each iteration separately, so repeated
 names cannot conceal failures in CI viewers.
 JUnit uses separate suite failure/error counts, escaped diagnostics and journal
-references. CTest also writes tier/profile summary XML.
+references. Aggregate scenarios are scoped by profile and catalog name.
 Invalid XML control characters in corrupted serial output are represented as
 literal hexadecimal escapes; the original journal and JSON retain the evidence.
 
@@ -253,8 +295,8 @@ before the fifty-three normal cases and exits with guest failure. This command
 python3 scripts/qemu_test.py --case kernel-tests-fail --build-dir build
 ```
 
-CTest's `kernel-suite-rejection` entry uses `--expect-test-failure` to verify
+The catalog's `kernel-suite-rejection` entry uses `--expect-test-failure` to verify
 that rejection. It accepts only the complete, consistent report of that
 specific intentional failure; crashes, timeouts, missing results, and unrelated
-test failures still fail the check. It does not use CTest's generic
+test failures still fail the check. It does not use a generic
 `WILL_FAIL` behavior.

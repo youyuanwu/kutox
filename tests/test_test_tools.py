@@ -209,7 +209,9 @@ class ReportTests(unittest.TestCase):
 
 class TierAndSoakTests(unittest.TestCase):
     def test_fast_checks_both_profiles_without_kernel_build_and_limits_jobs(self):
-        commands = list(check.commands("fast", ("OFF", "ON"), Path("build")))
+        tools = dict(qemu="qemu", nm="nm", clang="clang", ld="ld")
+        commands = [command for profile, item in check.plan("fast", ("OFF", "ON"))
+                    for command in check.render(item, profile, Path("build"), tools)[0]]
         tests = [command for command in commands if command[:2] == ["cargo", "test"] and "kutox" in command]
         self.assertEqual(len(tests), 2)
         self.assertTrue(any("--no-default-features" in command for command in tests))
@@ -222,14 +224,13 @@ class TierAndSoakTests(unittest.TestCase):
 
     def test_smoke_and_soak_preserve_serial_same_image_profile_order(self):
         for tier in ("smoke", "soak"):
-            commands = list(check.commands(tier, ("OFF", "ON"), Path("build")))
-            configs = [command for command in commands if command[:2] == ["cmake", "-S"]]
-            self.assertIn("-DKUTOX_GUEST_TESTS=OFF", configs[0])
-            self.assertIn("-DKUTOX_GUEST_TESTS=ON", configs[1])
-            for command in commands:
-                if command[0] == "ctest":
-                    self.assertIn(tier, command)
-                    self.assertEqual(command[command.index("--parallel") + 1], "1")
+            schedule = check.plan(tier, ("OFF", "ON"))
+            profiles = list(dict.fromkeys(profile for profile, _ in schedule if profile))
+            self.assertEqual(profiles, ["OFF", "ON"])
+            for profile in profiles:
+                commands = check.build_commands(profile, Path("build"))
+                self.assertIn(f"-DKUTOX_GUEST_TESTS={profile}", commands[0])
+                self.assertEqual(commands[1][-2:], ["--parallel", "1"])
 
     def test_paced_peer_requires_every_exact_reply_in_every_exchange(self):
         sent = []
