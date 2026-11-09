@@ -34,7 +34,7 @@ def fixture(case="network-tests"):
         lines += path_lines(case)
         lines += [summary(epoch, 6 + len(q.pci_layout(case)[2])), ready(epoch, identity, case)]
         lines += [
-            "# NETWORK_STACK_STORAGE state=400 future=608 added_slabs=1 added_pages=0 future_slabs=1 future_pages=0 charged=104268 stack_limit=5 rx_budget=8",
+            "# NETWORK_STACK_STORAGE state=400 future=608 added_slabs=1 added_pages=0 future_slabs=0 future_pages=0 future_storage=32768 charged=120684 stack_limit=5 rx_budget=8",
             f"# NETWORK_STACK_CONFIGURED identity={identity} cidr=10.0.2.15/24 mtu=1500",
             f"# NETWORK_STACK_READY identity={identity} mac=52:54:00:12:34:56 cidr=10.0.2.15/24 mtu=1500",
         ]
@@ -164,7 +164,7 @@ time.sleep(10)
         text = fixture()
         for before, after in [
             ("rejected=7 allocation=0", "rejected=0 allocation=0"),
-            ("future=608", "future=2049"), ("charged=104268", "charged=131073"),
+            ("future=608", "future=2049"), ("charged=120684", "charged=131073"),
             ("frame=balanced", "frame=leaked"), ("heap=balanced", "heap=leaked"),
             ("copied_after_remove=1", "copied_after_remove=0"),
             ("stale=1", "stale=0"), ("source_unchanged=1", "source_unchanged=0"),

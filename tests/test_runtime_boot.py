@@ -56,7 +56,7 @@ def live_log(case="driver-runtime-default"):
         lines.append(ready(1, 6, case))
     if network:
         lines += [
-            "# NETWORK_STACK_STORAGE state=512 future=512 added_slabs=1 added_pages=0 future_slabs=1 future_pages=0 charged=104203 stack_limit=5 rx_budget=8",
+            "# NETWORK_STACK_STORAGE state=512 future=512 added_slabs=1 added_pages=0 future_slabs=1 future_pages=0 future_storage=32768 charged=104203 stack_limit=5 rx_budget=8",
             "# NETWORK_STACK_WAIT state=source",
         ]
         if bound:

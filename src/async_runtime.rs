@@ -1,7 +1,6 @@
 //! One guarded executor. Only metadata and static wake tags cross IRQ boundaries.
 
-use crate::{Failure, cpu::X86Cpu, serial, threads, time};
-use alloc::{alloc::alloc, boxed::Box};
+use crate::{Failure, cpu::X86Cpu, memory, serial, threads, time};
 use core::{
     alloc::Layout,
     cell::UnsafeCell,
@@ -110,7 +109,29 @@ static POLLING: AtomicBool = AtomicBool::new(false);
 static READY: threads::WaitQueue = threads::WaitQueue::new();
 static PROGRESS: threads::WaitQueue = threads::WaitQueue::new();
 
-type Work = Pin<Box<dyn Future<Output = Result<(), TaskFailure>> + Send>>;
+struct Work {
+    pointer: NonNull<dyn Future<Output = Result<(), TaskFailure>> + Send>,
+}
+impl Work {
+    fn as_mut(&mut self) -> Pin<&mut (dyn Future<Output = Result<(), TaskFailure>> + Send)> {
+        // The owned arena slot stays fixed until this future is destroyed.
+        unsafe { Pin::new_unchecked(self.pointer.as_mut()) }
+    }
+}
+impl Drop for Work {
+    fn drop(&mut self) {
+        unsafe { self.pointer.as_ptr().drop_in_place() };
+    }
+}
+struct Arena {
+    _frames: moss_libkernel::memory::allocators::phys::PageAllocation<'static, 'static, X86Cpu>,
+    pointer: NonNull<u8>,
+}
+struct Storage(UnsafeCell<Option<Arena>>);
+// BSP, IF clear; no storage borrow crosses a poll, destructor or switch.
+unsafe impl Sync for Storage {}
+static ARENA: Storage = Storage(UnsafeCell::new(None));
+pub const FUTURE_STORAGE_BYTES: usize = MAX_TASKS * kutox::async_state::MAX_FUTURE_BYTES;
 struct Payload {
     task: TaskHandle,
     future: Work,
@@ -139,6 +160,7 @@ static WAKE_TAGS: [WakeTag; MAX_TASKS] = wake_tags();
 pub const METADATA_BYTES: usize = core::mem::size_of::<Control>()
     + core::mem::size_of::<Service>()
     + core::mem::size_of::<Payloads>()
+    + core::mem::size_of::<Storage>()
     + core::mem::size_of_val(&WAKE_TAGS)
     + core::mem::size_of::<threads::WaitQueue>() * 2
     + 2;
@@ -390,6 +412,9 @@ where
 {
     context()?;
     let layout = Layout::new::<F>();
+    if layout.align() > kutox::async_state::MAX_FUTURE_BYTES {
+        return Err(Error::State(StateError::PayloadTooLarge));
+    }
     let (task, lease) = {
         let mut control = CONTROL.lock_save_irq();
         if !CLAIMED.load(Ordering::Acquire) {
@@ -400,34 +425,21 @@ where
         let lease = state.retain_waker(task).expect("new task lease");
         (task, lease)
     };
-    let pointer = if layout.size() == 0 {
-        NonNull::<F>::dangling().as_ptr()
-    } else {
-        unsafe { alloc(layout).cast::<F>() }
+    let pointer = unsafe {
+        (&*ARENA.0.get())
+            .as_ref()
+            .expect("admitted future arena")
+            .pointer
+            .as_ptr()
+            .add(task.slot() * kutox::async_state::MAX_FUTURE_BYTES)
+            .cast::<F>()
     };
-    if pointer.is_null() {
-        CONTROL
-            .lock_save_irq()
-            .state
-            .as_mut()
-            .expect("admitted state")
-            .cancel(task)
-            .expect("admission rollback");
-        drop(future);
-        let mut control = CONTROL.lock_save_irq();
-        let state = control.state.as_mut().expect("admitted state");
-        state
-            .release_payload(task)
-            .expect("failed allocation payload release");
-        state
-            .release_waker(lease)
-            .expect("failed allocation lease release");
-        return Err(Error::NoMemory);
-    }
-    // Fallible allocation owns F before Box takes over; Box conversion allocates nothing.
-    let future: Work = unsafe {
+    let future = unsafe {
         pointer.write(future);
-        Box::into_pin(Box::from_raw(pointer))
+        let erased: *mut (dyn Future<Output = Result<(), TaskFailure>> + Send) = pointer;
+        Work {
+            pointer: NonNull::new(erased).expect("owned future slot"),
+        }
     };
     let payload = Payload {
         task,
@@ -737,6 +749,7 @@ pub(crate) struct Service {
 
 pub(crate) fn start_owned(
     scheduler: &mut threads::Scheduler<'_, '_, '_>,
+    hhdm_offset: u64,
 ) -> Result<Service, Failure> {
     if CLAIMED
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -762,6 +775,47 @@ pub(crate) fn start_owned(
         CLAIMED.store(false, Ordering::Release);
         return Err(Failure::new("async_epoch", Error::State(error).code()));
     }
+    let reserved = (|| {
+        #[cfg(feature = "guest-tests")]
+        if crate::guest_tests::async_hardening::arena_failure() {
+            return Err(Failure::new("async_storage", -12));
+        }
+        let frames = memory::global_frames()?;
+        let before = frames.stats().free_pages;
+        let allocation = frames
+            .alloc_frames(3)
+            .map_err(|_| Failure::new("async_storage", -12))?;
+        assert_eq!(allocation.region().size(), FUTURE_STORAGE_BYTES);
+        assert_eq!(before - frames.stats().free_pages, 8);
+        let address = hhdm_offset
+            .checked_add(allocation.region().start_address().value() as u64)
+            .ok_or(Failure::new("async_storage_address", -1))?;
+        let end = address
+            .checked_add(FUTURE_STORAGE_BYTES as u64 - 1)
+            .ok_or(Failure::new("async_storage_address", -1))?;
+        if !address.is_multiple_of(kutox::async_state::MAX_FUTURE_BYTES as u64)
+            || x86_64::VirtAddr::try_new(address).is_err()
+            || x86_64::VirtAddr::try_new(end).is_err()
+        {
+            return Err(Failure::new("async_storage_address", -1));
+        }
+        let pointer =
+            NonNull::new(address as *mut u8).ok_or(Failure::new("async_storage_address", -1))?;
+        unsafe {
+            assert!((&*ARENA.0.get()).is_none());
+            *ARENA.0.get() = Some(Arena {
+                _frames: allocation,
+                pointer,
+            });
+        }
+        Ok(())
+    })();
+    if let Err(error) = reserved {
+        begin_stop().expect("failed executor storage close");
+        CONTROL.lock_save_irq().stopped = true;
+        CLAIMED.store(false, Ordering::Release);
+        return Err(error);
+    }
     match scheduler.spawn(kutox_async_executor, 0) {
         Ok(task) => {
             CONTROL.lock_save_irq().owner = Some(task);
@@ -771,6 +825,7 @@ pub(crate) fn start_owned(
             begin_stop().expect("unstarted executor close");
             CONTROL.lock_save_irq().stopped = true;
             CLAIMED.store(false, Ordering::Release);
+            drop(unsafe { (&mut *ARENA.0.get()).take() });
             Err(error)
         }
     }
@@ -802,5 +857,7 @@ impl Drop for Service {
         );
         control.owner = None;
         CLAIMED.store(false, Ordering::Release);
+        drop(control);
+        drop(unsafe { (&mut *ARENA.0.get()).take() });
     }
 }

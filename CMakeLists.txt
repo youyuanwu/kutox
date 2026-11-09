@@ -92,6 +92,14 @@ foreach(case IN ITEMS network-invalid-default network-invalid-run network-invali
     set_tests_properties("${case}" PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
 endforeach()
 if(KUTOX_GUEST_TESTS)
+foreach(case IN ITEMS async-hardening-tests async-hardening-tests-low-memory async-hardening-tests-nested-low-memory)
+    add_test(NAME "${case}"
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
+            --case "${case}" --build-dir "${CMAKE_BINARY_DIR}"
+            --qemu "${QEMU}" --nm "${NM}" --timeout 90
+    )
+    set_tests_properties("${case}" PROPERTIES TIMEOUT 95 RUN_SERIAL TRUE)
+endforeach()
 add_test(NAME kernel-suite
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/qemu_test.py"
         --case kernel-tests --build-dir "${CMAKE_BINARY_DIR}"

@@ -108,6 +108,11 @@ fn report(operation: &str, error: Error) {
         "# ASYNC_NET_ERROR operation={operation} error={error:?}\n"
     ));
 }
+fn fail_service(operation: &str, error: Error) {
+    report(operation, error);
+    begin_stop();
+    kernel_runtime::async_failed(-272);
+}
 fn copy_context() -> Result<(), Error> {
     if exceptions::is_dispatching() || cpu::interrupts_enabled() || X86Cpu::irq_lock_depth() != 0 {
         return Err(Error::Context);
@@ -710,12 +715,19 @@ pub fn kutox_packet_broker(_: usize) {
             && net_device::session_open(current.key())
         {
             let device = current.device();
-            let info = match device.info() {
+            let info_result = device.info();
+            #[cfg(feature = "guest-tests")]
+            let info_result = if crate::guest_tests::async_hardening::native_failure() {
+                Err(Error::Driver(-273))
+            } else {
+                info_result
+            };
+            let info = match info_result {
                 Ok(info) => info,
                 Err(Error::Closed | Error::Stale) => continue,
                 Err(error) => {
-                    report("info", error);
-                    panic!("native metadata failed");
+                    fail_service("info", error);
+                    continue;
                 }
             };
             let mut changed = cache_info(info);
@@ -749,22 +761,25 @@ pub fn kutox_packet_broker(_: usize) {
                             // Keep Finishing until positively confirmed original removal.
                             Err(Error::Closed | Error::Stale) => {}
                             Err(error) => {
-                                report("finish", error);
-                                panic!("unretired native receipt release failed");
+                                fail_service("finish", error);
                             }
                         }
                     }
                     Ok(net_device::TxStatus::InFlight) => {
                         #[cfg(feature = "guest-tests")]
                         crate::guest_tests::async_network::pending_checkpoint();
+                        #[cfg(feature = "guest-tests")]
+                        crate::guest_tests::async_hardening::broker_checkpoint();
                     }
                     Ok(_) => {}
                     Err(Error::Closed | Error::Stale) => {}
                     Err(error) => {
-                        report("progress", error);
-                        panic!("unretired native TX failure");
+                        fail_service("progress", error);
                     }
                 }
+            }
+            if CONTROL.lock_save_irq().stop {
+                continue;
             }
             if info.ready {
                 let next = CONTROL.lock_save_irq().requests.next(current.key());
@@ -810,7 +825,10 @@ pub fn kutox_packet_broker(_: usize) {
                 let mut packet = match Packet::empty() {
                     Ok(packet) => packet,
                     Err(Error::Busy) => break,
-                    Err(error) => panic!("broker RX backing error {error:?}"),
+                    Err(error) => {
+                        fail_service("rx_backing", error);
+                        break;
+                    }
                 };
                 match device.receive_into(packet.buffer_mut()) {
                     Ok(0) => {
@@ -838,8 +856,8 @@ pub fn kutox_packet_broker(_: usize) {
                     }
                     Err(error) => {
                         drop(packet);
-                        report("receive", error);
-                        panic!("native RX failed");
+                        fail_service("receive", error);
+                        break;
                     }
                 }
             }
@@ -847,8 +865,7 @@ pub fn kutox_packet_broker(_: usize) {
                 Ok(info) => changed |= cache_info(info),
                 Err(Error::Closed | Error::Stale) => {}
                 Err(error) => {
-                    report("info", error);
-                    panic!("native post-operation metadata failed");
+                    fail_service("info", error);
                 }
             }
             if changed {

@@ -433,7 +433,7 @@ fn run_epoch(
     assert!(execution.max_batch <= 16 && execution.sleeps != 0);
     let service_bytes = runtime::METADATA_BYTES
         + runtime::STACK_BYTES
-        + execution.peak_payload_bytes
+        + runtime::FUTURE_STORAGE_BYTES
         + core::mem::size_of::<async_sync::Event>();
     assert!(service_bytes <= 128 * 1024);
     let name = if mode == 5 {

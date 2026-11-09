@@ -364,7 +364,7 @@ fn scope(
         + async_runtime::METADATA_BYTES
         + net_async::PACKET_STORAGE_BYTES
         + 32 * 1024
-        + async_runtime::stats().peak_payload_bytes;
+        + async_runtime::FUTURE_STORAGE_BYTES;
     assert!(service <= 128 * 1024);
     serial::print(format_args!(
         "# ASYNC_NET_JOIN epoch={epoch} finished=6 peak=6 requests=0 packets=0 staged_rx=0 workers=0 balanced=1 metadata={} broker_metadata={} async_metadata={} packet_storage={} stack_storage=32768 future_peak={} service={service}\n",

@@ -202,6 +202,23 @@ pub fn kutox_guest_network_stack(_: usize) {
     *OLD_RUNTIME.lock_save_irq() = Some(current());
 }
 
+pub(crate) fn assert_arp_copy(packet: &net_async::Packet, config: Config) {
+    let mut expected = [0; 60];
+    let mut ethernet = EthernetFrame::new_unchecked(&mut expected[..]);
+    ethernet.set_dst_addr(EthernetAddress::BROADCAST);
+    ethernet.set_src_addr(EthernetAddress([2, 0, 0, 0, 0, 1]));
+    ethernet.set_ethertype(EthernetProtocol::Arp);
+    ArpRepr::EthernetIpv4 {
+        operation: ArpOperation::Request,
+        source_hardware_addr: EthernetAddress([2, 0, 0, 0, 0, 1]),
+        source_protocol_addr: Ipv4Address::new(10, 0, 2, 2),
+        target_hardware_addr: EthernetAddress([0; 6]),
+        target_protocol_addr: config.cidr().address(),
+    }
+    .emit(&mut ArpPacket::new_unchecked(ethernet.payload_mut()));
+    assert_eq!(packet.bytes(), expected);
+}
+
 fn exchange(
     boot: &BootInfo,
     frames: &'static memory::PhysicalFrames<'static>,
@@ -225,20 +242,7 @@ fn exchange(
         RUNTIME.lock_save_irq().take();
         SESSION.lock_save_irq().take();
         let packet = COPY.lock_save_irq().take().unwrap();
-        let mut expected = [0; 60];
-        let mut ethernet = EthernetFrame::new_unchecked(&mut expected[..]);
-        ethernet.set_dst_addr(EthernetAddress::BROADCAST);
-        ethernet.set_src_addr(EthernetAddress([2, 0, 0, 0, 0, 1]));
-        ethernet.set_ethertype(EthernetProtocol::Arp);
-        ArpRepr::EthernetIpv4 {
-            operation: ArpOperation::Request,
-            source_hardware_addr: EthernetAddress([2, 0, 0, 0, 0, 1]),
-            source_protocol_addr: Ipv4Address::new(10, 0, 2, 2),
-            target_hardware_addr: EthernetAddress([0; 6]),
-            target_protocol_addr: boot.ipv4.cidr().address(),
-        }
-        .emit(&mut ArpPacket::new_unchecked(ethernet.payload_mut()));
-        assert_eq!(packet.bytes(), expected);
+        assert_arp_copy(&packet, boot.ipv4);
         let native = driver_memory::snapshot();
         assert!(linux_driver::managed_quiescent());
         assert_eq!(linux_driver::source_ticket(), 0);

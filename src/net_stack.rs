@@ -138,6 +138,10 @@ pub(crate) fn start(config: Config) -> Result<async_runtime::Task, Failure> {
     let claim = Claim;
     *STATUS.lock_save_irq() = Snapshot::default();
     let before = crate::heap::global().stats();
+    #[cfg(feature = "guest-tests")]
+    if crate::guest_tests::async_hardening::state_failure() {
+        return Err(Failure::new("network_stack_alloc", -12));
+    }
     let pointer = unsafe { alloc(Layout::new::<State>()).cast::<State>() };
     if pointer.is_null() {
         return Err(Failure::new("network_stack_alloc", -12));
@@ -169,17 +173,19 @@ pub(crate) fn start(config: Config) -> Result<async_runtime::Task, Failure> {
     let charged = async_runtime::METADATA_BYTES
         + net_async::METADATA_BYTES
         + METADATA_BYTES
+        + async_runtime::FUTURE_STORAGE_BYTES
         + net_async::PACKET_STORAGE_BYTES
         + 2 * async_runtime::STACK_BYTES
         + heap_bytes;
     serial::print(format_args!(
-        "# NETWORK_STACK_STORAGE state={} future={} added_slabs={} added_pages={} future_slabs={} future_pages={} charged={} stack_limit=5 rx_budget={RX_PER_TURN}\n",
+        "# NETWORK_STACK_STORAGE state={} future={} added_slabs={} added_pages={} future_slabs={} future_pages={} future_storage={} charged={} stack_limit=5 rx_budget={RX_PER_TURN}\n",
         STATE_BYTES,
         future_bytes,
         after.slabs - before.slabs,
         after.large_pages - before.large_pages,
         admitted.slabs - after.slabs,
         admitted.large_pages - after.large_pages,
+        async_runtime::FUTURE_STORAGE_BYTES,
         charged,
     ));
     if charged > 128 * 1024 {
@@ -280,6 +286,8 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
                 })
                 .transpose()?;
             rx = poll_fn(|cx| {
+                #[cfg(feature = "guest-tests")]
+                crate::guest_tests::async_hardening::retain_stack_waker(cx.waker());
                 if let Poll::Ready(result) = Pin::new(&mut receive).poll(cx) {
                     return Poll::Ready(
                         result.map(Some).map_err(|error| failure("receive", error)),
@@ -336,6 +344,8 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
         );
         #[cfg(feature = "guest-tests")]
         crate::guest_tests::network_stack::retain(rx.as_ref().expect("staged RX"));
+        #[cfg(feature = "guest-tests")]
+        crate::guest_tests::async_hardening::retain_packet(rx.as_ref().expect("staged RX"));
         state.rx += 1;
         match admission {
             Admission::Arp => state.arp += 1,

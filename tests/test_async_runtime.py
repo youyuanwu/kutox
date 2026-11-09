@@ -40,13 +40,13 @@ def async_log():
             f"# ASYNC_JOIN test={name} epoch=1 finished=5 peak=5 blocks=4 idle_sleeps=1 polls={polls} "
             f"max_batch={16 if index >= 3 else 2} completed={completed} cancelled={cancelled} failed=0 "
             f"registrations=0 deadlines=0 retained={retained} payload_bytes=0 peak_payload_bytes=2048 "
-            "metadata=4200 stack_bytes=16384 event_bytes=40 service_bytes=22672 balanced=1"
+            "metadata=4200 stack_bytes=16384 event_bytes=40 service_bytes=53392 balanced=1"
         )
         if index == 4:
             lines.extend([
                 "# LINUX_CONTROL_REJECT op=async_poll errno=-59",
                 "# ASYNC_REBIND changed_epoch=1 old_wake=ignored payload_retained=0 records=0",
-                "# ASYNC_JOIN test=async.cancel epoch=2 finished=5 peak=5 blocks=4 idle_sleeps=0 polls=2 max_batch=2 completed=1 cancelled=0 failed=0 registrations=0 deadlines=0 retained=0 payload_bytes=0 peak_payload_bytes=16 metadata=4200 stack_bytes=16384 event_bytes=40 service_bytes=20640 balanced=1",
+                "# ASYNC_JOIN test=async.cancel epoch=2 finished=5 peak=5 blocks=4 idle_sleeps=0 polls=2 max_batch=2 completed=1 cancelled=0 failed=0 registrations=0 deadlines=0 retained=0 payload_bytes=0 peak_payload_bytes=16 metadata=4200 stack_bytes=16384 event_bytes=40 service_bytes=53392 balanced=1",
             ])
         if index == 0:
             lines.extend([
@@ -92,7 +92,7 @@ class AsyncRuntimeTests(unittest.TestCase):
             ("max_batch=16", "max_batch=17"), ("peak=5", "peak=6"),
             ("blocks=4", "blocks=0"), ("stack_bytes=16384", "stack_bytes=32768"),
             ("metadata=4200", "metadata=32769"), ("peak_payload_bytes=2048", "peak_payload_bytes=32769"),
-            ("service_bytes=22672", "service_bytes=131073"),
+            ("service_bytes=53392", "service_bytes=131073"),
         ]:
             with self.subTest(before=before), self.assertRaises(AssertionError):
                 q.validate_result("async-core-tests", 1, async_log().replace(before, after, 1))

@@ -1,5 +1,6 @@
 //! Guest-only acceptance fixtures; not production driver code.
 
+pub(crate) mod async_hardening;
 pub(crate) mod async_network;
 mod async_runtime;
 mod device_irq;
@@ -353,6 +354,8 @@ pub fn run(boot: &BootInfo) -> ! {
         async_network::TESTS
     } else if boot.mode == BootMode::NetworkTests {
         network_stack::TESTS
+    } else if boot.mode == BootMode::AsyncHardeningTests {
+        async_hardening::TESTS
     } else {
         TESTS
     };

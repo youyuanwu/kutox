@@ -675,6 +675,10 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
                 )
             };
             let Some((id, reason, handle)) = next else {
+                #[cfg(feature = "guest-tests")]
+                if let Some(timer) = timer {
+                    crate::guest_tests::async_hardening::before_idle(timer)?;
+                }
                 let deadline = match (deadline, timer.and_then(irq::Timer::handler_deadline)) {
                     (Some(wait), Some(handler)) => Some(wait.min(handler)),
                     (wait, handler) => wait.or(handler),

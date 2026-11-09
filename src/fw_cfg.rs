@@ -26,6 +26,7 @@ pub enum BootMode {
     AsyncCoreTests,
     AsyncNetworkTests,
     NetworkTests,
+    AsyncHardeningTests,
     HeapOom,
     ThreadStackGuard,
 }
@@ -65,6 +66,7 @@ impl BootMode {
             Self::AsyncCoreTests => "async-core-tests",
             Self::AsyncNetworkTests => "async-network-tests",
             Self::NetworkTests => "network-tests",
+            Self::AsyncHardeningTests => "async-hardening-tests",
             Self::HeapOom => "heap-oom",
             Self::ThreadStackGuard => "thread-stack-guard",
         }
@@ -103,6 +105,7 @@ impl BootMode {
                 | Self::AsyncCoreTests
                 | Self::AsyncNetworkTests
                 | Self::NetworkTests
+                | Self::AsyncHardeningTests
                 | Self::HeapOom
                 | Self::ThreadStackGuard
         )
@@ -165,7 +168,7 @@ pub fn read_mode(
         b"async-core-tests" => Ok(Some(BootMode::AsyncCoreTests)),
         b"async-network-tests" => Ok(Some(BootMode::AsyncNetworkTests)),
         b"network-tests" => Ok(Some(BootMode::NetworkTests)),
-        b"async-hardening-tests" if !cfg!(feature = "guest-tests") => Err(Error::TestsDisabled),
+        b"async-hardening-tests" => Ok(Some(BootMode::AsyncHardeningTests)),
         b"heap-oom" => Ok(Some(BootMode::HeapOom)),
         b"thread-stack-guard" => Ok(Some(BootMode::ThreadStackGuard)),
         _ => Err(Error::UnknownMode),
@@ -312,6 +315,7 @@ mod tests {
             BootMode::AsyncCoreTests,
             BootMode::AsyncNetworkTests,
             BootMode::NetworkTests,
+            BootMode::AsyncHardeningTests,
             BootMode::HeapOom,
             BootMode::ThreadStackGuard,
         ] {
@@ -485,11 +489,15 @@ mod tests {
                 "opt/kutox/test-mode",
                 b"async-hardening-tests"
             )])),
-            Err(if cfg!(feature = "guest-tests") {
-                Error::UnknownMode
+            Ok(Some(BootMode::AsyncHardeningTests))
+        );
+        assert_eq!(
+            BootMode::AsyncHardeningTests.validate_build(),
+            if cfg!(feature = "guest-tests") {
+                Ok(())
             } else {
-                Error::TestsDisabled
-            }),
+                Err(Error::TestsDisabled)
+            }
         );
     }
 }
@@ -509,6 +517,7 @@ fn guest_modes_require_the_build_feature_without_changing_probe() {
         BootMode::AsyncCoreTests,
         BootMode::AsyncNetworkTests,
         BootMode::NetworkTests,
+        BootMode::AsyncHardeningTests,
         BootMode::EepromTimeout,
         BootMode::PageFault,
         BootMode::GeneralProtection,

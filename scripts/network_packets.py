@@ -20,16 +20,16 @@ def checksum(data):
     return (~total) & 0xffff
 
 
-def arp(reply=False):
-    source_mac, target_mac = (NIC, PEER) if reply else (PEER, bytes(6))
+def arp(reply=False, peer=PEER):
+    source_mac, target_mac = (NIC, peer) if reply else (peer, bytes(6))
     source_ip, target_ip = (IP, PEER_IP) if reply else (PEER_IP, IP)
-    destination = PEER if reply else bytes([255] * 6)
+    destination = peer if reply else bytes([255] * 6)
     body = struct.pack("!HHBBH", 1, 0x800, 6, 4, 2 if reply else 1)
     return (destination + source_mac + b"\x08\x06" + body +
             source_mac + source_ip + target_mac + target_ip).ljust(60, b"\0")
 
 
-def echo(epoch, sequence, length, reply=False):
+def echo(epoch, sequence, length, reply=False, peer=PEER):
     payload = bytes((epoch * 7 + sequence * 13 + index * 17) & 255 for index in range(length))
     body = struct.pack("!BBHHH", 0 if reply else 8, 0, 0, 0x1200 + epoch, sequence) + payload
     body = body[:2] + struct.pack("!H", checksum(body)) + body[4:]
@@ -37,7 +37,7 @@ def echo(epoch, sequence, length, reply=False):
     header = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(body), 0, 0x4000,
                          64, 1, 0, source_ip, destination_ip)
     header = header[:10] + struct.pack("!H", checksum(header)) + header[12:]
-    destination_mac, source_mac = (PEER, NIC) if reply else (NIC, PEER)
+    destination_mac, source_mac = (peer, NIC) if reply else (NIC, peer)
     return (destination_mac + source_mac + b"\x08\x00" + header + body).ljust(60, b"\0")
 
 
@@ -81,6 +81,16 @@ def replies():
 
 def live_requests(reply=False):
     return [arp(reply), echo(1, 1, 0, reply), echo(1, 5, 1472, reply)]
+
+def kernel_arp_request():
+    broadcast = bytes([255] * 6)
+    return (broadcast + NIC + b"\x08\x06" + struct.pack("!HHBBH", 1, 0x800, 6, 4, 1)
+            + NIC + IP + broadcast + PEER_IP).ljust(60, b"\0")
+
+
+def peer_arp_reply(peer):
+    return (NIC + peer + b"\x08\x06" + struct.pack("!HHBBH", 1, 0x800, 6, 4, 2)
+            + peer + PEER_IP + NIC + IP).ljust(60, b"\0")
 
 
 def validate_reply(packet, epoch, step):

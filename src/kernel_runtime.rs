@@ -549,7 +549,10 @@ impl<'a> Resources<'a> {
             scheduler.spawn(coordinator, self as *const Self as usize)?;
             checkpoint(Stage::Coordinator, self.boot.mode)?;
             if asynchronous {
-                asynchronous_service = Some(crate::async_runtime::start_owned(&mut scheduler)?);
+                asynchronous_service = Some(crate::async_runtime::start_owned(
+                    &mut scheduler,
+                    self.boot.hhdm_offset,
+                )?);
             }
             if network {
                 network_service = Some(crate::net_async::start_owned(&mut scheduler)?);

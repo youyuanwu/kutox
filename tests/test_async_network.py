@@ -81,7 +81,7 @@ def async_log():
             joined = min(epoch, 4)
             lines.append(
                 f"# ASYNC_NET_JOIN epoch={joined} finished=6 peak=6 requests=0 packets=0 staged_rx=0 workers=0 balanced=1 "
-                "metadata=60473 broker_metadata=2329 async_metadata=4202 packet_storage=32768 stack_storage=32768 future_peak=256 service=72323"
+                "metadata=60473 broker_metadata=2329 async_metadata=4202 packet_storage=32768 stack_storage=32768 future_peak=256 service=104835"
             )
         if epoch == 2:
             lines.append("ok 1 async.net.exchange")
@@ -103,7 +103,7 @@ class AsyncNetworkTests(unittest.TestCase):
             ("orphan_finished=1", "orphan_finished=0"), ("expired=1", "expired=0"),
             ("late_copy=1", "late_copy=0"), ("packets=0", "packets=1"),
             ("future_peak=256", "future_peak=32769"), ("metadata=60473", "metadata=65537"),
-            ("service=72323", "service=131073"), ("finished=6", "finished=5"),
+            ("service=104835", "service=131073"), ("finished=6", "finished=5"),
             ("pages=8", "pages=9"), ("allocation=1", "allocation=16"),
             ("code=-164", "code=-165"), ("operation=receive error=Busy", "operation=receive error=NoMemory"),
             ("event=21", "event=20"), ("event=30", "event=32"),

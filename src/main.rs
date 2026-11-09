@@ -266,6 +266,7 @@ fn probe() -> Result<BootOutcome, Failure> {
             | BootMode::AsyncCoreTests
             | BootMode::AsyncNetworkTests
             | BootMode::NetworkTests
+            | BootMode::AsyncHardeningTests
     ) {
         guest_tests::run(&boot);
     }

@@ -2,7 +2,7 @@
 
 ## Status, scope and outcome
 
-This is a **design with Phases 1-6 implemented and network-enabled normal boot**.
+This is a **design with Phases 1-7 implemented and network-enabled normal boot**.
 The baseline is merged driver integration at `ac637ab` (PR #7). Current normal
 boot retains Linux e1000, kernel workers, executor, packet broker and a smoltcp
 ARP/static IPv4/ICMP future, without application sockets or native clients;
@@ -25,8 +25,8 @@ build profiles; `driver-run` preserves the previous driver-only path.
 
 The milestone adds a bounded Moss-inspired Rust async runtime and
 ARP/static IPv4/ICMP echo over the existing unchanged Linux e1000. Explicit-mode
-acceptance and normal boot migration are complete. Hardening and final as-built
-documentation remain subsequent phases.
+acceptance, normal boot migration and hardening are complete. Final as-built
+documentation remains the last phase.
 
 The observable outcome is an isolated host peer resolving the kernel's MAC
 through ARP and receiving exact ICMP echo replies from a normal, persistent
@@ -381,14 +381,17 @@ deadline. Link loss pauses new offers without certifying source removal.
 
 Measured on the selected x86_64 profile after Phase 5 diagnostics: interface/
 counters state is 400 bytes,
-the admitted protocol future is 608 bytes, and each causes one actual 16-KiB
-slab reservation. The new-service charge is **104,268 bytes**: executor/broker/
-stack-status metadata 5,964 + packet arena 32,768 + two added guarded stacks 32,768 + those
-two slabs 32,768. Admission checks the 128-KiB ceiling using real heap deltas,
+the admitted protocol future is 608 bytes. The interface state uses one actual 16-KiB
+slab reservation for the interface state. Phase 7 replaces per-future slabs with
+one owned, eight-page **32-KiB pinned-future arena**. The new-service charge is
+**120,684 bytes**: executor/broker/stack-status metadata 5,996 + future arena
+32,768 + packet arena 32,768 + two added guarded stacks 32,768 + state slab 16,384.
+Admission checks the 128-KiB ceiling using actual frame ownership and heap deltas,
 not just requested object sizes. Driver metadata is 62,489 bytes, including the
 2,016-byte bounded production callback table added for source proof.
-These measurements cover the built-in service, not arbitrary application
-captures or the final hardening workload.
+Sixteen maximum-size admitted captures occupy this same arena rather than adding
+heap slabs. Payload size and alignment are bounded to 2 KiB; arbitrary allocations
+performed by application code inside a future are not covered.
 
 `NETWORK_STACK_WAIT`, `NETWORK_STACK_CONFIGURED` and `NETWORK_STACK_READY`
 distinguish missing source, configured subnet and actual source/link readiness.
@@ -506,9 +509,56 @@ Production host/CTest deadlines are 30/35 seconds. ON and OFF profiles test norm
 explicit run/network-run, 32-MiB, no/unsupported-NIC and driver-only behavior.
 Malformed default/explicit CIDRs fail before allocation; an ambiguous two-NIC
 default rejects before source/service admission. OFF rejects async core/broker/IP/
-hardening test selectors before initialization. The future hardening selector is
-reserved for OFF rejection only; ON still rejects it as unknown until Phase 7
-provides the fixture. No placeholder test or fallback probe is registered.
+hardening test selectors before initialization. ON now includes the real
+Phase 7 table; OFF omits its actors, fault hooks and inspectors.
+
+### As-built Phase 7 hardening
+
+The native executor reserves a fallible, owned eight-page RAM allocation at
+service admission. Sixteen 2-KiB slots hold pinned, type-erased `Send` futures;
+polling and destruction remain outside IRQ locks. Slot reuse follows payload
+destruction acknowledgement. Wakers still refer only to permanent metadata tags,
+not this allocation, and retained old-epoch wakers do not keep payload RAM alive.
+Oversized/over-aligned futures reject before writing a slot. No per-future heap
+allocation or hidden slab rounding can exceed the payload-storage ceiling.
+
+Unexpected broker errors report their operation and request coordinated service
+shutdown, retaining accepted/finishing receipts until native finish or certified
+source retirement. Source close now distinguishes a tracked completed receipt
+from a new TX publication: reset MMIO is not another doorbell. DMA unmap/free
+ordering checks remain active. Real IRQ completion racing cancellation is
+accepted only with original IRQ/NAPI/unmap/consume/account evidence.
+
+`async-hardening-tests`, `async-hardening-tests-low-memory` and
+`async-hardening-tests-nested-low-memory` share the ON ISO and contain five cases:
+capacity, failures, cancel, pressure and retirement. Host/CTest deadlines are
+90/95 seconds. Fourteen balanced scopes exercise:
+
+- Sixteen maximum-size captures/registrations/deadlines; explicit seventeenth
+  registration/deadline rejection; four request credits and sixteen packet loans;
+  next-admission failure, recovery, alignment rejection and stable re-poll addresses.
+- Arena/stack admission, real source allocation/DMA/IRQ faults, TX allocation and
+  consumed map failure, protocol-state allocation and propagated broker failure.
+- Sixteen actual timer-IRQ wake/cancel orderings, one accepted TX plus three
+  abandoned queued copies, retained DMA and explicit busy removal.
+- Four-credit starvation with eight staged plus eight native-ingress frames,
+  one explicit overflow drop, ordered recovery, seven malformed IP rejections,
+  real QMP link loss/recovery on the same instance and no empty-poll spin.
+- Pending protocol cancellation, original close/remove and joined destruction,
+  same-parent rebind, stale-waker IRQ with zero replacement polls, exact late
+  CPU-copy data and a fresh ARP lookup proving neighbor state was reset.
+
+The isolated socket/PCAP peer validates **23 exact TX frames**. Original source
+callbacks account for **31 RX deliveries**, including one capacity drop.
+Every scope restores frame/heap/request/packet/future/task/worker state, including
+three startup-failure scopes with no source callbacks. Source/device/function
+identities and all expected failures are independently validated; no guest-only
+Linux tracing is required. The original kernel/packet ledgers remain separate.
+
+```sh
+ctest --test-dir build --output-on-failure --parallel 1 \
+  -R '^(async-hardening-tests|async-hardening-tests-low-memory|async-hardening-tests-nested-low-memory)$'
+```
 
 ## Shutdown, cancellation and replacement
 

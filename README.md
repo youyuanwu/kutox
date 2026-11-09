@@ -128,6 +128,8 @@ The separate IP acceptance now passes exact ARP/16 echoes per epoch, seven
 directed protocol rejections and balanced shutdown across two source lifetimes.
 Normal network boot also passes real exchange followed by sustained uptime in
 both guest-enabled and test-free images.
+Async/network hardening now covers bounded captures, allocation/IRQ/map failures,
+accepted cancellation, RX/TX starvation, link recovery and same-parent rebind.
 
 ## Requirements
 
@@ -416,6 +418,28 @@ ownership without guest-only source tracing. Retained CPU copies, stale handles
 and exact frame/heap/future/task cleanup are checked separately.
 The guest-free image rejects `network-tests` early; production `network-run`
 is also the normal `run`/absent boot path.
+
+### Async/network hardening
+
+```sh
+ctest --test-dir build --output-on-failure --parallel 1 \
+  -R '^(async-hardening-tests|async-hardening-tests-low-memory|async-hardening-tests-nested-low-memory)$'
+```
+
+Five separate cases run fourteen balanced scopes per hardware profile. They
+check exact capacity/recovery, injected admission/source failures, timer-IRQ
+cancellation races, queued and accepted TX ownership, bounded RX starvation/
+overflow, malformed input, actual link loss/recovery and stale-waker rebind.
+An owned QMP monitor changes only this test's QEMU backend; no host interface
+or external cluster is modified. Socket/PCAP/source evidence validates 23 TX
+frames and 31 RX deliveries, with one explicit source-capacity drop.
+The OFF image rejects this mode before initialization.
+
+Pinned future captures now use one owned 32-KiB arena, not individually rounded
+heap allocations. Sixteen slots each admit at most 2 KiB with bounded alignment.
+The built-in service charge, including this arena, packet storage, interface
+state, metadata and two added stacks, is 120,684 bytes under 128 KiB. Application
+allocations inside arbitrary futures are outside that built-in charge.
 
 ### Managed failure and teardown hardening
 

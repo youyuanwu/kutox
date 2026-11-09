@@ -21,6 +21,10 @@ The [stdlib packet peer](scripts/network_packets.py), bounded production
 callback/status records and directed guest acceptance are also kutox code.
 They observe unchanged Linux and smoltcp implementations; no packet algorithm
 or additional upstream networking/syscall source is copied.
+The pinned-future arena, type-erased ownership/destruction adapter, bounded
+hardening hooks and completed-receipt closing gate are kutox implementations.
+The arena uses the existing adapted Moss owned frame guard; no new upstream
+Moss component or vendor-driver source is imported.
 
 ## Moss kernel primitives
 

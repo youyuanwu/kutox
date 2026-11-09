@@ -12,7 +12,7 @@ static struct {
     dma_addr_t dma;
     unsigned int bytes;
     unsigned long completed_before, completed_bytes_before, stats_before, stats_bytes_before;
-    bool live, accepted, mapped, sent, published, freed, completed, aborting;
+    bool live, accepted, mapped, sent, published, freed, completed, aborting, closing;
 } tx;
 static struct { bool live; struct sk_buff *pending; } many;
 static struct {
@@ -425,6 +425,7 @@ void kutox_c_tx_release(struct net_device *device)
 void kutox_c_tx_abort(struct net_device *device)
 {
     netdev_check(device);
+    if (tx.live) tx.closing = true;
     if (tx.live && tx.accepted && !tx.completed) {
         tx.aborting = true; tx_event(30,0);
     }
@@ -444,7 +445,7 @@ void kutox_c_tx_unmapped(u64 dma, size_t size, unsigned int direction)
 }
 void kutox_c_tx_mmio(uintptr_t address, u32 value, bool writing)
 {
-    if (!tx.live) return;
+    if (!tx.live || tx.closing) return;
     if (writing && address == tx.mmio + 0x3818 && tx.sent && !tx.aborting) {
         if (!tx.mapped || tx.published || value >= 256) kutox_platform_fail("tx_doorbell_order");
         tx.published = true; tx_event(21,value);

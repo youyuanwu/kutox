@@ -24,6 +24,7 @@ GUEST_SYMBOLS = {
     "kutox_guest_async_actor",
     "kutox_guest_async_network",
     "kutox_guest_network_stack",
+    "kutox_guest_async_hardening",
 } | NATIVE_INIT_SYMBOLS
 RUNTIME_SYMBOLS = {
     "e1000_probe", "e1000_open", "e1000_close", "e1000_xmit_frame",
