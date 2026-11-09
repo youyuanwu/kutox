@@ -10,7 +10,7 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 include(FetchContent)
 FetchContent_Declare(limine
-    URL https://github.com/Limine-Bootloader/Limine/releases/download/v12.0.2/limine-binary.tar.gz
+    URL https://github.com/Limine-Bootloader/Limine/releases/download/v12.0.2/limine-binary.tar.gz?download=1
     URL_HASH SHA256=3ceded87b8edee7c61085a06b5d3afe8bf371bf639498165dcf0f4b89b05dbfc
     DOWNLOAD_EXTRACT_TIMESTAMP ON
 )
