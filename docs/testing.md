@@ -24,7 +24,8 @@ python3 scripts/check.py soak
 
 - `fast`: formatting, portable kutox tests/Clippy with guest fixtures both enabled
   and disabled, adapted Moss host tests/Clippy, and Python harness tests.
-  It does not configure or boot a kernel.
+  It requires the initialized Linux submodule for source-audit input tests, but
+  does not configure, build or boot a freestanding kernel.
 - `smoke`: build and kernel Clippy for each profile, actual ELF checks, normal
   networking at 128/32 MiB, no/unsupported NIC, driver-only operation, early
   configuration rejection and debug controls/disabled-selector checks.

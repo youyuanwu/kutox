@@ -17,6 +17,14 @@ TOOLS = dict(qemu="qemu", nm="nm", clang="clang", ld="ld")
 
 
 class CatalogTests(unittest.TestCase):
+    def test_portable_ci_initializes_source_inputs_before_fast_checks(self):
+        workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/check.yml").read_text()
+        portable = workflow.split("  portable:", 1)[1].split("\n  guest:", 1)[0]
+        self.assertLess(portable.index("git submodule update --init --depth 1 linux"),
+                        portable.index("python3 scripts/check.py fast"))
+        self.assertIn("name: results-portable", portable)
+        self.assertIn("if: always()", portable)
+
     def test_guest_inventory_preserves_both_profiles_and_names_are_unique(self):
         self.assertEqual(len({item.name for item in CHECKS}), len(CHECKS))
         for profile, count in (("ON", 75), ("OFF", 37)):

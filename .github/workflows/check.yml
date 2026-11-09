@@ -26,12 +26,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Initialize pinned driver source
+        run: git submodule update --init --depth 1 linux
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.99.1'
           targets: x86_64-unknown-none
           components: rustfmt, clippy
       - run: python3 scripts/check.py fast
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: results-portable
+          path: build/test-logs/
 
   guest:
     runs-on: ubuntu-latest
