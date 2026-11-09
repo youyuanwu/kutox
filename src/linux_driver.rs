@@ -7,6 +7,48 @@ static TRACING: AtomicBool = AtomicBool::new(false);
 static BOOT_REPORTING: AtomicBool = AtomicBool::new(false);
 static CONTROL: crate::mutex::Mutex<()> = crate::mutex::Mutex::new(());
 
+#[derive(Clone, Copy, Default)]
+pub struct CallbackEntry {
+    pub count: u64,
+    pub ordinal: u64,
+    pub function: usize,
+    pub object: usize,
+    pub result: i32,
+}
+
+#[derive(Clone, Copy)]
+pub struct CallbackProof {
+    ordinal: u64,
+    entries: [CallbackEntry; 50],
+}
+const EMPTY_ENTRY: CallbackEntry = CallbackEntry {
+    count: 0,
+    ordinal: 0,
+    function: 0,
+    object: 0,
+    result: 0,
+};
+static CALLBACKS: moss_libkernel::sync::spinlock::SpinLockIrq<CallbackProof, crate::cpu::X86Cpu> =
+    moss_libkernel::sync::spinlock::SpinLockIrq::new(CallbackProof {
+        ordinal: 0,
+        entries: [EMPTY_ENTRY; 50],
+    });
+
+pub fn callback_proof() -> CallbackProof {
+    *CALLBACKS.lock_save_irq()
+}
+
+impl CallbackProof {
+    pub fn delta(&self, before: &Self, event: usize) -> Option<CallbackEntry> {
+        let entry = self.entries[event];
+        let count = entry
+            .count
+            .checked_sub(before.entries[event].count)
+            .expect("monotonic callback proof");
+        (count != 0).then_some(CallbackEntry { count, ..entry })
+    }
+}
+
 pub(crate) fn control(operation: &str, call: impl FnOnce() -> i32) -> i32 {
     if let Err(error) = threads::check_thread_context() {
         serial::print(format_args!(
@@ -66,6 +108,26 @@ extern "C" fn kutox_driver_tracing() -> bool {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn kutox_driver_trace(event: u32, function: usize, object: usize, result: i32) {
+    {
+        let mut proof = CALLBACKS.lock_save_irq();
+        proof.ordinal = proof
+            .ordinal
+            .checked_add(1)
+            .expect("callback ordinal exhausted");
+        let ordinal = proof.ordinal;
+        let entry = proof
+            .entries
+            .get_mut(event as usize)
+            .expect("known callback event");
+        entry.count = entry
+            .count
+            .checked_add(1)
+            .expect("callback count exhausted");
+        entry.ordinal = ordinal;
+        entry.function = function;
+        entry.object = object;
+        entry.result = result;
+    }
     if tracing() {
         serial::print(format_args!(
             "# LINUX_CALLBACK event={event} function={function:x} object={object:x} result={result}\n"
@@ -179,8 +241,13 @@ static MANAGED: crate::mutex::Mutex<Option<ManagedState>> = crate::mutex::Mutex:
 static NEXT_TX: AtomicU64 = AtomicU64::new(1);
 static MANAGED_TICKET: AtomicU64 = AtomicU64::new(0);
 
+pub(crate) fn source_ticket() -> u64 {
+    MANAGED_TICKET.load(Ordering::Acquire)
+}
+
 pub const METADATA_BYTES: usize = core::mem::size_of::<crate::mutex::Mutex<Option<ManagedState>>>()
     + core::mem::size_of::<ManagedDevice>()
+    + core::mem::size_of_val(&CALLBACKS)
     + 17;
 
 pub fn managed_quiescent() -> bool {
@@ -257,6 +324,16 @@ struct ManagedDevice {
 }
 
 impl ManagedDevice {
+    fn packet_call<T>(
+        &self,
+        operation: &'static str,
+        call: impl FnOnce(&mut ManagedState) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        self.call(operation, |state| {
+            crate::net_device::packet_access(self.ticket)?;
+            call(state)
+        })
+    }
     fn call<T>(
         &self,
         operation: &'static str,
@@ -298,6 +375,7 @@ impl ManagedDevice {
 impl NativeDevice for ManagedDevice {
     fn begin_stop(&self) {
         if !self.stopping.swap(true, Ordering::AcqRel) {
+            crate::net_device::revoke_source(self.ticket);
             crate::net_device::wake();
         }
     }
@@ -349,6 +427,7 @@ impl NativeDevice for ManagedDevice {
         crate::driver_memory::discard_ingress();
         *owner = None;
         MANAGED_TICKET.store(0, Ordering::Release);
+        crate::net_device::wake();
         Ok(())
     }
 }
@@ -387,7 +466,12 @@ impl NetworkDevice for ManagedDevice {
     }
 
     fn submit(&self, frame: &Frame) -> Result<TxTicket, Error> {
-        self.call("submit", |state| {
+        self.submit_bytes(frame.bytes())
+    }
+
+    fn submit_bytes(&self, bytes: &[u8]) -> Result<TxTicket, Error> {
+        Frame::validate(bytes)?;
+        self.packet_call("submit", |state| {
             if state.receipt.is_some() {
                 return Err(Error::Busy);
             }
@@ -414,15 +498,15 @@ impl NetworkDevice for ManagedDevice {
                     value.checked_add(1)
                 })
                 .map_err(|_| Error::Driver(-165))?;
-            checked(state.driver.packet(frame.bytes())).map_err(Error::from_code)?;
+            checked(state.driver.packet(bytes)).map_err(Error::from_code)?;
             let ticket = TxTicket::new(self.ticket, sequence)?;
-            state.receipt = Some((ticket, frame.wire_bytes()));
+            state.receipt = Some((ticket, bytes.len().max(60)));
             Ok(ticket)
         })
     }
 
     fn progress(&self, ticket: TxTicket) -> Result<TxStatus, Error> {
-        self.call("progress", |state| {
+        self.packet_call("progress", |state| {
             let bytes = Self::receipt(state, ticket)?;
             let mut status = state.driver.tx_status();
             if status == 0 {
@@ -443,7 +527,7 @@ impl NetworkDevice for ManagedDevice {
     }
 
     fn finish(&self, ticket: TxTicket) -> Result<(), Error> {
-        self.call("finish", |state| {
+        self.packet_call("finish", |state| {
             Self::receipt(state, ticket)?;
             match state.driver.tx_status() {
                 2 | -5 => {}
@@ -460,7 +544,7 @@ impl NetworkDevice for ManagedDevice {
     }
 
     fn receive(&self) -> Result<Option<Frame>, Error> {
-        self.call("receive", |_| {
+        self.packet_call("receive", |_| {
             let mut bytes = alloc::vec::Vec::new();
             bytes.try_reserve_exact(1514).map_err(|_| Error::NoMemory)?;
             bytes.resize(1514, 0);
@@ -474,6 +558,12 @@ impl NetworkDevice for ManagedDevice {
             }
             bytes.truncate(size);
             Frame::from_owned(bytes).map(Some)
+        })
+    }
+
+    fn receive_into(&self, output: &mut [u8; 1514]) -> Result<usize, Error> {
+        self.packet_call("receive_into", |_| {
+            Ok(crate::driver_memory::receive(output))
         })
     }
 }

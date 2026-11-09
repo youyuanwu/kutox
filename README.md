@@ -5,7 +5,8 @@ not building another native Rust NIC driver.
 The first milestone reads a QEMU Intel 82540EM NIC's permanent MAC address
 using **unchanged upstream Linux e1000 hardware code**.
 Normal boot now starts and retains the full unchanged e1000 driver in the
-kernel runtime. The finite MAC proof remains available as explicit `probe` mode.
+kernel runtime and answers ARP/static IPv4/ICMP through smoltcp. The finite MAC
+proof remains available as explicit `probe` mode.
 
 It uses a fixed-capacity port of Moss's `Smalloc` bootstrap allocator to
 reserve frame metadata, then hands physical RAM to an IRQ-locked adaptation
@@ -76,8 +77,8 @@ The earlier native Rust TX implementation and descriptor helper have been
 removed. The unchanged Linux e1000 implementation is the only packet driver:
 it owns descriptor programming, submission and IRQ/NAPI cleanup. Rust still
 provides PCI, MMIO, IRQ, DMA, scheduling and allocation services. Controlled
-original RX delivery and selected ring/lifetime hardening now pass; a networking
-stack remains subsequent work.
+original RX delivery and selected ring/lifetime hardening now pass. The explicit
+IPv4 service described below consumes this Linux-owned packet path.
 
 All four original driver units are linked for Linux lifecycle and TX/RX
 execution. See the
@@ -115,6 +116,26 @@ failure/teardown hardening. The [kernel-client guide](docs/rust-kernel-linux-dri
 describes service admission, packet receipts and deliberate shutdown without
 Linux-private structs.
 
+The next [async-kernel and IPv4 design](docs/async-kernel-networking.md) keeps
+Linux workers and adds Moss-inspired futures plus a native packet bridge.
+The bounded executor, async event/timer/yield core and owned Ethernet broker
+are implemented and guest-tested through explicit service paths, including
+Linux-backed timeout/cancellation and rebind. Explicit `network-run` now adds a
+bounded smoltcp ARP/static-IPv4/ICMP echo service in both build profiles.
+Normal `run`/absent boot now uses the same network-enabled path; explicit
+`driver-run` retains the driver-only service.
+The separate IP acceptance now passes exact ARP/16 echoes per epoch, seven
+directed protocol rejections and balanced shutdown across two source lifetimes.
+Normal network boot also passes real exchange followed by sustained uptime in
+both guest-enabled and test-free images.
+Async/network hardening now covers bounded captures, allocation/IRQ/map failures,
+accepted cancellation, RX/TX starvation, link recovery and same-parent rebind.
+The completed milestone's [as-built guide](docs/async-kernel-networking.md)
+documents native async APIs, ownership and supported limits. Latest implementation
+validation passed 171 Rust tests per profile and 182 Python tests, targeted guests,
+strict lint and source/ELF checks. Documentation completion does not claim a new
+full test-suite run.
+
 ## Requirements
 
 - Linux host with rustup; the repository pins Rust `1.99.1` and the
@@ -149,13 +170,14 @@ For a feature-off build of the same image:
 cmake -S . -B build -G Ninja -DKUTOX_GUEST_TESTS=OFF
 cmake --build build --target images --parallel 1
 ctest --test-dir build --output-on-failure --parallel 1 \
-  -R '^(kernel-build-profile|guest-tests-disabled|driver-runtime-tests-disabled|driver-network-tests-disabled|driver-hardening-tests-disabled|mac-known|driver-runtime-default|driver-runtime-run|driver-runtime-default-no-nic|driver-runtime-default-unsupported)$'
+  -R '^(kernel-build-profile|async-core-tests-disabled|async-network-tests-disabled|network-tests-disabled|async-hardening-tests-disabled|network-default|network-default-low-memory|network-default-no-nic|network-default-unsupported|network-run|driver-runtime-driver-only)$'
 ```
 
 This omits guest fixtures, C test objects, fault injection, checkpoints and
 test inspectors. Requested test modes fail before memory/device initialization.
 Real driver services, ownership checks and diagnostics remain, and normal boot
-retains the real NIC/runtime without running guest checkpoints or clients.
+retains the real NIC/runtime, executor, packet broker and protocol future without
+running guest checkpoints or native clients.
 Additional native client APIs retain scoped feature-off dead-code allowances,
 not missing-service fallbacks.
 
@@ -222,6 +244,7 @@ The runner selects a mode at launch through QEMU's `fw_cfg` file
 | `driver-runtime-tests` | Select acceptance from real PCI inventory: five no-NIC lifetime tests, managed packet clients for e1000, or unclaimed-runtime acceptance for an unsupported NIC. |
 | `driver-network-tests` | Exercise the managed e1000 runtime with exact packets, retained clients, typed errors and joined shutdown; reject two matching NICs before probing. |
 | `driver-hardening-tests` | Run five bounded manager/failure/FIFO/concurrent-consumer/pending-source teardown cases through the managed runtime. |
+| `network-tests` | Run separate configuration, exact ARP/static IPv4/ICMP and joined shutdown acceptance through the production stack and Linux packet callbacks. |
 | `heap-oom` | Attempt an oversized `Vec` allocation and verify Rust's fatal allocation-failure panic. |
 | `thread-stack-guard` | Read a thread's unmapped lower guard and verify the hardware page fault came from its mapped stack. |
 | `page-fault` | Read a deliberately unmapped address and verify the fatal exception diagnostics. |
@@ -297,15 +320,20 @@ Native clients use `net_device::enumerate(runtime)` and `Handle::info`.
 `finish` releases only completed or consumed-drop receipts. Dropping the native
 frame/handle or timing out does **not** free an accepted skb. `receive`/
 `wait_receive` return owned FIFO frames; stop wakes waiters with `Closed`, and
-owner retirement makes later handles `Stale`. There is no IP stack yet.
+owner retirement makes later handles `Stale`. The native async broker connects
+this packet API to the separate smoltcp service; no Linux IP stack is imported.
 
 ### Persistent normal boot
 
 Boot without a fw_cfg mode (or set it explicitly to `run`) to register built-ins,
 enumerate the firmware-configured PCI hierarchy, execute original module/probe/
-open callbacks and retain the device/services. Diagnostics distinguish
+open callbacks and retain the device/services plus executor, packet broker and
+one protocol future. Diagnostics distinguish
 `DRIVER_RUNTIME` initialization from `DRIVER_READY` real link readiness, and
 report the owned BDF/parent path, BAR spans and PIRQ/ELCR/swizzled IRQ route.
+`KERNEL_SERVICES` reports the checked runtime epoch and actual five admitted
+service stacks with zero native clients. `NETWORK_STACK_CONFIGURED` and
+`NETWORK_STACK_READY` distinguish the static subnet from actual link readiness.
 A missing or unsupported NIC leaves unclaimed inventory and two shared workers
 alive, without fabricated NIC readiness. Invalid topology fails explicitly
 before partial driver admission. Only deliberate kernel shutdown ends the
@@ -319,7 +347,7 @@ python3 scripts/qemu_test.py --case driver-runtime-run --build-dir build
 
 These smoke checks use the normal boot path, no guest test clients, and require
 the actual linked Linux startup callbacks, source-derived readiness and at
-least **three seconds alive after readiness** before terminating only their
+least **three seconds alive after exact ARP and ICMP exchange** before terminating only their
 owned QEMU child. The default check omits fw_cfg entirely; `default-mode` is a
 compatible runner alias. A watchdog timeout or premature exit is failure,
 not evidence of successful runtime operation. `mac-default-mode` is replaced
@@ -352,7 +380,72 @@ qemu-system-x86_64 -machine pc -accel tcg -cpu qemu64 -smp 1 -m 128M \
 ```
 
 The runtime stays in the dispatcher; use Ctrl+C to end this owned manual session.
-Booting does not automatically generate application packets, DHCP or IP traffic.
+It passively answers ARP/ICMP. There is no shell, userspace/socket application,
+DHCP, gateway or TCP service.
+
+No mode flag is needed for IPv4. Explicit
+`-fw_cfg name=opt/kutox/test-mode,string=network-run` uses the same service;
+`-fw_cfg name=opt/kutox/test-mode,string=driver-run` retains driver-only behavior.
+The default address is `10.0.2.15/24`; override it with
+`-fw_cfg name=opt/kutox/ipv4,string=10.0.2.16/24`.
+Only one connected subnet is configured, with no gateway or DHCP.
+Malformed, reserved, network/broadcast, duplicate or overlength CIDRs fail before
+memory/device admission. Driver-only/probe modes ignore this network field.
+`NETWORK_STACK_CONFIGURED` and `NETWORK_STACK_READY` distinguish static
+configuration from real link readiness. No/unsupported NIC retains services
+without fabricating readiness.
+
+```sh
+ctest --test-dir build --output-on-failure --parallel 1 \
+  -R '^(network-default|network-default-low-memory|network-default-no-nic|network-default-unsupported|network-run|driver-runtime-driver-only)$'
+```
+
+These production smoke cases validate exact ARP, zero/1472-byte ICMP echo replies
+on the socket and TX PCAP, then at least three seconds alive. No/unsupported NIC
+instead proves initialized unclaimed idle; driver-only mode emits no packets.
+Restricted QEMU user networking does not make the guest directly host-pingable;
+packet acceptance uses an owned local Ethernet socket peer instead.
+
+### Exact IPv4 guest acceptance
+
+```sh
+ctest --test-dir build --output-on-failure --parallel 1 \
+  -R '^(network-tests|network-tests-low-memory|network-tests-bridge|network-tests-nested-low-memory)$'
+```
+
+The [stdlib peer](scripts/network_packets.py) sends ARP and ICMP over an owned
+local Ethernet socket; no TAP, host interface or external network is used.
+Each of two epochs returns an ARP reply and 16 exact echoes, with payload sizes
+0/32/64/512/1472 repeated three times and one final zero-payload echo.
+Seven rejected inputs per epoch cover wrong destination, checksum, malformed/
+truncated and fragmented IPv4. Exact bytes are checked on the socket and TX PCAP.
+Bounded production callback records prove original Linux IRQ/NAPI and packet
+ownership without guest-only source tracing. Retained CPU copies, stale handles
+and exact frame/heap/future/task cleanup are checked separately.
+The guest-free image rejects `network-tests` early; production `network-run`
+is also the normal `run`/absent boot path.
+
+### Async/network hardening
+
+```sh
+ctest --test-dir build --output-on-failure --parallel 1 \
+  -R '^(async-hardening-tests|async-hardening-tests-low-memory|async-hardening-tests-nested-low-memory)$'
+```
+
+Five separate cases run fourteen balanced scopes per hardware profile. They
+check exact capacity/recovery, injected admission/source failures, timer-IRQ
+cancellation races, queued and accepted TX ownership, bounded RX starvation/
+overflow, malformed input, actual link loss/recovery and stale-waker rebind.
+An owned QMP monitor changes only this test's QEMU backend; no host interface
+or external cluster is modified. Socket/PCAP/source evidence validates 23 TX
+frames and 31 RX deliveries, with one explicit source-capacity drop.
+The OFF image rejects this mode before initialization.
+
+Pinned future captures now use one owned 32-KiB arena, not individually rounded
+heap allocations. Sixteen slots each admit at most 2 KiB with bounded alignment.
+The built-in service charge, including this arena, packet storage, interface
+state, metadata and two added stacks, is 120,684 bytes under 128 KiB. Application
+allocations inside arbitrary futures are outside that built-in charge.
 
 ### Managed failure and teardown hardening
 

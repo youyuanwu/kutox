@@ -1,5 +1,8 @@
 //! Guest-only acceptance fixtures; not production driver code.
 
+pub(crate) mod async_hardening;
+pub(crate) mod async_network;
+mod async_runtime;
 mod device_irq;
 mod driver_services;
 pub(crate) mod e1000_irq;
@@ -7,6 +10,7 @@ pub(crate) mod linux_e1000;
 mod linux_execution;
 pub(crate) mod linux_hardening;
 pub(crate) mod native_drivers;
+pub(crate) mod network_stack;
 
 use self::{
     driver_services as driver_service_tests, linux_e1000 as linux_driver,
@@ -287,6 +291,8 @@ pub fn run(boot: &BootInfo) -> ! {
     if cpu::interrupts_enabled()
         || X86Cpu::irq_lock_depth() != 0
         || !threads::is_quiescent()
+        || !crate::async_runtime::quiescent()
+        || !crate::net_async::quiescent()
         || !irq::is_quiescent()
         || !completion::tests::quiescent()
         || !threads::irq_tests::quiescent()
@@ -342,6 +348,14 @@ pub fn run(boot: &BootInfo) -> ! {
         crate::linux_driver::tests::TESTS
     } else if boot.mode == BootMode::DriverHardeningTests {
         crate::linux_driver::hardening::TESTS
+    } else if boot.mode == BootMode::AsyncCoreTests {
+        async_runtime::TESTS
+    } else if boot.mode == BootMode::AsyncNetworkTests {
+        async_network::TESTS
+    } else if boot.mode == BootMode::NetworkTests {
+        network_stack::TESTS
+    } else if boot.mode == BootMode::AsyncHardeningTests {
+        async_hardening::TESTS
     } else {
         TESTS
     };
@@ -379,6 +393,8 @@ pub fn run(boot: &BootInfo) -> ! {
             || heap_before != heap.stats()
             || X86Cpu::irq_lock_depth() != 0
             || !threads::is_quiescent()
+            || !crate::async_runtime::quiescent()
+            || !crate::net_async::quiescent()
             || !irq::is_quiescent()
             || !completion::tests::quiescent()
             || !threads::irq_tests::quiescent()

@@ -12,7 +12,7 @@ static struct {
     dma_addr_t dma;
     unsigned int bytes;
     unsigned long completed_before, completed_bytes_before, stats_before, stats_bytes_before;
-    bool live, accepted, mapped, sent, published, freed, completed, aborting;
+    bool live, accepted, mapped, sent, published, freed, completed, aborting, closing;
 } tx;
 static struct { bool live; struct sk_buff *pending; } many;
 static struct {
@@ -126,7 +126,13 @@ void netif_device_detach(struct net_device *device) { netdev_check(device); devi
 void netif_device_attach(struct net_device *device) { netdev_check(device); device->detached = false; }
 void netif_start_queue(struct net_device *device) { netdev_check(device); device->stopped = false; }
 void netif_stop_queue(struct net_device *device) { netdev_check(device); device->stopped = true; }
-void netif_wake_queue(struct net_device *device) { netdev_check(device); if (!device->detached) device->stopped = false; }
+void netif_wake_queue(struct net_device *device) {
+    netdev_check(device);
+    if (!device->detached && device->stopped) {
+        device->stopped = false;
+        kutox_net_wake();
+    }
+}
 void netif_tx_disable(struct net_device *device) { netif_stop_queue(device); }
 bool netif_queue_stopped(const struct net_device *device) { netdev_check(device); return device->stopped || device->detached; }
 void netdev_sent_queue(struct net_device *device, unsigned int bytes)
@@ -419,6 +425,7 @@ void kutox_c_tx_release(struct net_device *device)
 void kutox_c_tx_abort(struct net_device *device)
 {
     netdev_check(device);
+    if (tx.live) tx.closing = true;
     if (tx.live && tx.accepted && !tx.completed) {
         tx.aborting = true; tx_event(30,0);
     }
@@ -438,7 +445,7 @@ void kutox_c_tx_unmapped(u64 dma, size_t size, unsigned int direction)
 }
 void kutox_c_tx_mmio(uintptr_t address, u32 value, bool writing)
 {
-    if (!tx.live) return;
+    if (!tx.live || tx.closing) return;
     if (writing && address == tx.mmio + 0x3818 && tx.sent && !tx.aborting) {
         if (!tx.mapped || tx.published || value >= 256) kutox_platform_fail("tx_doorbell_order");
         tx.published = true; tx_event(21,value);

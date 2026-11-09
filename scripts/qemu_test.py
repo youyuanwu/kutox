@@ -12,6 +12,10 @@ import socket
 import struct
 import subprocess
 import time
+import json
+import tempfile
+from contextlib import nullcontext
+import network_packets as ip_packets
 
 ROOT = Path(__file__).resolve().parents[1]
 REVISION = "79a907609d53d5cd645b42c11550d295d43abf99"
@@ -97,6 +101,25 @@ RUNTIME_TEST_NAMES = (
     "runtime.startup_rollback", "runtime.admission_rollback",
     "runtime.no_nic_idle", "runtime.client_return", "runtime.shutdown_busy",
 )
+ASYNC_CORE_CASES = {
+    "async-core-tests": "async-core-tests",
+    "async-core-tests-low-memory": "async-core-tests",
+}
+ASYNC_CORE_NAMES = ("async.wake", "async.irq", "async.timer", "async.fairness", "async.cancel")
+ASYNC_NETWORK_CASES = {
+    case: "async-network-tests" for case in (
+        "async-network-tests", "async-network-tests-low-memory", "async-network-tests-nested-low-memory",
+    )
+}
+ASYNC_NETWORK_NAMES = ("async.net.exchange", "async.net.cancel", "async.net.rebind")
+IP_SUITE_CASES = {case: "network-tests" for case in (
+    "network-tests", "network-tests-low-memory", "network-tests-bridge", "network-tests-nested-low-memory",
+)}
+IP_TEST_NAMES = ("net.configuration", "net.exchange", "net.shutdown")
+ASYNC_HARD_CASES = {case: "async-hardening-tests" for case in (
+    "async-hardening-tests", "async-hardening-tests-low-memory", "async-hardening-tests-nested-low-memory",
+)}
+ASYNC_HARD_NAMES = ("async.hardening.capacity", "async.hardening.failures", "async.hardening.cancel", "async.hardening.pressure", "async.hardening.retirement")
 NETWORK_SUITE_CASES = {
     "driver-network-tests": "driver-network-tests",
     "driver-network-tests-low-memory": "driver-network-tests",
@@ -111,9 +134,30 @@ LIVE_CASES = {
     "driver-runtime-default": (None, True),
     "default-mode": (None, True),
     "driver-runtime-run": ("run", True),
+    "driver-runtime-driver-run": ("driver-run", True),
+    "driver-runtime-driver-only": ("driver-run", True),
     "driver-runtime-default-no-nic": (None, False),
     "driver-runtime-default-unsupported": (None, False),
+    "network-run": ("network-run", True),
+    "network-run-low-memory": ("network-run", True),
+    "network-run-no-nic": ("network-run", False),
+    "network-run-unsupported": ("network-run", False),
+    "network-default": (None, True),
+    "network-default-low-memory": (None, True),
+    "network-default-no-nic": (None, False),
+    "network-default-unsupported": (None, False),
 }
+CONFIG_FAILURES = {
+    "network-invalid-default": (None, "10.0.2.0/24", -28),
+    "network-invalid-run": ("run", "x" * 33, -27),
+    "network-invalid-explicit": ("network-run", "127.0.0.1/8", -28),
+}
+
+
+def live_network(case):
+    return LIVE_CASES[case][0] != "driver-run"
+
+
 HARDENING_CASES = {
     case: "driver-hardening-tests" for case in (
         "driver-hardening-tests", "driver-hardening-tests-low-memory", "driver-hardening-tests-nested-low-memory",
@@ -139,6 +183,12 @@ CASES = {
     "driver-runtime-tests-disabled": (None, "boot_mode"),
     "driver-network-tests-disabled": (None, "boot_mode"),
     "driver-hardening-tests-disabled": (None, "boot_mode"),
+    "async-core-tests-disabled": (None, "boot_mode"),
+    "async-network-tests-disabled": (None, "boot_mode"),
+    "network-tests-disabled": (None, "boot_mode"),
+    "async-hardening-tests-disabled": (None, "boot_mode"),
+    "network-default-ambiguous": (None, "runtime_e1000_inventory"),
+    **{case: (None, "boot_ipv4") for case in CONFIG_FAILURES},
     **{case: (None, None) for case in FAULT_RESULTS},
     "smp-unsupported": (None, "cpu_single_processor_required"),
     "heap-oom": (None, None),
@@ -150,6 +200,10 @@ CASES = {
     **{case: (None, None) for case in UNCLAIMED_CASES},
     **{case: (None, None) for case in LIVE_CASES},
     **{case: (None, None) for case in HARDENING_CASES},
+    **{case: (None, None) for case in ASYNC_CORE_CASES},
+    **{case: (None, None) for case in ASYNC_NETWORK_CASES},
+    **{case: (None, None) for case in IP_SUITE_CASES},
+    **{case: (None, None) for case in ASYNC_HARD_CASES},
 }
 
 
@@ -283,6 +337,102 @@ def validate_ktap(lines, returncode, expected_names):
     if returncode != expected_exit:
         raise AssertionError(f"suite QEMU exit {returncode}, expected {expected_exit}")
     return failures
+
+
+def validate_async_core(case, returncode, output):
+    lines = output.splitlines()
+    validate_boot_preamble(lines, ASYNC_CORE_CASES[case])
+    if any(line.startswith((
+        "CPU_EXCEPTION", "CPU_TEST_", "E1000_", "BOOT_MEMORY", "FRAME_ALLOCATOR",
+        "HEAP_", "THREAD_", "Bail out!", "# LINUX_CALLBACK", "# NATIVE_",
+    )) for line in lines):
+        raise AssertionError("async suite aborted or used an unrelated driver proof")
+    failures = validate_ktap(lines, returncode, ASYNC_CORE_NAMES)
+    if failures:
+        raise KernelSuiteFailure(f"async suite failed: {', '.join(sorted(failures))}")
+    proofs = (
+        "# ASYNC_WAKE polls=5 self_wake=coalesced cloned=1 consumed=1 prepoll=1 blocking_rejected=2 c_calls=0",
+        "# ASYNC_IRQ deliveries=1 registered=1 polled=0 c_calls=0 allocations=0 destructions=0 context=irq",
+        "# ASYNC_TIMER expirations=1 early=0 deadline=oneshot empty_polls=0 pending_polls=0 observation_ticks=2 no_async_deadline=1",
+        "# ASYNC_FAIRNESS first_batch=16 ready_tasks=16 native_between=1 guard_stack=1",
+        "# ASYNC_CANCEL tasks=16 registrations=16 deadlines=16 capacity_rejected=1 oversized_rejected=1 dropped=16 retained=1",
+        "# ASYNC_REBIND changed_epoch=1 old_wake=ignored payload_retained=0 records=0",
+        "# ASYNC_FAILURE code=-224 task_failed=1 runtime_failed=1 payloads=0 records=0 joined=1 balanced=1",
+    )
+    for proof in proofs:
+        if lines.count(proof) != 1:
+            raise AssertionError(f"missing or duplicate async proof: {proof}")
+    errors = [line for line in lines if line.startswith("# ASYNC_ERROR")]
+    if errors != [
+        "# ASYNC_ERROR operation=task error=Service(-224) code=-224",
+        "# ASYNC_ERROR operation=spawn error=State(Capacity) code=-220",
+        "# ASYNC_ERROR operation=spawn error=State(PayloadTooLarge) code=-220",
+    ]:
+        raise AssertionError("unexpected or hidden async task/admission failure")
+    if [line for line in lines if line.startswith("# RUNTIME_ERROR")] != [
+        "# RUNTIME_ERROR stage=runtime_start code=-224",
+    ]:
+        raise AssertionError("async failed task did not fail the joined runtime")
+    rejects = [line for line in lines if line.startswith("# LINUX_CONTROL")]
+    if rejects != [
+        "# LINUX_CONTROL_REJECT op=async_poll errno=-59",
+        "# LINUX_CONTROL_REJECT op=async_irq errno=-57",
+        "# LINUX_CONTROL_REJECT op=async_poll errno=-59",
+    ]:
+        raise AssertionError("missing async/IRQ blocking-control rejection")
+    joins = [line for line in lines if line.startswith("# ASYNC_JOIN")]
+    expected = (
+        ("async.wake", 1, 5, 3, 0, 0),
+        ("async.irq", 1, 2, 1, 0, 0),
+        ("async.timer", 1, 3, 1, 1, 0),
+        ("async.fairness", 1, 48, 16, 0, 0),
+        ("async.cancel", 1, 16, 0, 16, 1),
+        ("async.cancel", 2, 2, 1, 0, 0),
+    )
+    if len(joins) != len(expected):
+        raise AssertionError("missing or duplicate async epoch join")
+    metadata_values = set()
+    for line, (name, epoch, polls, completed, cancelled, retained) in zip(joins, expected):
+        match = re.fullmatch(
+            rf"# ASYNC_JOIN test={name} epoch={epoch} finished=5 peak=5 blocks=(\d+) idle_sleeps=(\d+) "
+            rf"polls={polls} max_batch=(\d+) completed={completed} cancelled={cancelled} failed=0 "
+            rf"registrations=0 deadlines=0 retained={retained} payload_bytes=0 peak_payload_bytes=(\d+) "
+            r"metadata=(\d+) stack_bytes=16384 event_bytes=(\d+) service_bytes=(\d+) balanced=1",
+            line,
+        )
+        if match is None:
+            raise AssertionError("malformed async join or unbalanced payload/registration retirement")
+        blocks, idles, batch, payload, metadata, event, service = map(int, match.groups())
+        if blocks < 2 or not 1 <= batch <= 16 or (name == "async.fairness" or retained) and batch != 16:
+            raise AssertionError("async executor stack, fairness or batch limit violated")
+        if name in ("async.irq", "async.timer") and idles < 1:
+            raise AssertionError("async wait did not idle through real IRQ delivery")
+        if not 0 < payload <= 32768 or not 2488 < metadata <= 32768 or not 0 < event <= 256:
+            raise AssertionError("async payload/control storage bound violated")
+        if service != metadata + 49152 + event or service > 131072:
+            raise AssertionError("async service storage accounting violated")
+        metadata_values.add(metadata)
+    if len(metadata_values) != 1:
+        raise AssertionError("async metadata changed between epochs")
+    known = set(proofs + tuple(errors) + tuple(joins))
+    if any(line.startswith("# ASYNC_") and line not in known for line in lines):
+        raise AssertionError("unexpected async acceptance evidence")
+    batches, events = {}, []
+    for line in lines:
+        if line.startswith(("# ASYNC_", "# LINUX_CONTROL", "# RUNTIME_ERROR")):
+            events.append(line)
+        elif re.fullmatch(r"ok \d+ async\.[a-z]+", line):
+            name = line.split()[2]
+            batches[name] = events
+            events = []
+    for name, proof in zip(ASYNC_CORE_NAMES, proofs):
+        if proof not in batches[name] or any(
+            line.startswith("# ASYNC_JOIN") and not line.startswith(f"# ASYNC_JOIN test={name} ")
+            for line in batches[name]
+        ):
+            raise AssertionError("async evidence belongs to the wrong guest case")
+    if proofs[-1] not in batches["async.wake"] or proofs[-2] not in batches["async.cancel"]:
+        raise AssertionError("async fault or epoch evidence belongs to the wrong case")
 
 
 def validate_runtime_suite(case, returncode, output):
@@ -733,7 +883,25 @@ def validate_thread_guard(returncode, output):
 def validate_result(case, returncode, output):
     if case in LIVE_CASES:
         raise AssertionError("persistent runtime requires measured live execution, not an exit code")
-    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled"):
+    if case == "network-default-ambiguous":
+        lines = output.splitlines()
+        expected = "E1000_MAC_FAIL stage=runtime_e1000_inventory code=-188"
+        if returncode != 3 or not lines or lines[-1] != expected:
+            raise AssertionError("ambiguous default topology was not rejected explicitly")
+        if any(line.startswith(("# DRIVER_CALLBACK", "# DRIVER_READY", "# KERNEL_SERVICES", "# NETWORK_STACK")) for line in lines):
+            raise AssertionError("ambiguous topology partially admitted a source/service")
+        return
+    if case in CONFIG_FAILURES:
+        lines = output.splitlines()
+        expected = f"E1000_MAC_FAIL stage=boot_ipv4 code={CONFIG_FAILURES[case][2]}"
+        if returncode != 3 or not lines or lines[-1] != expected:
+            raise AssertionError("network configuration did not fail explicitly before boot admission")
+        if [line for line in lines if line.startswith("KUTOX_BOOT")] != [f"KUTOX_BOOT linux={REVISION}"]:
+            raise AssertionError("configuration rejection lacks pinned boot provenance")
+        if any(line.startswith(("BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "# DRIVER_", "# KERNEL_SERVICES", "# NETWORK_STACK")) for line in lines):
+            raise AssertionError("invalid CIDR reached allocation or source admission")
+        return
+    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled", "async-network-tests-disabled", "network-tests-disabled", "async-hardening-tests-disabled"):
         lines = output.splitlines()
         expected = "E1000_MAC_FAIL stage=boot_mode code=-25"
         if returncode != 3 or not lines or lines[-1] != expected:
@@ -742,7 +910,7 @@ def validate_result(case, returncode, output):
             raise AssertionError("missing pinned-source feature-off boot marker")
         if [line for line in lines if line.startswith("E1000_")] != [expected] or any(
             line.startswith(("BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "THREAD_", "Bail out!",
-                             "# RUNTIME_", "# NATIVE_", "# LINUX_"))
+                             "# RUNTIME_", "# NATIVE_", "# LINUX_", "# ASYNC_", "# NET_IP_", "# NETWORK_STACK_"))
             for line in lines
         ):
             raise AssertionError("feature-off test mode reached initialization or guest fixtures")
@@ -755,6 +923,18 @@ def validate_result(case, returncode, output):
         return
     if case in RUNTIME_SUITE_CASES:
         validate_runtime_suite(case, returncode, output)
+        return
+    if case in ASYNC_CORE_CASES:
+        validate_async_core(case, returncode, output)
+        return
+    if case in ASYNC_NETWORK_CASES:
+        validate_async_network(case, returncode, output)
+        return
+    if case in IP_SUITE_CASES:
+        validate_network_stack(case, returncode, output)
+        return
+    if case in ASYNC_HARD_CASES:
+        validate_async_hardening(case, returncode, output)
         return
     if case in UNCLAIMED_CASES:
         validate_unclaimed_suite(case, returncode, output)
@@ -1286,6 +1466,224 @@ class NetworkProtocol:
             raise AssertionError("missing managed full-frame receipts")
 
 
+def async_network_tx_packets():
+    return [network_packet(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)] + [
+        network_packet(epoch, 3) for epoch in (3, 3, 4, 5)
+    ]
+
+
+class AsyncNetworkProtocol:
+    def __init__(self, send=None):
+        self.send = send
+        self.expected = [(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)] + [(4, 3), (5, 3)]
+        self.frames, self.pending = [], None
+
+    def observe(self, line):
+        if line.startswith("# NETWORK_RX_READY"):
+            match = re.fullmatch(r"# NETWORK_RX_READY epoch=(\d+) seq=([1-6]) bytes=(\d+)", line)
+            if match is None or self.pending is not None or len(self.frames) >= len(self.expected):
+                raise AssertionError("invalid async RX offer")
+            epoch, sequence, length = map(int, match.groups())
+            if (epoch, sequence) != self.expected[len(self.frames)]:
+                raise AssertionError("reordered async RX offer")
+            packet = network_packet(epoch, sequence, True)
+            if length != len(packet):
+                raise AssertionError("async RX length mismatch")
+            self.pending = (epoch, sequence)
+            if self.send:
+                self.send(struct.pack("!I", length) + packet)
+        elif line.startswith("# NETWORK_RX "):
+            match = re.fullmatch(r"# NETWORK_RX epoch=(\d+) seq=([1-6]) bytes=(\d+) path=(copy|build) data=([0-9a-f]+)", line)
+            if match is None or self.pending is None:
+                raise AssertionError("async RX without host offer")
+            epoch, sequence, length = map(int, match.groups()[:3])
+            packet = network_packet(epoch, sequence, True)
+            if (epoch, sequence) != self.pending or (length, match[4], bytes.fromhex(match[5])) != (
+                len(packet), "copy" if len(packet) <= 252 else "build", packet,
+            ):
+                raise AssertionError("async RX data/FCS/source copybreak mismatch")
+            self.frames.append(self.pending)
+            self.pending = None
+
+    def finish(self):
+        if self.pending is not None or self.frames != self.expected:
+            raise AssertionError("missing async Ethernet receipts")
+
+
+def validate_async_network(case, returncode, output, symbols=None):
+    lines = output.splitlines()
+    validate_boot_preamble(lines, "async-network-tests")
+    failures = validate_ktap(lines, returncode, ASYNC_NETWORK_NAMES)
+    if failures:
+        raise KernelSuiteFailure("async packet broker acceptance failed")
+    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "THREAD_", "Bail out!",
+                            "# ASYNC_ERROR", "# ASYNC_NET_TEST_ERROR", "# RUNTIME_ERROR", "# RUNTIME_PROBE", "# driver operation=")) for line in lines):
+        raise AssertionError("async broker aborted or hid a service/source failure")
+    protocol = AsyncNetworkProtocol()
+    for line in lines:
+        protocol.observe(line)
+    protocol.finish()
+    devices = [line for line in lines if line.startswith("# ASYNC_NET_DEVICE")]
+    if len(devices) != 5:
+        raise AssertionError("missing async source lifetimes")
+    identities = []
+    for epoch, line in enumerate(devices, 1):
+        match = re.fullmatch(
+            rf"# ASYNC_NET_DEVICE epoch={epoch} identity=(\d+) bdf=0000:([0-9a-f]{{2}}):([0-9a-f]{{2}})\.0 mac=52:54:00:12:34:56 mtu=1500 link=1", line,
+        )
+        if match is None or int(match[1]) == 0 or (int(match[2], 16), int(match[3], 16)) != (
+            len(pci_layout(case)[2]), pci_layout(case)[1],
+        ):
+            raise AssertionError("wrong async source identity/topology/readiness")
+        identities.append(int(match[1]))
+    if len(set(identities)) != 5:
+        raise AssertionError("async device identity reused")
+    expected_tx = [(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)] + [(4, 3), (5, 3)]
+    if [line for line in lines if line.startswith("# ASYNC_NET_TX")] != [
+        f"# ASYNC_NET_TX epoch={epoch} seq={sequence} input={NETWORK_LENGTHS[sequence - 1]} wire={max(NETWORK_LENGTHS[sequence - 1], 60)} complete=1"
+        for epoch, sequence in expected_tx
+    ]:
+        raise AssertionError("async native TX completion shape mismatch")
+    proofs = [
+        f"# ASYNC_NET_EXCLUSIVE epoch={epoch} raw_rx=busy raw_tx=busy metadata=allowed reservations=0" for epoch in (1, 2, 3, 4)
+    ] + [
+        f"# ASYNC_NET_STATS epoch={epoch} tx=6/2199 rx=6/2199 requests=0" for epoch in (1, 2)
+    ] + [
+        "# ASYNC_NET_CANCEL reserved=1 queued=4 capacity=4 rejected=1 retained_copy=1 source=1 cancelled=1 busy_remove=1 maps_retained=1 original_retired=1 orphan_finished=1 requests=0",
+        "# ASYNC_NET_REBIND epochs=2 identity_changed=1 old_closed=1 parent=retained late_copy=1 source_unchanged=1 requests=0 staged_rx=0",
+        "# ASYNC_NET_TIMEOUT accepted=1 expired=1 orphan=1 source_live=1 completion_owner=broker requests=1",
+    ]
+    if any(lines.count(proof) != 1 for proof in proofs):
+        raise AssertionError("missing async capacity/cancellation/rebind/ownership proof")
+    pools = [line for line in lines if line.startswith("# ASYNC_NET_POOL")]
+    if pools != ["# ASYNC_NET_POOL slots=16 requested=24224 pages=8 reserved=32768 allocation=1"] * 4:
+        raise AssertionError("packet arena did not meet the physical allocation ceiling")
+    joins = [line for line in lines if line.startswith("# ASYNC_NET_JOIN")]
+    if len(joins) != 4:
+        raise AssertionError("missing or duplicate joined async scopes")
+    sizes = set()
+    for epoch, line in enumerate(joins, 1):
+        match = re.fullmatch(
+            rf"# ASYNC_NET_JOIN epoch={epoch} finished=6 peak=6 requests=0 packets=0 staged_rx=0 workers=0 balanced=1 "
+            r"metadata=(\d+) broker_metadata=(\d+) async_metadata=(\d+) packet_storage=32768 stack_storage=32768 future_peak=(\d+) service=(\d+)", line,
+        )
+        if match is None:
+            raise AssertionError("async source/packet/future scope not joined")
+        driver, broker, executor, future, service = map(int, match.groups())
+        if not 60385 <= driver <= 65536 or broker + executor > 32768 or not 0 < future <= 32768:
+            raise AssertionError("driver/async/payload storage bound exceeded")
+        if service != broker + executor + 98304 or service > 131072:
+            raise AssertionError("async storage accounting invalid")
+        sizes.add((driver, broker, executor))
+    if len(sizes) != 1:
+        raise AssertionError("async fixed metadata changed across scopes")
+    async_errors = [line for line in lines if line.startswith("# ASYNC_NET_ERROR")]
+    if async_errors != ["# ASYNC_NET_ERROR operation=admit error=Busy", "# ASYNC_NET_ERROR operation=admit error=Closed"]:
+        raise AssertionError("missing or unexpected async admission errors")
+    if [line for line in lines if line.startswith("# NATIVE_DRIVER_ERROR")] != [
+        "# NATIVE_DRIVER_ERROR operation=driver-stop-reserve code=-164",
+    ]:
+        raise AssertionError("missing or unexpected busy-removal diagnostics")
+    net_errors = Counter()
+    for line in lines:
+        if line.startswith("# NET_ERROR"):
+            match = re.fullmatch(r"# NET_ERROR operation=([a-z_]+) error=(Busy|Closed|Stale)", line)
+            if match is None:
+                raise AssertionError("unclassified async native error")
+            net_errors[(match[1], match[2])] += 1
+    if net_errors.pop(("receive", "Busy"), 0) != 8 or net_errors.pop(("submit", "Busy"), 0) != 8:
+        raise AssertionError("native packet operations bypassed exclusive admission")
+    if any(operation not in ("info", "receive_into", "progress", "finish") or reason not in ("Closed", "Stale")
+           for operation, reason in net_errors) or sum(net_errors.values()) > 8:
+        raise AssertionError("unexpected native source operation failure")
+    events = []
+    for line in lines:
+        if line.startswith("# LINUX_CALLBACK"):
+            match = re.fullmatch(r"# LINUX_CALLBACK event=(\d+) function=([0-9a-f]+) object=([0-9a-f]+) result=(-?\d+)", line)
+            if match is None:
+                raise AssertionError("malformed async source callback")
+            events.append(tuple(int(value, 16 if index in (1, 2) else 10) for index, value in enumerate(match.groups())))
+    validate_callback_lifetime(events, symbols)
+    counts = Counter(event for event, _, _, _ in events)
+    if any(counts[event] != 5 for event in (1, 2, 3, 4, 5, 6, 7, 8, 33, 34, 35)):
+        raise AssertionError("unchanged original source lifecycles missing")
+    tx_lengths = [len(packet) for packet in async_network_tx_packets()]
+    rx_lengths = [len(network_packet(epoch, sequence, True)) for epoch, sequence in expected_tx]
+    for event in (19, 20, 22):
+        if [result for observed, _, _, result in events if observed == event] != tx_lengths:
+            raise AssertionError("original mapping/publication/retirement bytes mismatch")
+    for event in (24, 25):
+        observed = [result for actual, _, _, result in events if actual == event]
+        completed_lengths = tx_lengths[:13] + tx_lengths[14:]
+        if observed not in (completed_lengths, tx_lengths):
+            raise AssertionError("original source completions/receipts missing")
+    for event in (41, 42):
+        if counts[event] != len(rx_lengths):
+            raise AssertionError("original RX delivery/destruction receipts missing")
+    if [result for event, _, _, result in events if event == 41] != rx_lengths:
+        raise AssertionError("original full-L2 RX accounting mismatch")
+    transactions, transaction, packet = [], [], None
+    napi = False
+    tx_irq = False
+    stopped = False
+    inputs = [NETWORK_LENGTHS[sequence - 1] for epoch, sequence in
+              [(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)] + [(3, 3), (3, 3), (4, 3), (5, 3)]]
+    for event, _, obj, result in events:
+        if event == 13:
+            napi = True
+        elif event == 26:
+            napi = False
+        elif event == 7 and packet is not None:
+            stopped = True
+        elif event == 27 and packet == obj and result & 1:
+            tx_irq = True
+        if event not in (17, 18, 19, 20, 21, 22, 23, 24, 25, 28, 30, 31, 32):
+            continue
+        if event == 31:
+            if packet is not None:
+                raise AssertionError("overlapping async source packet ownership")
+            packet, transaction, tx_irq, stopped = obj, [], False, False
+        if packet is None or obj != packet:
+            raise AssertionError("async source callback without packet ownership")
+        index = len(transactions)
+        if index >= 16:
+            raise AssertionError("unexpected source TX transaction")
+        if event in (22, 23, 24) and index != 13 and (not napi or not tx_irq):
+            raise AssertionError("async TX completion bypassed original IRQ/NAPI")
+        transaction.append((event, result))
+        if event in (25, 28):
+            wire = tx_lengths[index]
+            prefix = [(31, inputs[index]), (17, inputs[index]), (19, wire), (20, wire)]
+            if len(transaction) < 7 or transaction[:4] != prefix or transaction[4][0] != 21 or not 0 <= transaction[4][1] <= 255 or transaction[5] != (18, 0):
+                raise AssertionError("original async submission/map/publication mismatch")
+            if event == 28:
+                if index != 13 or not stopped or transaction[6:] != [(30, 0), (22, wire), (28, 0)]:
+                    raise AssertionError("orphan DMA was released without original stop")
+            elif transaction[6:] != [(22, wire), (23, 64), (24, wire), (25, wire)]:
+                raise AssertionError("original async completion/finish ownership mismatch")
+            transactions.append(transaction)
+            packet = None
+    if packet is not None or len(transactions) != 16:
+        raise AssertionError("incomplete async source transactions")
+    expected_proofs = set(proofs + pools + devices + joins + [line for line in lines if line.startswith("# ASYNC_NET_TX")])
+    if any(line.startswith("# ASYNC_NET_") and line not in expected_proofs and line not in async_errors for line in lines):
+        raise AssertionError("unexpected async broker evidence")
+    batches, pending = {}, []
+    for line in lines:
+        if line.startswith("# ASYNC_NET_"):
+            pending.append(line)
+        elif re.fullmatch(r"ok \d+ async\.net\.[a-z]+", line):
+            batches[line.split()[2]] = pending
+            pending = []
+    expected_scopes = {"async.net.exchange": (1, 2), "async.net.cancel": (3,), "async.net.rebind": (4,)}
+    for name, epochs in expected_scopes.items():
+        observed = [int(re.search(r"epoch=(\d+)", line)[1]) for line in batches[name] if line.startswith("# ASYNC_NET_JOIN")]
+        if observed != list(epochs):
+            raise AssertionError("async joined scope belongs to the wrong case")
+    if proofs[-1] not in batches["async.net.cancel"] or proofs[-3] not in batches["async.net.cancel"] or proofs[-2] not in batches["async.net.rebind"]:
+        raise AssertionError("async timeout/cancellation/rebind evidence misplaced")
+
+
 def validate_network_suite(case, returncode, output, symbols=None):
     lines = output.splitlines()
     runtime = case in RUNTIME_NETWORK_CASES
@@ -1515,10 +1913,10 @@ def validate_unclaimed_suite(case, returncode, output):
 def validate_live_boot(case, output, symbols):
     lines = output.splitlines()
     mode = LIVE_CASES[case][0]
-    validate_boot_preamble(lines, "run", "fw_cfg" if mode else "default")
-    validate_allocator(lines, 128)
+    validate_boot_preamble(lines, mode or "run", "fw_cfg" if mode else "default")
+    validate_allocator(lines, 32 if case.endswith("low-memory") else 128)
     if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "KERNEL_RUNTIME_", "THREAD_", "KTAP", "ok ", "not ok ",
-                            "Bail out!", "# LINUX_CALLBACK", "# LINUX_FAULT", "# LINUX_RX_", "# LINUX_HARD_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR", "# HOST_")) for line in lines):
+                            "Bail out!", "KERNEL_PANIC", "# LINUX_CALLBACK", "# LINUX_FAULT", "# LINUX_RX_", "# LINUX_HARD_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR", "# NET_IP_", "# ASYNC_NET_", "# ASYNC_ERROR", "# NETWORK_STACK_ERROR", "# NETWORK_STACK_STOP", "# HOST_")) for line in lines):
         raise AssertionError("default runtime exited, failed, or entered a probe/fixture path")
     bound = int(LIVE_CASES[case][1])
     normalized = [line.removeprefix("# ") for line in lines]
@@ -1540,19 +1938,89 @@ def validate_live_boot(case, output, symbols):
         summary = next(line for line in normalized if line.startswith("DRIVER_RUNTIME"))
         if normalized.index(callbacks[-1]) >= normalized.index(summary):
             raise AssertionError("runtime reported initialization before original open")
+    network = [line for line in normalized if line.startswith("NETWORK_STACK")]
+    service = [line for line in normalized if line.startswith("KERNEL_SERVICES")]
+    initialized = next(line for line in normalized if line.startswith("DRIVER_RUNTIME "))
+    epoch = re.search(r"epoch=(\d+)", initialized)[1]
+    enabled = live_network(case)
+    expected_service = (
+        f"KERNEL_SERVICES epoch={epoch} mode={mode or 'run'} tasks={5 if enabled else 3} clients=0 async={int(enabled)} network={int(enabled)}"
+    )
+    if service != [expected_service] or normalized.index(service[0]) >= normalized.index(initialized):
+        raise AssertionError("normal services were not admitted with the expected real task count")
+    if not enabled:
+        if network:
+            raise AssertionError("driver-only boot activated the protocol stack")
+    else:
+        storage = [line for line in network if line.startswith("NETWORK_STACK_STORAGE")]
+        if len(storage) != 1:
+            raise AssertionError("missing bounded protocol storage")
+        match = re.fullmatch(
+            r"NETWORK_STACK_STORAGE state=(\d+) future=(\d+) added_slabs=(\d+) added_pages=(\d+) future_slabs=(\d+) future_pages=(\d+) future_storage=32768 charged=(\d+) stack_limit=5 rx_budget=8",
+            storage[0],
+        )
+        if (match is None or not all(0 < int(value) <= 2048 for value in match.groups()[:2])
+                or int(match[3]) > 1 or int(match[4]) != 0
+                or int(match[5]) > 1 or int(match[6]) != 0
+                or not 65536 < int(match[7]) <= 128 * 1024):
+            raise AssertionError("protocol storage exceeds admission limits")
+        expected = [storage[0], "NETWORK_STACK_WAIT state=source"]
+        if bound:
+            ready = next(line for line in normalized if line.startswith("DRIVER_READY "))
+            identity = re.search(r"identity=(\d+)", ready)[1]
+            expected += [
+                f"NETWORK_STACK_CONFIGURED identity={identity} cidr=10.0.2.15/24 mtu=1500",
+                f"NETWORK_STACK_WAIT state=link identity={identity}",
+                f"NETWORK_STACK_READY identity={identity} mac=52:54:00:12:34:56 cidr=10.0.2.15/24 mtu=1500",
+            ]
+        if network != expected:
+            raise AssertionError("network readiness does not match the real source")
 
 
-def execute_live(args, case):
+class LiveIPProtocol:
+    def __init__(self, send):
+        self.send = send
+        self.started = False
+        self.frames = []
+
+    @property
+    def complete(self):
+        return len(self.frames) == 3
+
+    def start(self):
+        if self.started:
+            raise AssertionError("duplicate live protocol readiness")
+        self.started = True
+        self._send(0)
+
+    def _send(self, index):
+        packet = ip_packets.live_requests()[index]
+        self.send(struct.pack("!I", len(packet)) + packet)
+
+    def transmit(self, packet):
+        index = len(self.frames)
+        if not self.started or index >= 3:
+            raise AssertionError("unrequested live packet")
+        ip_packets.validate_reply(packet, 1, (0, 1, 5)[index])
+        self.frames.append(packet)
+        if not self.complete:
+            self._send(index + 1)
+
+
+def execute_live(args, case, capture=None):
     deadline = time.monotonic() + args.timeout
     ready_at = None
     output, pending = bytearray(), bytearray()
+    network_pending = bytearray()
     symbols = runtime_symbols(getattr(args, "nm", "nm"))
     host, peer = socket.socketpair()
     with host, peer:
-        command = qemu_command(args, case, net_fd=peer.fileno())
+        command = qemu_command(args, case, capture=capture, net_fd=peer.fileno())
         with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                               stdin=subprocess.DEVNULL, pass_fds=(peer.fileno(),)) as process:
             peer.close()
+            host.settimeout(min(args.timeout, 2))
+            protocol = LiveIPProtocol(host.sendall) if live_network(case) and LIVE_CASES[case][1] else None
             try:
                 with selectors.DefaultSelector() as selector:
                     selector.register(process.stdout, selectors.EVENT_READ, "serial")
@@ -1579,6 +2047,8 @@ def execute_live(args, case):
                             host.settimeout(0.5)
                             if host.recv(1):
                                 raise AssertionError("default runtime emitted late unexpected packet bytes")
+                            if network_pending or protocol is not None and not protocol.complete:
+                                raise AssertionError("incomplete live packet exchange")
                             break
                         for key, _ in selector.select(min(deadline - now, 0.1)):
                             chunk = os.read(key.fd, 4096)
@@ -1586,7 +2056,20 @@ def execute_live(args, case):
                                 selector.unregister(key.fileobj)
                                 continue
                             if key.data == "network":
-                                raise AssertionError("default runtime emitted unexpected packet bytes")
+                                if protocol is None:
+                                    raise AssertionError("driver-only/unclaimed runtime emitted unexpected packet bytes")
+                                network_pending.extend(chunk)
+                                while len(network_pending) >= 4:
+                                    length = struct.unpack_from("!I", network_pending)[0]
+                                    if not 60 <= length <= 1514:
+                                        raise AssertionError("invalid live Ethernet record")
+                                    if len(network_pending) < 4 + length:
+                                        break
+                                    protocol.transmit(bytes(network_pending[4:4 + length]))
+                                    del network_pending[:4 + length]
+                                    if protocol.complete:
+                                        ready_at = time.monotonic()
+                                continue
                             output.extend(chunk)
                             pending.extend(chunk)
                             if len(output) > 1024 * 1024:
@@ -1595,10 +2078,17 @@ def execute_live(args, case):
                                 line, _, rest = pending.partition(b"\n")
                                 pending = bytearray(rest)
                                 decoded = line.decode("utf-8", errors="replace").rstrip("\r")
-                                marker = "DRIVER_READY" if LIVE_CASES[case][1] else "DRIVER_RUNTIME"
-                                if ready_at is None and decoded.removeprefix("# ").startswith(marker):
+                                marker = (
+                                    "NETWORK_STACK_READY" if protocol is not None
+                                    else "NETWORK_STACK_WAIT state=source" if live_network(case)
+                                    else "DRIVER_READY" if LIVE_CASES[case][1] else "DRIVER_RUNTIME"
+                                )
+                                if ready_at is None and (protocol is None or not protocol.started) and decoded.removeprefix("# ").startswith(marker):
                                     validate_live_boot(case, output.decode("utf-8", errors="replace"), symbols)
-                                    ready_at = time.monotonic()
+                                    if protocol is not None:
+                                        protocol.start()
+                                    else:
+                                        ready_at = time.monotonic()
                             if len(pending) > 8192:
                                 raise AssertionError("oversized unterminated runtime line")
                 if len(output) > 1024 * 1024 or not output.endswith(b"\n") or elapsed < 3:
@@ -1606,6 +2096,8 @@ def execute_live(args, case):
                 validate_live_boot(case, output.decode("utf-8", errors="replace"), symbols)
             except AssertionError as error:
                 raise AssertionError(f"{error}\n{output.decode('utf-8', errors='replace')}") from error
+            except OSError as error:
+                raise AssertionError(f"live peer I/O failed: {error}\n{output.decode('utf-8', errors='replace')}") from error
             finally:
                 if process.poll() is None:
                     process.terminate()
@@ -1840,6 +2332,405 @@ def validate_managed_hardening(case, returncode, output, symbols=None):
         raise AssertionError("source join, RX drain, purge and replacement backing order is unsafe")
 
 
+class IPProtocol:
+    def __init__(self, send=None):
+        self.send = send
+        self.offers = []
+        self.acks = []
+        self.frames = []
+        self.expected = [(epoch, step) for epoch in (1, 2) for step in range(24)]
+
+    def observe(self, line):
+        if match := re.fullmatch(r"# NET_IP_OFFER epoch=([12]) step=(\d+) kind=(arp|echo|reject) bytes=(\d+)", line):
+            epoch, step, kind, length = int(match[1]), int(match[2]), match[3], int(match[4])
+            index = len(self.offers)
+            packet = ip_packets.request(epoch, step)
+            if (index >= 48 or (epoch, step) != self.expected[index] or len(self.acks) != index
+                    or length != len(packet) or kind != ("arp" if step == 0 else "echo" if step <= 16 else "reject")):
+                raise AssertionError("IP peer transaction order/shape mismatch")
+            self.offers.append((epoch, step))
+            if self.send is not None:
+                self.send(struct.pack("!I", len(packet)) + packet)
+        elif match := re.fullmatch(r"# NET_IP_ACK epoch=([12]) step=(\d+) rx=(\d+) tx=(\d+) rejected=(\d+) requests=0", line):
+            epoch, step, rx, tx, rejected = map(int, match.groups())
+            index = len(self.acks)
+            if (index >= len(self.offers) or (epoch, step) != self.offers[index]
+                    or (rx, tx, rejected) != (step + 1, min(step + 1, 17), max(step - 16, 0))):
+                raise AssertionError("native RX/TX/drop acknowledgement mismatch")
+            self.acks.append((epoch, step))
+
+    def transmit(self, packet):
+        index = len(self.frames)
+        expected = [(epoch, step) for epoch in (1, 2) for step in range(17)]
+        if index >= len(expected) or expected[index] not in self.offers:
+            raise AssertionError("unrequested or unexpected IP reply")
+        epoch, step = expected[index]
+        ip_packets.validate_reply(packet, epoch, step)
+        self.frames.append(packet)
+
+    def finish(self, wire=True):
+        if self.offers != self.expected or self.acks != self.expected:
+            raise AssertionError("missing directed IP transactions")
+        if wire and self.frames != ip_packets.replies():
+            raise AssertionError("missing, extra or incorrect isolated ARP/ICMP replies")
+
+
+def validate_network_stack(case, returncode, output, symbols=None):
+    lines = output.splitlines()
+    validate_boot_preamble(lines, "network-tests")
+    banners = {
+        "Intel(R) PRO/1000 Network Driver",
+        "Copyright (c) 1999-2006 Intel Corporation.",
+        "eth0 NIC Link is Up 1000 Mbps Full Duplex, Flow Control: RX",
+    }
+    ktap_lines = ["# " + line if line in banners else line for line in lines]
+    if validate_ktap(ktap_lines, returncode, IP_TEST_NAMES):
+        raise KernelSuiteFailure("IP guest acceptance failed")
+    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "Bail out!", "# ASYNC_ERROR",
+                            "# ASYNC_NET_ERROR", "# NETWORK_STACK_ERROR", "# NET_ERROR", "# RUNTIME_ERROR",
+                            "# LINUX_CALLBACK", "# driver operation=")) for line in lines):
+        raise AssertionError("IP service/source error or guest-only tracing used")
+    if lines.count("# NET_IP_CONFIG cidr=10.0.2.15/24 rejected=7 allocation=0 source=0") != 1:
+        raise AssertionError("missing strict configuration evidence")
+    protocol = IPProtocol()
+    for line in lines:
+        protocol.observe(line)
+    protocol.finish(wire=False)
+    scope_start = lines.index("ok 1 net.configuration") + 1
+    scope_end = lines.index("ok 2 net.exchange")
+    if any(line.startswith("# NET_IP_") and not scope_start <= index < scope_end
+           for index, line in enumerate(lines) if not line.startswith(("# NET_IP_CONFIG", "# NET_IP_SHUTDOWN"))):
+        raise AssertionError("IP proof misplaced outside exchange case")
+    normalized = [line.removeprefix("# ") for line in lines]
+    validate_runtime_evidence(normalized, case, 1, scopes=2)
+    devices = [line for line in lines if line.startswith("# NET_IP_DEVICE")]
+    identities = []
+    for epoch, line in enumerate(devices, 1):
+        _, leaf, parents = pci_layout(case)
+        match = re.fullmatch(
+            rf"# NET_IP_DEVICE epoch={epoch} identity=(\d+) bdf=0000:{len(parents):02x}:{leaf:02x}\.0 mac=52:54:00:12:34:56 cidr=10.0.2.15/24 mtu=1500 link=1 stale={epoch - 1}", line)
+        if match is None or not int(match[1]):
+            raise AssertionError("wrong IP source identity/configuration/topology")
+        identities.append(int(match[1]))
+    if len(identities) != 2 or identities[0] == identities[1]:
+        raise AssertionError("IP source epoch identity reused or missing")
+    for identity in identities:
+        if lines.count(f"# NETWORK_STACK_READY identity={identity} mac=52:54:00:12:34:56 cidr=10.0.2.15/24 mtu=1500") != 1:
+            raise AssertionError("production protocol readiness missing")
+        if lines.count(f"# NETWORK_STACK_CONFIGURED identity={identity} cidr=10.0.2.15/24 mtu=1500") != 1:
+            raise AssertionError("production interface configuration missing")
+    if lines.count("# NETWORK_STACK_STOP rx=24 arp=1 echo=16 rejected=7 tx=17") != 2:
+        raise AssertionError("protocol payload not retired with complete counters")
+    storage = [line for line in lines if line.startswith("# NETWORK_STACK_STORAGE")]
+    if len(storage) != 2:
+        raise AssertionError("missing production stack allocations")
+    for line in storage:
+        match = re.fullmatch(
+            r"# NETWORK_STACK_STORAGE state=(\d+) future=(\d+) added_slabs=1 added_pages=0 future_slabs=0 future_pages=0 future_storage=32768 charged=(\d+) stack_limit=5 rx_budget=8", line)
+        if match is None or not all(0 < int(value) <= 2048 for value in match.groups()[:2]) or not 98304 < int(match[3]) <= 131072:
+            raise AssertionError("production service storage exceeds bounds")
+    for epoch in (1, 2):
+        if lines.count(f"# NET_IP_STATS epoch={epoch} tx=17/7044 rx=24/7464 rejected=7 source_dropped=0 retained=1") != 1:
+            raise AssertionError("original source accounting missing or inconsistent")
+    joins = [line for line in lines if line.startswith("# NET_IP_JOIN")]
+    if len(joins) != 2:
+        raise AssertionError("missing balanced IP joins")
+    for epoch, line in enumerate(joins, 1):
+        match = re.fullmatch(
+            rf"# NET_IP_JOIN epoch={epoch} finished=6 peak=6 frame=balanced heap=balanced sessions=0 requests=0 packets=0 futures=0 tasks=0 workers=0 copied_after_remove=1 source_unchanged=1 metadata=(\d+)", line)
+        if match is None or not 60385 <= int(match[1]) <= 65536:
+            raise AssertionError("IP resources not joined or driver metadata over budget")
+    if lines.count("# NET_IP_SHUTDOWN epochs=2 stale=1 source=0 copied=0 sessions=0 requests=0 futures=0 tasks=0 balanced=1") != 1:
+        raise AssertionError("stale shutdown/resource proof missing")
+    rows = {}
+    for line in lines:
+        if not line.startswith("# NET_IP_SOURCE"):
+            continue
+        match = re.fullmatch(
+            r"# NET_IP_SOURCE epoch=([12]) step=(\d+|stop|scope) event=(\d+) count=(\d+) ordinal=(\d+) function=([0-9a-f]+) object=([0-9a-f]+) result=(-?\d+)", line)
+        if match is None:
+            raise AssertionError("malformed original callback proof")
+        epoch, step = int(match[1]), match[2]
+        if step not in ("stop", "scope") and not 0 <= int(step) < 24:
+            raise AssertionError("out-of-range source transaction")
+        if step not in ("stop", "scope"):
+            offer = next(index for index, value in enumerate(lines) if value.startswith(f"# NET_IP_OFFER epoch={epoch} step={step} "))
+            ack = next(index for index, value in enumerate(lines) if value.startswith(f"# NET_IP_ACK epoch={epoch} step={step} "))
+            if not offer < lines.index(line) < ack:
+                raise AssertionError("original callbacks outside the directed transaction")
+        event, count, ordinal = map(int, match.groups()[2:5])
+        function, obj, result = int(match[6], 16), int(match[7], 16), int(match[8])
+        if not count or not ordinal or (epoch, step, event) in rows:
+            raise AssertionError("duplicate/empty callback proof")
+        validate_callback_symbol(event, function, obj, symbols)
+        rows[epoch, step, event] = count, ordinal, obj, result
+    for epoch in (1, 2):
+        scope = {event: row for (e, step, event), row in rows.items() if e == epoch and step == "scope"}
+        for event in (1, 2, 3, 4, 5, 6, 7, 8, 12, 33, 34, 35):
+            if event not in scope or scope[event][0] != 1:
+                raise AssertionError("original initialization/stop/removal missing")
+        stopped = {event: row for (e, step, event), row in rows.items() if e == epoch and step == "stop"}
+        if any(event not in stopped or stopped[event][0] != 1 for event in (7, 5)) or stopped[7][1] >= stopped[5][1]:
+            raise AssertionError("original close/remove source retirement missing or reordered")
+        for step in range(24):
+            events = {event: row for (e, s, event), row in rows.items() if e == epoch and s == str(step)}
+            packet = ip_packets.request(epoch, step)
+            for event in (9, 13, 41, 42):
+                if event not in events:
+                    raise AssertionError("original RX/IRQ/NAPI callback not reached")
+            if events[13][3] != 64 or events[41][0] != 1 or events[41][3] != len(packet) or events[42][0] != 1:
+                raise AssertionError("RX source length/FCS/NAPI/free accounting mismatch")
+            if events[41][1] >= events[42][1] or events[41][2] != events[42][2]:
+                raise AssertionError("RX backing freed before owned ingress")
+            tx_order = (31, 17, 19, 20, 21, 18, 22, 23, 24, 25)
+            if step > 16:
+                if any(event in events for event in tx_order):
+                    raise AssertionError("rejected IPv4 input transmitted")
+                continue
+            if any(event not in events or events[event][0] != 1 for event in tx_order):
+                raise AssertionError("TX source map/publication/consume/account/finish missing")
+            ordinals = [events[event][1] for event in tx_order]
+            if ordinals != sorted(set(ordinals)):
+                raise AssertionError("TX original ownership order violated")
+            if len({events[event][2] for event in tx_order}) != 1:
+                raise AssertionError("TX backing identity changed")
+            if any(events[event][3] != len(packet) for event in (31, 17, 19, 20, 22, 24, 25)):
+                raise AssertionError("TX source byte accounting mismatch")
+            if events[18][3] != 0 or events[23][3] != 64:
+                raise AssertionError("TX source did not accept and consume through NAPI")
+            for event in (17, 25):
+                if event not in scope or scope[event][0] != 17:
+                    raise AssertionError("original aggregate TX counts wrong")
+        if scope[41][0] != 24 or scope[42][0] != 24:
+            raise AssertionError("original aggregate RX counts wrong")
+
+
+def async_hardening_packets():
+    frame = bytearray(bytes.fromhex("02000000000152540012345688be") + bytes(46))
+    frame[14] = 7
+    return [bytes(frame), ip_packets.arp(True),
+            *[ip_packets.echo(1, sequence, 0, True) for sequence in range(1, 17)], ip_packets.echo(1, 18, 0, True),
+            ip_packets.arp(True), ip_packets.echo(1, 1, 0, True), ip_packets.kernel_arp_request(),
+            ip_packets.echo(2, 1, 0, True, peer=bytes.fromhex("020000000002"))]
+
+
+class AsyncHardProtocol:
+    expected = [
+        ("pressure-first", 8), ("pressure-fill", 1), ("pressure-overflow", 9),
+        ("pressure-invalid", 7), ("retirement-arp", 1),
+        ("retirement-pending", 1), ("retirement-replacement", 1),
+        ("retirement-neighbor", 1), ("retirement-echo", 1),
+    ]
+
+    expected = expected[:4] + [("link-down", 0), ("link-up", 0), ("link-echo", 1)] + expected[4:]
+
+    def __init__(self, send=None, monitor=None):
+        self.send = send
+        self.monitor = monitor
+        self.offers = []
+
+    def observe(self, line):
+        if not line.startswith("# ASYNC_HARD_OFFER"):
+            return
+        match = re.fullmatch(r"# ASYNC_HARD_OFFER stage=([a-z-]+) count=(\d+)", line)
+        if match is None or len(self.offers) >= len(self.expected):
+            raise AssertionError("malformed or extra hardening input offer")
+        stage, count = match[1], int(match[2])
+        if (stage, count) != self.expected[len(self.offers)]:
+            raise AssertionError("hardening input order/count mismatch")
+        self.offers.append((stage, count))
+        if stage in ("link-down", "link-up"):
+            if self.monitor is not None:
+                self.monitor.command("set_link", {"name": "irqtest", "up": stage == "link-up"})
+            return
+        if stage == "pressure-first":
+            packets = [ip_packets.arp(), *[ip_packets.echo(1, seq, 0) for seq in range(1, 8)]]
+        elif stage == "pressure-fill":
+            packets = [ip_packets.echo(1, 8, 0)]
+        elif stage == "pressure-overflow":
+            packets = [ip_packets.echo(1, seq, 0) for seq in range(9, 18)]
+        elif stage == "pressure-invalid":
+            packets = [ip_packets.rejected(1, kind) for kind in ip_packets.REJECTIONS]
+        elif stage == "retirement-arp":
+            packets = [ip_packets.arp()]
+        elif stage == "retirement-pending":
+            packets = [ip_packets.echo(1, 1, 0)]
+        elif stage == "retirement-neighbor":
+            packets = [ip_packets.peer_arp_reply(bytes.fromhex("020000000002"))]
+        elif stage == "link-echo":
+            packets = [ip_packets.echo(1, 18, 0)]
+        else:
+            packets = [ip_packets.echo(2, 1, 0, peer=bytes.fromhex("020000000002"))]
+        if self.send is not None:
+            self.send(b"".join(struct.pack("!I", len(packet)) + packet for packet in packets))
+
+    def finish(self):
+        if self.offers != self.expected:
+            raise AssertionError("missing hardening pressure/retirement inputs")
+
+
+def validate_async_hardening(case, returncode, output, symbols=None):
+    lines = output.splitlines()
+    validate_boot_preamble(lines, "async-hardening-tests")
+    banners = {"Intel(R) PRO/1000 Network Driver", "Copyright (c) 1999-2006 Intel Corporation.", "eth0 NIC Link is Down",
+               "eth0 NIC Link is Up 1000 Mbps Full Duplex, Flow Control: RX"}
+    if validate_ktap(["# " + line if line in banners else line for line in lines], returncode, ASYNC_HARD_NAMES):
+        raise KernelSuiteFailure("async/network hardening failed")
+    if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "Bail out!", "KERNEL_PANIC", "# LINUX_CALLBACK")) for line in lines):
+        raise AssertionError("hardening aborted or depended on guest tracing")
+    protocol = AsyncHardProtocol()
+    for line in lines:
+        protocol.observe(line)
+    protocol.finish()
+    required = [
+        "# ASYNC_HARD_CAPACITY tasks=16 events=16 deadlines=16 requests=4 packets=16 oversized=1 recovered=1 payload=32768 arena=32768 pinned=1 drops=16 event_rejected=1 deadline_rejected=1 alignment_rejected=1 repolls=15",
+        "# ASYNC_HARD_TX_FAILURE alloc=NoMemory map=Dropped consumed=1 dma=0 requests=0 surfaced=1",
+        "# ASYNC_HARD_STATE_FAILURE alloc=1 claim_recovered=1 dropped=1",
+        "# ASYNC_HARD_NATIVE_FAILURE code=-272 stopped=1 source_retired=1 joined=1",
+        "# ASYNC_HARD_CANCEL irq=16 orders=2 drops=16 terminal=1 maps_retained=1 busy=1 source_retired=1 orphan=0 queued=3 rejected=1 source_tx=1",
+        "# ASYNC_HARD_STARVED credits=4 staged=8 ingress=8 dropped=1 tx=0 empty_polls=0 ordered=1",
+        "# ASYNC_HARD_PRESSURE rx=26 tx=18 rejected=7 dropped=1 starvation=0 recovered=1 ordered=1 link_loss=1 link_recovery=1 same_identity=1",
+        "# ASYNC_HARD_RETIRE epochs=2 cancelled=1 busy=1 joined=1 old_closed=1 stale_irq=1 stale_polls=0 late_copy=1 source_unchanged=1 neighbor_reset=1 fresh_arp=1",
+    ]
+    if any(lines.count(line) != 1 for line in required):
+        raise AssertionError("missing/duplicate bounded failure, ownership or recovery evidence")
+    for kind in range(1, 5):
+        expected = f"# ASYNC_HARD_FAULT kind={kind} bound={int(kind == 4)} failed={int(kind != 4)} balanced_pending=1"
+        if lines.count(expected) != 1:
+            raise AssertionError("source allocation/map/IRQ fault was not reached")
+    matrix = [(0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (10, 0), (6, 0), (7, 0), (8, 0), (9, 0)]
+    scopes = [line for line in lines if line.startswith("# ASYNC_HARD_SCOPE")]
+    if scopes != [f"# ASYNC_HARD_SCOPE scope={index} mode={mode} injected={fault}"
+                  for index, (mode, fault) in enumerate(matrix, 1)]:
+        raise AssertionError("hardening fault/lifetime matrix incomplete or reordered")
+    joins = [line for line in lines if line.startswith("# ASYNC_HARD_JOIN")]
+    if len(joins) != 14:
+        raise AssertionError("missing joined hardening scopes")
+    for index, line in enumerate(joins, 1):
+        mode, fault = matrix[index - 1]
+        result = -12 if fault == 1 else -210 if fault else -272 if mode == 6 else 0
+        match = re.fullmatch(
+            rf"# ASYNC_HARD_JOIN scope={index} result={result} frames=balanced heap=balanced requests=0 packets=0 futures=0 tasks=0 workers=0 metadata=(\d+) future_storage=32768 packet_storage=32768", line)
+        if match is None or not 60385 <= int(match[1]) <= 65536:
+            raise AssertionError("hardening resources leaked or driver metadata over budget")
+        if lines.index(scopes[index - 1]) >= lines.index(line):
+            raise AssertionError("join precedes scope admission")
+        batch = lines[lines.index(scopes[index - 1]):lines.index(line)]
+        for value in batch:
+            if value.startswith("# NETWORK_STACK_ERROR"):
+                raise AssertionError("unexpected protocol failure")
+            if value.startswith("# ASYNC_ERROR") and not (index == 1 and value in (
+                "# ASYNC_ERROR operation=spawn error=State(Capacity) code=-220",
+                "# ASYNC_ERROR operation=spawn error=State(PayloadTooLarge) code=-220",
+            )):
+                raise AssertionError("unexpected executor failure")
+            if value.startswith("# ASYNC_NET_ERROR") and not (
+                index == 11 and value == "# ASYNC_NET_ERROR operation=info error=Driver(-273)"
+                or index == 12 and value == "# ASYNC_NET_ERROR operation=admit error=Busy"
+            ):
+                raise AssertionError("unexpected broker failure")
+            if value.startswith("# NATIVE_DRIVER_ERROR") and not (
+                index in (5, 6, 7) and value == "# NATIVE_DRIVER_ERROR operation=driver-probe-callback code=-12"
+                or index in (12, 14) and value == "# NATIVE_DRIVER_ERROR operation=driver-stop-reserve code=-164"
+            ):
+                raise AssertionError("unexpected native source failure")
+            if value.startswith("# RUNTIME_PROBE") and not (index in (5, 6, 7) and re.fullmatch(
+                r"# RUNTIME_PROBE Failed \{ device: DeviceHandle\(\d+\), error: Driver\(-12\) \}", value
+            )):
+                raise AssertionError("unexpected failed source probe")
+            if value.startswith("# driver operation=") and not (
+                index in (5, 6, 9) and value in ("# driver operation=allocate code=-12", "# driver operation=pci_probe code=-12")
+                or index in (8, 9) and value == "# driver operation=map code=-12"
+                or index == 13 and value == "# driver operation=ingress_capacity code=-12"
+            ):
+                raise AssertionError("unexpected platform allocation/packet error")
+            if value.startswith("# NET_ERROR") and not (
+                index == 9 and value in ("# NET_ERROR operation=submit error=NoMemory", "# NET_ERROR operation=submit_bytes error=NoMemory")
+                or re.fullmatch(r"# NET_ERROR operation=(info|receive_into|progress) error=(Closed|Stale)", value)
+            ):
+                raise AssertionError("unexpected native packet error")
+    ready = [line for line in lines if line.startswith("# ASYNC_HARD_READY")]
+    if len(ready) != 9:
+        raise AssertionError("missing source/replacement readiness")
+    for line in ready:
+        _, leaf, parents = pci_layout(case)
+        match = re.fullmatch(
+            rf"# ASYNC_HARD_READY scope=(\d+) identity=(\d+) bdf=0000:{len(parents):02x}:{leaf:02x}\.0 mac=52:54:00:12:34:56 mtu=1500", line)
+        if match is None or not int(match[2]):
+            raise AssertionError("hardening source topology/identity wrong")
+    records = {}
+    for line in lines:
+        if not line.startswith("# ASYNC_HARD_SOURCE"):
+            continue
+        match = re.fullmatch(r"# ASYNC_HARD_SOURCE scope=(\d+) event=(\d+) count=(\d+) ordinal=(\d+) function=([0-9a-f]+) object=([0-9a-f]+) result=(-?\d+)", line)
+        if match is None:
+            raise AssertionError("malformed original source proof")
+        scope, event, count, ordinal = map(int, match.groups()[:4])
+        if not 1 <= scope <= 14 or not count or not ordinal or (scope, event) in records:
+            raise AssertionError("duplicate/invalid source proof")
+        validate_callback_symbol(event, int(match[5], 16), int(match[6], 16), symbols)
+        records[scope, event] = count, int(match[7])
+    if any(scope in (2, 3, 4) for scope, _ in records):
+        raise AssertionError("failed service admission invoked a source")
+    for scope, tx, rx in ((12, 1, 0), (13, 18, 25), (14, 4, 5)):
+        for event, count in ((17, tx), (18, tx), (41, rx)):
+            if count and records.get((scope, event), (0,))[0] != count:
+                raise AssertionError("original TX/RX hardening totals wrong")
+        for event in (8, 12, 34, 35, 7, 5):
+            if (scope, event) not in records:
+                raise AssertionError("original driver/IRQ/NAPI/retirement not reached")
+    if records.get((13, 44), (0,))[0] != 1 or records.get((13, 42), (0,))[0] != 26:
+        raise AssertionError("RX overflow not explicitly dropped and freed by source")
+    storage = [line for line in lines if line.startswith("# NETWORK_STACK_STORAGE")]
+    if len(storage) != 5:
+        raise AssertionError("missing bounded protocol allocations")
+    for line in storage:
+        match = re.fullmatch(r"# NETWORK_STACK_STORAGE state=(\d+) future=(\d+) added_slabs=(\d+) added_pages=0 future_slabs=0 future_pages=0 future_storage=32768 charged=(\d+) stack_limit=5 rx_budget=8", line)
+        if match is None or not all(0 < int(value) <= 2048 for value in match.groups()[:2]) or int(match[3]) > 1 or not 98304 < int(match[4]) <= 131072:
+            raise AssertionError("hidden future/protocol allocator growth")
+    expected_errors = [
+        "# RUNTIME_ERROR stage=async_storage code=-12",
+        "# RUNTIME_ERROR stage=runtime_startup_injected code=-210",
+        "# RUNTIME_ERROR stage=runtime_startup_injected code=-210",
+        "# RUNTIME_ERROR stage=runtime_start code=-272",
+    ]
+    if [line for line in lines if line.startswith("# RUNTIME_ERROR")] != expected_errors:
+        raise AssertionError("unexpected or hidden runtime failure")
+
+
+class QMP:
+    def __init__(self, path):
+        self.path = path
+        self.socket = socket.socket(socket.AF_UNIX)
+        self.stream = None
+
+    def connect(self, process, deadline):
+        while not self.path.exists():
+            if process.poll() is not None or time.monotonic() >= deadline:
+                raise AssertionError("owned QMP monitor did not become ready")
+            time.sleep(0.01)
+        self.socket.settimeout(2)
+        self.socket.connect(str(self.path))
+        self.stream = self.socket.makefile("rwb", buffering=0)
+        if "QMP" not in json.loads(self.stream.readline(65536)):
+            raise AssertionError("invalid owned QMP greeting")
+        self.command("qmp_capabilities")
+
+    def command(self, name, arguments=None):
+        self.stream.write(json.dumps({"execute": name, "arguments": arguments or {}}).encode() + b"\n")
+        while True:
+            reply = json.loads(self.stream.readline(65536))
+            if "error" in reply:
+                raise AssertionError(f"owned QMP command failed: {reply['error']}")
+            if "return" in reply:
+                return
+
+    def close(self):
+        if self.stream is not None:
+            self.stream.close()
+        self.socket.close()
+
+
 def execute_suite(args, case, capture):
     deadline = time.monotonic() + args.timeout
     output = bytearray()
@@ -1848,19 +2739,29 @@ def execute_suite(args, case, capture):
     transmitted = []
     network = case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES
     hardening = case in HARDENING_CASES
+    asynchronous = case in ASYNC_NETWORK_CASES
+    ip_network = case in IP_SUITE_CASES
+    async_hardening = case in ASYNC_HARD_CASES
     ambiguous = case.endswith("ambiguous")
-    expected = [managed_hard_packet(sequence) for sequence in range(1, 5)] if hardening else [] if network and ambiguous else [network_packet(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)] if network else expected_tx_packets()
+    expected = async_hardening_packets() if async_hardening else ip_packets.replies() if ip_network else async_network_tx_packets() if asynchronous else [managed_hard_packet(sequence) for sequence in range(1, 5)] if hardening else [] if network and ambiguous else [network_packet(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)] if network else expected_tx_packets()
     host, peer = socket.socketpair()
-    with host, peer:
+    with host, peer, (tempfile.TemporaryDirectory(prefix="kutox-hardening-") if async_hardening else nullcontext(None)) as directory:
         command = qemu_command(args, case, capture, peer.fileno())
+        monitor_path = Path(directory) / "qmp" if directory is not None else None
+        if monitor_path is not None:
+            command += ["-qmp", f"unix:{monitor_path},server=on,wait=off"]
         with subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL, pass_fds=(peer.fileno(),),
         ) as process:
             peer.close()
             host.settimeout(min(args.timeout, 2))
-            protocols = (ManagedHardProtocol(host.sendall),) if hardening else (NetworkProtocol(host.sendall, ambiguous),) if network else (RXProtocol(host.sendall), HardProtocol(host.sendall))
+            monitor = None
             try:
+                if monitor_path is not None:
+                    monitor = QMP(monitor_path)
+                    monitor.connect(process, deadline)
+                protocols = (AsyncHardProtocol(host.sendall, monitor),) if async_hardening else (IPProtocol(host.sendall),) if ip_network else (AsyncNetworkProtocol(host.sendall),) if asynchronous else (ManagedHardProtocol(host.sendall),) if hardening else (NetworkProtocol(host.sendall, ambiguous),) if network else (RXProtocol(host.sendall), HardProtocol(host.sendall))
                 with selectors.DefaultSelector() as selector:
                     selector.register(process.stdout, selectors.EVENT_READ, "serial")
                     selector.register(host, selectors.EVENT_READ, "network")
@@ -1895,6 +2796,8 @@ def execute_suite(args, case, capture):
                                     if len(network_pending) < size + 4:
                                         break
                                     transmitted.append(bytes(network_pending[4:size + 4]))
+                                    if ip_network:
+                                        protocols[0].transmit(transmitted[-1])
                                     del network_pending[:size + 4]
                                     if len(transmitted) > len(expected):
                                         raise AssertionError("unexpected guest packet on isolated socket")
@@ -1915,6 +2818,8 @@ def execute_suite(args, case, capture):
             except AssertionError as error:
                 raise AssertionError(f"{error}\n{output.decode('utf-8', errors='replace')}") from error
             finally:
+                if monitor is not None:
+                    monitor.close()
                 if process.poll() is None:
                     process.terminate()
                     try:
@@ -1935,7 +2840,20 @@ def qemu_command(args, case, capture=None, net_fd=None):
         "-cdrom", str(args.build_dir / "kutox.iso"), "-nic", "none",
         "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
     ]
-    if case not in LIVE_CASES or LIVE_CASES[case][0] is not None:
+    if case == "network-default-ambiguous":
+        command += [
+            "-netdev", "user,id=first,restrict=on",
+            "-device", "e1000,netdev=first,mac=52:54:00:12:34:56",
+            "-netdev", "user,id=second,restrict=on",
+            "-device", "e1000,netdev=second,mac=52:54:00:00:00:02",
+        ]
+        return command
+    if case in CONFIG_FAILURES:
+        mode, cidr, _ = CONFIG_FAILURES[case]
+        if mode is not None:
+            command += ["-fw_cfg", f"name=opt/kutox/test-mode,string={mode}"]
+        command += ["-fw_cfg", f"name=opt/kutox/ipv4,string={cidr}"]
+    elif case not in LIVE_CASES or LIVE_CASES[case][0] is not None:
         mode = {
             "eeprom-timeout": "eeprom-timeout",
             "invalid-mode": "unsupported",
@@ -1943,6 +2861,10 @@ def qemu_command(args, case, capture=None, net_fd=None):
             "driver-runtime-tests-disabled": "driver-runtime-tests",
             "driver-network-tests-disabled": "driver-network-tests",
             "driver-hardening-tests-disabled": "driver-hardening-tests",
+            "async-core-tests-disabled": "async-core-tests",
+            "async-network-tests-disabled": "async-network-tests",
+            "network-tests-disabled": "network-tests",
+            "async-hardening-tests-disabled": "async-hardening-tests",
             "heap-oom": "heap-oom",
             "thread-stack-guard": "thread-stack-guard",
             **{case: case for case in FAULT_RESULTS},
@@ -1951,11 +2873,15 @@ def qemu_command(args, case, capture=None, net_fd=None):
             **NETWORK_SUITE_CASES,
             **RUNTIME_NETWORK_CASES,
             **HARDENING_CASES,
+            **ASYNC_CORE_CASES,
+            **ASYNC_NETWORK_CASES,
+            **IP_SUITE_CASES,
+            **ASYNC_HARD_CASES,
             **{case: "driver-runtime-tests" for case in UNCLAIMED_CASES},
             **{case: mode for case, (mode, _) in LIVE_CASES.items() if mode is not None},
         }.get(case, "probe")
         command += ["-fw_cfg", f"name=opt/kutox/test-mode,string={mode}"]
-    if case not in ("missing", "smp-unsupported", "heap-oom", "thread-stack-guard", "guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled") and case not in FAULT_RESULTS and case not in KERNEL_SUITE_CASES and case not in RUNTIME_SUITE_CASES and case not in NETWORK_SUITE_CASES and case not in RUNTIME_NETWORK_CASES and case not in LIVE_CASES and case not in HARDENING_CASES:
+    if case not in ("missing", "smp-unsupported", "heap-oom", "thread-stack-guard", "guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled", "async-network-tests-disabled", "network-tests-disabled", "async-hardening-tests-disabled") and case not in CONFIG_FAILURES and case not in FAULT_RESULTS and case not in KERNEL_SUITE_CASES and case not in RUNTIME_SUITE_CASES and case not in NETWORK_SUITE_CASES and case not in RUNTIME_NETWORK_CASES and case not in LIVE_CASES and case not in HARDENING_CASES and case not in ASYNC_CORE_CASES and case not in ASYNC_NETWORK_CASES and case not in IP_SUITE_CASES and case not in ASYNC_HARD_CASES:
         model = "e1000e" if case == "unsupported" or case in UNCLAIMED_CASES else "e1000"
         mac = CASES[case][0] or "52:54:00:12:34:56"
         command += [
@@ -1967,7 +2893,7 @@ def qemu_command(args, case, capture=None, net_fd=None):
             "-netdev", "user,id=second,restrict=on",
             "-device", "e1000,netdev=second,mac=52:54:00:00:00:02",
         ]
-    if case in KERNEL_SUITE_CASES or case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES or case in HARDENING_CASES or case in LIVE_CASES and case != "driver-runtime-default-no-nic":
+    if case in KERNEL_SUITE_CASES or case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES or case in HARDENING_CASES or case in ASYNC_NETWORK_CASES or case in IP_SUITE_CASES or case in ASYNC_HARD_CASES or case in LIVE_CASES and not case.endswith("no-nic"):
         if net_fd is None or net_fd < 0:
             raise AssertionError("kernel suite requires an owned RX socket")
         root, leaf, parents = pci_layout(case)
@@ -1976,7 +2902,7 @@ def qemu_command(args, case, capture=None, net_fd=None):
             if len(parents) == 2:
                 command += ["-device", "pci-bridge,id=bridge1,chassis_nr=2,shpc=off,msi=off,bus=bridge0,addr=4"]
         bus = f",bus=bridge{len(parents) - 1}" if parents else ""
-        model = "e1000e" if case == "driver-runtime-default-unsupported" else "e1000"
+        model = "e1000e" if case.endswith("unsupported") else "e1000"
         command += [
             "-netdev", f"socket,id=irqtest,fd={net_fd}",
             "-device", f"{model},netdev=irqtest{bus},addr={leaf:x},mac=52:54:00:12:34:56",
@@ -1996,13 +2922,13 @@ def qemu_command(args, case, capture=None, net_fd=None):
 def run_case(args, case, index=0):
     log = args.build_dir / "test-logs" / f"{args.case}-{index}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
-    capture = log.with_suffix(".pcap") if case in KERNEL_SUITE_CASES or case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES or case in HARDENING_CASES else None
+    capture = log.with_suffix(".pcap") if case in KERNEL_SUITE_CASES or case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES or case in HARDENING_CASES or case in ASYNC_NETWORK_CASES or case in IP_SUITE_CASES or case in ASYNC_HARD_CASES or case in LIVE_CASES and live_network(case) and LIVE_CASES[case][1] else None
     if capture is not None:
         capture.unlink(missing_ok=True)
     command = qemu_command(args, case) if capture is None and case not in LIVE_CASES else None
     try:
         if case in LIVE_CASES:
-            completed, elapsed = execute_live(args, case)
+            completed, elapsed = execute_live(args, case, capture)
         else:
             completed = execute_suite(args, case, capture) if capture is not None else subprocess.run(
                 command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -2027,12 +2953,28 @@ def run_case(args, case, index=0):
                     expected = [managed_hard_packet(sequence) for sequence in range(1, 5)]
                 if case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES:
                     expected = [] if case.endswith("ambiguous") else [network_packet(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)]
+                if case in ASYNC_NETWORK_CASES:
+                    expected = async_network_tx_packets()
+                if case in IP_SUITE_CASES:
+                    expected = ip_packets.replies()
+                if case in ASYNC_HARD_CASES:
+                    expected = async_hardening_packets()
+                if case in LIVE_CASES:
+                    expected = ip_packets.live_requests(reply=True)
                 validate_tx_capture(stream.read(1024 * 1024 + 1), expected)
             symbols = runtime_symbols(getattr(args, "nm", "nm"))
-            if case in HARDENING_CASES:
+            if case in LIVE_CASES:
+                validate_live_boot(case, output, symbols)
+            elif case in HARDENING_CASES:
                 validate_managed_hardening(case, completed.returncode, output, symbols)
             elif case in NETWORK_SUITE_CASES or case in RUNTIME_NETWORK_CASES:
                 validate_network_suite(case, completed.returncode, output, symbols)
+            elif case in ASYNC_NETWORK_CASES:
+                validate_async_network(case, completed.returncode, output, symbols)
+            elif case in IP_SUITE_CASES:
+                validate_network_stack(case, completed.returncode, output, symbols)
+            elif case in ASYNC_HARD_CASES:
+                validate_async_hardening(case, completed.returncode, output, symbols)
             else:
                 validate_linux_callbacks(output, symbols)
                 validate_native_drivers(output.splitlines(), case, symbols)
@@ -2042,7 +2984,10 @@ def run_case(args, case, index=0):
         raise KernelSuiteFailure(f"{error}\nlog: {log}\n{output}") from error
     except AssertionError as error:
         raise AssertionError(f"{error}\nlog: {log}\n{output}") from error
-    measured = f" (alive {elapsed:.3f}s after readiness, owned child terminated)" if case in LIVE_CASES else ""
+    measured = (
+        f" (alive {elapsed:.3f}s after {'exact exchange' if live_network(case) and LIVE_CASES[case][1] else 'initialization/readiness'}, owned child terminated)"
+        if case in LIVE_CASES else ""
+    )
     print(f"PASS {case}: {log}{measured}")
 
 

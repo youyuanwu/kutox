@@ -5,10 +5,13 @@ const FILE_DIRECTORY: u16 = 0x19;
 const MAX_FILES: u32 = 1024;
 const MAX_MODE_BYTES: usize = 32;
 const MODE_FILE: &[u8] = b"opt/kutox/test-mode";
+const IPV4_FILE: &[u8] = b"opt/kutox/ipv4";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BootMode {
     Run,
+    DriverRun,
+    NetworkRun,
     Probe,
     EepromTimeout,
     PageFault,
@@ -20,11 +23,23 @@ pub enum BootMode {
     DriverRuntimeTests,
     DriverNetworkTests,
     DriverHardeningTests,
+    AsyncCoreTests,
+    AsyncNetworkTests,
+    NetworkTests,
+    AsyncHardeningTests,
     HeapOom,
     ThreadStackGuard,
 }
 
 impl BootMode {
+    pub const fn is_network_runtime(self) -> bool {
+        matches!(self, Self::Run | Self::NetworkRun)
+    }
+
+    pub const fn uses_ipv4(self) -> bool {
+        self.is_network_runtime() || matches!(self, Self::NetworkTests)
+    }
+
     pub const fn selected(configured: Option<Self>) -> Self {
         match configured {
             Some(mode) => mode,
@@ -35,6 +50,8 @@ impl BootMode {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Run => "run",
+            Self::DriverRun => "driver-run",
+            Self::NetworkRun => "network-run",
             Self::Probe => "probe",
             Self::EepromTimeout => "eeprom-timeout",
             Self::PageFault => "page-fault",
@@ -46,6 +63,10 @@ impl BootMode {
             Self::DriverRuntimeTests => "driver-runtime-tests",
             Self::DriverNetworkTests => "driver-network-tests",
             Self::DriverHardeningTests => "driver-hardening-tests",
+            Self::AsyncCoreTests => "async-core-tests",
+            Self::AsyncNetworkTests => "async-network-tests",
+            Self::NetworkTests => "network-tests",
+            Self::AsyncHardeningTests => "async-hardening-tests",
             Self::HeapOom => "heap-oom",
             Self::ThreadStackGuard => "thread-stack-guard",
         }
@@ -81,6 +102,10 @@ impl BootMode {
                 | Self::DriverRuntimeTests
                 | Self::DriverNetworkTests
                 | Self::DriverHardeningTests
+                | Self::AsyncCoreTests
+                | Self::AsyncNetworkTests
+                | Self::NetworkTests
+                | Self::AsyncHardeningTests
                 | Self::HeapOom
                 | Self::ThreadStackGuard
         )
@@ -96,6 +121,9 @@ pub enum Error {
     UnknownMode = -23,
     DuplicateModeFile = -24,
     TestsDisabled = -25,
+    DuplicateIpv4File = -26,
+    InvalidIpv4Length = -27,
+    InvalidIpv4 = -28,
 }
 
 fn read_bytes<const N: usize>(read: &mut impl FnMut() -> u8) -> [u8; N] {
@@ -111,53 +139,21 @@ pub fn read_mode(
     mut select: impl FnMut(u16),
     mut read: impl FnMut() -> u8,
 ) -> Result<Option<BootMode>, Error> {
-    select(0);
-    if read_bytes::<4>(&mut read) != *b"QEMU" {
-        return Ok(None);
-    }
-    select(FILE_DIRECTORY);
-    let count = u32::from_be_bytes(read_bytes(&mut read));
-    if count > MAX_FILES {
-        return Err(Error::DirectoryTooLarge);
-    }
-    let mut found = None;
-    for _ in 0..count {
-        let entry = read_bytes::<64>(&mut read);
-        let name = &entry[8..];
-        let end = name
-            .iter()
-            .position(|byte| *byte == 0)
-            .ok_or(Error::MalformedDirectory)?;
-        if entry[6..8] != [0, 0] {
-            return Err(Error::MalformedDirectory);
-        }
-        if &name[..end] != MODE_FILE {
-            continue;
-        }
-        if found.is_some() {
-            return Err(Error::DuplicateModeFile);
-        }
-        let size = u32::from_be_bytes([entry[0], entry[1], entry[2], entry[3]]) as usize;
-        let selector = u16::from_be_bytes([entry[4], entry[5]]);
-        if selector < 0x20 || selector & 0xc000 != 0 {
-            return Err(Error::MalformedDirectory);
-        }
-        if size == 0 || size > MAX_MODE_BYTES {
-            return Err(Error::InvalidModeLength);
-        }
-        found = Some((size, selector));
-    }
-    let Some((size, selector)) = found else {
+    let Some((bytes, size)) = read_file(
+        &mut select,
+        &mut read,
+        MODE_FILE,
+        Error::DuplicateModeFile,
+        Error::InvalidModeLength,
+    )?
+    else {
         return Ok(None);
     };
-    select(selector);
-    let mut bytes = [0; MAX_MODE_BYTES];
-    for byte in &mut bytes[..size] {
-        *byte = read();
-    }
     let value = bytes[..size].strip_suffix(&[0]).unwrap_or(&bytes[..size]);
     match value {
         b"run" => Ok(Some(BootMode::Run)),
+        b"driver-run" => Ok(Some(BootMode::DriverRun)),
+        b"network-run" => Ok(Some(BootMode::NetworkRun)),
         b"probe" => Ok(Some(BootMode::Probe)),
         b"eeprom-timeout" => Ok(Some(BootMode::EepromTimeout)),
         b"page-fault" => Ok(Some(BootMode::PageFault)),
@@ -169,10 +165,85 @@ pub fn read_mode(
         b"driver-runtime-tests" => Ok(Some(BootMode::DriverRuntimeTests)),
         b"driver-network-tests" => Ok(Some(BootMode::DriverNetworkTests)),
         b"driver-hardening-tests" => Ok(Some(BootMode::DriverHardeningTests)),
+        b"async-core-tests" => Ok(Some(BootMode::AsyncCoreTests)),
+        b"async-network-tests" => Ok(Some(BootMode::AsyncNetworkTests)),
+        b"network-tests" => Ok(Some(BootMode::NetworkTests)),
+        b"async-hardening-tests" => Ok(Some(BootMode::AsyncHardeningTests)),
         b"heap-oom" => Ok(Some(BootMode::HeapOom)),
         b"thread-stack-guard" => Ok(Some(BootMode::ThreadStackGuard)),
         _ => Err(Error::UnknownMode),
     }
+}
+
+pub fn read_ipv4(
+    mut select: impl FnMut(u16),
+    mut read: impl FnMut() -> u8,
+) -> Result<crate::network_config::Config, Error> {
+    let Some((bytes, size)) = read_file(
+        &mut select,
+        &mut read,
+        IPV4_FILE,
+        Error::DuplicateIpv4File,
+        Error::InvalidIpv4Length,
+    )?
+    else {
+        return Ok(Default::default());
+    };
+    crate::network_config::Config::parse(&bytes[..size]).map_err(|_| Error::InvalidIpv4)
+}
+
+fn read_file(
+    select: &mut impl FnMut(u16),
+    read: &mut impl FnMut() -> u8,
+    filename: &[u8],
+    duplicate: Error,
+    length: Error,
+) -> Result<Option<([u8; MAX_MODE_BYTES], usize)>, Error> {
+    select(0);
+    if read_bytes::<4>(read) != *b"QEMU" {
+        return Ok(None);
+    }
+    select(FILE_DIRECTORY);
+    let count = u32::from_be_bytes(read_bytes(read));
+    if count > MAX_FILES {
+        return Err(Error::DirectoryTooLarge);
+    }
+    let mut found = None;
+    for _ in 0..count {
+        let entry = read_bytes::<64>(read);
+        let name = &entry[8..];
+        let end = name
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or(Error::MalformedDirectory)?;
+        if entry[6..8] != [0, 0] {
+            return Err(Error::MalformedDirectory);
+        }
+        if &name[..end] != filename {
+            continue;
+        }
+        if found.is_some() {
+            return Err(duplicate);
+        }
+        let size = u32::from_be_bytes([entry[0], entry[1], entry[2], entry[3]]) as usize;
+        let selector = u16::from_be_bytes([entry[4], entry[5]]);
+        if selector < 0x20 || selector & 0xc000 != 0 {
+            return Err(Error::MalformedDirectory);
+        }
+        if size == 0 || size > MAX_MODE_BYTES {
+            return Err(length);
+        }
+        found = Some((size, selector));
+    }
+    let Some((size, selector)) = found else {
+        return Ok(None);
+    };
+    select(selector);
+    let mut bytes = [0; MAX_MODE_BYTES];
+    for byte in &mut bytes[..size] {
+        *byte = read();
+    }
+    Ok(Some((bytes, size)))
 }
 
 #[cfg(test)]
@@ -228,6 +299,8 @@ mod tests {
     fn selects_each_supported_mode() {
         for mode in [
             BootMode::Run,
+            BootMode::DriverRun,
+            BootMode::NetworkRun,
             BootMode::Probe,
             BootMode::EepromTimeout,
             BootMode::PageFault,
@@ -239,6 +312,10 @@ mod tests {
             BootMode::DriverRuntimeTests,
             BootMode::DriverNetworkTests,
             BootMode::DriverHardeningTests,
+            BootMode::AsyncCoreTests,
+            BootMode::AsyncNetworkTests,
+            BootMode::NetworkTests,
+            BootMode::AsyncHardeningTests,
             BootMode::HeapOom,
             BootMode::ThreadStackGuard,
         ] {
@@ -338,6 +415,91 @@ mod tests {
             Err(Error::DuplicateModeFile)
         );
     }
+
+    fn ipv4(files: &[(&str, &[u8])]) -> Result<crate::network_config::Config, Error> {
+        let blobs = fixture(files);
+        let state = RefCell::new((0, 0));
+        read_ipv4(
+            |selector| *state.borrow_mut() = (selector, 0),
+            || {
+                let mut state = state.borrow_mut();
+                let value = blobs[&state.0][state.1];
+                state.1 += 1;
+                value
+            },
+        )
+    }
+
+    #[test]
+    fn bounded_optional_network_file_and_driver_independence() {
+        assert_eq!(ipv4(&[]), Ok(Default::default()));
+        assert_eq!(
+            ipv4(&[("opt/kutox/ipv4", b"10.0.2.15/24")]),
+            Ok(Default::default())
+        );
+        assert_eq!(
+            ipv4(&[
+                ("opt/kutox/ipv4", b"10.0.2.15/24"),
+                ("opt/kutox/ipv4", b"10.0.2.16/24")
+            ]),
+            Err(Error::DuplicateIpv4File),
+        );
+        for value in [b"".as_slice(), &[b'x'; 33]] {
+            assert_eq!(
+                ipv4(&[("opt/kutox/ipv4", value)]),
+                Err(Error::InvalidIpv4Length)
+            );
+        }
+        assert_eq!(
+            ipv4(&[("opt/kutox/ipv4", b"10.0.2.0/24")]),
+            Err(Error::InvalidIpv4)
+        );
+        for mode in [BootMode::Run, BootMode::DriverRun, BootMode::Probe] {
+            assert_eq!(
+                run(&fixture(&[
+                    ("opt/kutox/test-mode", mode.name().as_bytes()),
+                    ("opt/kutox/ipv4", b"bad"),
+                    ("opt/kutox/ipv4", b"also bad"),
+                ])),
+                Ok(Some(mode))
+            );
+            assert_eq!(mode.validate_build(), Ok(()));
+        }
+        assert_eq!(BootMode::NetworkRun.validate_build(), Ok(()));
+    }
+
+    #[test]
+    fn default_network_policy_and_reserved_hardening_rejection() {
+        assert!(BootMode::selected(None).is_network_runtime());
+        for mode in [BootMode::Run, BootMode::NetworkRun] {
+            assert!(mode.uses_ipv4());
+            assert_eq!(mode.validate_build(), Ok(()));
+        }
+        for mode in [
+            BootMode::DriverRun,
+            BootMode::Probe,
+            BootMode::DriverRuntimeTests,
+        ] {
+            assert!(!mode.is_network_runtime());
+            assert!(!mode.uses_ipv4());
+        }
+        assert!(BootMode::NetworkTests.uses_ipv4());
+        assert_eq!(
+            run(&fixture(&[(
+                "opt/kutox/test-mode",
+                b"async-hardening-tests"
+            )])),
+            Ok(Some(BootMode::AsyncHardeningTests))
+        );
+        assert_eq!(
+            BootMode::AsyncHardeningTests.validate_build(),
+            if cfg!(feature = "guest-tests") {
+                Ok(())
+            } else {
+                Err(Error::TestsDisabled)
+            }
+        );
+    }
 }
 #[test]
 fn guest_modes_require_the_build_feature_without_changing_probe() {
@@ -352,6 +514,10 @@ fn guest_modes_require_the_build_feature_without_changing_probe() {
         BootMode::DriverRuntimeTests,
         BootMode::DriverNetworkTests,
         BootMode::DriverHardeningTests,
+        BootMode::AsyncCoreTests,
+        BootMode::AsyncNetworkTests,
+        BootMode::NetworkTests,
+        BootMode::AsyncHardeningTests,
         BootMode::EepromTimeout,
         BootMode::PageFault,
         BootMode::GeneralProtection,

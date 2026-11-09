@@ -24,8 +24,11 @@ tested. All eight driver-reuse phases are complete for the
 [as-built support profile](#as-built-support-statement), not arbitrary Linux
 drivers or physical hardware.
 Normal boot now retains the managed e1000 in the persistent kernel runtime;
-explicit `probe` preserves the finite boot-time MAC proof. No IP stack or Linux
-application environment is implied.
+explicit `probe` preserves the finite boot-time MAC proof. A separate Rust
+smoltcp service now supplies ARP/static IPv4/ICMP through that driver; no Linux
+IP stack or Linux application environment is imported. The completed
+[async milestone guide](async-kernel-networking.md) covers the mixed execution
+model, raw async clients, bounds and current validation.
 All eight [Moss-style integration phases](#moss-style-driver-infrastructure) are
 complete. The [kernel-client lifecycle](#kernel-client-lifecycle) describes how
 to admit native consumers and retain/retire their packet ownership.
@@ -892,6 +895,12 @@ authoritative even on one cooperative CPU.
 
 ## Async Rust and synchronous Linux drivers
 
+The [next milestone design](async-kernel-networking.md) applies this separation
+to a bounded executor and Linux-backed ARP/static IPv4/ICMP service. Its
+network-enabled default boot now retains five service stacks and one protocol
+future over unchanged Linux e1000. Explicit `driver-run` remains driver-only;
+no userspace/socket application environment or Linux IP stack is imported.
+
 The main execution-model mismatch is sleeping C code. A Linux driver can
 call a wait or mutex operation deep within an ordinary C call stack. It
 cannot directly suspend that stack by invoking Rust `.await`.
@@ -1337,7 +1346,10 @@ These APIs are kernel-internal, not userspace sockets or a binary driver ABI.
 Use [kernel_runtime.rs](../src/kernel_runtime.rs) and
 [net_device.rs](../src/net_device.rs) from guarded cooperative client threads,
 with no outer IRQ-saving guard. The normal boot path supplies an empty
-`Clients` list and generates no application traffic.
+`Clients` list and admits the separate ARP/static IPv4/ICMP protocol future.
+It answers network requests but starts no userspace/socket application.
+Explicit scoped `Resources::run` client APIs remain driver-only; normal boot
+uses `run_network` with the selected network mode.
 
 1. After allocator/time initialization, keep `Resources::start(&boot, frames)`
    alive in the boot scope; `frames` is the kernel's static physical allocator.
@@ -1554,9 +1566,10 @@ ELF profile checks positively require real driver/service symbols and require
 or reject test symbols according to the selected build. Test-disabled boot and
 test-enabled guest regressions use the same image location sequentially.
 
-Normal boot remains the MAC helper while persistent service/managed-e1000
-integration is pending. Feature-off dormant-service dead-code allowances are scoped to those
-kernel modules only; strict type/lint checks and test-enabled warnings remain.
+Normal boot retains the network-enabled runtime in both profiles; only explicit
+`probe` runs the finite MAC helper. Feature-off native-client dead-code allowances
+are scoped to the relevant kernel modules; strict type/lint checks and
+test-enabled warnings remain.
 No KUnit runtime, Linux module loader or additional kernel dependency is imported.
 
 ### Rust OS and userspace track

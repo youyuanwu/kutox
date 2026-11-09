@@ -103,6 +103,19 @@ pub(crate) fn source_progress() {
         CONTROL.probe_pending.store(true, Ordering::Release);
         notify(&CONTROL.event).expect("source readiness notification");
     }
+    crate::net_async::source_progress();
+}
+
+pub(crate) fn current_handle() -> Handle {
+    Handle {
+        epoch: CONTROL.epoch.load(Ordering::Acquire),
+    }
+}
+
+pub(crate) fn async_failed(code: i32) {
+    CONTROL.start_error.store(code, Ordering::Release);
+    CONTROL.request.store(true, Ordering::Release);
+    notify(&CONTROL.event).expect("async service failure notification");
 }
 
 fn refresh_ready(resources: &Resources<'_>, initial: bool) -> Result<(), Failure> {
@@ -345,6 +358,7 @@ pub struct Resources<'a> {
     boot: BootInfo,
     frames: &'static memory::PhysicalFrames<'static>,
     ran: Cell<bool>,
+    network: Cell<bool>,
     _claim: Claim,
 }
 
@@ -357,6 +371,7 @@ pub const METADATA_BYTES: usize = core::mem::size_of::<Resources<'static>>()
     + irq::APIC_METADATA_BYTES
     + linux_driver::METADATA_BYTES
     + crate::net_device::METADATA_BYTES
+    + crate::net_device::SESSION_METADATA_BYTES
     + core::mem::size_of::<crate::driver_platform::Owner>()
     + core::mem::size_of::<linux_irq::BoundIrq<'static, 'static, 'static>>();
 const _: () =
@@ -366,7 +381,11 @@ impl<'a> Resources<'a> {
     fn reporting(&self) -> bool {
         matches!(
             self.boot.mode,
-            kutox::fw_cfg::BootMode::Run | kutox::fw_cfg::BootMode::DriverRuntimeTests
+            kutox::fw_cfg::BootMode::Run
+                | kutox::fw_cfg::BootMode::DriverRun
+                | kutox::fw_cfg::BootMode::NetworkRun
+                | kutox::fw_cfg::BootMode::NetworkTests
+                | kutox::fw_cfg::BootMode::DriverRuntimeTests
         )
     }
     pub fn start(
@@ -381,6 +400,8 @@ impl<'a> Resources<'a> {
         frames: &'static memory::PhysicalFrames<'static>,
     ) -> Result<Self, Failure> {
         if !threads::is_quiescent()
+            || !crate::async_runtime::quiescent()
+            || !crate::net_async::quiescent()
             || !irq::is_quiescent()
             || !linux_deferred::quiescent()
             || !linux_irq::quiescent()
@@ -439,6 +460,7 @@ impl<'a> Resources<'a> {
             boot: boot.clone(),
             frames,
             ran: Cell::new(false),
+            network: Cell::new(false),
             _claim: claim,
         })
     }
@@ -450,10 +472,35 @@ impl<'a> Resources<'a> {
     }
 
     pub fn run(&self, clients: Clients) -> Result<threads::RunStats, Failure> {
-        self.run_inner(clients).inspect_err(report)
+        self.run_inner(clients, false, false).inspect_err(report)
     }
 
-    fn run_inner(&self, clients: Clients) -> Result<threads::RunStats, Failure> {
+    pub fn run_async(&self, clients: Clients) -> Result<threads::RunStats, Failure> {
+        self.run_inner(clients, true, false).inspect_err(report)
+    }
+
+    pub fn run_network(&self, clients: Clients) -> Result<threads::RunStats, Failure> {
+        self.run_inner(clients, true, true).inspect_err(report)
+    }
+
+    #[cfg(feature = "guest-tests")]
+    pub(crate) fn async_test_irq(
+        &self,
+        deadline: u64,
+        handler: irq::Handler,
+    ) -> Result<(), Failure> {
+        self.timer.schedule_handler(deadline, handler)
+    }
+
+    fn run_inner(
+        &self,
+        clients: Clients,
+        asynchronous: bool,
+        network: bool,
+    ) -> Result<threads::RunStats, Failure> {
+        if asynchronous && clients.entries.iter().flatten().count() > 1 {
+            return Err(Failure::new("runtime_async_client_capacity", -203));
+        }
         if !threads::is_quiescent() {
             return Err(Failure::new("runtime_dispatcher_busy", -208));
         }
@@ -494,20 +541,54 @@ impl<'a> Resources<'a> {
         };
         let mut scheduler = threads::Scheduler::new(&self.space);
         let workers = linux_deferred::start_owned(&mut scheduler)?;
+        let mut asynchronous_service = None;
+        let mut network_service = None;
         let admission = (|| {
             checkpoint(Stage::Workers, self.boot.mode)?;
             // The shared owner and client entries stay in this scope until every stack joins.
             scheduler.spawn(coordinator, self as *const Self as usize)?;
             checkpoint(Stage::Coordinator, self.boot.mode)?;
+            if asynchronous {
+                asynchronous_service = Some(crate::async_runtime::start_owned(
+                    &mut scheduler,
+                    self.boot.hhdm_offset,
+                )?);
+            }
+            if network {
+                network_service = Some(crate::net_async::start_owned(&mut scheduler)?);
+            }
             for entry in clients.entries.iter().flatten() {
                 scheduler.spawn(client_entry, entry as *const Client as usize)?;
             }
             checkpoint(Stage::Clients, self.boot.mode)
         })();
         if let Err(error) = admission {
+            if let Some(service) = &network_service {
+                service.rollback(&mut scheduler)?;
+            }
+            if let Some(service) = &asynchronous_service {
+                service.rollback(&mut scheduler)?;
+            }
             workers.rollback(&mut scheduler)?;
             scheduler.discard_all_unstarted()?;
             return Err(error);
+        }
+        self.network.set(network);
+        if matches!(
+            self.boot.mode,
+            kutox::fw_cfg::BootMode::Run
+                | kutox::fw_cfg::BootMode::NetworkRun
+                | kutox::fw_cfg::BootMode::DriverRun
+        ) {
+            serial::print(format_args!(
+                "# KERNEL_SERVICES epoch={} mode={} tasks={} clients={} async={} network={}\n",
+                CONTROL.epoch.load(Ordering::Acquire),
+                self.boot.mode.name(),
+                scheduler.task_count(),
+                clients.entries.iter().flatten().count(),
+                u8::from(asynchronous),
+                u8::from(network),
+            ));
         }
         CONTROL.running.store(true, Ordering::Release);
         let stats = scheduler
@@ -522,6 +603,7 @@ impl<'a> Resources<'a> {
         assert!(
             CONTROL.stopped.load(Ordering::Acquire)
                 && linux_deferred::quiescent()
+                && crate::async_runtime::payload_count() == 0
                 && MANAGER.quiescent()
                 && stats.peak_tasks <= MAX_TASKS,
             "runtime join incomplete"
@@ -534,6 +616,15 @@ impl<'a> Resources<'a> {
         }
         drop(binding);
         drop(platform);
+        if self.boot.mode.is_network_runtime()
+            || self.boot.mode == kutox::fw_cfg::BootMode::DriverRun
+        {
+            serial::print(format_args!(
+                "# KERNEL_SERVICES_CLOSED epoch={} tasks={}\n",
+                CONTROL.epoch.load(Ordering::Acquire),
+                scheduler.task_count(),
+            ));
+        }
         Ok(stats)
     }
 }
@@ -600,10 +691,16 @@ fn initialize(resources: &Resources<'_>) -> Result<(), Failure> {
     }
     refresh_ready(resources, true)?;
     checkpoint(Stage::Manager, resources.boot.mode)?;
+    if resources.boot.mode.is_network_runtime() && resources.network.get() {
+        crate::net_stack::kutox_ipv4_service(resources.boot.ipv4)?;
+    }
     Ok(())
 }
 
 fn shutdown() -> Result<(), Failure> {
+    crate::net_async::begin_stop();
+    crate::async_runtime::begin_stop()
+        .map_err(|error| Failure::new("runtime_async_stop", error.code()))?;
     let phase = MANAGER
         .snapshot()
         .map_err(|error| Failure::new("runtime_manager", error.code()))?
@@ -616,6 +713,9 @@ fn shutdown() -> Result<(), Failure> {
     if !linux_irq::callbacks_drained() || !linux_runtime::quiescent() {
         return Err(Failure::new("runtime_source_users", -207));
     }
+    crate::async_runtime::join()
+        .map_err(|error| Failure::new("runtime_async_join", error.code()))?;
+    crate::net_async::join()?;
     linux_deferred::stop_and_join()
 }
 

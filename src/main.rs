@@ -3,6 +3,16 @@
 
 extern crate alloc;
 
+#[allow(
+    dead_code,
+    reason = "Production async API awaits network boot integration"
+)]
+mod async_runtime;
+#[allow(
+    dead_code,
+    reason = "Production async API awaits network boot integration"
+)]
+mod async_sync;
 mod boot;
 mod completion;
 mod cpu;
@@ -108,6 +118,11 @@ mod memory;
     )
 )]
 mod mutex;
+#[allow(
+    dead_code,
+    reason = "Production packet broker awaits IP boot integration"
+)]
+mod net_async;
 #[cfg_attr(
     not(feature = "guest-tests"),
     allow(
@@ -116,6 +131,14 @@ mod mutex;
     )
 )]
 mod net_device;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "Native stack diagnostics are available to kernel clients"
+    )
+)]
+mod net_stack;
 #[cfg_attr(
     not(feature = "guest-tests"),
     allow(
@@ -240,6 +263,10 @@ fn probe() -> Result<BootOutcome, Failure> {
             | BootMode::DriverRuntimeTests
             | BootMode::DriverNetworkTests
             | BootMode::DriverHardeningTests
+            | BootMode::AsyncCoreTests
+            | BootMode::AsyncNetworkTests
+            | BootMode::NetworkTests
+            | BootMode::AsyncHardeningTests
     ) {
         guest_tests::run(&boot);
     }
@@ -287,10 +314,17 @@ fn probe() -> Result<BootOutcome, Failure> {
     );
     let ticks = time::calibrate()?;
     println!("TSC ticks_per_us={ticks}");
-    if boot.mode == BootMode::Run {
+    if matches!(
+        boot.mode,
+        BootMode::Run | BootMode::DriverRun | BootMode::NetworkRun
+    ) {
         linux_driver::report_boot_callbacks(true);
         let resources = kernel_runtime::Resources::start(&boot, allocator)?;
-        resources.run(kernel_runtime::Clients::new())?;
+        if boot.mode.is_network_runtime() {
+            resources.run_network(kernel_runtime::Clients::new())?;
+        } else {
+            resources.run(kernel_runtime::Clients::new())?;
+        }
         linux_driver::report_boot_callbacks(false);
         return Ok(BootOutcome::RuntimeStopped);
     }

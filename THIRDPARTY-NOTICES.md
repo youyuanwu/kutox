@@ -1,5 +1,31 @@
 # Third-party source notices
 
+## smoltcp IPv4 stack
+
+- Project: [smoltcp](https://github.com/smoltcp-rs/smoltcp).
+- Dependency: exact `0.13.0`, with its registry checksum pinned in
+  [Cargo.lock](Cargo.lock).
+- Copyright: Copyright (C) smoltcp contributors.
+- License: 0BSD; the original notice is retained in the dependency's
+  [LICENSE-0BSD.txt](https://github.com/smoltcp-rs/smoltcp/blob/v0.13.0/LICENSE-0BSD.txt).
+- Defaults are disabled. The seven selected features provide Ethernet, IPv4,
+  automatic ICMP echo replies, the required ICMP socket type, and fixed interface
+  address/neighbor/route capacities. No application sockets are instantiated.
+
+The [staged token adapter](src/net_stack_state.rs), [protocol service](src/net_stack.rs)
+and [static configuration](src/network_config.rs) are kutox code. smoltcp owns
+ARP/IP/ICMP packet processing; unchanged Linux e1000 still owns hardware TX/RX.
+This follows pinned Moss's declared stack baseline, not a copy of its complete
+socket, networking syscall or process-oriented service modules.
+The [stdlib packet peer](scripts/network_packets.py), bounded production
+callback/status records and directed guest acceptance are also kutox code.
+They observe unchanged Linux and smoltcp implementations; no packet algorithm
+or additional upstream networking/syscall source is copied.
+The pinned-future arena, type-erased ownership/destruction adapter, bounded
+hardening hooks and completed-receipt closing gate are kutox implementations.
+The arena uses the existing adapted Moss owned frame guard; no new upstream
+Moss component or vendor-driver source is imported.
+
 ## Moss kernel primitives
 
 - Project: [Moss / libkernel](https://github.com/hexagonal-sun/moss-kernel).
@@ -19,6 +45,7 @@
   [regions](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/region.rs),
   [CpuOps in lib.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/lib.rs),
   [task lifecycle states](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/sched/sched_task/state.rs),
+  [waker registration](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/waker_set.rs),
   [spinlock.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/spinlock.rs),
   and [mutex.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/mutex.rs).
 - Locations: portable primitives in
@@ -121,11 +148,64 @@ this depth to reject cooperative switching while any IRQ-safe guard is held.
 `Running`, `Sleeping`, and `Finished` states and named
 activate/runnable/sleep/wake/finish transitions.
 The subset uses exclusive mutable access and typed invalid-transition errors,
-not the upstream atomic-enum dependency. The upstream `Woken`, pending-sleep,
-stopping, and async-future lifecycle machinery is not copied. kutox's single-CPU
+not the upstream atomic-enum dependency. The separate async subset below adds
+`Woken` and pending-sleep without changing synchronous callers. kutox's single-CPU
 cooperative dispatcher registers waits with interrupts disabled and uses native
 notification-generation tokens for early wakes; this is not Moss's concurrent
 CAS-based wake/deactivation protocol or a claim of SMP-safe sleeping.
+
+### Bounded async task and registration adaptations
+
+[task/async_state.rs](third_party/moss-libkernel/src/task/async_state.rs)
+adapts the same pinned state source's wake-during-poll, `PendingSleep`
+deactivation and finished-task wake behavior. Caller-serialized mutable access
+replaces atomic enums/CAS; already-queued wakes coalesce, and a wake during poll
+or deactivation requires another FIFO turn. Stopped/process/preemption/ARM/SMP
+scheduler machinery is not imported.
+
+[sync/waker_set.rs](third_party/moss-libkernel/src/sync/waker_set.rs)
+adapts pinned Moss's registration, FIFO removal and drop-aware unregister model.
+Fixed caller-owned slots and globally checked nonwrapping registration IDs
+replace its dynamic `BTreeMap` and wrapping tokens. The set holds only copyable
+wake metadata, not arbitrary `Waker`s or user payloads; notification extracts
+metadata instead of invoking Waker hooks under an IRQ lock. Registration guards
+borrow the set without retaining a held lock and drop only copyable metadata.
+The upstream `Arc`/`WaitUntil` future implementation is not copied.
+
+[src/async_state.rs](src/async_state.rs) is native kutox policy using these
+adaptations: checked epochs, sixteen live/retained task slots, FIFO admission,
+event generations, sixteen registrations/deadlines and explicit cancellation,
+failure and off-lock payload-release acknowledgement. Waker records retain
+metadata slots only, including across epoch reopen. This portable layer is
+separate from the native executor and hardware integration below; its host
+tests alone are not claims of guest execution or source DMA drain.
+
+[src/async_runtime.rs](src/async_runtime.rs) and
+[src/async_sync.rs](src/async_sync.rs) are native kutox code using these ports
+and the existing guarded dispatcher/one-shot timer. Fallible pinned payload
+ownership, permanent bounded RawWaker tags, checked lease accounting, sixteen
+poll batches, event generation snapshots, async deadline registration and
+joined cancellation/failure are not copies of Moss's process-oriented executor
+or `Arc<Work>` waker. Hardware guest tests prove IRQ notification without
+polling or payload destruction and retained-waker safety across scoped epochs.
+The production executor is active in normal boot in both feature profiles;
+fixtures remain guest-only. Its frame-owned pinned-future arena is native kutox
+ownership glue using the existing Moss frame guard, not a copied upstream
+executor. No Linux packet algorithm is replaced.
+
+[src/net_async.rs](src/net_async.rs) and
+[src/net_async_state.rs](src/net_async_state.rs) add native kutox owned request,
+packet-arena, session and broker policy. They use the existing Moss-derived
+heap/IRQ primitives and guarded async core, not Moss socket/syscall code.
+The single caller still executes unchanged Linux TX/RX/IRQ/NAPI/close/remove.
+Native `submit_bytes`/`receive_into` reuse the existing Ethernet admission and
+copied ingress implementation, avoiding packet allocation in future polling.
+The compatibility queue-wake shim now publishes an actual stopped-to-runnable
+transition; it does not replace any driver's queue/descriptor algorithm.
+Exclusive admission, CPU-copy loan lifetime and positive original source-ticket
+retirement are native kutox mechanisms. The completed milestone adds smoltcp
+through the separate adapter/service described above, not by importing Moss's
+socket/syscall subsystem or Linux's IP stack.
 
 Moss's reviewed run queue is deadline/virtual-clock based and its kernel work
 is future-based; it is not copied as a stackful scheduler. kutox's bounded FIFO
@@ -141,8 +221,10 @@ on the existing Moss IRQ-lock adaptation and native wait queues. Pinned Moss's
 [async condition variable](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/condvar.rs)
 and
 [waker registration](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/waker_set.rs)
-were reviewed as prior art. Their `Arc`, future, and `Waker` implementations
-are not imported. Remembered credits, the broadcast latch, in-flight reset
+were reviewed as prior art for counting completions. Their `Arc`, future, and
+`Waker` implementations are not imported; the separate bounded registration
+adaptation above is not used by the stackful completion path.
+Remembered credits, the broadcast latch, in-flight reset
 exclusion, synchronous cancellation/deadlines, and completion tests are not
 claimed as an unchanged Moss primitive or Linux completion implementation.
 

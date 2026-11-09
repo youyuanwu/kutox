@@ -49,6 +49,7 @@ pub enum SwitchError {
     DeadlineOverflow = -56,
     InterruptContext = -57,
     DeferredContext = -58,
+    AsyncContext = -59,
 }
 
 fn switch_allowed() -> Result<(), SwitchError> {
@@ -57,6 +58,9 @@ fn switch_allowed() -> Result<(), SwitchError> {
     }
     if crate::linux_deferred::atomic_context() {
         return Err(SwitchError::DeferredContext);
+    }
+    if crate::async_runtime::is_polling() {
+        return Err(SwitchError::AsyncContext);
     }
     if X86Cpu::irq_lock_depth() != 0 {
         return Err(SwitchError::LocksHeld);
@@ -256,16 +260,13 @@ pub(crate) fn wait_deadline(timeout_us: Option<u64>) -> Result<Option<u64>, Swit
 }
 
 fn deadline_after(usec: u64) -> Result<u64, SwitchError> {
-    let duration = time::ticks_for_us(usec).map_err(|error| {
+    time::deadline_after_us(usec).map_err(|error| {
         if error.stage == "tsc_not_calibrated" {
             SwitchError::ClockUnavailable
         } else {
             SwitchError::DeadlineOverflow
         }
-    })?;
-    time::now_ticks()
-        .checked_add(duration)
-        .ok_or(SwitchError::DeadlineOverflow)
+    })
 }
 
 pub fn sleep_us(usec: u64) -> Result<WakeReason, SwitchError> {
@@ -348,10 +349,13 @@ impl Dispatch {
 static DISPATCH: SpinLockIrq<Dispatch, X86Cpu> = SpinLockIrq::new(Dispatch::new());
 
 pub(crate) fn timer_tick() {
-    let mut dispatch = DISPATCH.lock_save_irq();
-    if dispatch.bound {
-        dispatch.expire(time::now_ticks());
+    {
+        let mut dispatch = DISPATCH.lock_save_irq();
+        if dispatch.bound {
+            dispatch.expire(time::now_ticks());
+        }
     }
+    crate::async_runtime::timer_tick();
 }
 
 pub(crate) fn has_ready() -> bool {
@@ -479,6 +483,10 @@ pub struct Scheduler<'space, 'a, 'storage> {
 }
 
 impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
+    pub fn task_count(&self) -> usize {
+        self.tasks.iter().filter(|task| task.is_some()).count()
+    }
+
     pub fn new(space: &'space memory::StackSpace<'a, 'storage>) -> Self {
         Self {
             tasks: core::array::from_fn(|_| None),
@@ -667,6 +675,10 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
                 )
             };
             let Some((id, reason, handle)) = next else {
+                #[cfg(feature = "guest-tests")]
+                if let Some(timer) = timer {
+                    crate::guest_tests::async_hardening::before_idle(timer)?;
+                }
                 let deadline = match (deadline, timer.and_then(irq::Timer::handler_deadline)) {
                     (Some(wait), Some(handler)) => Some(wait.min(handler)),
                     (wait, handler) => wait.or(handler),
