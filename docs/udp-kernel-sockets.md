@@ -14,6 +14,9 @@ configuration to this interface. The subsequent
 owner, not application UDP sockets. TCP, IPv6, fragmentation, userspace and
 POSIX file descriptors remain outside this scope.
 
+The subsequent [TCP client API](tcp-kernel-clients.md) implements outbound
+streams separately, sharing this protocol owner and Linux packet broker.
+
 The implementation was informed by pinned Moss revision
 `1358b5d78b9151e382dc60ccda7fe0de191e56af`:
 

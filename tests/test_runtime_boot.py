@@ -142,6 +142,9 @@ class RuntimeBootTests(unittest.TestCase):
             "# DNS_STORAGE charged=0 limit=32768 queries=4 results=4",
             "# DNS_ERROR operation=resolve error=TimedOut",
             "# DNS_TEST_EPOCH epoch=1",
+            "# TCP_STORAGE charged=0 limit=131072 connections=4 buffer=4096",
+            "# TCP_ERROR operation=connect error=TimedOut",
+            "# TCP_TEST_EPOCH epoch=1",
         ]:
             with self.subTest(extra=extra), self.assertRaises(AssertionError):
                 runner.validate_live_boot("driver-runtime-default", live_log() + extra + "\n", SYMBOLS)

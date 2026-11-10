@@ -136,6 +136,14 @@ mod net_stack;
     not(feature = "guest-tests"),
     allow(
         dead_code,
+        reason = "TCP sockets are opened explicitly by native clients"
+    )
+)]
+mod net_tcp;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
         reason = "Native UDP sockets are opened explicitly by kernel clients"
     )
 )]
@@ -270,6 +278,7 @@ fn probe() -> Result<BootOutcome, Failure> {
             | BootMode::UdpTests
             | BootMode::DhcpTests
             | BootMode::DnsTests
+            | BootMode::TcpTests
             | BootMode::AsyncHardeningTests
     ) {
         guest_tests::run(&boot);

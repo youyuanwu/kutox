@@ -37,11 +37,11 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
-    fn wire(self) -> IpEndpoint {
+    pub(crate) fn wire(self) -> IpEndpoint {
         IpEndpoint::new(IpAddress::Ipv4(Ipv4Address::from(self.address)), self.port)
     }
 
-    fn validate(self, config: Config, routed: bool) -> Result<(), Error> {
+    pub(crate) fn validate(self, config: Config, routed: bool) -> Result<(), Error> {
         let address = Ipv4Address::from(self.address);
         let cidr = config.cidr();
         if self.port == 0

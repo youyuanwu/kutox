@@ -16,6 +16,9 @@ contains socket/readiness scaffolding, not a DNS resolver. Its
 does not enable smoltcp DNS. This is not a port of working Moss DNS code; no
 additional Moss networking, VFS, or syscall source is copied.
 
+The subsequent [native TCP extension](tcp-kernel-clients.md) is separate:
+it does not add TCP fallback or HTTP acceptance to this resolver.
+
 The added dependency features are `socket-dns`, `dns-max-server-count-2`, and
 `dns-max-result-count-4`. Defaults remain disabled and the version is unchanged.
 

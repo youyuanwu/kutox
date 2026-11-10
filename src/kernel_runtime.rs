@@ -404,6 +404,7 @@ impl<'a> Resources<'a> {
             || !crate::net_async::quiescent()
             || !crate::net_udp::quiescent()
             || !crate::net_dns::quiescent()
+            || !crate::net_tcp::quiescent()
             || !irq::is_quiescent()
             || !linux_deferred::quiescent()
             || !linux_irq::quiescent()

@@ -22,6 +22,10 @@ and smoltcp is not upgraded. The subsequent
 [bounded DNS resolver](dns-kernel-resolver.md) consumes the published servers;
 TCP, IPv6, userspace and a general routing API remain outside this milestone.
 
+The subsequent [TCP client extension](tcp-kernel-clients.md) also consumes this
+configuration. Same-address/subnet and DNS-only renewals preserve streams;
+address/subnet or lease/link loss closes them before further application egress.
+
 ## Boot selection
 
 Normal boot retains `10.0.2.15/24`, without a gateway or DHCP. A strict static
