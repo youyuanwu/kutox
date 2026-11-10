@@ -60,6 +60,9 @@ fn bytes(epoch: usize, sequence: usize, length: usize, incoming: bool) -> net_as
     net_async::Packet::from_bytes(&bytes[..length]).unwrap()
 }
 pub(crate) fn received(ticket: u64, length: usize) {
+    if RUNTIME.lock_save_irq().is_none() {
+        return;
+    }
     threads::check_thread_context().unwrap();
     let path = linux_driver::control("async_rx_path", || unsafe { kutox_c_linux_rx_path(ticket) });
     assert_eq!(path, if length <= 252 { 1 } else { 2 });

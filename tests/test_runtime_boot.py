@@ -61,11 +61,15 @@ def live_log(case="driver-runtime-default"):
             "# NETWORK_STACK_WAIT state=source",
         ]
         if bound:
-            lines += [
-                "# NETWORK_STACK_CONFIGURED identity=6 cidr=10.0.2.15/24 mtu=1500",
-                "# NETWORK_STACK_WAIT state=link identity=6",
-                "# NETWORK_STACK_READY identity=6 mac=52:54:00:12:34:56 cidr=10.0.2.15/24 mtu=1500",
-            ]
+            if case in runner.DHCP_LIVE_CASES:
+                lines += [
+                    "# DHCP_STORAGE charged=0 limit=32768 sockets=1 dns=2",
+                    "# DHCP_CONFIG identity=6 generation=1 cidr=10.0.2.15/24 router=Some(10.0.2.2) dns=[Some(1.1.1.1), Some(8.8.8.8)]",
+                ]
+            else:
+                lines += ["# NETWORK_STACK_CONFIGURED identity=6 cidr=10.0.2.15/24 mtu=1500"]
+            lines += ["# NETWORK_STACK_WAIT state=link identity=6",
+                      "# NETWORK_STACK_READY identity=6 mac=52:54:00:12:34:56 cidr=10.0.2.15/24 mtu=1500"]
     return "\n".join(lines) + "\n"
 
 

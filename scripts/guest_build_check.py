@@ -26,6 +26,7 @@ GUEST_SYMBOLS = {
     "kutox_guest_async_network",
     "kutox_guest_network_stack",
     "kutox_guest_udp_client",
+    "kutox_guest_dhcp_client",
     "kutox_guest_async_hardening",
 } | NATIVE_INIT_SYMBOLS
 RUNTIME_SYMBOLS = {

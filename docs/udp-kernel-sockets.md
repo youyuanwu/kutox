@@ -8,8 +8,9 @@ boot opens no UDP sockets and starts no echo service or application client.
 Enabling UDP intentionally changes valid traffic to an unbound UDP port from
 smoltcp's unsupported-protocol ICMP error to ICMP port-unreachable; a portable
 wire-level test covers that behavior without creating an application socket.
-DHCP, DNS, TCP, IPv6, fragmentation, routing gateways, userspace and POSIX file
-descriptors are not part of this interface.
+The [DHCP extension](dhcp-ipv4.md) supplies optional address/gateway/DNS
+configuration to this interface. DNS resolution, TCP, IPv6, fragmentation,
+userspace and POSIX file descriptors remain outside its scope.
 
 The implementation was informed by pinned Moss revision
 `1358b5d78b9151e382dc60ccda7fe0de191e56af`:
@@ -50,10 +51,12 @@ one socket; different sockets may have independent pending operations.
   Duplicate ports and capacity exhaustion return distinct errors. There is no
   wildcard bind, ephemeral-port selection or port reuse.
   Bind does not promise link readiness; queued sends remain bounded while
-  the source/link is unavailable.
-- Destinations must be nonzero-port unicast peers in the connected subnet,
-  excluding the local address and network/broadcast endpoints. There is no
-  gateway or local loopback delivery.
+  the source/link is unavailable in static mode. DHCP requires an acquired
+  address first, otherwise bind returns `NotConfigured`, and reserves port 68.
+- Destinations must be nonzero-port unicast peers, excluding the local address
+  and network/broadcast endpoints. Static mode requires the connected subnet;
+  DHCP permits off-subnet peers when it supplies a default gateway. There is
+  no local loopback delivery.
 - Send success means the complete datagram was copied into smoltcp's TX queue,
   not that Linux completed DMA or a remote peer received it. UDP is lossy.
 - Empty datagrams are valid. Oversized sends are rejected without truncation.
@@ -150,6 +153,8 @@ Each of two runtime epochs proves:
   16 delivered Ethernet frames, and exact frame/heap cleanup after joined stop.
 - A retained old handle rejected after runtime restart without touching the
   new socket.
+  DHCP same-address renewal preserves sockets; address/subnet changes and
+  lease/link loss close their generations rather than silently rebinding them.
 
 The [peer/oracle](../scripts/udp_packets.py) is independent of the scheduling
 catalog and guest implementation. Portable tests separately exercise smoltcp

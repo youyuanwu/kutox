@@ -14,8 +14,10 @@ import time
 from contextlib import nullcontext
 import network_packets as ip_packets
 import udp_packets
+import dhcp_packets
 from qemu_scenarios import *
 from qemu_scenarios import SCENARIOS
+from qemu_scenarios import DHCP_LIVE_CASES
 from qemu_protocols import *
 from qemu_validation import *
 
@@ -34,7 +36,7 @@ def execute_live(args, case, capture=None):
             peer.close()
             host.settimeout(min(args.timeout, 2))
             exchanges = getattr(args, "soak_exchanges", 1)
-            protocol = LiveIPProtocol(host.sendall, exchanges, 0.2 if exchanges > 1 else 0) if live_network(case) and LIVE_CASES[case][1] else None
+            protocol = dhcp_packets.LiveProtocol(host.sendall) if case in DHCP_LIVE_CASES else LiveIPProtocol(host.sendall, exchanges, 0.2 if exchanges > 1 else 0) if live_network(case) and LIVE_CASES[case][1] else None
             try:
                 with selectors.DefaultSelector() as selector:
                     selector.register(process.stdout, selectors.EVENT_READ, "serial")
@@ -122,7 +124,10 @@ def execute_live(args, case, capture=None):
                     except subprocess.TimeoutExpired:
                         process.kill()
                         process.wait()
-        return subprocess.CompletedProcess(command, process.returncode, bytes(output)), elapsed
+        completed = subprocess.CompletedProcess(command, process.returncode, bytes(output))
+        if case in DHCP_LIVE_CASES:
+            completed.dhcp_packets = protocol.expected_packets
+        return completed, elapsed
 
 
 class QMP:
@@ -171,12 +176,13 @@ def execute_suite(args, case, capture):
     ip_network = kind == "ip"
     async_hardening = kind == "async-hardening"
     udp_network = kind == "udp"
+    dhcp_network = kind == "dhcp"
     ambiguous = case.endswith("ambiguous")
     expected = async_hardening_packets() if async_hardening else ip_packets.replies() if ip_network else async_network_tx_packets() if asynchronous else [managed_hard_packet(sequence) for sequence in range(1, 5)] if hardening else [] if network and ambiguous else [network_packet(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)] if network else expected_tx_packets()
     if udp_network:
         expected = udp_packets.replies()
     host, peer = socket.socketpair()
-    with host, peer, (tempfile.TemporaryDirectory(prefix="kutox-hardening-") if async_hardening else nullcontext(None)) as directory:
+    with host, peer, (tempfile.TemporaryDirectory(prefix="kutox-hardening-") if async_hardening or dhcp_network else nullcontext(None)) as directory:
         command = qemu_command(args, case, capture, peer.fileno())
         monitor_path = Path(directory) / "qmp" if directory is not None else None
         if monitor_path is not None:
@@ -192,7 +198,7 @@ def execute_suite(args, case, capture):
                 if monitor_path is not None:
                     monitor = QMP(monitor_path)
                     monitor.connect(process, deadline)
-                protocols = (udp_packets.Protocol(host.sendall),) if udp_network else (AsyncHardProtocol(host.sendall, monitor),) if async_hardening else (IPProtocol(host.sendall),) if ip_network else (AsyncNetworkProtocol(host.sendall),) if asynchronous else (ManagedHardProtocol(host.sendall),) if hardening else (NetworkProtocol(host.sendall, ambiguous),) if network else (RXProtocol(host.sendall), HardProtocol(host.sendall))
+                protocols = (dhcp_packets.Protocol(host.sendall, monitor),) if dhcp_network else (udp_packets.Protocol(host.sendall),) if udp_network else (AsyncHardProtocol(host.sendall, monitor),) if async_hardening else (IPProtocol(host.sendall),) if ip_network else (AsyncNetworkProtocol(host.sendall),) if asynchronous else (ManagedHardProtocol(host.sendall),) if hardening else (NetworkProtocol(host.sendall, ambiguous),) if network else (RXProtocol(host.sendall), HardProtocol(host.sendall))
                 with selectors.DefaultSelector() as selector:
                     selector.register(process.stdout, selectors.EVENT_READ, "serial")
                     selector.register(host, selectors.EVENT_READ, "network")
@@ -227,10 +233,10 @@ def execute_suite(args, case, capture):
                                     if len(network_pending) < size + 4:
                                         break
                                     transmitted.append(bytes(network_pending[4:size + 4]))
-                                    if ip_network or udp_network:
+                                    if ip_network or udp_network or dhcp_network:
                                         protocols[0].transmit(transmitted[-1])
                                     del network_pending[:size + 4]
-                                    if len(transmitted) > len(expected):
+                                    if len(transmitted) > (128 if dhcp_network else len(expected)):
                                         raise AssertionError("unexpected guest packet on isolated socket")
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
@@ -238,6 +244,8 @@ def execute_suite(args, case, capture):
                     returncode = process.wait(timeout=remaining)
                     if serial_pending or network_pending:
                         raise AssertionError("truncated guest serial/socket output")
+                    if dhcp_network:
+                        expected = protocols[0].expected_packets
                     if transmitted != expected:
                         raise AssertionError("isolated socket did not carry the exact Linux TX frames")
                     for protocol in protocols:
@@ -258,6 +266,9 @@ def execute_suite(args, case, capture):
                     except subprocess.TimeoutExpired:
                         process.kill()
                         process.wait()
-        return subprocess.CompletedProcess(command, returncode, bytes(output))
+        completed = subprocess.CompletedProcess(command, returncode, bytes(output))
+        if dhcp_network:
+            completed.dhcp_packets = expected
+        return completed
 
 __all__ = ['execute_live', 'QMP', 'execute_suite']

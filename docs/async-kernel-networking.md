@@ -36,7 +36,11 @@ adds explicit client sockets and guest-only echo/client acceptance to this same 
 owner. Normal boot still opens no application socket. This guide's phase evidence
 and original seven-feature measurements describe the completed ARP/ICMP milestone.
 
-DHCP, TCP, IPv6, VFS/filesystems, processes/userspace, additional drivers,
+The subsequent [DHCP extension](dhcp-ipv4.md) adds opt-in dynamic configuration,
+gateway/DNS publication and lease-driven UDP lifetime policy; static boot remains
+the default.
+
+TCP, IPv6, VFS/filesystems, processes/userspace, additional drivers,
 SMP/preemption and broader hardware are subsequent work, not this milestone.
 
 ## Shared core, two execution models

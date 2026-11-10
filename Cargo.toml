@@ -24,6 +24,7 @@ smoltcp = { version = "=0.13.0", default-features = false, features = [
     "auto-icmp-echo-reply",
     "socket-icmp",
     "socket-udp",
+    "socket-dhcpv4",
     "iface-max-addr-count-1",
     "iface-neighbor-cache-count-8",
     "iface-max-route-count-1",

@@ -271,7 +271,7 @@ fn exchange(
     boot: &BootInfo,
     frames: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
-    if boot.ipv4 != kutox::network_config::Config::default() {
+    if boot.ipv4 != kutox::network_config::Mode::default() {
         return Err(Failure::new("udp_test_config", -291));
     }
     time::calibrate()?;

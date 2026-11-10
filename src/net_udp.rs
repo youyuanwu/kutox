@@ -4,7 +4,7 @@ use crate::{async_runtime, async_sync, cpu, exceptions, serial, threads};
 use core::{future::poll_fn, pin::Pin, task::Poll};
 pub use kutox::udp_state::{Endpoint, Error};
 use kutox::{
-    network_config::Config,
+    network_config::{Config, Settings},
     udp_state::{Buffers, Control, Engine, Key},
 };
 use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
@@ -45,8 +45,8 @@ fn notify(event: &async_sync::Event) {
 }
 
 pub struct Service;
-pub(crate) fn start(config: Config) -> Result<Service, Error> {
-    CONTROL.lock_save_irq().start(config)?;
+pub(crate) fn start(config: Option<Config>) -> Result<Service, Error> {
+    CONTROL.lock_save_irq().start_optional(config)?;
     Ok(Service)
 }
 
@@ -87,6 +87,15 @@ pub(crate) fn drive(engine: &mut Option<Engine>) {
     {
         notify(&PROGRESS);
     }
+}
+
+pub(crate) fn configure(settings: Option<Settings>, engine: &mut Option<Engine>) {
+    CONTROL.lock_save_irq().configure(
+        settings.map(|value| value.address),
+        settings.is_some_and(|value| value.router.is_some()),
+    );
+    drive(engine);
+    notify(&PROGRESS);
 }
 
 async fn wait<T>(usec: u64, mut check: impl FnMut() -> Result<T, Error>) -> Result<T, Error> {

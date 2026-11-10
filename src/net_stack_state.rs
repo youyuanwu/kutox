@@ -1,15 +1,38 @@
 //! Staged smoltcp tokens borrow CPU copies and already-reserved TX credit.
 
 use crate::{net_state::Error, network_config};
+use alloc::vec::Vec;
 use smoltcp::{
-    iface::{Config, Interface},
+    iface::{Config, Interface, SocketHandle, SocketSet, SocketStorage},
     phy::{ChecksumCapabilities, Device, DeviceCapabilities, Medium, RxToken, TxToken},
     time::Instant,
     wire::{
         ArpPacket, ArpRepr, EthernetAddress, EthernetFrame, EthernetProtocol, HardwareAddress,
-        Icmpv4Packet, Icmpv4Repr, IpCidr, IpProtocol, Ipv4Packet, Ipv4Repr,
+        Icmpv4Packet, Icmpv4Repr, IpCidr, IpProtocol, Ipv4Packet, Ipv4Repr, UdpPacket,
     },
 };
+
+pub struct Dhcp {
+    pub sockets: SocketSet<'static>,
+    handle: SocketHandle,
+}
+
+impl Dhcp {
+    pub fn new() -> Result<Self, crate::udp_state::Error> {
+        let mut storage = Vec::new();
+        storage
+            .try_reserve_exact(1)
+            .map_err(|_| crate::udp_state::Error::NoMemory)?;
+        storage.push(SocketStorage::EMPTY);
+        let mut sockets = SocketSet::new(storage);
+        let handle = sockets.add(smoltcp::socket::dhcpv4::Socket::new());
+        Ok(Self { sockets, handle })
+    }
+
+    pub fn socket(&mut self) -> &mut smoltcp::socket::dhcpv4::Socket<'static> {
+        self.sockets.get_mut(self.handle)
+    }
+}
 
 pub trait PacketBytes {
     fn bytes(&self) -> &[u8];
@@ -107,6 +130,15 @@ pub fn interface(
     device: &mut impl Device,
     now: Instant,
 ) -> Result<Interface, Error> {
+    interface_mode(config.into(), mac, device, now)
+}
+
+pub fn interface_mode(
+    mode: network_config::Mode,
+    mac: [u8; 6],
+    device: &mut impl Device,
+    now: Instant,
+) -> Result<Interface, Error> {
     if mac == [0; 6] || mac[0] & 1 != 0 {
         return Err(Error::Unsupported);
     }
@@ -115,12 +147,38 @@ pub fn interface(
         device,
         now,
     );
-    interface.update_ip_addrs(|addresses| {
-        addresses
-            .push(IpCidr::Ipv4(config.cidr()))
-            .expect("one static address");
-    });
+    apply_settings(
+        &mut interface,
+        mode.address().map(|address| network_config::Settings {
+            address,
+            router: None,
+            dns: [None; 2],
+        }),
+    )?;
     Ok(interface)
+}
+
+pub fn apply_settings(
+    interface: &mut Interface,
+    settings: Option<network_config::Settings>,
+) -> Result<(), Error> {
+    let address = settings.map(|settings| IpCidr::Ipv4(settings.address.cidr()));
+    if interface.ip_addrs().first().copied() != address {
+        interface.update_ip_addrs(|addresses| {
+            addresses.clear();
+            if let Some(address) = address {
+                addresses.push(address).expect("one IPv4 address");
+            }
+        });
+    }
+    interface.routes_mut().remove_default_ipv4_route();
+    if let Some(router) = settings.and_then(|settings| settings.router) {
+        interface
+            .routes_mut()
+            .add_default_ipv4_route(router)
+            .map_err(|_| Error::Busy)?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,10 +187,20 @@ pub enum Admission {
     Echo,
     Other,
     Rejected,
+    Dhcp,
 }
 
 /// Diagnostic classification only; smoltcp owns protocol acceptance and replies.
 pub fn admission(bytes: &[u8], config: network_config::Config, mac: [u8; 6]) -> Admission {
+    admission_mode(bytes, Some(config), false, mac)
+}
+
+pub fn admission_mode(
+    bytes: &[u8],
+    config: Option<network_config::Config>,
+    dhcp: bool,
+    mac: [u8; 6],
+) -> Admission {
     let Ok(frame) = EthernetFrame::new_checked(bytes) else {
         return Admission::Rejected;
     };
@@ -158,10 +226,18 @@ pub fn admission(bytes: &[u8], config: network_config::Config, mac: [u8; 6]) -> 
             let Ok(repr) = Ipv4Repr::parse(&packet, &caps) else {
                 return Admission::Rejected;
             };
-            if repr.dst_addr != config.cidr().address()
-                || packet.more_frags()
-                || packet.frag_offset() != 0
+            if packet.more_frags() || packet.frag_offset() != 0 {
+                return Admission::Rejected;
+            }
+            if dhcp
+                && repr.next_header == IpProtocol::Udp
+                && let Ok(udp) = UdpPacket::new_checked(packet.payload())
+                && udp.src_port() == 67
+                && udp.dst_port() == 68
             {
+                return Admission::Dhcp;
+            }
+            if config.is_none_or(|config| repr.dst_addr != config.cidr().address()) {
                 return Admission::Rejected;
             }
             if repr.next_header != IpProtocol::Icmp {

@@ -21,6 +21,13 @@ deadlines, cancellation, stale handles and balanced shutdown/restart.
 The OFF image rejects `udp-tests` early, omits the acceptance fixture and
 continues production build/profile and normal-boot smoke validation.
 
+[DHCP acceptance](dhcp-ipv4.md) uses the same ownership split. `dhcp-tests*`
+is guest-only ON lifecycle acceptance; `dhcp-tests-disabled` checks early OFF
+rejection. Production `network-dhcp*` acquires a lease and measures live
+ARP/ICMP service in both profiles without a guest client. Low-memory DHCP
+lifecycle and production cases run in smoke CI; wire expectations remain in
+the independent stdlib server rather than the scheduling catalog.
+
 ## Validation tiers
 
 ```sh

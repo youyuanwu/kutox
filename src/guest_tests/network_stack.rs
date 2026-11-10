@@ -77,7 +77,7 @@ fn configuration(
     boot: &BootInfo,
     _: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
-    super::support::assert_eq!(boot.ipv4, Config::default());
+    super::support::assert_eq!(boot.ipv4, Config::default().into());
     let mut context = super::support::Context::new();
     for (index, value) in [
         b"10.0.2.0/24".as_slice(),
@@ -99,7 +99,7 @@ fn configuration(
     context.finish()?;
     serial::print(format_args!(
         "# NET_IP_CONFIG cidr={} rejected=7 allocation=0 source=0\n",
-        boot.ipv4.cidr()
+        Config::default().cidr()
     ));
     Ok(())
 }
@@ -236,7 +236,11 @@ fn exchange(
         let heap_before = heap::global().stats();
         let source_before = linux_driver::callback_proof();
         EPOCH.store(epoch, Ordering::Release);
-        *CONFIG.lock_save_irq() = Some(boot.ipv4);
+        let config = boot
+            .ipv4
+            .address()
+            .ok_or(Failure::new("network_test_config", -291))?;
+        *CONFIG.lock_save_irq() = Some(config);
         RETAIN.store(true, Ordering::Release);
         let resources = Resources::start(boot, frames)?;
         *RUNTIME.lock_save_irq() = Some(resources.handle());
@@ -250,7 +254,7 @@ fn exchange(
         RUNTIME.lock_save_irq().take();
         SESSION.lock_save_irq().take();
         let packet = COPY.lock_save_irq().take().unwrap();
-        assert_arp_copy(&packet, boot.ipv4);
+        assert_arp_copy(&packet, config);
         let native = driver_memory::snapshot();
         assert!(linux_driver::managed_quiescent());
         assert_eq!(linux_driver::source_ticket(), 0);

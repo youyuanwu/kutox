@@ -26,6 +26,7 @@ pub enum Error {
     WouldBlock,
     TimedOut,
     Context,
+    NotConfigured,
     Wait(i32),
 }
 
@@ -40,17 +41,15 @@ impl Endpoint {
         IpEndpoint::new(IpAddress::Ipv4(Ipv4Address::from(self.address)), self.port)
     }
 
-    fn validate(self, config: Config) -> Result<(), Error> {
+    fn validate(self, config: Config, routed: bool) -> Result<(), Error> {
         let address = Ipv4Address::from(self.address);
         let cidr = config.cidr();
         if self.port == 0
-            || !cidr.contains_addr(&address)
+            || (!cidr.contains_addr(&address) && !routed)
             || address == cidr.address()
             || address == cidr.network().address()
             || Some(address) == cidr.broadcast()
-            || self.address[0] == 0
-            || self.address[0] == 127
-            || self.address[0] >= 224
+            || !crate::network_config::valid_unicast(address)
         {
             return Err(Error::Unaddressable);
         }
@@ -125,6 +124,8 @@ impl Buffers {
 pub struct Control {
     active: bool,
     config: Option<Config>,
+    routed: bool,
+    dhcp: bool,
     next_ticket: u64,
     slots: [Slot; MAX_SOCKETS],
     pub buffers: Option<Buffers>,
@@ -141,6 +142,8 @@ impl Control {
         Self {
             active: false,
             config: None,
+            routed: false,
+            dhcp: false,
             next_ticket: 1,
             slots: [Slot::EMPTY; MAX_SOCKETS],
             buffers: None,
@@ -148,10 +151,16 @@ impl Control {
     }
 
     pub fn start(&mut self, config: Config) -> Result<(), Error> {
+        self.start_optional(Some(config))
+    }
+
+    pub fn start_optional(&mut self, config: Option<Config>) -> Result<(), Error> {
         if self.active || self.buffers.is_some() {
             return Err(Error::Busy);
         }
-        self.config = Some(config);
+        self.config = config;
+        self.routed = false;
+        self.dhcp = config.is_none();
         self.active = true;
         Ok(())
     }
@@ -160,6 +169,22 @@ impl Control {
         self.active = false;
         self.slots.fill(Slot::EMPTY);
         self.buffers.take()
+    }
+
+    pub fn configure(&mut self, config: Option<Config>, routed: bool) -> bool {
+        let changed = self.config != config;
+        if changed {
+            for index in 0..MAX_SOCKETS {
+                let ticket = self.slots[index].ticket;
+                self.close(Key {
+                    slot: index,
+                    ticket,
+                });
+            }
+        }
+        self.config = config;
+        self.routed = routed;
+        changed
     }
 
     pub fn quiescent(&self) -> bool {
@@ -187,8 +212,14 @@ impl Control {
         if !self.active {
             return Err(Error::Closed);
         }
+        if self.config.is_none() {
+            return Err(Error::NotConfigured);
+        }
         if port == 0 {
             return Err(Error::InvalidPort);
+        }
+        if self.dhcp && port == 68 {
+            return Err(Error::AddressInUse);
         }
         if self
             .slots
@@ -272,7 +303,7 @@ impl Control {
         if slot.send != Send::Idle {
             return Err(Error::Busy);
         }
-        endpoint.validate(self.config.expect("active configuration"))?;
+        endpoint.validate(self.config.expect("active configuration"), self.routed)?;
         if bytes.len() > MAX_DATAGRAM {
             return Err(Error::TooLarge);
         }

@@ -17,6 +17,65 @@ const PEER: Endpoint = Endpoint {
 };
 
 #[test]
+fn lease_changes_revoke_sockets_but_same_address_renewal_retains_them() {
+    let (mut control, mut engine, key) = setup();
+    assert!(!control.configure(Some(Config::default()), true));
+    control.opened(key).unwrap();
+    let remote = Endpoint {
+        address: [1, 1, 1, 1],
+        port: 53,
+    };
+    control.send(key, b"routed", remote).unwrap();
+    control.cancel_send(key);
+    assert!(!control.configure(Some(Config::default()), false));
+    assert_eq!(
+        control.send(key, b"unrouted", remote),
+        Err(Error::Unaddressable)
+    );
+    assert!(control.configure(None, false));
+    assert_eq!(control.opened(key), Err(Error::Closed));
+    assert_eq!(control.open(7001), Err(Error::NotConfigured));
+    engine.sync(&mut control);
+    assert!(control.closed(key));
+    let changed = Config::parse(b"10.0.2.16/24").unwrap();
+    assert!(control.configure(Some(changed), true));
+    let new = control.open(7000).unwrap();
+    engine.sync(&mut control);
+    control.opened(new).unwrap();
+    control.close(key);
+    control.opened(new).unwrap();
+}
+
+#[test]
+fn dhcp_reserves_its_client_port_even_after_configuration() {
+    let mut control = Control::new();
+    control.start_optional(None).unwrap();
+    assert_eq!(control.can_open(7000), Err(Error::NotConfigured));
+    control.configure(Some(Config::default()), true);
+    assert_eq!(control.can_open(68), Err(Error::AddressInUse));
+    assert_eq!(control.can_open(7000), Ok(()));
+    drop(control.stop());
+    control.start(Config::default()).unwrap();
+    assert_eq!(control.can_open(68), Ok(()));
+}
+
+#[test]
+fn dhcp_socket_does_not_eagerly_allocate_or_consume_udp_capacity() {
+    let dhcp = crate::net_stack_state::Dhcp::new().unwrap();
+    assert_eq!(dhcp.sockets.iter().count(), 1);
+    let mut engine = Engine::new().unwrap();
+    assert_eq!(engine.sockets.iter().count(), MAX_SOCKETS);
+    let mut control = Control::new();
+    control.start(Config::default()).unwrap();
+    control.buffers = Some(Buffers::new().unwrap());
+    for port in 7000..7000 + MAX_SOCKETS as u16 {
+        control.open(port).unwrap();
+    }
+    engine.sync(&mut control);
+    assert_eq!(control.counts(), (MAX_SOCKETS, 0, 0));
+}
+
+#[test]
 fn bind_capacity_duplicates_and_close_ack() {
     let (mut control, mut engine, first) = setup();
     assert_eq!(control.open(0), Err(Error::InvalidPort));
