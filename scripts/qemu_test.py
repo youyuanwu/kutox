@@ -16,7 +16,7 @@ from qemu_scenarios import SCENARIOS
 from qemu_scenarios import UDP_CASES
 from qemu_protocols import *
 from qemu_validation import *
-from qemu_validation import validate_udp_demo
+from qemu_validation import validate_udp_suite
 from qemu_process import *
 from test_reports import Result, accepted_results, write_reports
 
@@ -101,7 +101,7 @@ def run_case(args, case, index=0):
             elif case in IP_SUITE_CASES:
                 validate_network_stack(case, completed.returncode, output, symbols)
             elif case in UDP_CASES:
-                validate_udp_demo(case, completed.returncode, output, symbols)
+                validate_udp_suite(case, completed.returncode, output, symbols)
             elif case in ASYNC_HARD_CASES:
                 validate_async_hardening(case, completed.returncode, output, symbols)
             else:

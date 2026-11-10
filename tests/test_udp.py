@@ -7,9 +7,10 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import udp_packets as udp
 from network_packets import IP, PEER_IP, checksum
-from qemu_scenarios import HEAP_RESULT, REVISION, UDP_CASES, SCENARIOS, qemu_command
-from qemu_validation import validate_udp_demo
+from qemu_scenarios import REVISION, UDP_CASES, SCENARIOS, qemu_command
+from qemu_validation import KernelSuiteFailure, validate_result, validate_udp_suite
 from test_catalog import GUEST_CHECKS
+from test_reports import accepted_results
 
 SYMBOLS = {name: index * 0x1000 for index, name in enumerate((
     "e1000_init_module", "e1000_exit_module", "e1000_probe", "e1000_remove",
@@ -21,8 +22,10 @@ EVENTS = (1, 2, 3, 5, 6, 7, 17, 34)
 def journal():
     lines = [f"KUTOX_BOOT linux={REVISION}",
              "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled",
-             "BOOT_MODE mode=udp-demo source=fw_cfg", HEAP_RESULT]
+             "BOOT_MODE mode=udp-tests source=fw_cfg", "KTAP version 1", "1..1"]
     for epoch in (1, 2):
+        lines += ["Intel(R) PRO/1000 Network Driver", "Copyright (c) 1999-2006 Intel Corporation.",
+                  "eth0 NIC Link is Up 1000 Mbps Full Duplex, Flow Control: RX"]
         lines += [f"# UDP_STORAGE epoch={epoch} sockets=4 rx_queue=2 tx_queue=2 mailbox=1 max_datagram=1472 charged=81920"]
         if epoch == 2:
             lines += ["# UDP_ERROR operation=send error=Closed"]
@@ -44,7 +47,8 @@ def journal():
         for event, function in zip(EVENTS, SYMBOLS.values()):
             lines += [f"# UDP_SOURCE epoch={epoch} event={event} count={ {17: 11}.get(event, 1)} function={function:x} object=100 result=0"]
         lines += [f"# UDP_CLOSED epoch={epoch} frames=balanced heap=balanced sockets=0 requests=0"]
-    return "\n".join([*lines, "UDP_DEMO_OK epochs=2", "KERNEL_RUNTIME_STOPPED", ""])
+    return "\n".join([*lines, "# UDP_COMPLETE epochs=2", "ok 1 udp.exchange",
+                      "# Totals: pass:1 fail:0 skip:0 total:1", ""])
 
 
 class UdpTests(unittest.TestCase):
@@ -94,9 +98,9 @@ class UdpTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             peer.finish()
 
-    def test_demo_requires_complete_lifecycle_errors_source_and_budgets(self):
+    def test_suite_requires_complete_ktap_lifecycle_errors_source_and_budgets(self):
         text = journal()
-        validate_udp_demo("udp-demo", 1, text, SYMBOLS)
+        validate_udp_suite("udp-tests", 1, text, SYMBOLS)
         for before, after in (
             ("charged=81920", "charged=131073"),
             ("tx=11", "tx=9"),
@@ -105,29 +109,57 @@ class UdpTests(unittest.TestCase):
             ("BufferTooSmall { required: 32 }", "TimedOut"),
             ("event=17 count=11", "event=17 count=9"),
             ("frames=balanced", "frames=leaked"),
-            ("UDP_DEMO_OK epochs=2", "UDP_DEMO_OK epochs=1"),
+            ("# UDP_COMPLETE epochs=2", "# UDP_COMPLETE epochs=1"),
+            ("KTAP version 1", "KTAP version 2"),
+            ("1..1", "1..2"),
+            ("ok 1 udp.exchange", "ok 1 udp.other"),
+            ("# Totals: pass:1 fail:0 skip:0 total:1", "# Totals: pass:0 fail:0 skip:0 total:1"),
+            ("Intel(R) PRO/1000 Network Driver", "unexpected driver banner"),
         ):
             with self.subTest(before=before), self.assertRaises(AssertionError):
-                validate_udp_demo("udp-demo", 1, text.replace(before, after, 1), SYMBOLS)
+                validate_udp_suite("udp-tests", 1, text.replace(before, after, 1), SYMBOLS)
         with self.assertRaises(AssertionError):
-            validate_udp_demo("udp-demo", 3, text, SYMBOLS)
+            validate_udp_suite("udp-tests", 3, text, SYMBOLS)
         with self.assertRaises(AssertionError):
-            validate_udp_demo("udp-demo", 1, text, {**SYMBOLS, "e1000_xmit_frame": 0xdead})
+            validate_udp_suite("udp-tests", 1, text, {**SYMBOLS, "e1000_xmit_frame": 0xdead})
         with self.assertRaises(AssertionError):
-            validate_udp_demo("udp-demo", 1, text + "E1000_MAC_FAIL stage=panic code=-1\n", SYMBOLS)
+            validate_udp_suite("udp-tests", 1, text + "E1000_MAC_FAIL stage=panic code=-1\n", SYMBOLS)
+        failed = text.replace("ok 1 udp.exchange", "not ok 1 udp.exchange").replace(
+            "# Totals: pass:1 fail:0 skip:0 total:1", "# Totals: pass:0 fail:1 skip:0 total:1")
+        with self.assertRaises(KernelSuiteFailure):
+            validate_udp_suite("udp-tests", 3, failed, SYMBOLS)
+        self.assertEqual(
+            [(result.name, result.status) for result in accepted_results("udp-tests", text, 1, Path("udp.log"))],
+            [("udp.exchange", "passed")],
+        )
 
-    def test_demo_is_production_in_both_profiles_and_uses_owned_socket_peer(self):
+    def test_suite_is_guest_only_and_uses_owned_socket_peer(self):
         args = SimpleNamespace(qemu="qemu", build_dir=Path("build"))
         for case in UDP_CASES:
             self.assertEqual(SCENARIOS[case].protocol, "udp")
             command = qemu_command(args, case, net_fd=5)
-            self.assertIn("name=opt/kutox/test-mode,string=udp-demo", command)
+            self.assertIn("name=opt/kutox/test-mode,string=udp-tests", command)
             self.assertIn("socket,id=irqtest,fd=5", command)
             item = next(item for item in GUEST_CHECKS if item.name == case)
-            self.assertEqual(item.profiles, ("ON", "OFF"))
-        low = next(item for item in GUEST_CHECKS if item.name == "udp-demo-low-memory")
+            self.assertEqual(item.profiles, ("ON",))
+        low = next(item for item in GUEST_CHECKS if item.name == "udp-tests-low-memory")
         self.assertIn("smoke", low.tiers)
-        self.assertEqual(SCENARIOS["udp-demo-low-memory"].ram_mib, 32)
+        self.assertEqual(SCENARIOS["udp-tests-low-memory"].ram_mib, 32)
+        self.assertFalse(any("udp-demo" in name for name in SCENARIOS))
+        disabled = next(item for item in GUEST_CHECKS if item.name == "udp-tests-disabled")
+        self.assertEqual(disabled.profiles, ("OFF",))
+        self.assertIn("smoke", disabled.tiers)
+        command = qemu_command(args, "udp-tests-disabled")
+        self.assertIn("name=opt/kutox/test-mode,string=udp-tests", command)
+
+    def test_disabled_udp_selector_is_rejected_before_any_admission(self):
+        boot = f"KUTOX_BOOT linux={REVISION}\n"
+        error = "E1000_MAC_FAIL stage=boot_mode code=-25\n"
+        validate_result("udp-tests-disabled", 3, boot + error)
+        for marker in ("BOOT_MODE mode=udp-tests source=fw_cfg", "KTAP version 1",
+                       "# UDP_STORAGE epoch=1", "# NETWORK_STACK_READY"):
+            with self.subTest(marker=marker), self.assertRaises(AssertionError):
+                validate_result("udp-tests-disabled", 3, boot + marker + "\n" + error)
 
 
 if __name__ == "__main__":

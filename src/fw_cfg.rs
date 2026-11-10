@@ -12,7 +12,6 @@ pub enum BootMode {
     Run,
     DriverRun,
     NetworkRun,
-    UdpDemo,
     Probe,
     EepromTimeout,
     PageFault,
@@ -27,6 +26,7 @@ pub enum BootMode {
     AsyncCoreTests,
     AsyncNetworkTests,
     NetworkTests,
+    UdpTests,
     AsyncHardeningTests,
     HeapOom,
     ThreadStackGuard,
@@ -34,11 +34,11 @@ pub enum BootMode {
 
 impl BootMode {
     pub const fn is_network_runtime(self) -> bool {
-        matches!(self, Self::Run | Self::NetworkRun | Self::UdpDemo)
+        matches!(self, Self::Run | Self::NetworkRun)
     }
 
     pub const fn uses_ipv4(self) -> bool {
-        self.is_network_runtime() || matches!(self, Self::NetworkTests)
+        self.is_network_runtime() || matches!(self, Self::NetworkTests | Self::UdpTests)
     }
 
     pub const fn selected(configured: Option<Self>) -> Self {
@@ -53,7 +53,6 @@ impl BootMode {
             Self::Run => "run",
             Self::DriverRun => "driver-run",
             Self::NetworkRun => "network-run",
-            Self::UdpDemo => "udp-demo",
             Self::Probe => "probe",
             Self::EepromTimeout => "eeprom-timeout",
             Self::PageFault => "page-fault",
@@ -68,6 +67,7 @@ impl BootMode {
             Self::AsyncCoreTests => "async-core-tests",
             Self::AsyncNetworkTests => "async-network-tests",
             Self::NetworkTests => "network-tests",
+            Self::UdpTests => "udp-tests",
             Self::AsyncHardeningTests => "async-hardening-tests",
             Self::HeapOom => "heap-oom",
             Self::ThreadStackGuard => "thread-stack-guard",
@@ -107,6 +107,7 @@ impl BootMode {
                 | Self::AsyncCoreTests
                 | Self::AsyncNetworkTests
                 | Self::NetworkTests
+                | Self::UdpTests
                 | Self::AsyncHardeningTests
                 | Self::HeapOom
                 | Self::ThreadStackGuard
@@ -159,7 +160,6 @@ pub fn read_mode(
         b"run" => Ok(Some(BootMode::Run)),
         b"driver-run" => Ok(Some(BootMode::DriverRun)),
         b"network-run" => Ok(Some(BootMode::NetworkRun)),
-        b"udp-demo" => Ok(Some(BootMode::UdpDemo)),
         b"probe" => Ok(Some(BootMode::Probe)),
         b"eeprom-timeout" => Ok(Some(BootMode::EepromTimeout)),
         b"page-fault" => Ok(Some(BootMode::PageFault)),
@@ -174,6 +174,7 @@ pub fn read_mode(
         b"async-core-tests" => Ok(Some(BootMode::AsyncCoreTests)),
         b"async-network-tests" => Ok(Some(BootMode::AsyncNetworkTests)),
         b"network-tests" => Ok(Some(BootMode::NetworkTests)),
+        b"udp-tests" => Ok(Some(BootMode::UdpTests)),
         b"async-hardening-tests" => Ok(Some(BootMode::AsyncHardeningTests)),
         b"heap-oom" => Ok(Some(BootMode::HeapOom)),
         b"thread-stack-guard" => Ok(Some(BootMode::ThreadStackGuard)),
@@ -331,7 +332,6 @@ mod tests {
             BootMode::Run,
             BootMode::DriverRun,
             BootMode::NetworkRun,
-            BootMode::UdpDemo,
             BootMode::Probe,
             BootMode::EepromTimeout,
             BootMode::PageFault,
@@ -346,6 +346,7 @@ mod tests {
             BootMode::AsyncCoreTests,
             BootMode::AsyncNetworkTests,
             BootMode::NetworkTests,
+            BootMode::UdpTests,
             BootMode::AsyncHardeningTests,
             BootMode::HeapOom,
             BootMode::ThreadStackGuard,
@@ -564,7 +565,7 @@ mod tests {
     #[test]
     fn default_network_policy_and_reserved_hardening_rejection() {
         assert!(BootMode::selected(None).is_network_runtime());
-        for mode in [BootMode::Run, BootMode::NetworkRun, BootMode::UdpDemo] {
+        for mode in [BootMode::Run, BootMode::NetworkRun] {
             assert!(mode.uses_ipv4());
             assert_eq!(mode.validate_build(), Ok(()));
         }
@@ -577,6 +578,12 @@ mod tests {
             assert!(!mode.uses_ipv4());
         }
         assert!(BootMode::NetworkTests.uses_ipv4());
+        assert!(BootMode::UdpTests.uses_ipv4());
+        assert!(!BootMode::UdpTests.is_network_runtime());
+        assert_eq!(
+            run(&fixture(&[("opt/kutox/test-mode", b"udp-demo")])),
+            Err(Error::UnknownMode)
+        );
         assert_eq!(
             run(&fixture(&[(
                 "opt/kutox/test-mode",
@@ -610,6 +617,7 @@ fn guest_modes_require_the_build_feature_without_changing_probe() {
         BootMode::AsyncCoreTests,
         BootMode::AsyncNetworkTests,
         BootMode::NetworkTests,
+        BootMode::UdpTests,
         BootMode::AsyncHardeningTests,
         BootMode::EepromTimeout,
         BootMode::PageFault,

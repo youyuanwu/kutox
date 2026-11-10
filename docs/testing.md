@@ -13,11 +13,13 @@ build the ELF and package Limine/ISO. Python owns QEMU lifecycle, independent
 acceptance and reports. CTest registrations and recursive CMake check targets
 have been removed; no additional test-management framework is required.
 
-The [UDP socket/demo acceptance](udp-kernel-sockets.md) extends this same catalog.
-`udp-demo*` runs a finite production kernel client in both profiles at 128/32 MiB,
-including nested bridges; `udp-demo-low-memory` also runs in smoke CI. Its
+The [UDP guest acceptance](udp-kernel-sockets.md) extends this same catalog.
+`udp-tests*` runs a guest-only kernel client at 128/32 MiB in the ON profile,
+including nested bridges; `udp-tests-low-memory` also runs in smoke CI. Its
 independent wire peer checks socket and TX PCAP bytes, RX/TX queue pressure,
 deadlines, cancellation, stale handles and balanced shutdown/restart.
+The OFF image rejects `udp-tests` early, omits the acceptance fixture and
+continues production build/profile and normal-boot smoke validation.
 
 ## Validation tiers
 

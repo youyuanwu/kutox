@@ -130,7 +130,7 @@ IP_SUITE_CASES = {case: "network-tests" for case in (
 
 IP_TEST_NAMES = ("net.configuration", "net.exchange", "net.shutdown")
 
-UDP_CASES = {"udp-demo", "udp-demo-low-memory", "udp-demo-nested-low-memory"}
+UDP_CASES = {"udp-tests", "udp-tests-low-memory", "udp-tests-nested-low-memory"}
 
 ASYNC_HARD_CASES = {case: "async-hardening-tests" for case in (
     "async-hardening-tests", "async-hardening-tests-low-memory", "async-hardening-tests-nested-low-memory",
@@ -220,6 +220,7 @@ CASES = {
     "async-core-tests-disabled": (None, "boot_mode"),
     "async-network-tests-disabled": (None, "boot_mode"),
     "network-tests-disabled": (None, "boot_mode"),
+    "udp-tests-disabled": (None, "boot_mode"),
     "async-hardening-tests-disabled": (None, "boot_mode"),
     "network-default-ambiguous": (None, "runtime_e1000_inventory"),
     **{case: (None, "boot_ipv4") for case in CONFIG_FAILURES},
@@ -385,7 +386,7 @@ def _scenario(case):
         **KERNEL_SUITE_CASES, **RUNTIME_SUITE_CASES, **NETWORK_SUITE_CASES,
         **RUNTIME_NETWORK_CASES, **HARDENING_CASES, **ASYNC_CORE_CASES,
         **ASYNC_NETWORK_CASES, **IP_SUITE_CASES, **ASYNC_HARD_CASES,
-        **{name: "udp-demo" for name in UDP_CASES},
+        **{name: "udp-tests" for name in UDP_CASES},
         **{name: name for name in FAULT_RESULTS},
         **{name: name.removesuffix("-disabled") for name in CASES if name.endswith("-tests-disabled")},
         "guest-tests-disabled": "kernel-tests",

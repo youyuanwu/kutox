@@ -27,7 +27,7 @@ class CatalogTests(unittest.TestCase):
 
     def test_guest_inventory_preserves_both_profiles_and_names_are_unique(self):
         self.assertEqual(len({item.name for item in CHECKS}), len(CHECKS))
-        for profile, count in (("ON", 78), ("OFF", 40)):
+        for profile, count in (("ON", 78), ("OFF", 38)):
             cases = [item for item in GUEST_CHECKS if profile in item.profiles and "full" in item.tiers]
             self.assertEqual(len(cases), count)
         names = {item.name for item in GUEST_CHECKS}

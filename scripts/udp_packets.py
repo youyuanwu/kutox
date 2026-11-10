@@ -1,4 +1,4 @@
-"""Independent wire fixtures and bounded peer for the explicit kernel UDP demo."""
+"""Independent wire fixtures and bounded peer for guest UDP acceptance."""
 
 import re
 import struct

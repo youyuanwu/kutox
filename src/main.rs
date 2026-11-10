@@ -161,7 +161,6 @@ mod serial;
 )]
 mod threads;
 mod time;
-mod udp_demo;
 
 use core::{arch::asm, ffi::CStr, panic::PanicInfo};
 use kutox::fw_cfg::BootMode;
@@ -263,6 +262,7 @@ fn probe() -> Result<BootOutcome, Failure> {
             | BootMode::AsyncCoreTests
             | BootMode::AsyncNetworkTests
             | BootMode::NetworkTests
+            | BootMode::UdpTests
             | BootMode::AsyncHardeningTests
     ) {
         guest_tests::run(&boot);
@@ -311,10 +311,6 @@ fn probe() -> Result<BootOutcome, Failure> {
     );
     let ticks = time::calibrate()?;
     println!("TSC ticks_per_us={ticks}");
-    if boot.mode == BootMode::UdpDemo {
-        udp_demo::run(&boot, allocator)?;
-        return Ok(BootOutcome::RuntimeStopped);
-    }
     if matches!(
         boot.mode,
         BootMode::Run | BootMode::DriverRun | BootMode::NetworkRun

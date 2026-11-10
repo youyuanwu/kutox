@@ -107,20 +107,31 @@ measured additional heap ceiling is 128 KiB; the selected profile measured
 memory, and application-owned payloads are charged separately. No additional
 kernel stack is created for the sockets.
 
-## Explicit demo and acceptance
+## Guest acceptance
 
-`udp-demo` is a finite production boot mode, available with guest fixtures ON
-or OFF. It requires the default `10.0.2.15/24`, one supported e1000 and the
-isolated test peer; another configured CIDR fails with `udp_demo_config`.
-Normal `run`/absent, `network-run` and `driver-run` behavior is not replaced.
+The [UDP fixture](../src/guest_tests/udp.rs) is part of the existing guest test
+harness, behind the `guest-tests` feature, and runs as the `udp.exchange` KTAP
+case selected by `udp-tests`. It requires the default `10.0.2.15/24`, one
+supported e1000 and the isolated test peer; another configured CIDR fails
+with `udp_test_config`. There is no production demo mode. Normal `run`/absent,
+`network-run` and `driver-run` behavior is not replaced.
 
 ```sh
-python3 scripts/check.py full --profiles both --scope guest --select 'udp-demo*'
+python3 scripts/check.py full --profiles ON --scope guest --select 'udp-tests*'
 ```
 
 The catalog runs 128 MiB, 32 MiB and nested-bridge 32 MiB cases. Low-memory UDP
 also belongs to smoke CI. All cases use the shared ISO and an owned local
-Ethernet socket pair, never TAP, a host NIC or an external peer.
+Ethernet socket pair, never TAP, a host NIC or an external peer. The shared
+fixture boundary additionally checks allocator snapshots and all service/IRQ/
+mapping quiescence. JSON/JUnit results use the native `udp.exchange` case.
+
+The socket implementation is compiled in both profiles. OFF contains no UDP
+guest fixture, explicitly rejects `udp-tests` before memory/device admission,
+and still receives build/profile and normal-boot validation. It no longer
+executes the UDP application acceptance workload; that belongs only to ON.
+The ELF gate requires the UDP fixture entry only in ON, rejects guest symbols
+in OFF and requires the production UDP control in both.
 
 Each of two runtime epochs proves:
 

@@ -1,5 +1,6 @@
-//! Explicit finite kernel client/echo demonstration, also available without fixtures.
+//! Guest-only UDP socket, wire and lifecycle acceptance.
 
+use super::TestCase;
 use crate::{
     Failure, async_runtime, async_sync,
     boot::BootInfo,
@@ -20,6 +21,10 @@ use kutox::async_state::Outcome;
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 
 const TIMEOUT: u64 = 3_000_000;
+pub(crate) static TESTS: &[TestCase] = &[TestCase {
+    name: "udp.exchange",
+    run: exchange,
+}];
 const PEER: Endpoint = Endpoint {
     address: [10, 0, 2, 2],
     port: 9000,
@@ -250,20 +255,26 @@ async fn exercise() -> Result<(), async_runtime::TaskFailure> {
     Ok(())
 }
 
-fn client(_: usize) {
+#[unsafe(no_mangle)]
+pub fn kutox_guest_udp_client(_: usize) {
+    let protocol = net_stack::start(kutox::network_config::Config::default()).unwrap();
     let task = async_runtime::spawn(exercise()).unwrap();
     assert_eq!(task.wait(), Ok(Outcome::Complete));
     drop(task);
     kernel_runtime::current_handle().request_shutdown().unwrap();
+    kernel_runtime::current_handle().wait_stopped().unwrap();
+    assert_eq!(protocol.wait(), Ok(Outcome::Cancelled));
+    drop(protocol);
 }
 
-pub fn run(
+fn exchange(
     boot: &BootInfo,
     frames: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
     if boot.ipv4 != kutox::network_config::Config::default() {
-        return Err(Failure::new("udp_demo_config", -291));
+        return Err(Failure::new("udp_test_config", -291));
     }
+    time::calibrate()?;
     for epoch in 1..=2 {
         let before = frames.stats();
         let heap_before = heap::global().stats();
@@ -271,7 +282,7 @@ pub fn run(
         EPOCH.store(epoch, Ordering::Release);
         let resources = Resources::start(boot, frames)?;
         let mut clients = Clients::new();
-        clients.add(client, 0)?;
+        clients.add(kutox_guest_udp_client, 0)?;
         let stats = resources.run_network(clients)?;
         assert!(stats.peak_tasks <= kernel_runtime::MAX_TASKS);
         drop(resources);
@@ -301,6 +312,6 @@ pub fn run(
         ));
     }
     drop(OLD.lock_save_irq().take());
-    serial::print(format_args!("UDP_DEMO_OK epochs=2\n"));
+    serial::print(format_args!("# UDP_COMPLETE epochs=2\n"));
     Ok(())
 }

@@ -32,7 +32,7 @@ through ARP and receiving exact ICMP echo replies from a normal, persistent
 boot, including a guest-test-free image. No Linux packet algorithm is replaced.
 
 The subsequent [bounded kernel UDP socket extension](udp-kernel-sockets.md)
-adds explicit client sockets and a finite echo/client demo to this same protocol
+adds explicit client sockets and guest-only echo/client acceptance to this same protocol
 owner. Normal boot still opens no application socket. This guide's phase evidence
 and original seven-feature measurements describe the completed ARP/ICMP milestone.
 
@@ -470,7 +470,7 @@ networking; the stdlib peer is an isolated test endpoint, not guest protocol cod
 | Mode/configuration | Intended behavior |
 | --- | --- |
 | `network-run` | Explicit persistent async/network service, identical to normal boot. |
-| `udp-demo` | Subsequent finite UDP echo/client acceptance in both profiles; never an implicit normal-boot client. |
+| `udp-tests` | Subsequent guest-only UDP echo/client acceptance; the OFF build rejects it before initialization. |
 | `driver-run` | Persistent driver/services only, preserving the previous driver-only boot. |
 | `run` or absent mode | Network-enabled boot with five guarded service stacks and one protocol future. |
 | `probe` / existing guest modes | Preserve explicit finite MAC and existing source/native test semantics. |

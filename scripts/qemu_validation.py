@@ -14,17 +14,30 @@ from qemu_protocols import *
 class KernelSuiteFailure(AssertionError):
     """A complete, consistent guest suite reported failed test cases."""
 
-def validate_udp_demo(case, returncode, output, symbols=None):
+
+def driver_ktap_lines(lines, *, link_down=False):
+    banners = {
+        "Intel(R) PRO/1000 Network Driver",
+        "Copyright (c) 1999-2006 Intel Corporation.",
+        "eth0 NIC Link is Up 1000 Mbps Full Duplex, Flow Control: RX",
+    }
+    if link_down:
+        banners.add("eth0 NIC Link is Down")
+    return ["# " + line if line in banners else line for line in lines]
+
+
+def validate_udp_suite(case, returncode, output, symbols=None):
     import udp_packets
 
     lines = output.splitlines()
-    validate_boot_preamble(lines, "udp-demo")
-    if returncode != 1 or lines[-2:] != ["UDP_DEMO_OK epochs=2", "KERNEL_RUNTIME_STOPPED"]:
-        raise AssertionError("UDP demo did not complete and shut down successfully")
-    if any(line.startswith(("E1000_", "CPU_EXCEPTION", "Bail out!", "KTAP", "not ok", "# NETWORK_STACK_ERROR", "# ASYNC_ERROR", "# RUNTIME_ERROR")) for line in lines):
-        raise AssertionError("UDP demo reached an error or fixture path")
-    if lines.count(HEAP_RESULT) != 1:
-        raise AssertionError("UDP demo lacks allocator provenance")
+    validate_boot_preamble(lines, "udp-tests")
+    if any(line.startswith(("E1000_", "CPU_EXCEPTION", "Bail out!", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KERNEL_RUNTIME_STOPPED", "# NETWORK_STACK_ERROR", "# ASYNC_ERROR", "# RUNTIME_ERROR")) for line in lines):
+        raise AssertionError("UDP suite aborted or reached a production boot path")
+    if validate_ktap(driver_ktap_lines(lines), returncode, ("udp.exchange",)):
+        raise KernelSuiteFailure("UDP suite failed: udp.exchange")
+    complete = "# UDP_COMPLETE epochs=2"
+    if lines.count(complete) != 1 or lines.index(complete) >= lines.index("ok 1 udp.exchange"):
+        raise AssertionError("UDP suite lacks completed two-epoch acceptance")
     protocol = udp_packets.Protocol()
     for line in lines:
         protocol.observe(line)
@@ -65,6 +78,8 @@ def validate_udp_demo(case, returncode, output, symbols=None):
             raise AssertionError("missing, duplicate or reordered original-driver UDP callbacks")
     if epoch_positions[0][-1] >= epoch_positions[1][0]:
         raise AssertionError("UDP epochs overlap before joined resource release")
+    if epoch_positions[1][-1] >= lines.index(complete):
+        raise AssertionError("UDP completion precedes joined resource release")
     errors = [line for line in lines if line.startswith("# UDP_ERROR")]
     expected_errors = [
         "# UDP_ERROR operation=bind error=InvalidPort",
@@ -741,7 +756,7 @@ def validate_thread_guard(returncode, output):
 
 def validate_result(case, returncode, output):
     if case in UDP_CASES:
-        validate_udp_demo(case, returncode, output)
+        validate_udp_suite(case, returncode, output)
         return
     if case in TEST_OPTIONS_FAILURES:
         lines = output.splitlines()
@@ -777,7 +792,7 @@ def validate_result(case, returncode, output):
         if any(line.startswith(("BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "# DRIVER_", "# KERNEL_SERVICES", "# NETWORK_STACK")) for line in lines):
             raise AssertionError("invalid CIDR reached allocation or source admission")
         return
-    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled", "async-network-tests-disabled", "network-tests-disabled", "async-hardening-tests-disabled"):
+    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled", "async-network-tests-disabled", "network-tests-disabled", "udp-tests-disabled", "async-hardening-tests-disabled"):
         lines = output.splitlines()
         expected = "E1000_MAC_FAIL stage=boot_mode code=-25"
         if returncode != 3 or not lines or lines[-1] != expected:
@@ -786,7 +801,7 @@ def validate_result(case, returncode, output):
             raise AssertionError("missing pinned-source feature-off boot marker")
         if [line for line in lines if line.startswith("E1000_")] != [expected] or any(
             line.startswith(("BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "THREAD_", "Bail out!",
-                             "# RUNTIME_", "# NATIVE_", "# LINUX_", "# ASYNC_", "# NET_IP_", "# NETWORK_STACK_"))
+                             "# RUNTIME_", "# NATIVE_", "# LINUX_", "# ASYNC_", "# NET_IP_", "# NETWORK_STACK_", "# UDP_"))
             for line in lines
         ):
             raise AssertionError("feature-off test mode reached initialization or guest fixtures")
@@ -1714,13 +1729,7 @@ def validate_managed_hardening(case, returncode, output, symbols=None):
 def validate_network_stack(case, returncode, output, symbols=None):
     lines = output.splitlines()
     validate_boot_preamble(lines, "network-tests")
-    banners = {
-        "Intel(R) PRO/1000 Network Driver",
-        "Copyright (c) 1999-2006 Intel Corporation.",
-        "eth0 NIC Link is Up 1000 Mbps Full Duplex, Flow Control: RX",
-    }
-    ktap_lines = ["# " + line if line in banners else line for line in lines]
-    if validate_ktap(ktap_lines, returncode, IP_TEST_NAMES):
+    if validate_ktap(driver_ktap_lines(lines), returncode, IP_TEST_NAMES):
         raise KernelSuiteFailure("IP guest acceptance failed")
     if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "Bail out!", "# ASYNC_ERROR",
                             "# ASYNC_NET_ERROR", "# NETWORK_STACK_ERROR", "# NET_ERROR", "# RUNTIME_ERROR",
@@ -1844,9 +1853,7 @@ def validate_network_stack(case, returncode, output, symbols=None):
 def validate_async_hardening(case, returncode, output, symbols=None):
     lines = output.splitlines()
     validate_boot_preamble(lines, "async-hardening-tests")
-    banners = {"Intel(R) PRO/1000 Network Driver", "Copyright (c) 1999-2006 Intel Corporation.", "eth0 NIC Link is Down",
-               "eth0 NIC Link is Up 1000 Mbps Full Duplex, Flow Control: RX"}
-    if validate_ktap(["# " + line if line in banners else line for line in lines], returncode, ASYNC_HARD_NAMES):
+    if validate_ktap(driver_ktap_lines(lines, link_down=True), returncode, ASYNC_HARD_NAMES):
         raise KernelSuiteFailure("async/network hardening failed")
     if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "Bail out!", "KERNEL_PANIC", "# LINUX_CALLBACK")) for line in lines):
         raise AssertionError("hardening aborted or depended on guest tracing")

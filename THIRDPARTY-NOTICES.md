@@ -23,7 +23,7 @@ callback/status records and directed guest acceptance are also kutox code.
 They observe unchanged Linux and smoltcp implementations; no packet algorithm
 or additional upstream networking/syscall source is copied.
 The [native UDP API](src/net_udp.rs), [bounded socket control](src/udp_state.rs)
-and [explicit demo](src/udp_demo.rs) are kutox code, with UDP processing supplied
+and [guest acceptance](src/guest_tests/udp.rs) are kutox code, with UDP processing supplied
 by smoltcp. Pinned Moss's socket handles, buffers and readiness separation
 informed this boundary; that revision has no IPv4 UDP implementation. No
 additional Moss networking, VFS or syscall source is imported. See the

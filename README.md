@@ -138,9 +138,9 @@ full test-suite run.
 
 Bounded [async kernel UDP sockets](docs/udp-kernel-sockets.md) now extend the same
 protocol owner. Four explicit client sockets support send/receive, deadlines,
-cancellation and close/rebind without exposing Linux structs. The finite
-`udp-demo` exercises echo and an initiating kernel client in both build profiles;
-normal boot opens no UDP socket. Moss's socket design informed the integration,
+cancellation and close/rebind without exposing Linux structs. Guest-only
+`udp-tests` exercises echo and an initiating kernel client in the ON profile;
+OFF omits the acceptance fixture. Normal boot opens no UDP socket. Moss's socket design informed the integration,
 while smoltcp owns UDP and unchanged Linux e1000 owns hardware packets.
 
 ## Requirements
@@ -243,7 +243,6 @@ The runner selects a mode at launch through QEMU's `fw_cfg` file
 |-------|----------|
 | `run` | Persistent Linux-driver, executor, packet-broker and ARP/static-IPv4/ICMP service; also the default when the optional file is absent. No NIC is not a fatal boot condition. |
 | `network-run` | Same network-enabled service as `run`. |
-| `udp-demo` | Finite production UDP echo/client and lifecycle demonstration with an isolated peer; available in both profiles, not started by normal boot. |
 | `driver-run` | Retain Linux e1000 and its workers without the Rust protocol service. |
 | `probe` | Explicit finite MAC proof, ending with `E1000_MAC_OK`; no original module startup. |
 | `eeprom-timeout` | Withhold the EEPROM grant to exercise the upstream retry/error path. |
@@ -253,6 +252,7 @@ The runner selects a mode at launch through QEMU's `fw_cfg` file
 | `driver-network-tests` | Exercise the managed e1000 runtime with exact packets, retained clients, typed errors and joined shutdown; reject two matching NICs before probing. |
 | `driver-hardening-tests` | Run five bounded manager/failure/FIFO/concurrent-consumer/pending-source teardown cases through the managed runtime. |
 | `network-tests` | Run separate configuration, exact ARP/static IPv4/ICMP and joined shutdown acceptance through the production stack and Linux packet callbacks. |
+| `udp-tests` | Run guest-only UDP echo/client, queue/deadline/cancellation and joined shutdown/restart acceptance through the production socket API. |
 | `heap-oom` | Attempt an oversized `Vec` allocation and verify Rust's fatal allocation-failure panic. |
 | `thread-stack-guard` | Read a thread's unmapped lower guard and verify the hardware page fault came from its mapped stack. |
 | `page-fault` | Read a deliberately unmapped address and verify the fatal exception diagnostics. |
@@ -414,17 +414,19 @@ instead proves initialized unclaimed idle; driver-only mode emits no packets.
 Restricted QEMU user networking does not make the guest directly host-pingable;
 packet acceptance uses an owned local Ethernet socket peer instead.
 
-### Explicit UDP echo/client demonstration
+### UDP guest acceptance
 
 ```sh
-python3 scripts/check.py full --profiles both --scope guest --select 'udp-demo*'
+python3 scripts/check.py full --profiles ON --scope guest --select 'udp-tests*'
 ```
 
-This keeps normal boot free of UDP applications and runs the finite production demo against
-an isolated peer at 128/32 MiB, including nested PCI bridges. It proves exact
+This runs the feature-gated guest suite against an isolated peer at 128/32 MiB,
+including nested PCI bridges. It proves exact
 UDP packets, queue limits, deadlines, cancellation, short-buffer retention,
 close/rebind and balanced shutdown/restart. See the
 [native API and Moss comparison](docs/udp-kernel-sockets.md).
+The OFF image rejects `udp-tests` before initialization and contains no UDP
+acceptance fixture; production UDP services remain compiled in both profiles.
 
 ### Exact IPv4 guest acceptance
 

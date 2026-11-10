@@ -62,9 +62,9 @@ PROFILE_CHECKS = (
 
 
 GUEST_CHECKS = (
-    guest('udp-demo', 'udp-demo', 40, 45, ('ON', 'OFF')),
-    guest('udp-demo-low-memory', 'udp-demo-low-memory', 40, 45, ('ON', 'OFF'), ('full', 'smoke')),
-    guest('udp-demo-nested-low-memory', 'udp-demo-nested-low-memory', 40, 45, ('ON', 'OFF')),
+    guest('udp-tests', 'udp-tests', 40, 45, ('ON',)),
+    guest('udp-tests-low-memory', 'udp-tests-low-memory', 40, 45, ('ON',), ('full', 'smoke')),
+    guest('udp-tests-nested-low-memory', 'udp-tests-nested-low-memory', 40, 45, ('ON',)),
     guest('mac-known', 'known', 20, 65, ('ON', 'OFF'), ('full',), ()),
     guest('mac-alternate', 'alternate', 20, 65, ('ON', 'OFF'), ('full',), ()),
     guest('mac-missing', 'missing', 20, 65, ('ON', 'OFF'), ('full',), ()),
@@ -147,6 +147,7 @@ GUEST_CHECKS = (
     guest('async-core-tests-disabled', 'async-core-tests-disabled', 25, 30, ('OFF',), ('full', 'smoke'), ()),
     guest('async-network-tests-disabled', 'async-network-tests-disabled', 35, 40, ('OFF',), ('full', 'smoke'), ()),
     guest('network-tests-disabled', 'network-tests-disabled', 20, 25, ('OFF',), ('full', 'smoke'), ()),
+    guest('udp-tests-disabled', 'udp-tests-disabled', 20, 25, ('OFF',), ('full', 'smoke'), ()),
     guest('async-hardening-tests-disabled', 'async-hardening-tests-disabled', 20, 25, ('OFF',), ('full', 'smoke'), ()),
     guest('test-options-disabled', 'test-options-disabled', 20, 25, ('OFF',), ('full', 'smoke'), ()),
     guest('network-soak-low-memory', 'network-default-low-memory', 90, 95, ('ON', 'OFF'), ('soak',), ('--soak-seconds', '30', '--soak-exchanges', '20')),
