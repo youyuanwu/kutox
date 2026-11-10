@@ -27,6 +27,7 @@ GUEST_SYMBOLS = {
     "kutox_guest_network_stack",
     "kutox_guest_udp_client",
     "kutox_guest_dhcp_client",
+    "kutox_guest_dns_client",
     "kutox_guest_async_hardening",
 } | NATIVE_INIT_SYMBOLS
 RUNTIME_SYMBOLS = {
@@ -41,6 +42,7 @@ RUNTIME_SYMBOLS = {
     "<smoltcp::iface::interface::InterfaceInner>::process_ethernet",
     "kutox::linux_driver::CALLBACKS",
     "kutox::net_udp::CONTROL",
+    "kutox::net_dns::CONTROL",
 }
 GUEST_ONLY_PATTERN = re.compile(
     r"::(?:guest_tests|tests|wait_tests|irq_tests|test_cleanup)::|"

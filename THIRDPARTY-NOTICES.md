@@ -8,14 +8,14 @@
 - Copyright: Copyright (C) smoltcp contributors.
 - License: 0BSD; the original notice is retained in the dependency's
   [LICENSE-0BSD.txt](https://github.com/smoltcp-rs/smoltcp/blob/v0.13.0/LICENSE-0BSD.txt).
-- Defaults are disabled. The ten selected features provide Ethernet, IPv4,
+- Defaults are disabled. The thirteen selected features provide Ethernet, IPv4,
   automatic ICMP echo replies, the required ICMP socket type, UDP sockets,
-  DHCPv4, owned allocation support, and fixed interface address/neighbor/route capacities.
+  DHCPv4, DNS, owned allocation support, and fixed DNS/interface capacities.
   UDP sockets are instantiated only when an explicit kernel client binds.
 
 The [staged token adapter](src/net_stack_state.rs), [protocol service](src/net_stack.rs)
 and [network configuration](src/network_config.rs) are kutox code. smoltcp owns
-ARP/IP/ICMP/UDP/DHCP processing; unchanged Linux e1000 still owns hardware TX/RX.
+ARP/IP/ICMP/UDP/DHCP/DNS processing; unchanged Linux e1000 still owns hardware TX/RX.
 This follows pinned Moss's declared stack baseline, not a copy of its complete
 socket, networking syscall or process-oriented service modules.
 The [stdlib packet peer](scripts/network_packets.py), bounded production
@@ -32,6 +32,10 @@ The [DHCP lifecycle and configuration](docs/dhcp-ipv4.md), guest fixture and
 isolated stdlib server are kutox integration and acceptance code. Pinned Moss
 does not provide DHCP client integration or enable smoltcp DHCP; the extension
 uses the existing exact smoltcp dependency rather than claiming a Moss DHCP port.
+The [DNS resolver](docs/dns-kernel-resolver.md), bounded request admission and
+response guard, guest fixture and independent peer are kutox integration code
+around smoltcp's DNS client and wire parsers. Pinned Moss has no resolver and
+does not enable smoltcp DNS; no additional Moss source is copied.
 The pinned-future arena, type-erased ownership/destruction adapter, bounded
 hardening hooks and completed-receipt closing gate are kutox implementations.
 The arena uses the existing adapted Moss owned frame guard; no new upstream

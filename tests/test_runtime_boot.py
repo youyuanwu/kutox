@@ -139,6 +139,9 @@ class RuntimeBootTests(unittest.TestCase):
             "# LINUX_CALLBACK event=17", "# NATIVE_INIT fake=1", "KTAP version 1",
             "# HOST_RUNTIME_ALIVE elapsed=3", "# DRIVER_READY fake=1",
             "# DRIVER_STOPPED stage=early_exit",
+            "# DNS_STORAGE charged=0 limit=32768 queries=4 results=4",
+            "# DNS_ERROR operation=resolve error=TimedOut",
+            "# DNS_TEST_EPOCH epoch=1",
         ]:
             with self.subTest(extra=extra), self.assertRaises(AssertionError):
                 runner.validate_live_boot("driver-runtime-default", live_log() + extra + "\n", SYMBOLS)

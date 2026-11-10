@@ -369,6 +369,13 @@ pub struct Engine {
 }
 
 impl Engine {
+    pub fn owns_port(&self, port: u16) -> bool {
+        self.handles.iter().any(|handle| {
+            let socket = self.sockets.get::<udp::Socket>(*handle);
+            socket.is_open() && socket.endpoint().port == port
+        })
+    }
+
     pub fn new() -> Result<Self, Error> {
         let mut storage: Vec<SocketStorage<'static>> = Vec::new();
         storage

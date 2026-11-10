@@ -7,7 +7,7 @@ import subprocess
 import network_packets as ip_packets
 from qemu_scenarios import *
 from qemu_scenarios import TEST_OPTIONS_FAILURES
-from qemu_scenarios import UDP_CASES, DHCP_CASES, DHCP_LIVE_CASES
+from qemu_scenarios import UDP_CASES, DHCP_CASES, DHCP_LIVE_CASES, DNS_CASES
 from qemu_protocols import *
 
 
@@ -136,6 +136,61 @@ def validate_dhcp_suite(case, returncode, output):
     storage = [line for line in lines if line.startswith("# DHCP_STORAGE ")]
     if len(storage) != 2 or any((match := re.fullmatch(r"# DHCP_STORAGE charged=(\d+) limit=32768 sockets=1 dns=2", line)) is None or not 0 <= int(match[1]) <= 32768 for line in storage):
         raise AssertionError("unbounded or missing DHCP socket storage")
+
+
+def validate_dns_suite(case, returncode, output):
+    lines = output.splitlines()
+    validate_boot_preamble(lines, "dns-tests")
+    if validate_ktap(driver_ktap_lines(lines, link_down=True), returncode, ("dns.lifecycle",)):
+        raise KernelSuiteFailure("DNS lifecycle failed")
+    if any(line.startswith(("E1000_", "CPU_EXCEPTION", "Bail out!", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "# DHCP_ERROR", "# DHCP_REJECT", "# NETWORK_STACK_ERROR", "# ASYNC_ERROR", "# RUNTIME_ERROR")) for line in lines):
+        raise AssertionError("DNS acceptance reached an unrelated production/error path")
+    errors = [
+        "NotConfigured", "InvalidName", "ResponseCode(3)", "ResponseCode(2)",
+        "Truncated", "Failed", "TooManyResults", "TimedOut", "Capacity",
+        "ConfigChanged", "ConfigChanged", "NotConfigured",
+    ]
+    previous = -1
+    for epoch in (1, 2):
+        start = f"# DNS_TEST_EPOCH epoch={epoch}"
+        release = f"# DNS_TEST_RELEASE epoch={epoch} queries=4"
+        link = f"# DNS_TEST_LINK_UP epoch={epoch}"
+        config = f"# DNS_TEST_CONFIG epoch={epoch} renewal=preserved dns_change=revoked link=revoked recovered=1"
+        join = f"# DNS_TEST_JOIN epoch={epoch} queries=0 pending_shutdown=cancelled frame=balanced heap=balanced"
+        markers = (start, release, link, config, join)
+        if any(lines.count(marker) != 1 for marker in markers):
+            raise AssertionError("DNS lifecycle/resource proof missing or duplicated")
+        positions = [lines.index(marker) for marker in markers]
+        if positions != sorted(positions) or positions[0] <= previous:
+            raise AssertionError("DNS lifecycle or runtime epochs reordered")
+        previous = positions[-1]
+        block = lines[positions[0]:positions[-1]]
+        storage = [line for line in block if line.startswith("# DNS_STORAGE ")]
+        if len(storage) != 1 or (match := re.fullmatch(r"# DNS_STORAGE charged=(\d+) limit=32768 queries=4 results=4", storage[0])) is None or not 0 <= int(match[1]) <= 32768:
+            raise AssertionError("DNS storage is missing or exceeds its measured ceiling")
+        api = [line for line in block if line.startswith("# DNS_TEST_API ")]
+        if len(api) != 1 or (match := re.fullmatch(rf"# DNS_TEST_API epoch={epoch} no_cache=2 errors=5 timeout=1 cancelled=1 polls=(\d+)", api[0])) is None or not 1 <= int(match[1]) <= 24 or not lines.index(api[0]) < positions[1]:
+            raise AssertionError("DNS API/idle budget proof is missing")
+        if [line for line in block if line.startswith("# DNS_ERROR ")] != [
+            f"# DNS_ERROR operation=resolve error={error}" for error in errors
+        ]:
+            raise AssertionError("DNS errors, cancellation or configuration revocation mismatch")
+        if block.count("# DNS_REJECT reason=response") != 5:
+            raise AssertionError("DNS malformed/stale response rejection proof mismatch")
+        configs = [line for line in block if line.startswith("# DHCP_CONFIG ")]
+        expected = ((1, 15, "1.1.1.1", "8.8.8.8"), (2, 15, "8.8.8.8", "1.1.1.1"), (4, 16, "8.8.8.8", "1.1.1.1"))
+        if len(configs) != 3:
+            raise AssertionError("DNS lease/configuration generation proof mismatch")
+        for line, (generation, last, first, second) in zip(configs, expected):
+            prefix = rf"# DHCP_CONFIG identity=[1-9]\d* generation={generation} "
+            suffix = f"cidr=10.0.2.{last}/24 router=Some(10.0.2.2) dns=[Some({first}), Some({second})]"
+            if re.fullmatch(prefix + re.escape(suffix), line) is None:
+                raise AssertionError("DNS server/address configuration mismatch")
+        losses = [line for line in block if line.startswith("# DHCP_DECONFIG ")]
+        if len(losses) != 1 or re.fullmatch(r"# DHCP_DECONFIG identity=[1-9]\d* generation=3 reason=link", losses[0]) is None:
+            raise AssertionError("DNS link loss did not revoke the lease")
+    if previous >= lines.index("ok 1 dns.lifecycle"):
+        raise AssertionError("DNS success preceded joined cleanup")
 
 
 def validate_pci_hierarchy(lines, case):
@@ -795,6 +850,9 @@ def validate_thread_guard(returncode, output):
 
 
 def validate_result(case, returncode, output):
+    if case in DNS_CASES:
+        validate_dns_suite(case, returncode, output)
+        return
     if case in DHCP_CASES:
         validate_dhcp_suite(case, returncode, output)
         return
@@ -835,7 +893,7 @@ def validate_result(case, returncode, output):
         if any(line.startswith(("BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "# DRIVER_", "# KERNEL_SERVICES", "# NETWORK_STACK")) for line in lines):
             raise AssertionError("invalid CIDR reached allocation or source admission")
         return
-    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled", "async-network-tests-disabled", "network-tests-disabled", "udp-tests-disabled", "dhcp-tests-disabled", "async-hardening-tests-disabled"):
+    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled", "async-network-tests-disabled", "network-tests-disabled", "udp-tests-disabled", "dhcp-tests-disabled", "dns-tests-disabled", "async-hardening-tests-disabled"):
         lines = output.splitlines()
         expected = "E1000_MAC_FAIL stage=boot_mode code=-25"
         if returncode != 3 or not lines or lines[-1] != expected:
@@ -844,7 +902,7 @@ def validate_result(case, returncode, output):
             raise AssertionError("missing pinned-source feature-off boot marker")
         if [line for line in lines if line.startswith("E1000_")] != [expected] or any(
             line.startswith(("BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "THREAD_", "Bail out!",
-                             "# RUNTIME_", "# NATIVE_", "# LINUX_", "# ASYNC_", "# NET_IP_", "# NETWORK_STACK_", "# UDP_", "# DHCP_"))
+                             "# RUNTIME_", "# NATIVE_", "# LINUX_", "# ASYNC_", "# NET_IP_", "# NETWORK_STACK_", "# UDP_", "# DHCP_", "# DNS_"))
             for line in lines
         ):
             raise AssertionError("feature-off test mode reached initialization or guest fixtures")
@@ -1534,7 +1592,7 @@ def validate_live_boot(case, output, symbols):
     validate_boot_preamble(lines, mode or "run", "fw_cfg" if mode else "default")
     validate_allocator(lines, 32 if case.endswith("low-memory") else 128)
     if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "KERNEL_RUNTIME_", "THREAD_", "KTAP", "ok ", "not ok ",
-                            "Bail out!", "KERNEL_PANIC", "# LINUX_CALLBACK", "# LINUX_FAULT", "# LINUX_RX_", "# LINUX_HARD_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR", "# NET_IP_", "# ASYNC_NET_", "# ASYNC_ERROR", "# NETWORK_STACK_ERROR", "# NETWORK_STACK_STOP", "# HOST_", "# DHCP_ERROR", "# DHCP_REJECT", "# DHCP_TEST_")) for line in lines):
+                            "Bail out!", "KERNEL_PANIC", "# LINUX_CALLBACK", "# LINUX_FAULT", "# LINUX_RX_", "# LINUX_HARD_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR", "# NET_IP_", "# ASYNC_NET_", "# ASYNC_ERROR", "# NETWORK_STACK_ERROR", "# NETWORK_STACK_STOP", "# HOST_", "# DHCP_ERROR", "# DHCP_REJECT", "# DHCP_TEST_", "# DNS_")) for line in lines):
         raise AssertionError("default runtime exited, failed, or entered a probe/fixture path")
     bound = int(LIVE_CASES[case][1])
     normalized = [line.removeprefix("# ") for line in lines]

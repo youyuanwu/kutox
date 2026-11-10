@@ -28,6 +28,7 @@ pub enum BootMode {
     NetworkTests,
     UdpTests,
     DhcpTests,
+    DnsTests,
     AsyncHardeningTests,
     HeapOom,
     ThreadStackGuard,
@@ -40,7 +41,10 @@ impl BootMode {
 
     pub const fn uses_ipv4(self) -> bool {
         self.is_network_runtime()
-            || matches!(self, Self::NetworkTests | Self::UdpTests | Self::DhcpTests)
+            || matches!(
+                self,
+                Self::NetworkTests | Self::UdpTests | Self::DhcpTests | Self::DnsTests
+            )
     }
 
     pub const fn selected(configured: Option<Self>) -> Self {
@@ -71,6 +75,7 @@ impl BootMode {
             Self::NetworkTests => "network-tests",
             Self::UdpTests => "udp-tests",
             Self::DhcpTests => "dhcp-tests",
+            Self::DnsTests => "dns-tests",
             Self::AsyncHardeningTests => "async-hardening-tests",
             Self::HeapOom => "heap-oom",
             Self::ThreadStackGuard => "thread-stack-guard",
@@ -112,6 +117,7 @@ impl BootMode {
                 | Self::NetworkTests
                 | Self::UdpTests
                 | Self::DhcpTests
+                | Self::DnsTests
                 | Self::AsyncHardeningTests
                 | Self::HeapOom
                 | Self::ThreadStackGuard
@@ -180,6 +186,7 @@ pub fn read_mode(
         b"network-tests" => Ok(Some(BootMode::NetworkTests)),
         b"udp-tests" => Ok(Some(BootMode::UdpTests)),
         b"dhcp-tests" => Ok(Some(BootMode::DhcpTests)),
+        b"dns-tests" => Ok(Some(BootMode::DnsTests)),
         b"async-hardening-tests" => Ok(Some(BootMode::AsyncHardeningTests)),
         b"heap-oom" => Ok(Some(BootMode::HeapOom)),
         b"thread-stack-guard" => Ok(Some(BootMode::ThreadStackGuard)),
@@ -353,6 +360,7 @@ mod tests {
             BootMode::NetworkTests,
             BootMode::UdpTests,
             BootMode::DhcpTests,
+            BootMode::DnsTests,
             BootMode::AsyncHardeningTests,
             BootMode::HeapOom,
             BootMode::ThreadStackGuard,
@@ -629,6 +637,7 @@ fn guest_modes_require_the_build_feature_without_changing_probe() {
         BootMode::NetworkTests,
         BootMode::UdpTests,
         BootMode::DhcpTests,
+        BootMode::DnsTests,
         BootMode::AsyncHardeningTests,
         BootMode::EepromTimeout,
         BootMode::PageFault,

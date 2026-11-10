@@ -18,8 +18,9 @@ does not enable DHCP. Therefore this is not a port of a working Moss DHCP
 implementation. No additional Moss source or Linux packet algorithm is copied.
 
 The only new dependency feature is `socket-dhcpv4`; defaults remain disabled,
-and smoltcp is not upgraded. DNS addresses are exposed as configuration only:
-there is no DNS resolver, TCP, IPv6, userspace or general routing API.
+and smoltcp is not upgraded. The subsequent
+[bounded DNS resolver](dns-kernel-resolver.md) consumes the published servers;
+TCP, IPv6, userspace and a general routing API remain outside this milestone.
 
 ## Boot selection
 
@@ -96,6 +97,10 @@ one-entry DHCP socket set and the optional application socket set share the same
 Interface owner. DHCP ingress/events and DHCP expiry dispatch are processed
 before application UDP egress, so configuration revocation closes old queues
 before they can emit with an obsolete address.
+
+The DNS extension uses the same ordering and invalidates outstanding queries
+on any address/subnet, gateway or DNS-list change as well as lease/link loss.
+Identical renewals preserve queries.
 
 The owner sleeps on packet/source events, client commands or the earliest
 smoltcp deadline across both sets. It does not add a periodic idle tick.

@@ -13,6 +13,7 @@ class StackProfileTests(unittest.TestCase):
         self.assertEqual(set(stack["features"]), {
             "alloc", "socket-udp",
             "socket-dhcpv4",
+            "socket-dns", "dns-max-server-count-2", "dns-max-result-count-4",
             "medium-ethernet", "proto-ipv4", "auto-icmp-echo-reply", "socket-icmp",
             "iface-max-addr-count-1", "iface-neighbor-cache-count-8", "iface-max-route-count-1",
         })

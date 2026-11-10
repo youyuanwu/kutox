@@ -121,6 +121,11 @@ mod net_async;
 mod net_device;
 #[cfg_attr(
     not(feature = "guest-tests"),
+    allow(dead_code, reason = "DNS API is available to native kernel clients")
+)]
+mod net_dns;
+#[cfg_attr(
+    not(feature = "guest-tests"),
     allow(
         dead_code,
         reason = "Native stack diagnostics are available to kernel clients"
@@ -264,6 +269,7 @@ fn probe() -> Result<BootOutcome, Failure> {
             | BootMode::NetworkTests
             | BootMode::UdpTests
             | BootMode::DhcpTests
+            | BootMode::DnsTests
             | BootMode::AsyncHardeningTests
     ) {
         guest_tests::run(&boot);

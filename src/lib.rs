@@ -6,6 +6,7 @@ pub mod async_state;
 pub mod completion_state;
 pub mod deferred_state;
 pub mod dma_state;
+pub mod dns_state;
 pub mod driver_registry;
 pub mod drivers;
 pub mod fw_cfg;

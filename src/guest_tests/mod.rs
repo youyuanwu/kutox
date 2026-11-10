@@ -5,6 +5,7 @@ pub(crate) mod async_network;
 mod async_runtime;
 mod device_irq;
 mod dhcp;
+mod dns;
 mod driver_services;
 pub(crate) mod e1000_irq;
 pub(crate) mod linux_e1000;
@@ -388,6 +389,8 @@ pub fn run(boot: &BootInfo) -> ! {
         udp::TESTS
     } else if boot.mode == BootMode::DhcpTests {
         dhcp::TESTS
+    } else if boot.mode == BootMode::DnsTests {
+        dns::TESTS
     } else if boot.mode == BootMode::AsyncHardeningTests {
         async_hardening::TESTS
     } else {

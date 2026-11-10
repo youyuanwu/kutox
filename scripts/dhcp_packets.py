@@ -44,12 +44,13 @@ def client(xid, message, local=bytes(4), requested=None, rebinding=False):
     return udp(bootp(xid, message, local=local, extra=options), local, target, 68, 67, True, target == BROADCAST)
 
 
-def reply(xid, message, last=15, invalid_router=False, mac=NIC, lease=3):
+def reply(xid, message, last=15, invalid_router=False, mac=NIC, lease=3,
+          dns=bytes((1, 1, 1, 1, 8, 8, 8, 8))):
     options = option(54, PEER_IP)
     if message != 6:
         options += option(1, bytes((255, 255, 255, 0)))
         options += option(3, bytes((10, 0, 3, 1)) if invalid_router else PEER_IP)
-        options += option(6, bytes((1, 1, 1, 1, 8, 8, 8, 8)))
+        options += option(6, dns)
         options += option(51, struct.pack("!I", lease))
         options += option(58, struct.pack("!I", 1 if lease == 3 else 60))
         options += option(59, struct.pack("!I", 2 if lease == 3 else 100))
