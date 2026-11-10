@@ -11,6 +11,7 @@ class StackProfileTests(unittest.TestCase):
         self.assertEqual(stack["version"], "=0.13.0")
         self.assertIs(stack["default-features"], False)
         self.assertEqual(set(stack["features"]), {
+            "alloc", "socket-udp",
             "medium-ethernet", "proto-ipv4", "auto-icmp-echo-reply", "socket-icmp",
             "iface-max-addr-count-1", "iface-neighbor-cache-count-8", "iface-max-route-count-1",
         })

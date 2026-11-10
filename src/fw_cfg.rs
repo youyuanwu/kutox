@@ -12,6 +12,7 @@ pub enum BootMode {
     Run,
     DriverRun,
     NetworkRun,
+    UdpDemo,
     Probe,
     EepromTimeout,
     PageFault,
@@ -33,7 +34,7 @@ pub enum BootMode {
 
 impl BootMode {
     pub const fn is_network_runtime(self) -> bool {
-        matches!(self, Self::Run | Self::NetworkRun)
+        matches!(self, Self::Run | Self::NetworkRun | Self::UdpDemo)
     }
 
     pub const fn uses_ipv4(self) -> bool {
@@ -52,6 +53,7 @@ impl BootMode {
             Self::Run => "run",
             Self::DriverRun => "driver-run",
             Self::NetworkRun => "network-run",
+            Self::UdpDemo => "udp-demo",
             Self::Probe => "probe",
             Self::EepromTimeout => "eeprom-timeout",
             Self::PageFault => "page-fault",
@@ -157,6 +159,7 @@ pub fn read_mode(
         b"run" => Ok(Some(BootMode::Run)),
         b"driver-run" => Ok(Some(BootMode::DriverRun)),
         b"network-run" => Ok(Some(BootMode::NetworkRun)),
+        b"udp-demo" => Ok(Some(BootMode::UdpDemo)),
         b"probe" => Ok(Some(BootMode::Probe)),
         b"eeprom-timeout" => Ok(Some(BootMode::EepromTimeout)),
         b"page-fault" => Ok(Some(BootMode::PageFault)),
@@ -328,6 +331,7 @@ mod tests {
             BootMode::Run,
             BootMode::DriverRun,
             BootMode::NetworkRun,
+            BootMode::UdpDemo,
             BootMode::Probe,
             BootMode::EepromTimeout,
             BootMode::PageFault,
@@ -560,7 +564,7 @@ mod tests {
     #[test]
     fn default_network_policy_and_reserved_hardening_rejection() {
         assert!(BootMode::selected(None).is_network_runtime());
-        for mode in [BootMode::Run, BootMode::NetworkRun] {
+        for mode in [BootMode::Run, BootMode::NetworkRun, BootMode::UdpDemo] {
             assert!(mode.uses_ipv4());
             assert_eq!(mode.validate_build(), Ok(()));
         }

@@ -131,6 +131,14 @@ mod net_stack;
     not(feature = "guest-tests"),
     allow(
         dead_code,
+        reason = "Native UDP sockets are opened explicitly by kernel clients"
+    )
+)]
+mod net_udp;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
         reason = "Additional kernel service APIs are available to native clients"
     )
 )]
@@ -153,6 +161,7 @@ mod serial;
 )]
 mod threads;
 mod time;
+mod udp_demo;
 
 use core::{arch::asm, ffi::CStr, panic::PanicInfo};
 use kutox::fw_cfg::BootMode;
@@ -302,6 +311,10 @@ fn probe() -> Result<BootOutcome, Failure> {
     );
     let ticks = time::calibrate()?;
     println!("TSC ticks_per_us={ticks}");
+    if boot.mode == BootMode::UdpDemo {
+        udp_demo::run(&boot, allocator)?;
+        return Ok(BootOutcome::RuntimeStopped);
+    }
     if matches!(
         boot.mode,
         BootMode::Run | BootMode::DriverRun | BootMode::NetworkRun

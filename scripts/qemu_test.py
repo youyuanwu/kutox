@@ -10,10 +10,13 @@ import re
 import time
 from hashlib import sha256
 import network_packets as ip_packets
+import udp_packets
 from qemu_scenarios import *
 from qemu_scenarios import SCENARIOS
+from qemu_scenarios import UDP_CASES
 from qemu_protocols import *
 from qemu_validation import *
+from qemu_validation import validate_udp_demo
 from qemu_process import *
 from test_reports import Result, accepted_results, write_reports
 
@@ -79,6 +82,8 @@ def run_case(args, case, index=0):
                     expected = async_network_tx_packets()
                 if case in IP_SUITE_CASES:
                     expected = ip_packets.replies()
+                if case in UDP_CASES:
+                    expected = udp_packets.replies()
                 if case in ASYNC_HARD_CASES:
                     expected = async_hardening_packets()
                 if case in LIVE_CASES:
@@ -95,6 +100,8 @@ def run_case(args, case, index=0):
                 validate_async_network(case, completed.returncode, output, symbols)
             elif case in IP_SUITE_CASES:
                 validate_network_stack(case, completed.returncode, output, symbols)
+            elif case in UDP_CASES:
+                validate_udp_demo(case, completed.returncode, output, symbols)
             elif case in ASYNC_HARD_CASES:
                 validate_async_hardening(case, completed.returncode, output, symbols)
             else:

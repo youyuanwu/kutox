@@ -352,6 +352,8 @@ fn capacity(session: net_async::Session) {
     assert_eq!(net_async::counts(), (0, 0, 0));
     let protocol = net_stack::start(Config::default()).unwrap();
     wait(|| net_stack::snapshot().ready);
+    let protocol_bytes = runtime::stats().payload_bytes;
+    assert!(protocol_bytes > 0 && protocol_bytes <= kutox::async_state::MAX_FUTURE_BYTES);
     PIN_REPOLLS.store(0, Ordering::Release);
     for (index, task) in tasks[..15].iter_mut().enumerate() {
         ADDRESSES[index].store(0, Ordering::Release);
@@ -361,7 +363,7 @@ fn capacity(session: net_async::Session) {
     }
     threads::yield_now().unwrap();
     wait(|| PIN_REPOLLS.load(Ordering::Acquire) == 15);
-    assert_eq!(runtime::stats().payload_bytes, 15 * 2048 + 608);
+    assert_eq!(runtime::stats().payload_bytes, 15 * 2048 + protocol_bytes);
     for task in &mut tasks {
         if let Some(task) = task.take() {
             cancelled(task);

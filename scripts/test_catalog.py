@@ -62,6 +62,9 @@ PROFILE_CHECKS = (
 
 
 GUEST_CHECKS = (
+    guest('udp-demo', 'udp-demo', 40, 45, ('ON', 'OFF')),
+    guest('udp-demo-low-memory', 'udp-demo-low-memory', 40, 45, ('ON', 'OFF'), ('full', 'smoke')),
+    guest('udp-demo-nested-low-memory', 'udp-demo-nested-low-memory', 40, 45, ('ON', 'OFF')),
     guest('mac-known', 'known', 20, 65, ('ON', 'OFF'), ('full',), ()),
     guest('mac-alternate', 'alternate', 20, 65, ('ON', 'OFF'), ('full',), ()),
     guest('mac-missing', 'missing', 20, 65, ('ON', 'OFF'), ('full',), ()),

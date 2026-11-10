@@ -13,6 +13,7 @@ import tempfile
 import time
 from contextlib import nullcontext
 import network_packets as ip_packets
+import udp_packets
 from qemu_scenarios import *
 from qemu_scenarios import SCENARIOS
 from qemu_protocols import *
@@ -169,8 +170,11 @@ def execute_suite(args, case, capture):
     asynchronous = kind == "async-network"
     ip_network = kind == "ip"
     async_hardening = kind == "async-hardening"
+    udp_network = kind == "udp"
     ambiguous = case.endswith("ambiguous")
     expected = async_hardening_packets() if async_hardening else ip_packets.replies() if ip_network else async_network_tx_packets() if asynchronous else [managed_hard_packet(sequence) for sequence in range(1, 5)] if hardening else [] if network and ambiguous else [network_packet(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)] if network else expected_tx_packets()
+    if udp_network:
+        expected = udp_packets.replies()
     host, peer = socket.socketpair()
     with host, peer, (tempfile.TemporaryDirectory(prefix="kutox-hardening-") if async_hardening else nullcontext(None)) as directory:
         command = qemu_command(args, case, capture, peer.fileno())
@@ -188,7 +192,7 @@ def execute_suite(args, case, capture):
                 if monitor_path is not None:
                     monitor = QMP(monitor_path)
                     monitor.connect(process, deadline)
-                protocols = (AsyncHardProtocol(host.sendall, monitor),) if async_hardening else (IPProtocol(host.sendall),) if ip_network else (AsyncNetworkProtocol(host.sendall),) if asynchronous else (ManagedHardProtocol(host.sendall),) if hardening else (NetworkProtocol(host.sendall, ambiguous),) if network else (RXProtocol(host.sendall), HardProtocol(host.sendall))
+                protocols = (udp_packets.Protocol(host.sendall),) if udp_network else (AsyncHardProtocol(host.sendall, monitor),) if async_hardening else (IPProtocol(host.sendall),) if ip_network else (AsyncNetworkProtocol(host.sendall),) if asynchronous else (ManagedHardProtocol(host.sendall),) if hardening else (NetworkProtocol(host.sendall, ambiguous),) if network else (RXProtocol(host.sendall), HardProtocol(host.sendall))
                 with selectors.DefaultSelector() as selector:
                     selector.register(process.stdout, selectors.EVENT_READ, "serial")
                     selector.register(host, selectors.EVENT_READ, "network")
@@ -223,7 +227,7 @@ def execute_suite(args, case, capture):
                                     if len(network_pending) < size + 4:
                                         break
                                     transmitted.append(bytes(network_pending[4:size + 4]))
-                                    if ip_network:
+                                    if ip_network or udp_network:
                                         protocols[0].transmit(transmitted[-1])
                                     del network_pending[:size + 4]
                                     if len(transmitted) > len(expected):

@@ -8,9 +8,10 @@
 - Copyright: Copyright (C) smoltcp contributors.
 - License: 0BSD; the original notice is retained in the dependency's
   [LICENSE-0BSD.txt](https://github.com/smoltcp-rs/smoltcp/blob/v0.13.0/LICENSE-0BSD.txt).
-- Defaults are disabled. The seven selected features provide Ethernet, IPv4,
-  automatic ICMP echo replies, the required ICMP socket type, and fixed interface
-  address/neighbor/route capacities. No application sockets are instantiated.
+- Defaults are disabled. The nine selected features provide Ethernet, IPv4,
+  automatic ICMP echo replies, the required ICMP socket type, UDP sockets,
+  owned allocation support, and fixed interface address/neighbor/route capacities.
+  UDP sockets are instantiated only when an explicit kernel client binds.
 
 The [staged token adapter](src/net_stack_state.rs), [protocol service](src/net_stack.rs)
 and [static configuration](src/network_config.rs) are kutox code. smoltcp owns
@@ -21,6 +22,12 @@ The [stdlib packet peer](scripts/network_packets.py), bounded production
 callback/status records and directed guest acceptance are also kutox code.
 They observe unchanged Linux and smoltcp implementations; no packet algorithm
 or additional upstream networking/syscall source is copied.
+The [native UDP API](src/net_udp.rs), [bounded socket control](src/udp_state.rs)
+and [explicit demo](src/udp_demo.rs) are kutox code, with UDP processing supplied
+by smoltcp. Pinned Moss's socket handles, buffers and readiness separation
+informed this boundary; that revision has no IPv4 UDP implementation. No
+additional Moss networking, VFS or syscall source is imported. See the
+[UDP guide](docs/udp-kernel-sockets.md) for precise reference paths and differences.
 The pinned-future arena, type-erased ownership/destruction adapter, bounded
 hardening hooks and completed-receipt closing gate are kutox implementations.
 The arena uses the existing adapted Moss owned frame guard; no new upstream

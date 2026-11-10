@@ -130,6 +130,7 @@ IP_SUITE_CASES = {case: "network-tests" for case in (
 
 IP_TEST_NAMES = ("net.configuration", "net.exchange", "net.shutdown")
 
+UDP_CASES = {"udp-demo", "udp-demo-low-memory", "udp-demo-nested-low-memory"}
 
 ASYNC_HARD_CASES = {case: "async-hardening-tests" for case in (
     "async-hardening-tests", "async-hardening-tests-low-memory", "async-hardening-tests-nested-low-memory",
@@ -237,6 +238,7 @@ CASES = {
     **{case: (None, None) for case in ASYNC_NETWORK_CASES},
     **{case: (None, None) for case in IP_SUITE_CASES},
     **{case: (None, None) for case in ASYNC_HARD_CASES},
+    **{case: (None, None) for case in UDP_CASES},
 }
 
 
@@ -383,6 +385,7 @@ def _scenario(case):
         **KERNEL_SUITE_CASES, **RUNTIME_SUITE_CASES, **NETWORK_SUITE_CASES,
         **RUNTIME_NETWORK_CASES, **HARDENING_CASES, **ASYNC_CORE_CASES,
         **ASYNC_NETWORK_CASES, **IP_SUITE_CASES, **ASYNC_HARD_CASES,
+        **{name: "udp-demo" for name in UDP_CASES},
         **{name: name for name in FAULT_RESULTS},
         **{name: name.removesuffix("-disabled") for name in CASES if name.endswith("-tests-disabled")},
         "guest-tests-disabled": "kernel-tests",
@@ -393,7 +396,7 @@ def _scenario(case):
         **{name: value[0] for name, value in LIVE_CASES.items()},
     }.get(case, "probe")
     protocol = next((kind for cases, kind in (
-        (ASYNC_HARD_CASES, "async-hardening"), (IP_SUITE_CASES, "ip"),
+        (UDP_CASES, "udp"), (ASYNC_HARD_CASES, "async-hardening"), (IP_SUITE_CASES, "ip"),
         (ASYNC_NETWORK_CASES, "async-network"), (HARDENING_CASES, "managed-hardening"),
         (NETWORK_SUITE_CASES | RUNTIME_NETWORK_CASES, "network"),
         (KERNEL_SUITE_CASES, "kernel"),

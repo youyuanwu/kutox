@@ -7,11 +7,80 @@ import subprocess
 import network_packets as ip_packets
 from qemu_scenarios import *
 from qemu_scenarios import TEST_OPTIONS_FAILURES
+from qemu_scenarios import UDP_CASES
 from qemu_protocols import *
 
 
 class KernelSuiteFailure(AssertionError):
     """A complete, consistent guest suite reported failed test cases."""
+
+def validate_udp_demo(case, returncode, output, symbols=None):
+    import udp_packets
+
+    lines = output.splitlines()
+    validate_boot_preamble(lines, "udp-demo")
+    if returncode != 1 or lines[-2:] != ["UDP_DEMO_OK epochs=2", "KERNEL_RUNTIME_STOPPED"]:
+        raise AssertionError("UDP demo did not complete and shut down successfully")
+    if any(line.startswith(("E1000_", "CPU_EXCEPTION", "Bail out!", "KTAP", "not ok", "# NETWORK_STACK_ERROR", "# ASYNC_ERROR", "# RUNTIME_ERROR")) for line in lines):
+        raise AssertionError("UDP demo reached an error or fixture path")
+    if lines.count(HEAP_RESULT) != 1:
+        raise AssertionError("UDP demo lacks allocator provenance")
+    protocol = udp_packets.Protocol()
+    for line in lines:
+        protocol.observe(line)
+    if protocol.offers != [(epoch, step) for epoch in (1, 2) for step in range(10)]:
+        raise AssertionError("incomplete UDP offer ledger")
+    epoch_positions = []
+    for epoch in (1, 2):
+        storage = [line for line in lines if line.startswith(f"# UDP_STORAGE epoch={epoch} ")]
+        if len(storage) != 1:
+            raise AssertionError("missing or duplicate bounded UDP storage evidence")
+        match = re.fullmatch(rf"# UDP_STORAGE epoch={epoch} sockets=4 rx_queue=2 tx_queue=2 mailbox=1 max_datagram=1472 charged=(\d+)", storage[0])
+        if match is None or not 0 < int(match[1]) <= 128 * 1024:
+            raise AssertionError("UDP allocation exceeded the storage ceiling")
+        block = f"# UDP_BLOCK epoch={epoch}"
+        pressure = f"# UDP_BACKPRESSURE epoch={epoch} queued=2 timeout=1 cancelled=1 closed=1"
+        api = f"# UDP_API epoch={epoch} invalid=5 capacity=4 cancelled=3 timeout=2 stale={epoch - 1}"
+        exchange = f"# UDP_EXCHANGE epoch={epoch} echo=4 client=1 pressure=3/4 rejected=4 short=retained rebind=1 rx=16 tx=11"
+        closed = f"# UDP_CLOSED epoch={epoch} frames=balanced heap=balanced sockets=0 requests=0"
+        markers = (storage[0], block, pressure, api, f"# UDP_OFFER epoch={epoch} step=0 kind=arp length=0",
+                   f"# UDP_OFFER epoch={epoch} step=9 kind=rebind length=0", exchange, closed)
+        if any(lines.count(marker) != 1 for marker in markers) or [lines.index(marker) for marker in markers] != sorted(lines.index(marker) for marker in markers):
+            raise AssertionError("UDP API/exchange/join evidence is missing, duplicated or reordered")
+        epoch_positions.append([lines.index(marker) for marker in markers])
+        source = [line for line in lines if line.startswith(f"# UDP_SOURCE epoch={epoch} ")]
+        events = []
+        for line in source:
+            match = re.fullmatch(rf"# UDP_SOURCE epoch={epoch} event=(\d+) count=(\d+) function=([0-9a-f]+) object=([0-9a-f]+) result=(-?\d+)", line)
+            if match is None:
+                raise AssertionError("malformed original-driver UDP proof")
+            event, count = int(match[1]), int(match[2])
+            if count != {17: 11}.get(event, 1) or int(match[5]) < 0:
+                raise AssertionError("wrong original-driver UDP callback count/result")
+            validate_callback_symbol(event, int(match[3], 16), int(match[4], 16), symbols)
+            if not lines.index(exchange) < lines.index(line) < lines.index(closed):
+                raise AssertionError("original-driver proof is outside the joined UDP epoch")
+            events.append(event)
+        if events != [1, 2, 3, 5, 6, 7, 17, 34]:
+            raise AssertionError("missing, duplicate or reordered original-driver UDP callbacks")
+    if epoch_positions[0][-1] >= epoch_positions[1][0]:
+        raise AssertionError("UDP epochs overlap before joined resource release")
+    errors = [line for line in lines if line.startswith("# UDP_ERROR")]
+    expected_errors = [
+        "# UDP_ERROR operation=bind error=InvalidPort",
+        "# UDP_ERROR operation=bind error=AddressInUse",
+        "# UDP_ERROR operation=bind error=Capacity",
+        "# UDP_ERROR operation=send error=TooLarge",
+        "# UDP_ERROR operation=send error=Unaddressable",
+        "# UDP_ERROR operation=receive error=TimedOut",
+        "# UDP_ERROR operation=send error=TimedOut",
+        "# UDP_ERROR operation=receive error=BufferTooSmall { required: 32 }",
+        *["# UDP_ERROR operation=receive error=TimedOut"] * 3,
+    ]
+    if errors != expected_errors + ["# UDP_ERROR operation=send error=Closed"] + expected_errors:
+        raise AssertionError("UDP error/cancellation/deadline evidence is inconsistent")
+    if protocol.blocks != [1, 2] or lines.count("# NETWORK_STACK_STOP rx=16 arp=1 echo=0 rejected=2 tx=11") != 2:
+        raise AssertionError("UDP stack shutdown packet ledger is inconsistent")
 
 
 def validate_pci_hierarchy(lines, case):
@@ -671,6 +740,9 @@ def validate_thread_guard(returncode, output):
 
 
 def validate_result(case, returncode, output):
+    if case in UDP_CASES:
+        validate_udp_demo(case, returncode, output)
+        return
     if case in TEST_OPTIONS_FAILURES:
         lines = output.splitlines()
         expected = TEST_OPTIONS_FAILURES[case][2]

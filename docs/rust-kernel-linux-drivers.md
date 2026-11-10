@@ -29,6 +29,9 @@ smoltcp service now supplies ARP/static IPv4/ICMP through that driver; no Linux
 IP stack or Linux application environment is imported. The completed
 [async milestone guide](async-kernel-networking.md) covers the mixed execution
 model, raw async clients, bounds and current validation.
+The subsequent [bounded kernel UDP API](udp-kernel-sockets.md) uses the same
+protocol owner and unchanged Linux packet path; it does not import Moss's VFS,
+syscall layer or a Linux IP stack.
 All eight [Moss-style integration phases](#moss-style-driver-infrastructure) are
 complete. The [kernel-client lifecycle](#kernel-client-lifecycle) describes how
 to admit native consumers and retain/retire their packet ownership.

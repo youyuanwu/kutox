@@ -131,10 +131,17 @@ both guest-enabled and test-free images.
 Async/network hardening now covers bounded captures, allocation/IRQ/map failures,
 accepted cancellation, RX/TX starvation, link recovery and same-parent rebind.
 The completed milestone's [as-built guide](docs/async-kernel-networking.md)
-documents native async APIs, ownership and supported limits. Latest implementation
+documents native async APIs, ownership and supported limits. That milestone's implementation
 validation passed 171 Rust tests per profile and 182 Python tests, targeted guests,
 strict lint and source/ELF checks. Documentation completion does not claim a new
 full test-suite run.
+
+Bounded [async kernel UDP sockets](docs/udp-kernel-sockets.md) now extend the same
+protocol owner. Four explicit client sockets support send/receive, deadlines,
+cancellation and close/rebind without exposing Linux structs. The finite
+`udp-demo` exercises echo and an initiating kernel client in both build profiles;
+normal boot opens no UDP socket. Moss's socket design informed the integration,
+while smoltcp owns UDP and unchanged Linux e1000 owns hardware packets.
 
 ## Requirements
 
@@ -236,6 +243,7 @@ The runner selects a mode at launch through QEMU's `fw_cfg` file
 |-------|----------|
 | `run` | Persistent Linux-driver, executor, packet-broker and ARP/static-IPv4/ICMP service; also the default when the optional file is absent. No NIC is not a fatal boot condition. |
 | `network-run` | Same network-enabled service as `run`. |
+| `udp-demo` | Finite production UDP echo/client and lifecycle demonstration with an isolated peer; available in both profiles, not started by normal boot. |
 | `driver-run` | Retain Linux e1000 and its workers without the Rust protocol service. |
 | `probe` | Explicit finite MAC proof, ending with `E1000_MAC_OK`; no original module startup. |
 | `eeprom-timeout` | Withhold the EEPROM grant to exercise the upstream retry/error path. |
@@ -380,7 +388,7 @@ qemu-system-x86_64 -machine pc -accel tcg -cpu qemu64 -smp 1 -m 128M \
 ```
 
 The runtime stays in the dispatcher; use Ctrl+C to end this owned manual session.
-It passively answers ARP/ICMP. There is no shell, userspace/socket application,
+It passively answers ARP/ICMP. There is no shell, userspace application,
 DHCP, gateway or TCP service.
 
 No mode flag is needed for IPv4. Explicit
@@ -405,6 +413,18 @@ on the socket and TX PCAP, then at least three seconds alive. No/unsupported NIC
 instead proves initialized unclaimed idle; driver-only mode emits no packets.
 Restricted QEMU user networking does not make the guest directly host-pingable;
 packet acceptance uses an owned local Ethernet socket peer instead.
+
+### Explicit UDP echo/client demonstration
+
+```sh
+python3 scripts/check.py full --profiles both --scope guest --select 'udp-demo*'
+```
+
+This keeps normal boot free of UDP applications and runs the finite production demo against
+an isolated peer at 128/32 MiB, including nested PCI bridges. It proves exact
+UDP packets, queue limits, deadlines, cancellation, short-buffer retention,
+close/rebind and balanced shutdown/restart. See the
+[native API and Moss comparison](docs/udp-kernel-sockets.md).
 
 ### Exact IPv4 guest acceptance
 

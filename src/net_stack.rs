@@ -1,12 +1,13 @@
 //! A single protocol future; all Linux calls stay on the packet broker.
 
-use crate::{Failure, async_runtime, async_sync, net_async, serial, time};
+use crate::{Failure, async_runtime, async_sync, net_async, net_udp, serial, time};
 use alloc::{alloc::alloc, boxed::Box};
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::{alloc::Layout, future::poll_fn, mem::size_of_val, pin::Pin, task::Poll};
 use kutox::{
     net_stack_state::{self, Adapter, Admission, TxBacking},
     network_config::Config,
+    udp_state::Engine,
 };
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 use smoltcp::{
@@ -75,6 +76,8 @@ impl TxBacking for net_async::TxReservation {
 
 struct State {
     _claim: Claim,
+    _udp: net_udp::Service,
+    udp: Option<Engine>,
     identity: u64,
     interface: Option<Interface>,
     config: Config,
@@ -136,6 +139,12 @@ pub(crate) fn start(config: Config) -> Result<async_runtime::Task, Failure> {
         return Err(Failure::new("network_stack_busy", -16));
     }
     let claim = Claim;
+    let udp = net_udp::start(config).map_err(|error| {
+        serial::print(format_args!(
+            "# NETWORK_STACK_ERROR operation=udp error={error:?}\n"
+        ));
+        Failure::new("network_udp_start", -290)
+    })?;
     *STATUS.lock_save_irq() = Snapshot::default();
     let before = crate::heap::global().stats();
     #[cfg(feature = "guest-tests")]
@@ -149,6 +158,8 @@ pub(crate) fn start(config: Config) -> Result<async_runtime::Task, Failure> {
     let state = unsafe {
         pointer.write(State {
             _claim: claim,
+            _udp: udp,
+            udp: None,
             identity: 0,
             interface: None,
             config,
@@ -173,6 +184,7 @@ pub(crate) fn start(config: Config) -> Result<async_runtime::Task, Failure> {
     let charged = async_runtime::METADATA_BYTES
         + net_async::METADATA_BYTES
         + METADATA_BYTES
+        + net_udp::METADATA_BYTES
         + async_runtime::FUTURE_STORAGE_BYTES
         + net_async::PACKET_STORAGE_BYTES
         + 2 * async_runtime::STACK_BYTES
@@ -233,10 +245,13 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
     let mut waiting_link = true;
     let mut reported_ready = false;
     let mut processed = 0;
+    let mut empty_sockets = SocketSet::new(alloc::vec::Vec::<SocketStorage<'static>>::new());
     loop {
+        let mut udp_work = net_udp::work();
         let mut changed = session
             .changed()
             .map_err(|error| failure("changed", error))?;
+        net_udp::drive(&mut state.udp);
         let info = session.info().map_err(|error| failure("info", error))?;
         if !info.ready || !info.link {
             if !waiting_link {
@@ -248,7 +263,14 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
                 waiting_link = true;
                 publish(&state, false);
             }
-            changed.await.map_err(async_runtime::Error::task_failure)?;
+            poll_fn(|cx| {
+                if let Poll::Ready(result) = Pin::new(&mut changed).poll(cx) {
+                    return Poll::Ready(result);
+                }
+                Pin::new(&mut udp_work).poll(cx)
+            })
+            .await
+            .map_err(async_runtime::Error::task_failure)?;
             continue;
         }
         if !reported_ready {
@@ -269,13 +291,15 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
         }
         if rx.is_none() {
             let timestamp = now()?;
-            let mut storage: [SocketStorage<'_>; 0] = [];
-            let sockets = SocketSet::new(&mut storage[..]);
+            let sockets = state
+                .udp
+                .as_ref()
+                .map_or(&empty_sockets, |udp| &udp.sockets);
             let delay = state
                 .interface
                 .as_mut()
                 .expect("owned interface")
-                .poll_delay(timestamp, &sockets);
+                .poll_delay(timestamp, sockets);
             let mut receive = session.receive();
             let mut sleep = delay
                 .map(|delay| {
@@ -309,6 +333,13 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
                             .map_err(async_runtime::Error::task_failure),
                     );
                 }
+                if let Poll::Ready(result) = Pin::new(&mut udp_work).poll(cx) {
+                    return Poll::Ready(
+                        result
+                            .map(|()| None)
+                            .map_err(async_runtime::Error::task_failure),
+                    );
+                }
                 Poll::Pending
             })
             .await?;
@@ -318,7 +349,6 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
                     .as_mut()
                     .expect("owned interface")
                     .poll_maintenance(now()?);
-                continue;
             }
             let info = session.info().map_err(|error| failure("link", error))?;
             if !info.ready || !info.link {
@@ -337,48 +367,69 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
             }
             Err(error) => return Err(failure("reserve", error)),
         };
-        let admission = net_stack_state::admission(
-            rx.as_ref().expect("staged RX").bytes(),
-            state.config,
-            state.mac,
-        );
-        #[cfg(feature = "guest-tests")]
-        crate::guest_tests::network_stack::retain(rx.as_ref().expect("staged RX"));
-        #[cfg(feature = "guest-tests")]
-        crate::guest_tests::async_hardening::retain_packet(rx.as_ref().expect("staged RX"));
-        state.rx += 1;
-        match admission {
-            Admission::Arp => state.arp += 1,
-            Admission::Echo => state.echo += 1,
-            Admission::Rejected => state.rejected += 1,
-            Admission::Other => {}
+        net_udp::drive(&mut state.udp);
+        if let Some(packet) = &rx {
+            let admission = net_stack_state::admission(packet.bytes(), state.config, state.mac);
+            #[cfg(feature = "guest-tests")]
+            crate::guest_tests::network_stack::retain(rx.as_ref().expect("staged RX"));
+            #[cfg(feature = "guest-tests")]
+            crate::guest_tests::async_hardening::retain_packet(rx.as_ref().expect("staged RX"));
+            state.rx += 1;
+            match admission {
+                Admission::Arp => state.arp += 1,
+                Admission::Echo => state.echo += 1,
+                Admission::Rejected => state.rejected += 1,
+                Admission::Other => {}
+            }
+            if admission == Admission::Rejected {
+                rx = None;
+                drop(backing.take());
+            } else {
+                let sockets = state
+                    .udp
+                    .as_mut()
+                    .map_or(&mut empty_sockets, |udp| &mut udp.sockets);
+                let result = state
+                    .interface
+                    .as_mut()
+                    .expect("owned interface")
+                    .poll_ingress_single(
+                        now()?,
+                        &mut Adapter {
+                            rx: &mut rx,
+                            backing: &mut backing,
+                            pending: &mut pending,
+                        },
+                        sockets,
+                    );
+                assert_ne!(
+                    result,
+                    PollIngressSingleResult::None,
+                    "reserved pair not consumed"
+                );
+            }
         }
-        if admission == Admission::Rejected {
-            rx = None;
-            drop(backing.take());
-        } else {
-            let mut storage: [SocketStorage<'_>; 0] = [];
-            let mut sockets = SocketSet::new(&mut storage[..]);
-            let result = state
+        if pending.is_none() && backing.is_some() {
+            let sockets = state
+                .udp
+                .as_mut()
+                .map_or(&mut empty_sockets, |udp| &mut udp.sockets);
+            state
                 .interface
                 .as_mut()
                 .expect("owned interface")
-                .poll_ingress_single(
+                .poll_egress(
                     now()?,
                     &mut Adapter {
                         rx: &mut rx,
                         backing: &mut backing,
                         pending: &mut pending,
                     },
-                    &mut sockets,
+                    sockets,
                 );
-            assert_ne!(
-                result,
-                PollIngressSingleResult::None,
-                "reserved pair not consumed"
-            );
-            drop(backing.take());
         }
+        drop(backing.take());
+        net_udp::drive(&mut state.udp);
         if let Some(result) = pending.take() {
             result
                 .map_err(|error| failure("commit", error))?
