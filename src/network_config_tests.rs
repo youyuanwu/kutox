@@ -1,6 +1,62 @@
 use super::*;
 
 #[test]
+fn dhcp_is_explicit_and_never_uses_a_static_fallback() {
+    assert_eq!(Mode::parse(b"dhcp"), Ok(Mode::Dhcp));
+    assert_eq!(Mode::Dhcp.address(), None);
+    assert_eq!(Mode::parse(b"10.0.2.15/24"), Ok(Mode::default()));
+    for bytes in [b"DHCP".as_slice(), b"dhcp\0", b" dhcp", b"dhcp\n"] {
+        assert!(Mode::parse(bytes).is_err());
+    }
+}
+
+fn lease() -> smoltcp::socket::dhcpv4::Config<'static> {
+    smoltcp::socket::dhcpv4::Config {
+        server: smoltcp::socket::dhcpv4::ServerInfo {
+            address: Ipv4Address::new(10, 0, 2, 2),
+            identifier: Ipv4Address::new(10, 0, 2, 2),
+        },
+        address: Config::default().cidr(),
+        router: Some(Ipv4Address::new(10, 0, 2, 2)),
+        dns_servers: Default::default(),
+        packet: None,
+    }
+}
+
+#[test]
+fn leased_settings_are_validated_and_dns_is_bounded() {
+    let mut lease = lease();
+    for address in [Ipv4Address::new(1, 1, 1, 1), Ipv4Address::new(8, 8, 8, 8)] {
+        lease.dns_servers.push(address).unwrap();
+    }
+    let settings = Settings::from_dhcp(&lease).unwrap();
+    assert_eq!(settings.address, Config::default());
+    assert_eq!(settings.router, lease.router);
+    assert_eq!(
+        settings.dns,
+        [
+            Some(Ipv4Address::new(1, 1, 1, 1)),
+            Some(Ipv4Address::new(8, 8, 8, 8))
+        ]
+    );
+    for router in [
+        Ipv4Address::UNSPECIFIED,
+        Ipv4Address::new(10, 0, 3, 1),
+        Ipv4Address::new(10, 0, 2, 255),
+        lease.address.address(),
+    ] {
+        lease.router = Some(router);
+        assert_eq!(Settings::from_dhcp(&lease), Err(Error::Router));
+    }
+    lease.router = None;
+    lease.dns_servers[0] = Ipv4Address::BROADCAST;
+    assert_eq!(Settings::from_dhcp(&lease), Err(Error::Dns));
+    lease.dns_servers.clear();
+    lease.server.identifier = Ipv4Address::UNSPECIFIED;
+    assert_eq!(Settings::from_dhcp(&lease), Err(Error::Server));
+}
+
+#[test]
 fn default_and_connected_subnets() {
     assert_eq!(Config::parse(b"10.0.2.15/24"), Ok(Config::default()));
     for value in [

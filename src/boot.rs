@@ -47,7 +47,7 @@ pub struct BootInfo {
     pub memory_map: &'static [&'static limine::memory_map::Entry],
     pub mode: BootMode,
     pub mode_configured: bool,
-    pub ipv4: kutox::network_config::Config,
+    pub ipv4: kutox::network_config::Mode,
     pub rsdp_physical: Option<u64>,
     #[cfg(feature = "guest-tests")]
     pub test_selection: kutox::test_selection::Selection,

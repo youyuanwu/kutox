@@ -4,6 +4,7 @@ pub(crate) mod async_hardening;
 pub(crate) mod async_network;
 mod async_runtime;
 mod device_irq;
+mod dhcp;
 mod driver_services;
 pub(crate) mod e1000_irq;
 pub(crate) mod linux_e1000;
@@ -12,6 +13,7 @@ pub(crate) mod linux_hardening;
 pub(crate) mod native_drivers;
 pub(crate) mod network_stack;
 pub(crate) mod support;
+mod udp;
 
 use self::{
     driver_services as driver_service_tests, linux_e1000 as linux_driver,
@@ -382,6 +384,10 @@ pub fn run(boot: &BootInfo) -> ! {
         async_network::TESTS
     } else if boot.mode == BootMode::NetworkTests {
         network_stack::TESTS
+    } else if boot.mode == BootMode::UdpTests {
+        udp::TESTS
+    } else if boot.mode == BootMode::DhcpTests {
+        dhcp::TESTS
     } else if boot.mode == BootMode::AsyncHardeningTests {
         async_hardening::TESTS
     } else {

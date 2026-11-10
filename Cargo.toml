@@ -18,10 +18,13 @@ guest-tests = []
 limine = "0.5"
 moss-libkernel = { path = "third_party/moss-libkernel" }
 smoltcp = { version = "=0.13.0", default-features = false, features = [
+    "alloc",
     "medium-ethernet",
     "proto-ipv4",
     "auto-icmp-echo-reply",
     "socket-icmp",
+    "socket-udp",
+    "socket-dhcpv4",
     "iface-max-addr-count-1",
     "iface-neighbor-cache-count-8",
     "iface-max-route-count-1",

@@ -65,6 +65,8 @@ class GuestBuildTests(unittest.TestCase):
                 validate_result("guest-tests-disabled", 3, changed)
 
     def test_enabled_requires_runtime_and_guest_code(self):
+        self.assertIn("kutox_guest_udp_client", GUEST_SYMBOLS)
+        self.assertIn("kutox::net_udp::CONTROL", RUNTIME_SYMBOLS)
         validate_symbols(RUNTIME_SYMBOLS | GUEST_SYMBOLS, True)
         with self.assertRaises(AssertionError):
             validate_symbols(RUNTIME_SYMBOLS, True)

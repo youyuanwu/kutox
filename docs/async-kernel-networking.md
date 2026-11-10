@@ -31,7 +31,16 @@ The observable outcome is an isolated host peer resolving the kernel's MAC
 through ARP and receiving exact ICMP echo replies from a normal, persistent
 boot, including a guest-test-free image. No Linux packet algorithm is replaced.
 
-UDP/DHCP, TCP, IPv6, VFS/filesystems, processes/userspace, additional drivers,
+The subsequent [bounded kernel UDP socket extension](udp-kernel-sockets.md)
+adds explicit client sockets and guest-only echo/client acceptance to this same protocol
+owner. Normal boot still opens no application socket. This guide's phase evidence
+and original seven-feature measurements describe the completed ARP/ICMP milestone.
+
+The subsequent [DHCP extension](dhcp-ipv4.md) adds opt-in dynamic configuration,
+gateway/DNS publication and lease-driven UDP lifetime policy; static boot remains
+the default.
+
+TCP, IPv6, VFS/filesystems, processes/userspace, additional drivers,
 SMP/preemption and broader hardware are subsequent work, not this milestone.
 
 ## Shared core, two execution models
@@ -99,7 +108,7 @@ license is 0BSD; kutox's current Rust 1.99.1 meets that requirement.
 | Use Moss-aligned smoltcp with a kutox device adapter (selected) | Reuses the IP implementation without those OS dependencies; requires an explicit synchronous-token/asynchronous-driver bridge. |
 | Write ARP/IP/ICMP or select latest smoltcp independently | Custom protocol code duplicates a maintained stack; a newer release widens the dependency/API audit without serving this milestone. |
 
-Default features are disabled. The enabled features provide only Ethernet, IPv4, automatic ICMP echo
+Default features are disabled. The original milestone's enabled features provide Ethernet, IPv4, automatic ICMP echo
 reply and bounded interface configuration: `medium-ethernet`, `proto-ipv4`,
 `auto-icmp-echo-reply`, `socket-icmp`, `iface-max-addr-count-1`,
 `iface-neighbor-cache-count-8` and `iface-max-route-count-1`.
@@ -107,7 +116,10 @@ Ethernet enables smoltcp's socket framework, whose compile guard requires a
 concrete socket type. Enable socket-icmp to satisfy that guard, but instantiate
 no application sockets: automatic echo and borrowed empty socket storage
 provide this milestone. No TCP/UDP/DHCP, fragmentation, IPv6, host PHY, std,
-async socket or floating-point TCP features are needed.
+async socket or floating-point TCP features are needed for that milestone.
+The [UDP extension](udp-kernel-sockets.md) adds only `alloc` and `socket-udp`:
+normal boot uses empty socket storage until an explicit client binds, then the
+same protocol owner polls the bounded owned socket set for ingress and egress.
 
 The adapted async files are
 [task/async_state.rs](../third_party/moss-libkernel/src/task/async_state.rs) and
@@ -462,6 +474,7 @@ networking; the stdlib peer is an isolated test endpoint, not guest protocol cod
 | Mode/configuration | Intended behavior |
 | --- | --- |
 | `network-run` | Explicit persistent async/network service, identical to normal boot. |
+| `udp-tests` | Subsequent guest-only UDP echo/client acceptance; the OFF build rejects it before initialization. |
 | `driver-run` | Persistent driver/services only, preserving the previous driver-only boot. |
 | `run` or absent mode | Network-enabled boot with five guarded service stacks and one protocol future. |
 | `probe` / existing guest modes | Preserve explicit finite MAC and existing source/native test semantics. |

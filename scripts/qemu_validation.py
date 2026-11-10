@@ -7,11 +7,135 @@ import subprocess
 import network_packets as ip_packets
 from qemu_scenarios import *
 from qemu_scenarios import TEST_OPTIONS_FAILURES
+from qemu_scenarios import UDP_CASES, DHCP_CASES, DHCP_LIVE_CASES
 from qemu_protocols import *
 
 
 class KernelSuiteFailure(AssertionError):
     """A complete, consistent guest suite reported failed test cases."""
+
+
+def driver_ktap_lines(lines, *, link_down=False):
+    banners = {
+        "Intel(R) PRO/1000 Network Driver",
+        "Copyright (c) 1999-2006 Intel Corporation.",
+        "eth0 NIC Link is Up 1000 Mbps Full Duplex, Flow Control: RX",
+    }
+    if link_down:
+        banners.add("eth0 NIC Link is Down")
+    return ["# " + line if line in banners else line for line in lines]
+
+
+def validate_udp_suite(case, returncode, output, symbols=None):
+    import udp_packets
+
+    lines = output.splitlines()
+    validate_boot_preamble(lines, "udp-tests")
+    if any(line.startswith(("E1000_", "CPU_EXCEPTION", "Bail out!", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KERNEL_RUNTIME_STOPPED", "# NETWORK_STACK_ERROR", "# ASYNC_ERROR", "# RUNTIME_ERROR")) for line in lines):
+        raise AssertionError("UDP suite aborted or reached a production boot path")
+    if validate_ktap(driver_ktap_lines(lines), returncode, ("udp.exchange",)):
+        raise KernelSuiteFailure("UDP suite failed: udp.exchange")
+    complete = "# UDP_COMPLETE epochs=2"
+    if lines.count(complete) != 1 or lines.index(complete) >= lines.index("ok 1 udp.exchange"):
+        raise AssertionError("UDP suite lacks completed two-epoch acceptance")
+    protocol = udp_packets.Protocol()
+    for line in lines:
+        protocol.observe(line)
+    if protocol.offers != [(epoch, step) for epoch in (1, 2) for step in range(10)]:
+        raise AssertionError("incomplete UDP offer ledger")
+    epoch_positions = []
+    for epoch in (1, 2):
+        storage = [line for line in lines if line.startswith(f"# UDP_STORAGE epoch={epoch} ")]
+        if len(storage) != 1:
+            raise AssertionError("missing or duplicate bounded UDP storage evidence")
+        match = re.fullmatch(rf"# UDP_STORAGE epoch={epoch} sockets=4 rx_queue=2 tx_queue=2 mailbox=1 max_datagram=1472 charged=(\d+)", storage[0])
+        if match is None or not 0 < int(match[1]) <= 128 * 1024:
+            raise AssertionError("UDP allocation exceeded the storage ceiling")
+        block = f"# UDP_BLOCK epoch={epoch}"
+        pressure = f"# UDP_BACKPRESSURE epoch={epoch} queued=2 timeout=1 cancelled=1 closed=1"
+        api = f"# UDP_API epoch={epoch} invalid=5 capacity=4 cancelled=3 timeout=2 stale={epoch - 1}"
+        exchange = f"# UDP_EXCHANGE epoch={epoch} echo=4 client=1 pressure=3/4 rejected=4 short=retained rebind=1 rx=16 tx=11"
+        closed = f"# UDP_CLOSED epoch={epoch} frames=balanced heap=balanced sockets=0 requests=0"
+        markers = (storage[0], block, pressure, api, f"# UDP_OFFER epoch={epoch} step=0 kind=arp length=0",
+                   f"# UDP_OFFER epoch={epoch} step=9 kind=rebind length=0", exchange, closed)
+        if any(lines.count(marker) != 1 for marker in markers) or [lines.index(marker) for marker in markers] != sorted(lines.index(marker) for marker in markers):
+            raise AssertionError("UDP API/exchange/join evidence is missing, duplicated or reordered")
+        epoch_positions.append([lines.index(marker) for marker in markers])
+        source = [line for line in lines if line.startswith(f"# UDP_SOURCE epoch={epoch} ")]
+        events = []
+        for line in source:
+            match = re.fullmatch(rf"# UDP_SOURCE epoch={epoch} event=(\d+) count=(\d+) function=([0-9a-f]+) object=([0-9a-f]+) result=(-?\d+)", line)
+            if match is None:
+                raise AssertionError("malformed original-driver UDP proof")
+            event, count = int(match[1]), int(match[2])
+            if count != {17: 11}.get(event, 1) or int(match[5]) < 0:
+                raise AssertionError("wrong original-driver UDP callback count/result")
+            validate_callback_symbol(event, int(match[3], 16), int(match[4], 16), symbols)
+            if not lines.index(exchange) < lines.index(line) < lines.index(closed):
+                raise AssertionError("original-driver proof is outside the joined UDP epoch")
+            events.append(event)
+        if events != [1, 2, 3, 5, 6, 7, 17, 34]:
+            raise AssertionError("missing, duplicate or reordered original-driver UDP callbacks")
+    if epoch_positions[0][-1] >= epoch_positions[1][0]:
+        raise AssertionError("UDP epochs overlap before joined resource release")
+    if epoch_positions[1][-1] >= lines.index(complete):
+        raise AssertionError("UDP completion precedes joined resource release")
+    errors = [line for line in lines if line.startswith("# UDP_ERROR")]
+    expected_errors = [
+        "# UDP_ERROR operation=bind error=InvalidPort",
+        "# UDP_ERROR operation=bind error=AddressInUse",
+        "# UDP_ERROR operation=bind error=Capacity",
+        "# UDP_ERROR operation=send error=TooLarge",
+        "# UDP_ERROR operation=send error=Unaddressable",
+        "# UDP_ERROR operation=receive error=TimedOut",
+        "# UDP_ERROR operation=send error=TimedOut",
+        "# UDP_ERROR operation=receive error=BufferTooSmall { required: 32 }",
+        *["# UDP_ERROR operation=receive error=TimedOut"] * 3,
+    ]
+    if errors != expected_errors + ["# UDP_ERROR operation=send error=Closed"] + expected_errors:
+        raise AssertionError("UDP error/cancellation/deadline evidence is inconsistent")
+    if protocol.blocks != [1, 2] or lines.count("# NETWORK_STACK_STOP rx=16 arp=1 echo=0 rejected=2 tx=11") != 2:
+        raise AssertionError("UDP stack shutdown packet ledger is inconsistent")
+
+def validate_dhcp_suite(case, returncode, output):
+    lines = output.splitlines()
+    validate_boot_preamble(lines, "dhcp-tests")
+    if validate_ktap(driver_ktap_lines(lines, link_down=True), returncode, ("dhcp.lifecycle",)):
+        raise KernelSuiteFailure("DHCP lifecycle failed")
+    if any(line.startswith(("E1000_", "CPU_EXCEPTION", "Bail out!", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "# DHCP_ERROR", "# NETWORK_STACK_ERROR", "# ASYNC_ERROR", "# RUNTIME_ERROR")) for line in lines):
+        raise AssertionError("DHCP acceptance aborted or reached a production/error path")
+    configs = [line for line in lines if line.startswith("# DHCP_CONFIG ")]
+    expected = [(last, generation) for _ in (1, 2) for last, generation in ((15, 1), (16, 2), (17, 4), (18, 6), (19, 8))]
+    if len(configs) != len(expected):
+        raise AssertionError("missing, duplicate or unexpected DHCP configuration")
+    for line, (last, generation) in zip(configs, expected):
+        if not re.fullmatch(rf"# DHCP_CONFIG identity=[1-9]\d* generation={generation} cidr=10\.0\.2\.{last}/24 router=Some\(10\.0\.2\.2\) dns=\[Some\(1\.1\.1\.1\), Some\(8\.8\.8\.8\)\]", line):
+            raise AssertionError("DHCP address, route, DNS or generation mismatch")
+    deconfigs = [line for line in lines if line.startswith("# DHCP_DECONFIG ")]
+    if len(deconfigs) != 6:
+        raise AssertionError("missing DHCP lease/link revocation")
+    for line, (generation, reason) in zip(deconfigs, [(3, "lease"), (5, "lease"), (7, "link")] * 2):
+        if not re.fullmatch(rf"# DHCP_DECONFIG identity=[1-9]\d* generation={generation} reason={reason}", line):
+            raise AssertionError("DHCP deconfiguration ordering mismatch")
+    if lines.count("# DHCP_REJECT error=Router") != 2:
+        raise AssertionError("invalid lease did not fail closed")
+    held = "# DHCP_TEST_CREDIT epoch=2 state=held grants=4"
+    lost = "# DHCP_TEST_LOSS epoch=2 kind=expiry generation=5 sockets=closed"
+    released = "# DHCP_TEST_CREDIT epoch=2 state=released grants=0"
+    if any(lines.count(marker) != 1 for marker in (held, lost, released)) or not lines.index(held) < lines.index(lost) < lines.index(released):
+        raise AssertionError("DHCP expiry did not progress under complete TX-credit exhaustion")
+    for epoch in (1, 2):
+        idle = [line for line in lines if line.startswith(f"# DHCP_TEST_IDLE epoch={epoch} ")]
+        if len(idle) != 1 or (match := re.fullmatch(rf"# DHCP_TEST_IDLE epoch={epoch} polls=(\d+) lease=none fallback=none", idle[0])) is None or int(match[1]) > 16:
+            raise AssertionError("DHCP discovery busy-polled or used fallback configuration")
+        for stage, generation in enumerate((1, 1, 2, 4, 6, 8), 1):
+            if lines.count(f"# DHCP_TEST_EXCHANGE epoch={epoch} stage={stage} generation={generation} routed=1 dns=2") != 1:
+                raise AssertionError("DHCP UDP handle/route acceptance incomplete")
+        if lines.count(f"# DHCP_TEST_JOIN epoch={epoch} generations=8 leases=5 rejected=1 tx_udp=6 frame=balanced heap=balanced sockets=0 futures=0") != 1:
+            raise AssertionError("DHCP source lifetime was not joined and balanced")
+    storage = [line for line in lines if line.startswith("# DHCP_STORAGE ")]
+    if len(storage) != 2 or any((match := re.fullmatch(r"# DHCP_STORAGE charged=(\d+) limit=32768 sockets=1 dns=2", line)) is None or not 0 <= int(match[1]) <= 32768 for line in storage):
+        raise AssertionError("unbounded or missing DHCP socket storage")
 
 
 def validate_pci_hierarchy(lines, case):
@@ -671,6 +795,12 @@ def validate_thread_guard(returncode, output):
 
 
 def validate_result(case, returncode, output):
+    if case in DHCP_CASES:
+        validate_dhcp_suite(case, returncode, output)
+        return
+    if case in UDP_CASES:
+        validate_udp_suite(case, returncode, output)
+        return
     if case in TEST_OPTIONS_FAILURES:
         lines = output.splitlines()
         expected = TEST_OPTIONS_FAILURES[case][2]
@@ -705,7 +835,7 @@ def validate_result(case, returncode, output):
         if any(line.startswith(("BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "# DRIVER_", "# KERNEL_SERVICES", "# NETWORK_STACK")) for line in lines):
             raise AssertionError("invalid CIDR reached allocation or source admission")
         return
-    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled", "async-network-tests-disabled", "network-tests-disabled", "async-hardening-tests-disabled"):
+    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled", "async-network-tests-disabled", "network-tests-disabled", "udp-tests-disabled", "dhcp-tests-disabled", "async-hardening-tests-disabled"):
         lines = output.splitlines()
         expected = "E1000_MAC_FAIL stage=boot_mode code=-25"
         if returncode != 3 or not lines or lines[-1] != expected:
@@ -714,7 +844,7 @@ def validate_result(case, returncode, output):
             raise AssertionError("missing pinned-source feature-off boot marker")
         if [line for line in lines if line.startswith("E1000_")] != [expected] or any(
             line.startswith(("BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "THREAD_", "Bail out!",
-                             "# RUNTIME_", "# NATIVE_", "# LINUX_", "# ASYNC_", "# NET_IP_", "# NETWORK_STACK_"))
+                             "# RUNTIME_", "# NATIVE_", "# LINUX_", "# ASYNC_", "# NET_IP_", "# NETWORK_STACK_", "# UDP_", "# DHCP_"))
             for line in lines
         ):
             raise AssertionError("feature-off test mode reached initialization or guest fixtures")
@@ -1404,7 +1534,7 @@ def validate_live_boot(case, output, symbols):
     validate_boot_preamble(lines, mode or "run", "fw_cfg" if mode else "default")
     validate_allocator(lines, 32 if case.endswith("low-memory") else 128)
     if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "KERNEL_RUNTIME_", "THREAD_", "KTAP", "ok ", "not ok ",
-                            "Bail out!", "KERNEL_PANIC", "# LINUX_CALLBACK", "# LINUX_FAULT", "# LINUX_RX_", "# LINUX_HARD_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR", "# NET_IP_", "# ASYNC_NET_", "# ASYNC_ERROR", "# NETWORK_STACK_ERROR", "# NETWORK_STACK_STOP", "# HOST_")) for line in lines):
+                            "Bail out!", "KERNEL_PANIC", "# LINUX_CALLBACK", "# LINUX_FAULT", "# LINUX_RX_", "# LINUX_HARD_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR", "# NET_IP_", "# ASYNC_NET_", "# ASYNC_ERROR", "# NETWORK_STACK_ERROR", "# NETWORK_STACK_STOP", "# HOST_", "# DHCP_ERROR", "# DHCP_REJECT", "# DHCP_TEST_")) for line in lines):
         raise AssertionError("default runtime exited, failed, or entered a probe/fixture path")
     bound = int(LIVE_CASES[case][1])
     normalized = [line.removeprefix("# ") for line in lines]
@@ -1456,11 +1586,18 @@ def validate_live_boot(case, output, symbols):
         if bound:
             ready = next(line for line in normalized if line.startswith("DRIVER_READY "))
             identity = re.search(r"identity=(\d+)", ready)[1]
-            expected += [
-                f"NETWORK_STACK_CONFIGURED identity={identity} cidr=10.0.2.15/24 mtu=1500",
-                f"NETWORK_STACK_WAIT state=link identity={identity}",
-                f"NETWORK_STACK_READY identity={identity} mac=52:54:00:12:34:56 cidr=10.0.2.15/24 mtu=1500",
-            ]
+            if case not in DHCP_LIVE_CASES:
+                expected += [f"NETWORK_STACK_CONFIGURED identity={identity} cidr=10.0.2.15/24 mtu=1500"]
+            expected += [f"NETWORK_STACK_WAIT state=link identity={identity}",
+                         f"NETWORK_STACK_READY identity={identity} mac=52:54:00:12:34:56 cidr=10.0.2.15/24 mtu=1500"]
+            if case in DHCP_LIVE_CASES:
+                if [line for line in normalized if line.startswith("DHCP_CONFIG ")] != [
+                    f"DHCP_CONFIG identity={identity} generation=1 cidr=10.0.2.15/24 router=Some(10.0.2.2) dns=[Some(1.1.1.1), Some(8.8.8.8)]"
+                ] or any(line.startswith("DHCP_DECONFIG") for line in normalized):
+                    raise AssertionError("production DHCP lease/route/DNS readiness mismatch")
+                dhcp_storage = [line for line in normalized if line.startswith("DHCP_STORAGE ")]
+                if len(dhcp_storage) != 1 or (match := re.fullmatch(r"DHCP_STORAGE charged=(\d+) limit=32768 sockets=1 dns=2", dhcp_storage[0])) is None or not 0 <= int(match[1]) <= 32768:
+                    raise AssertionError("production DHCP storage ceiling exceeded")
         if network != expected:
             raise AssertionError("network readiness does not match the real source")
 
@@ -1642,13 +1779,7 @@ def validate_managed_hardening(case, returncode, output, symbols=None):
 def validate_network_stack(case, returncode, output, symbols=None):
     lines = output.splitlines()
     validate_boot_preamble(lines, "network-tests")
-    banners = {
-        "Intel(R) PRO/1000 Network Driver",
-        "Copyright (c) 1999-2006 Intel Corporation.",
-        "eth0 NIC Link is Up 1000 Mbps Full Duplex, Flow Control: RX",
-    }
-    ktap_lines = ["# " + line if line in banners else line for line in lines]
-    if validate_ktap(ktap_lines, returncode, IP_TEST_NAMES):
+    if validate_ktap(driver_ktap_lines(lines), returncode, IP_TEST_NAMES):
         raise KernelSuiteFailure("IP guest acceptance failed")
     if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "Bail out!", "# ASYNC_ERROR",
                             "# ASYNC_NET_ERROR", "# NETWORK_STACK_ERROR", "# NET_ERROR", "# RUNTIME_ERROR",
@@ -1772,9 +1903,7 @@ def validate_network_stack(case, returncode, output, symbols=None):
 def validate_async_hardening(case, returncode, output, symbols=None):
     lines = output.splitlines()
     validate_boot_preamble(lines, "async-hardening-tests")
-    banners = {"Intel(R) PRO/1000 Network Driver", "Copyright (c) 1999-2006 Intel Corporation.", "eth0 NIC Link is Down",
-               "eth0 NIC Link is Up 1000 Mbps Full Duplex, Flow Control: RX"}
-    if validate_ktap(["# " + line if line in banners else line for line in lines], returncode, ASYNC_HARD_NAMES):
+    if validate_ktap(driver_ktap_lines(lines, link_down=True), returncode, ASYNC_HARD_NAMES):
         raise KernelSuiteFailure("async/network hardening failed")
     if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "Bail out!", "KERNEL_PANIC", "# LINUX_CALLBACK")) for line in lines):
         raise AssertionError("hardening aborted or depended on guest tracing")

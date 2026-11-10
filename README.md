@@ -131,10 +131,21 @@ both guest-enabled and test-free images.
 Async/network hardening now covers bounded captures, allocation/IRQ/map failures,
 accepted cancellation, RX/TX starvation, link recovery and same-parent rebind.
 The completed milestone's [as-built guide](docs/async-kernel-networking.md)
-documents native async APIs, ownership and supported limits. Latest implementation
+documents native async APIs, ownership and supported limits. That milestone's implementation
 validation passed 171 Rust tests per profile and 182 Python tests, targeted guests,
 strict lint and source/ELF checks. Documentation completion does not claim a new
 full test-suite run.
+
+Bounded [async kernel UDP sockets](docs/udp-kernel-sockets.md) now extend the same
+protocol owner. Four explicit client sockets support send/receive, deadlines,
+cancellation and close/rebind without exposing Linux structs. Guest-only
+`udp-tests` exercises echo and an initiating kernel client in the ON profile;
+OFF omits the acceptance fixture. Normal boot opens no UDP socket. Moss's socket design informed the integration,
+while smoltcp owns UDP and unchanged Linux e1000 owns hardware packets.
+
+Opt-in [DHCPv4 configuration](docs/dhcp-ipv4.md) now uses the same protocol owner
+to acquire, renew and revoke an address, default gateway and bounded DNS list.
+Static boot remains the default; DHCP does not start an application client.
 
 ## Requirements
 
@@ -245,6 +256,8 @@ The runner selects a mode at launch through QEMU's `fw_cfg` file
 | `driver-network-tests` | Exercise the managed e1000 runtime with exact packets, retained clients, typed errors and joined shutdown; reject two matching NICs before probing. |
 | `driver-hardening-tests` | Run five bounded manager/failure/FIFO/concurrent-consumer/pending-source teardown cases through the managed runtime. |
 | `network-tests` | Run separate configuration, exact ARP/static IPv4/ICMP and joined shutdown acceptance through the production stack and Linux packet callbacks. |
+| `udp-tests` | Run guest-only UDP echo/client, queue/deadline/cancellation and joined shutdown/restart acceptance through the production socket API. |
+| `dhcp-tests` | Run guest-only acquisition, renewal, NAK/expiry, lease/socket changes and link-recovery acceptance with an isolated server. |
 | `heap-oom` | Attempt an oversized `Vec` allocation and verify Rust's fatal allocation-failure panic. |
 | `thread-stack-guard` | Read a thread's unmapped lower guard and verify the hardware page fault came from its mapped stack. |
 | `page-fault` | Read a deliberately unmapped address and verify the fatal exception diagnostics. |
@@ -380,15 +393,17 @@ qemu-system-x86_64 -machine pc -accel tcg -cpu qemu64 -smp 1 -m 128M \
 ```
 
 The runtime stays in the dispatcher; use Ctrl+C to end this owned manual session.
-It passively answers ARP/ICMP. There is no shell, userspace/socket application,
-DHCP, gateway or TCP service.
+It passively answers ARP/ICMP. There is no shell, userspace application or TCP
+service. Static boot does not run DHCP or install a default gateway.
 
 No mode flag is needed for IPv4. Explicit
 `-fw_cfg name=opt/kutox/test-mode,string=network-run` uses the same service;
 `-fw_cfg name=opt/kutox/test-mode,string=driver-run` retains driver-only behavior.
 The default address is `10.0.2.15/24`; override it with
 `-fw_cfg name=opt/kutox/ipv4,string=10.0.2.16/24`.
-Only one connected subnet is configured, with no gateway or DHCP.
+Alternatively, set `-fw_cfg name=opt/kutox/ipv4,string=dhcp` to acquire an
+address/subnet, optional default gateway and up to two DNS addresses. There is
+no static fallback when DHCP is selected. See the [lease/socket policy](docs/dhcp-ipv4.md).
 Malformed, reserved, network/broadcast, duplicate or overlength CIDRs fail before
 memory/device admission. Driver-only/probe modes ignore this network field.
 `NETWORK_STACK_CONFIGURED` and `NETWORK_STACK_READY` distinguish static
@@ -405,6 +420,20 @@ on the socket and TX PCAP, then at least three seconds alive. No/unsupported NIC
 instead proves initialized unclaimed idle; driver-only mode emits no packets.
 Restricted QEMU user networking does not make the guest directly host-pingable;
 packet acceptance uses an owned local Ethernet socket peer instead.
+
+### UDP guest acceptance
+
+```sh
+python3 scripts/check.py full --profiles ON --scope guest --select 'udp-tests*'
+```
+
+This runs the feature-gated guest suite against an isolated peer at 128/32 MiB,
+including nested PCI bridges. It proves exact
+UDP packets, queue limits, deadlines, cancellation, short-buffer retention,
+close/rebind and balanced shutdown/restart. See the
+[native API and Moss comparison](docs/udp-kernel-sockets.md).
+The OFF image rejects `udp-tests` before initialization and contains no UDP
+acceptance fixture; production UDP services remain compiled in both profiles.
 
 ### Exact IPv4 guest acceptance
 

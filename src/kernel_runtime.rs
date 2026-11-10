@@ -402,6 +402,7 @@ impl<'a> Resources<'a> {
         if !threads::is_quiescent()
             || !crate::async_runtime::quiescent()
             || !crate::net_async::quiescent()
+            || !crate::net_udp::quiescent()
             || !irq::is_quiescent()
             || !linux_deferred::quiescent()
             || !linux_irq::quiescent()

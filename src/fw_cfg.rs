@@ -26,6 +26,8 @@ pub enum BootMode {
     AsyncCoreTests,
     AsyncNetworkTests,
     NetworkTests,
+    UdpTests,
+    DhcpTests,
     AsyncHardeningTests,
     HeapOom,
     ThreadStackGuard,
@@ -37,7 +39,8 @@ impl BootMode {
     }
 
     pub const fn uses_ipv4(self) -> bool {
-        self.is_network_runtime() || matches!(self, Self::NetworkTests)
+        self.is_network_runtime()
+            || matches!(self, Self::NetworkTests | Self::UdpTests | Self::DhcpTests)
     }
 
     pub const fn selected(configured: Option<Self>) -> Self {
@@ -66,6 +69,8 @@ impl BootMode {
             Self::AsyncCoreTests => "async-core-tests",
             Self::AsyncNetworkTests => "async-network-tests",
             Self::NetworkTests => "network-tests",
+            Self::UdpTests => "udp-tests",
+            Self::DhcpTests => "dhcp-tests",
             Self::AsyncHardeningTests => "async-hardening-tests",
             Self::HeapOom => "heap-oom",
             Self::ThreadStackGuard => "thread-stack-guard",
@@ -105,6 +110,8 @@ impl BootMode {
                 | Self::AsyncCoreTests
                 | Self::AsyncNetworkTests
                 | Self::NetworkTests
+                | Self::UdpTests
+                | Self::DhcpTests
                 | Self::AsyncHardeningTests
                 | Self::HeapOom
                 | Self::ThreadStackGuard
@@ -171,6 +178,8 @@ pub fn read_mode(
         b"async-core-tests" => Ok(Some(BootMode::AsyncCoreTests)),
         b"async-network-tests" => Ok(Some(BootMode::AsyncNetworkTests)),
         b"network-tests" => Ok(Some(BootMode::NetworkTests)),
+        b"udp-tests" => Ok(Some(BootMode::UdpTests)),
+        b"dhcp-tests" => Ok(Some(BootMode::DhcpTests)),
         b"async-hardening-tests" => Ok(Some(BootMode::AsyncHardeningTests)),
         b"heap-oom" => Ok(Some(BootMode::HeapOom)),
         b"thread-stack-guard" => Ok(Some(BootMode::ThreadStackGuard)),
@@ -181,7 +190,7 @@ pub fn read_mode(
 pub fn read_ipv4(
     mut select: impl FnMut(u16),
     mut read: impl FnMut() -> u8,
-) -> Result<crate::network_config::Config, Error> {
+) -> Result<crate::network_config::Mode, Error> {
     let Some((bytes, size)) = read_file::<MAX_MODE_BYTES>(
         &mut select,
         &mut read,
@@ -192,7 +201,7 @@ pub fn read_ipv4(
     else {
         return Ok(Default::default());
     };
-    crate::network_config::Config::parse(&bytes[..size]).map_err(|_| Error::InvalidIpv4)
+    crate::network_config::Mode::parse(&bytes[..size]).map_err(|_| Error::InvalidIpv4)
 }
 
 pub fn read_test_options(
@@ -342,6 +351,8 @@ mod tests {
             BootMode::AsyncCoreTests,
             BootMode::AsyncNetworkTests,
             BootMode::NetworkTests,
+            BootMode::UdpTests,
+            BootMode::DhcpTests,
             BootMode::AsyncHardeningTests,
             BootMode::HeapOom,
             BootMode::ThreadStackGuard,
@@ -443,7 +454,7 @@ mod tests {
         );
     }
 
-    fn ipv4(files: &[(&str, &[u8])]) -> Result<crate::network_config::Config, Error> {
+    fn ipv4(files: &[(&str, &[u8])]) -> Result<crate::network_config::Mode, Error> {
         let blobs = fixture(files);
         let state = RefCell::new((0, 0));
         read_ipv4(
@@ -523,6 +534,10 @@ mod tests {
     fn bounded_optional_network_file_and_driver_independence() {
         assert_eq!(ipv4(&[]), Ok(Default::default()));
         assert_eq!(
+            ipv4(&[("opt/kutox/ipv4", b"dhcp")]),
+            Ok(crate::network_config::Mode::Dhcp)
+        );
+        assert_eq!(
             ipv4(&[("opt/kutox/ipv4", b"10.0.2.15/24")]),
             Ok(Default::default())
         );
@@ -573,6 +588,12 @@ mod tests {
             assert!(!mode.uses_ipv4());
         }
         assert!(BootMode::NetworkTests.uses_ipv4());
+        assert!(BootMode::UdpTests.uses_ipv4());
+        assert!(!BootMode::UdpTests.is_network_runtime());
+        assert_eq!(
+            run(&fixture(&[("opt/kutox/test-mode", b"udp-demo")])),
+            Err(Error::UnknownMode)
+        );
         assert_eq!(
             run(&fixture(&[(
                 "opt/kutox/test-mode",
@@ -606,6 +627,8 @@ fn guest_modes_require_the_build_feature_without_changing_probe() {
         BootMode::AsyncCoreTests,
         BootMode::AsyncNetworkTests,
         BootMode::NetworkTests,
+        BootMode::UdpTests,
+        BootMode::DhcpTests,
         BootMode::AsyncHardeningTests,
         BootMode::EepromTimeout,
         BootMode::PageFault,

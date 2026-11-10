@@ -20,6 +20,7 @@ pub mod run_queue;
 #[cfg(feature = "guest-tests")]
 pub mod test_cleanup;
 pub mod test_selection;
+pub mod udp_state;
 
 #[cfg(test)]
 extern crate std;

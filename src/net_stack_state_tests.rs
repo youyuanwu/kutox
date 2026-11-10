@@ -9,6 +9,38 @@ const MAC: [u8; 6] = [0x52, 0x54, 0, 0x12, 0x34, 0x56];
 const PEER: [u8; 6] = [2, 0xaa, 0xbb, 0xcc, 0xdd, 1];
 const PEER_IP: Ipv4Address = Ipv4Address::new(10, 0, 2, 2);
 
+#[test]
+fn closed_udp_port_reports_icmp_port_unreachable_without_application_sockets() {
+    use smoltcp::wire::{Icmpv4DstUnreachable, IpAddress, UdpPacket};
+    let config = network_config::Config::default();
+    let mut interface = make_interface(config);
+    process(&mut interface, arp(config)).unwrap();
+    let mut frame = echo(config, 0);
+    let mut ethernet = EthernetFrame::new_unchecked(&mut frame.bytes[..frame.len]);
+    let mut ip = Ipv4Packet::new_unchecked(ethernet.payload_mut());
+    ip.set_next_header(IpProtocol::Udp);
+    ip.fill_checksum();
+    let mut udp = UdpPacket::new_unchecked(ip.payload_mut());
+    udp.set_src_port(9000);
+    udp.set_dst_port(7000);
+    udp.set_len(8);
+    udp.fill_checksum(
+        &IpAddress::Ipv4(PEER_IP),
+        &IpAddress::Ipv4(config.cidr().address()),
+    );
+    let response = process(&mut interface, frame).unwrap();
+    let ethernet = EthernetFrame::new_checked(response.bytes()).unwrap();
+    let ip = Ipv4Packet::new_checked(ethernet.payload()).unwrap();
+    let icmp = Icmpv4Packet::new_checked(ip.payload()).unwrap();
+    assert!(matches!(
+        Icmpv4Repr::parse(&icmp, &ChecksumCapabilities::default()),
+        Ok(Icmpv4Repr::DstUnreachable {
+            reason: Icmpv4DstUnreachable::PortUnreachable,
+            ..
+        })
+    ));
+}
+
 #[derive(Clone)]
 struct Frame {
     bytes: [u8; 1514],

@@ -13,6 +13,21 @@ build the ELF and package Limine/ISO. Python owns QEMU lifecycle, independent
 acceptance and reports. CTest registrations and recursive CMake check targets
 have been removed; no additional test-management framework is required.
 
+The [UDP guest acceptance](udp-kernel-sockets.md) extends this same catalog.
+`udp-tests*` runs a guest-only kernel client at 128/32 MiB in the ON profile,
+including nested bridges; `udp-tests-low-memory` also runs in smoke CI. Its
+independent wire peer checks socket and TX PCAP bytes, RX/TX queue pressure,
+deadlines, cancellation, stale handles and balanced shutdown/restart.
+The OFF image rejects `udp-tests` early, omits the acceptance fixture and
+continues production build/profile and normal-boot smoke validation.
+
+[DHCP acceptance](dhcp-ipv4.md) uses the same ownership split. `dhcp-tests*`
+is guest-only ON lifecycle acceptance; `dhcp-tests-disabled` checks early OFF
+rejection. Production `network-dhcp*` acquires a lease and measures live
+ARP/ICMP service in both profiles without a guest client. Low-memory DHCP
+lifecycle and production cases run in smoke CI; wire expectations remain in
+the independent stdlib server rather than the scheduling catalog.
+
 ## Validation tiers
 
 ```sh
