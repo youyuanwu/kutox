@@ -108,7 +108,7 @@ rejects guest evidence. No new selector, catalog registration or dependency
 is added. These use the interruptible bounded runner.
 
 [User IRQ acceptance](kernel-implementation.md#timer-bounded-ring-3-runs)
-adds `user.timeout` and `user.device_irq` (seventy-two kernel cases). A real
+adds `user.timeout` and `user.device_irq`. A real
 ELF loops without syscalls and must time out across sixteen 5-ms epochs,
 each measured at >=5 ms and <100 ms, with restored CR3/CR0/IF, exact frame
 balance, a reusable timer and a preserved future handler. Invalid budgets,
@@ -123,6 +123,21 @@ deadline boundaries and forced-IF flag sanitization. Strict host journals
 require all ordered proofs inside their own cases, and reject unknown user
 evidence. ON/OFF symbol and production-boot gates cover the new fixtures.
 This tests bounded user execution, not a multi-task process scheduler.
+
+[Resumable-task acceptance](kernel-implementation.md#resumable-user-tasks)
+adds `user.tasks` and `user.task_limits` (seventy-four kernel cases), without
+a new boot selector or catalog registration. Two real ELF tasks alternate
+over eight epochs and 64 slices, preserving 48 quantum contexts, independent
+same-VA counters, seeded GPRs/DF/IF and an intentionally unaligned resumed SP.
+Both tasks exit correctly, with a real kernel worker run between every slice.
+Limit tests cover capacity and stale handles, failed setup/retry, paused
+cancellation, rejected noncanonical IRQ contexts, contained resume-fetch faults,
+cumulative total budgets with uncharged 10-ms kernel gaps, a faulting task
+while its peer survives, and 32 writes across quanta before the syscall cap.
+The portable Moss test checks owned save/restore copying, and portable budget
+tests cover exact quantum/final-slice boundaries and overrun saturation.
+Frame balance, strict ordered host evidence and actual ON/OFF symbol gates
+remain mandatory. Normal boot still creates no user dispatcher or task.
 
 ## Validation tiers
 

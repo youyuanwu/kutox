@@ -18,7 +18,7 @@ pub(crate) mod support;
 mod tcp;
 mod udp;
 mod user;
-mod user_elf;
+pub(crate) mod user_elf;
 mod user_interrupts;
 
 use self::{
@@ -346,6 +346,14 @@ static TESTS: &[TestCase] = &[
     TestCase {
         name: "user.device_irq",
         run: user_interrupts::device,
+    },
+    TestCase {
+        name: "user.tasks",
+        run: crate::user_tasks::tests::kutox_guest_user_tasks,
+    },
+    TestCase {
+        name: "user.task_limits",
+        run: crate::user_tasks::tests::limits,
     },
 ];
 

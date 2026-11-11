@@ -266,14 +266,90 @@ The runner remains a bring-up boundary, not Moss's persistent user context,
 scheduled process loop or asynchronous syscall machinery. The portable stack
 builder is independent of this runner and can be reused by a future process layer.
 
-**Limitations:** this is a wall-clock budget enforced at CPL3 timer/trap return,
-not kernel preemption or a resumable user-task scheduler. Kernel trap work keeps
+**Limitations:** this single-run frontend has a wall-clock budget enforced at
+CPL3 timer/trap return; it does not requeue a context. The separate resumable
+layer below reuses the same trap engine. This is not kernel preemption. Kernel trap work keeps
 IF clear and must remain bounded; expiry cannot interrupt a stuck kernel handler.
 Ready kernel workers run only after the user call returns. There is no
 asynchronous/blocking user API, VFS, signals, CoW/fork,
 demand paging, SMP, Linux userspace ABI, TLS or FPU/SIMD context switching.
 The permanent TSS entry stack, like the existing exception stacks, has no guard
 page. Normal boot runs no userspace demo or fixture.
+
+## Resumable user tasks
+
+The [bounded dispatcher](../src/user_tasks.rs) owns at most two address spaces
+and saved user contexts. Its [context port](../third_party/moss-libkernel/src/task/context.rs)
+adapts pinned Moss's `src/process/ctx.rs`: `from_user_ctx`, user access, save
+and restore retain owned snapshot semantics, but typed `Copy` values replace
+raw-pointer copies and no signal/kernel futures are imported. The existing
+[FIFO](../src/run_queue.rs), already built on ported Moss `TaskState`, supplies
+runnable/running/finished transitions, generation-bearing handles and reaping.
+There is no second ready-queue or task-state implementation.
+
+`Dispatcher::admit` consumes a loaded ELF owner and a cumulative execution
+budget. Rejection, including capacity and invalid duration, drops that
+unpublished owner. `kutox_user_dispatch_next` runs the next ready task for one
+quantum and returns a handle, cumulative report and measured slice ticks.
+Both budget and quantum requests use 1..=1,000,000 microseconds, converted to
+calibrated ticks. An empty dispatcher returns `None`. After every step the
+original kernel CR3/CR0/segments and IF-clear state are restored, the timer is
+stopped/drained and all user/mapper locks are released. The caller may then run
+kernel work, including the existing cooperative kernel scheduler, before the
+next step. This is an explicit boot-context dispatcher, not a background task
+or integration with the persistent networking runtime.
+
+A native 144-byte x86_64 context contains fifteen GPRs, RIP, RSP and RFLAGS.
+Compile-time size/offset assertions match the entry assembly. Fresh contexts
+start with zeroed GPRs; resume restores all saved GPRs rather than clearing
+them. Initial entry keeps its RX/W^X and aligned writable-stack admission;
+resume validates the user-window return addresses without requiring the
+initial SP alignment. Fetch/access failures then occur as contained CPL3
+faults, including when a parked task's code is unmapped. No selectors, TSS
+frame pointer or borrowed payload pointer is stored in the portable context.
+Return flags are sanitized and IF forced set on every entry.
+
+Quantum expiry saves the user frame before constructing the kernel continuation
+and returns `Stop::QuantumExpired`; that task goes to the FIFO tail. The owned
+root, tables, stack and image RAM remain alive while parked. An invalid return
+frame is terminal rather than being saved for retry. Exit, fault, syscall limit,
+invalid context and total-budget exhaustion finish/reap the slot and immediately
+release its address space. The native entry/context owner remains non-transferable;
+no FPU/TLS/SMP state or unsafe Send/Sync is introduced.
+
+The total budget decreases by measured ticks from slice arming to the stop trap,
+including entry and IRQ/syscall work, but not cleanup or kernel work between
+slices. The next slice uses the smaller of the remaining budget and requested
+quantum. Measured overruns saturate the remaining budget at zero and return
+terminal `TimedOut`; yielding cannot reset it. Syscall/write/output/IRQ counts
+also persist across quanta, preserving the 32-call and 1024-byte task limits.
+A trapped bounded syscall completes before a resumable quantum yield, so the
+saved RIP never skips an unexecuted syscall or loses its return value.
+
+Invalid quantum requests leave the queue unchanged. Ordinary native setup
+errors requeue the unchanged task for retry without charging execution time;
+they never replace or drain an already armed caller event. An error after handing control
+to native user entry retires the task rather than replaying a stale frame;
+the error is still propagated to the caller. Cancellation can remove a
+runnable task whether fresh or paused; stale handles are rejected after slot
+reuse. Dropping the dispatcher releases any remaining parked owners without
+reentering userspace.
+
+[Two guest cases](../src/guest_tests/user_tasks.rs) run real linked ELF tasks
+with independent data at the same VA. Eight epochs prove exact alternation,
+64 slices/48 retained quanta, increasing independent counters, preserved
+registers/DF/IF and an 8-byte-aligned resumed stack, exits 65/66 and 64 actual
+kernel-worker turns between slices. The limit case verifies paused cancellation,
+capacity/stale/busy-timer rejection, noncanonical IRQ context rejection,
+contained instruction-fetch failure on resume, cumulative 5/8-ms budgets with
+uncharged 10-ms gaps, one task faulting while another exits, and 32 successful
+zero-length writes across quanta before the cumulative syscall limit. Every
+case checks exact frame reclamation; the host requires ordered in-case proofs.
+The dispatcher frontend exists in both profiles, but fixtures remain ON-only.
+
+This is not full Moss process VM, VFS, signals, fork, blocking syscalls, priority
+scheduling or a Linux process ABI. Kernel trap work remains non-preemptive and
+must be bounded; ready kernel workers run only between explicit steps.
 
 ## Implementation boundaries
 

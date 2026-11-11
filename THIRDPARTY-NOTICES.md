@@ -70,6 +70,7 @@ Moss component or vendor-driver source is imported.
   [ELF VMA construction and file/page resolution](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/proc_vm/vmarea.rs),
   [CpuOps in lib.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/lib.rs),
   [task lifecycle states](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/sched/sched_task/state.rs),
+  [user-context ownership](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/process/ctx.rs),
   [waker registration](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/waker_set.rs),
   [spinlock.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/spinlock.rs),
   and [mutex.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/mutex.rs).
@@ -162,6 +163,23 @@ context is imported. Timeout returns to the synchronous kernel caller rather
 than selecting another user task. The [guest IRQ acceptance](src/guest_tests/user_interrupts.rs)
 uses existing DMA-disabled e1000 interrupt scaffolding, not a replacement for
 the unchanged Linux driver's packet path.
+
+### Resumable user contexts
+
+The [user-context port](third_party/moss-libkernel/src/task/context.rs) adapts
+pinned Moss's `src/process/ctx.rs`. It retains owned user-state construction,
+access, save and restore while replacing raw pointer copying with typed `Copy`
+snapshots; restore returns a value instead of writing to a raw destination.
+Signal/kernel future storage is omitted. The original MIT notice is retained
+in the port and shared license file, with the source in crate provenance.
+
+The [native two-task dispatcher](src/user_tasks.rs), x86_64 saved register layout,
+entry/return assembly, cumulative execution accounting and
+[guest acceptance](src/guest_tests/user_tasks.rs) are kutox integration.
+They reuse the existing FIFO and previously adapted Moss `TaskState`; no second
+queue policy, full Moss scheduler or ARM user-context/assembly is imported.
+The complete process VM, signals, VFS, blocking syscall work and FPU/TLS context
+switching remain outside this subset.
 
 ### Bootstrap memory allocator
 

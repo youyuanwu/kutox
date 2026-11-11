@@ -445,6 +445,12 @@ def validate_user_runs(lines, names):
             "# USER_IRQ source=moss-boundary cpl=3 timer=delivered device=e1000 delivered=1 resumed=45 gprs=preserved df=preserved if=enabled locks=0",
             "# USER_IRQ_RETURN cpl=3 timer=delivered noncanonical=rejected calls=0 recovery=33",
         ],
+        "user.tasks": [
+            "# USER_TASKS source=moss-context format=elf64 tasks=2 fifo=alternating epochs=8 slices=64 quanta=48 exits=65,66 memory=isolated context=continued rsp=unaligned df=preserved if=enabled kernel_work=64 frames=balanced",
+        ],
+        "user.task_limits": [
+            "# USER_TASK_LIMITS capacity=2 stale=rejected retry=preserved cancel=paused irq_context=rejected resume_fault=contained budgets=cumulative gaps_us=10000 timeouts=2 fault=isolated survivor=66 syscall_limit=32 writes=32 bytes=0 frames=balanced",
+        ],
     }
 
     def relevant(line):

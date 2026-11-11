@@ -152,6 +152,7 @@ class RuntimeBootTests(unittest.TestCase):
             "# USER_ELF_ROLLBACK pools=11 failures=10 malformed=4 stack=rejected frames=balanced",
             "# USER_TIMEOUT source=moss-boundary cpl=3 format=elf64 budget_us=5000 elapsed_us=5000..99999 calls=0 epochs=16 timer=reusable handler=preserved frames=balanced",
             "# USER_IRQ source=moss-boundary cpl=3 timer=delivered device=e1000 delivered=1 resumed=45 gprs=preserved df=preserved if=enabled locks=0",
+            "# USER_TASKS source=moss-context format=elf64 tasks=2 fifo=alternating epochs=8 slices=64 quanta=48 exits=65,66 memory=isolated context=continued rsp=unaligned df=preserved if=enabled kernel_work=64 frames=balanced",
         ]:
             with self.subTest(extra=extra), self.assertRaises(AssertionError):
                 runner.validate_live_boot("driver-runtime-default", live_log() + extra + "\n", SYMBOLS)

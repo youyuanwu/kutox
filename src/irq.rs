@@ -227,6 +227,7 @@ pub struct Timer<'a, 'storage> {
 }
 
 pub(crate) struct UserSlice {
+    pub(crate) started: u64,
     pub(crate) deadline: u64,
     interval_counts: u32,
     interval_ticks: u64,
@@ -381,16 +382,19 @@ impl<'a, 'storage> Timer<'a, 'storage> {
         Ok(true)
     }
 
-    pub(crate) fn with_user_slice<R>(
+    pub(crate) fn with_user_slice_ticks<R>(
         &self,
-        budget_us: u64,
+        duration: u64,
         run: impl FnOnce(UserSlice) -> R,
     ) -> Result<R, Failure> {
         context()?;
-        if budget_us == 0 || budget_us > kutox::user_state::MAX_RUN_US {
+        if duration == 0 {
             return Err(Failure::new("user_run_budget", -1));
         }
-        let deadline = time::deadline_after_us(budget_us)?;
+        let started = time::now_ticks();
+        let deadline = started
+            .checked_add(duration)
+            .ok_or(Failure::new("user_run_deadline", -1))?;
         let first = self
             .handler_deadline()
             .map_or(deadline, |when| when.min(deadline));
@@ -398,6 +402,7 @@ impl<'a, 'storage> Timer<'a, 'storage> {
             return Err(Failure::new("user_timer_elapsed", -1));
         }
         let result = run(UserSlice {
+            started,
             deadline,
             interval_counts: self.interval_counts,
             interval_ticks: self.interval_ticks,

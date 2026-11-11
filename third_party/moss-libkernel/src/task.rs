@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2025 Matthew Leach
-//! Task lifecycle and startup-stack primitives adapted from Moss.
+//! Task lifecycle, saved contexts and executable startup primitives adapted from Moss.
 
 pub mod async_state;
+pub mod context;
 pub mod elf;
 pub mod user_stack;
 

@@ -43,12 +43,14 @@ An explicit [timer-bounded user run](docs/kernel-implementation.md#timer-bounded
 can now enter ring 3 and use native `int 0x80` write/exit syscalls. Hardware user
 faults end that run without stopping the kernel. Normal boot starts no user
 program; guest-only embedded programs exercise the boundary. This is not a
-process scheduler or Linux userspace ABI. A bounded
+full process runtime or Linux userspace ABI. A bounded
 [Moss-derived static ELF loader](docs/kernel-implementation.md#bounded-moss-elf-loading)
 now maps embedded x86_64 executables, zeroes BSS and builds the initial stack.
 User execution enables timer/device IRQs and has an explicit execution budget;
-even a syscall-free infinite loop returns a timeout. This is still single-task
-bring-up, not a scheduled process runtime.
+even a syscall-free infinite loop returns a timeout. A bounded
+[resumable user dispatcher](docs/kernel-implementation.md#resumable-user-tasks)
+now alternates two owned ELF tasks without restarting them and returns to kernel
+work between quanta. Blocking syscalls and a full process runtime remain absent.
 
 The scoped [kernel runtime](src/kernel_runtime.rs) now retains the dispatcher,
 native manager, APIC/timer/controllers and shared Linux workers through client

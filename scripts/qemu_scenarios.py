@@ -89,6 +89,8 @@ KERNEL_TEST_NAMES = (
     "user.elf_rollback",
     "user.timeout",
     "user.device_irq",
+    "user.tasks",
+    "user.task_limits",
 )
 
 

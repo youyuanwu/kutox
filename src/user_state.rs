@@ -14,6 +14,53 @@ pub const MAX_RUN_US: u64 = 1_000_000;
 pub const SYS_WRITE: u64 = 1;
 pub const SYS_EXIT: u64 = 60;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(i32)]
+pub enum BudgetError {
+    Empty = -360,
+    Quantum = -361,
+}
+
+pub struct ExecutionBudget {
+    remaining: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SlicePlan {
+    pub ticks: u64,
+    pub final_slice: bool,
+}
+
+impl ExecutionBudget {
+    pub fn new(ticks: u64) -> Result<Self, BudgetError> {
+        if ticks == 0 {
+            return Err(BudgetError::Empty);
+        }
+        Ok(Self { remaining: ticks })
+    }
+
+    pub fn remaining(&self) -> u64 {
+        self.remaining
+    }
+
+    pub fn plan(&self, quantum_ticks: u64) -> Result<SlicePlan, BudgetError> {
+        if quantum_ticks == 0 {
+            return Err(BudgetError::Quantum);
+        }
+        if self.remaining == 0 {
+            return Err(BudgetError::Empty);
+        }
+        Ok(SlicePlan {
+            ticks: self.remaining.min(quantum_ticks),
+            final_slice: self.remaining <= quantum_ticks,
+        })
+    }
+
+    pub fn charge(&mut self, ticks: u64) {
+        self.remaining = self.remaining.saturating_sub(ticks);
+    }
+}
+
 pub fn valid_user_return(instruction: u64, stack: u64) -> bool {
     (USER_BASE..USER_END).contains(&instruction) && USER_BASE < stack && stack <= USER_END
 }
@@ -123,6 +170,41 @@ pub fn plan_copy(
 mod tests {
     use super::*;
     use moss_libkernel::memory::permissions::PtePermissions;
+
+    #[test]
+    fn execution_budget_separates_quantum_expiry_from_exact_total_exhaustion() {
+        assert!(matches!(ExecutionBudget::new(0), Err(BudgetError::Empty)));
+        let mut budget = ExecutionBudget::new(10).unwrap();
+        assert_eq!(budget.plan(0), Err(BudgetError::Quantum));
+        assert_eq!(
+            budget.plan(4),
+            Ok(SlicePlan {
+                ticks: 4,
+                final_slice: false
+            })
+        );
+        budget.charge(4);
+        assert_eq!(budget.remaining(), 6);
+        assert_eq!(
+            budget.plan(6),
+            Ok(SlicePlan {
+                ticks: 6,
+                final_slice: true
+            })
+        );
+        assert_eq!(
+            budget.plan(7),
+            Ok(SlicePlan {
+                ticks: 6,
+                final_slice: true
+            })
+        );
+        budget.charge(0);
+        assert_eq!(budget.remaining(), 6);
+        budget.charge(u64::MAX);
+        assert_eq!(budget.remaining(), 0);
+        assert_eq!(budget.plan(1), Err(BudgetError::Empty));
+    }
 
     fn mapped(_: u64) -> Option<PageInfo> {
         Some(PageInfo {

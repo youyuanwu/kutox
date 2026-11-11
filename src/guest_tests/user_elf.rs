@@ -18,7 +18,7 @@ use moss_libkernel::memory::{
 };
 
 #[unsafe(export_name = "kutox_guest_user_elf")]
-pub(super) static ELF: [u8; include_bytes!(concat!(env!("OUT_DIR"), "/user.elf")).len()] =
+pub(crate) static ELF: [u8; include_bytes!(concat!(env!("OUT_DIR"), "/user.elf")).len()] =
     *include_bytes!(concat!(env!("OUT_DIR"), "/user.elf"));
 
 #[unsafe(no_mangle)]

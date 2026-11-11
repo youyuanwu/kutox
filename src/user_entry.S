@@ -8,27 +8,28 @@ kutox_user_enter:
     push r13
     push r14
     push r15
-    mov [r8], rsp
-    push rcx
-    push rsi
-    push 0x202
+    mov [rcx], rsp
+    mov rax, rdi
     push rdx
-    push rdi
-    xor eax, eax
-    xor ecx, ecx
-    xor edx, edx
-    xor ebx, ebx
-    xor ebp, ebp
-    xor esi, esi
-    xor edi, edi
-    xor r8d, r8d
-    xor r9d, r9d
-    xor r10d, r10d
-    xor r11d, r11d
-    xor r12d, r12d
-    xor r13d, r13d
-    xor r14d, r14d
-    xor r15d, r15d
+    push qword ptr [rax + 128]
+    push qword ptr [rax + 136]
+    push rsi
+    push qword ptr [rax + 120]
+    mov r15, [rax]
+    mov r14, [rax + 8]
+    mov r13, [rax + 16]
+    mov r12, [rax + 24]
+    mov r11, [rax + 32]
+    mov r10, [rax + 40]
+    mov r9, [rax + 48]
+    mov r8, [rax + 56]
+    mov rdi, [rax + 64]
+    mov rsi, [rax + 72]
+    mov rbp, [rax + 80]
+    mov rbx, [rax + 88]
+    mov rdx, [rax + 96]
+    mov rcx, [rax + 104]
+    mov rax, [rax + 112]
     iretq
 .size kutox_user_enter, .-kutox_user_enter
 

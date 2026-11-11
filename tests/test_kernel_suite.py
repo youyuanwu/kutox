@@ -368,6 +368,12 @@ def user_log(name):
             "# USER_IRQ source=moss-boundary cpl=3 timer=delivered device=e1000 delivered=1 resumed=45 gprs=preserved df=preserved if=enabled locks=0",
             "# USER_IRQ_RETURN cpl=3 timer=delivered noncanonical=rejected calls=0 recovery=33",
         ],
+        "user.tasks": [
+            "# USER_TASKS source=moss-context format=elf64 tasks=2 fifo=alternating epochs=8 slices=64 quanta=48 exits=65,66 memory=isolated context=continued rsp=unaligned df=preserved if=enabled kernel_work=64 frames=balanced",
+        ],
+        "user.task_limits": [
+            "# USER_TASK_LIMITS capacity=2 stale=rejected retry=preserved cancel=paused irq_context=rejected resume_fault=contained budgets=cumulative gaps_us=10000 timeouts=2 fault=isolated survivor=66 syscall_limit=32 writes=32 bytes=0 frames=balanced",
+        ],
     }[name]
 
 
@@ -413,7 +419,7 @@ def suite_log(case="kernel-tests"):
 class KernelSuiteTests(unittest.TestCase):
     def test_user_run_proofs_require_cpl3_exact_bounds_faults_recovery_and_order(self):
         names = ("user.entry_exit", "user.syscalls", "user.faults", "user.reclamation")
-        self.assertEqual(KERNEL_TEST_NAMES[-9:-5], names)
+        self.assertEqual(KERNEL_TEST_NAMES[-11:-7], names)
         output = suite_log()
         for name in names:
             for marker in user_log(name):
@@ -440,7 +446,7 @@ class KernelSuiteTests(unittest.TestCase):
             "memory.user_switching", "memory.user_permissions",
             "memory.user_rollback", "memory.user_reclamation",
         )
-        self.assertEqual(KERNEL_TEST_NAMES[-13:-9], names)
+        self.assertEqual(KERNEL_TEST_NAMES[-15:-11], names)
         output = suite_log()
         validate_result("kernel-tests", 1, output)
         for name in names:
@@ -449,7 +455,7 @@ class KernelSuiteTests(unittest.TestCase):
                 validate_result("kernel-tests", 1, output.replace(f"ok {index} {name}\n", ""))
 
     def test_moss_startup_stack_requires_actual_cpl3_layout_and_reclamation_proof(self):
-        self.assertEqual(KERNEL_TEST_NAMES[-5], "user.startup_stack")
+        self.assertEqual(KERNEL_TEST_NAMES[-7], "user.startup_stack")
         output = suite_log()
         marker = user_log("user.startup_stack")[0]
         for replacement in (
@@ -472,7 +478,7 @@ class KernelSuiteTests(unittest.TestCase):
                 validate_result("kernel-tests", 1, output.replace(limit, replacement))
 
     def test_elf_requires_loading_execution_bss_fault_recovery_and_rollback_proofs(self):
-        self.assertEqual(KERNEL_TEST_NAMES[-4:-2], ("user.elf", "user.elf_rollback"))
+        self.assertEqual(KERNEL_TEST_NAMES[-6:-4], ("user.elf", "user.elf_rollback"))
         output = suite_log()
         for name in ("user.elf", "user.elf_rollback"):
             for marker in user_log(name):
@@ -494,9 +500,9 @@ class KernelSuiteTests(unittest.TestCase):
             validate_result("kernel-tests", 1, output.replace(marker + "\n" + result, result + "\n" + marker))
 
     def test_user_irq_proofs_require_exact_budget_device_return_and_cleanup(self):
-        self.assertEqual(KERNEL_TEST_NAMES[-2:], ("user.timeout", "user.device_irq"))
+        self.assertEqual(KERNEL_TEST_NAMES[-4:-2], ("user.timeout", "user.device_irq"))
         output = suite_log()
-        for name in KERNEL_TEST_NAMES[-2:]:
+        for name in KERNEL_TEST_NAMES[-4:-2]:
             marker = user_log(name)[0]
             changes = [
                 "", marker + "\n" + marker, marker.replace("cpl=3", "cpl=0"),
@@ -530,6 +536,38 @@ class KernelSuiteTests(unittest.TestCase):
         ):
             with self.subTest(replacement=replacement), self.assertRaises(AssertionError):
                 validate_result("kernel-tests", 1, output.replace(marker, replacement))
+
+    def test_resumable_tasks_require_exact_continuation_fairness_and_limit_proofs(self):
+        self.assertEqual(KERNEL_TEST_NAMES[-2:], ("user.tasks", "user.task_limits"))
+        output = suite_log()
+        for name in KERNEL_TEST_NAMES[-2:]:
+            marker = user_log(name)[0]
+            changes = ["", marker + "\n" + marker]
+            for before, after in (
+                ("source=moss-context", "source=unrelated"), ("tasks=2", "tasks=1"),
+                ("fifo=alternating", "fifo=starved"), ("epochs=8", "epochs=7"),
+                ("slices=64", "slices=63"), ("quanta=48", "quanta=47"),
+                ("exits=65,66", "exits=99,99"), ("memory=isolated", "memory=shared"),
+                ("context=continued", "context=restarted"), ("rsp=unaligned", "rsp=aligned"),
+                ("df=preserved", "df=cleared"), ("if=enabled", "if=disabled"),
+                ("kernel_work=64", "kernel_work=0"), ("frames=balanced", "frames=leaked"),
+                ("capacity=2", "capacity=3"), ("stale=rejected", "stale=accepted"),
+                ("retry=preserved", "retry=lost"), ("budgets=cumulative", "budgets=reset"),
+                ("cancel=paused", "cancel=never-run"), ("irq_context=rejected", "irq_context=accepted"),
+                ("resume_fault=contained", "resume_fault=retried"),
+                ("gaps_us=10000", "gaps_us=0"), ("timeouts=2", "timeouts=0"),
+                ("fault=isolated", "fault=fatal"), ("survivor=66", "survivor=99"),
+                ("syscall_limit=32", "syscall_limit=33"), ("writes=32", "writes=0"),
+                ("bytes=0", "bytes=1"),
+            ):
+                if before in marker:
+                    changes.append(marker.replace(before, after))
+            for changed in changes:
+                with self.subTest(name=name, changed=changed), self.assertRaises(AssertionError):
+                    validate_result("kernel-tests", 1, output.replace(marker, changed))
+            result = f"ok {KERNEL_TEST_NAMES.index(name) + 1} {name}"
+            with self.assertRaises(AssertionError):
+                validate_result("kernel-tests", 1, output.replace(marker + "\n" + result, result + "\n" + marker))
 
     def test_pci_hierarchy_rejects_missing_duplicate_and_wrong_identity(self):
         case = "kernel-tests-nested"
