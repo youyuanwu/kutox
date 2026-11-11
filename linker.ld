@@ -16,6 +16,7 @@ SECTIONS {
         KEEP(*(.text.kutox_async_executor))
         KEEP(*(.text.kutox_packet_broker))
         KEEP(*(.text.kutox_user_bringup))
+        KEEP(*(.text.kutox_user_load_elf))
         *(.text .text.*)
         _kernel_text_end = .;
     } :text

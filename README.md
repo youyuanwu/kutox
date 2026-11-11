@@ -43,7 +43,10 @@ An explicit [cooperative user run](docs/kernel-implementation.md#cooperative-rin
 can now enter ring 3 and use native `int 0x80` write/exit syscalls. Hardware user
 faults end that run without stopping the kernel. Normal boot starts no user
 program; guest-only embedded programs exercise the boundary. This is not a
-process scheduler, Linux userspace ABI or ELF loader.
+process scheduler or Linux userspace ABI. A bounded
+[Moss-derived static ELF loader](docs/kernel-implementation.md#bounded-moss-elf-loading)
+now maps embedded x86_64 executables, zeroes BSS and builds the initial stack.
+Execution is still limited to trusted, finite programs with interrupts disabled.
 
 The scoped [kernel runtime](src/kernel_runtime.rs) now retains the dispatcher,
 native manager, APIC/timer/controllers and shared Linux workers through client

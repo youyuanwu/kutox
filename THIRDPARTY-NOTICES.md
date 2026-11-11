@@ -66,6 +66,8 @@ Moss component or vendor-driver source is imported.
   [page permissions](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/paging/permissions.rs),
   [address-space contract](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/address_space.rs),
   [startup-stack construction](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/process/exec.rs#L288),
+  [ELF exec flow](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/process/exec.rs#L52),
+  [ELF VMA construction and file/page resolution](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/proc_vm/vmarea.rs),
   [CpuOps in lib.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/lib.rs),
   [task lifecycle states](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/sched/sched_task/state.rs),
   [waker registration](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/waker_set.rs),
@@ -121,6 +123,22 @@ It omits upstream's placeholder `AT_RANDOM` rather than claiming entropy;
 caller-supplied `AT_RANDOM`, duplicate tags and overrides of default tags fail.
 It imports no ELF parser, interpreter loader, process scheduler or CoW behavior.
 The original MIT notice is retained in the port and shared license file.
+
+### Static ELF loading
+
+The [bounded ELF adaptation](third_party/moss-libkernel/src/task/elf.rs) follows
+`exec_elf`/`process_prog_headers` and adapts the permission conversion,
+page-rounded file prefix and zeroed file/page intersection from
+`VMArea::from_pheader`/`resolve_fault` at the pinned revision. It uses eager owned
+pages and the existing stack port instead of inodes, VMAs, fault-driven reads
+and process replacement. Its checked System V/x86_64 ELF decoder, hard limits,
+W^X/window/overlap/entry validation and unpublished-space failure ownership are
+kutox adaptations, not an unchanged upstream loader or a copy of `object`.
+It does not import interpreter/PIE loading, VFS, TLS, CoW or process scheduling.
+The [native loader frontend](src/user.rs), separately linked
+[ELF fixture](src/guest_tests/user_elf.S), [fixture linker](src/guest_tests/user_elf.ld)
+and guest/host acceptance are kutox integration code. The original MIT notice
+is retained in the portable port and shared license file.
 
 The [cooperative user-run service](src/user.rs), its
 [x86_64 entry/return assembly](src/user_entry.S),

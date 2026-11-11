@@ -18,6 +18,7 @@ pub(crate) mod support;
 mod tcp;
 mod udp;
 mod user;
+mod user_elf;
 
 use self::{
     driver_services as driver_service_tests, linux_e1000 as linux_driver,
@@ -328,6 +329,14 @@ static TESTS: &[TestCase] = &[
     TestCase {
         name: "user.startup_stack",
         run: user::startup_stack,
+    },
+    TestCase {
+        name: "user.elf",
+        run: user_elf::kutox_guest_elf,
+    },
+    TestCase {
+        name: "user.elf_rollback",
+        run: user_elf::rollback,
     },
 ];
 

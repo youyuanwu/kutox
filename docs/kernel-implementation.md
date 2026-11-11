@@ -91,8 +91,64 @@ page is never replaced. Host tests inspect exact bytes and lifetimes, while
 then verifies duplicate-map preservation and frame balance across sixteen epochs.
 The existing small-pool guest tests also exercise real stack-mapping OOM rollback.
 
-This is startup-stack reuse only: no ELF parsing/loading, process scheduler,
-VFS, TLS, signals, CoW/fork or general Linux userspace ABI is imported.
+This component is startup-stack reuse only. The bounded ELF adaptation below
+uses it without importing a process scheduler, VFS, TLS, signals, CoW/fork or
+general Linux userspace ABI.
+
+## Bounded Moss ELF loading
+
+The [portable ELF adaptation](../third_party/moss-libkernel/src/task/elf.rs)
+follows pinned Moss's `exec_elf`/`process_prog_headers` and adapts
+`VMArea::from_pheader`/`resolve_fault` for eager owned pages. Moss's complete
+exec path requires inodes, file-backed VMAs, demand paging and scheduled process
+contexts; these are not imported. A small checked ELF decoder replaces its
+`object` parser dependency. The existing native x86_64 mapper and CPU entry
+remain unchanged.
+
+The selected format is System V, little-endian ELF64, x86_64 `ET_EXEC` with
+standard 64-byte file and 56-byte program headers. At most sixteen program
+headers, eight nonempty load segments and fifteen image pages are admitted;
+the last user-window page is reserved for the RW/NX startup stack. Section
+headers are not used. NULL, NOTE and PHDR entries require no extra mappings;
+a GNU_STACK entry is accepted only without executable/unknown permission bits.
+Dynamic/interpreter/TLS and other unsupported program headers, PIE, extended
+header numbering and nonzero architecture flags fail explicitly.
+
+Before any native frame allocation, validation checks the whole program table,
+file offsets/sizes, `filesz <= memsz`, address overflow/window bounds,
+power-of-two alignment and file/VA congruence. Page-rounded segment overlaps,
+including otherwise disjoint segments sharing a page, are rejected rather than
+merging permissions. Every load segment must be readable and obey W^X. Entry
+must lie in file-backed bytes of an executable segment, not padding or BSS.
+As in Moss's mappable VMA, an unaligned segment includes the preceding file
+prefix back to the page boundary. Page allocation starts zeroed; only the
+file/page intersection is copied, leaving mixed-page and whole-page BSS zero.
+
+`user::kutox_user_load_elf` parses first, creates a new scratch address space,
+then eagerly maps the image and invokes the ported startup-stack builder.
+Auxv contains PHNUM, PHENT and ENTRY; PHDR is included only when the complete
+program table is actually mapped. PAGESZ/NULL come from the stack builder;
+there is no fabricated random pointer. The portable loader consumes the
+unpublished space: allocation, mapping or stack failure drops the whole space,
+including partial page tables, without replacing an existing live image.
+Success returns its owned space, entry, stack pointer and image-page count;
+entering ring 3 is a separate explicit operation.
+
+[Two guest cases](../src/guest_tests/user_elf.rs) use a real ELF assembled by
+Clang and linked separately by `ld.lld` from the guest-only
+[program](../src/guest_tests/user_elf.S) and [linker script](../src/guest_tests/user_elf.ld).
+It has RO headers, an unaligned RX entry, unaligned initialized RW data crossing
+a page, and 8192 BSS bytes across partial and full pages. CPL3 code checks the
+startup layout, data/BSS, writable data, write/exit and status 44 over sixteen
+fresh loads. Hardware rejects code writes and data execution; a subsequent
+fresh load succeeds. Eleven tiny real frame pools exercise every allocation
+boundary through stack creation, with exact reclamation and a live old space
+remaining intact. Portable tests cover malformed images and injected map errors.
+
+The native loader is retained in both profiles; the linked ELF and acceptance
+entry exist only in ON. Normal boot loads no program. This is not general
+`execve`, a dynamic linker, filesystem loading, ASLR, Linux binary compatibility
+or a remedy for the finite-run limitation below.
 
 ## Cooperative ring-3 runs
 
@@ -169,8 +225,8 @@ builder is independent of this runner and can be reused by a future process laye
 **Limitations:** IF remains clear and there is no preemption, runtime deadline,
 or recovery from a user loop that makes no syscall. This interface is for finite
 controlled programs, not arbitrary untrusted workloads or concurrent user tasks;
-device/timer delivery waits until the run returns. There is no ELF loading,
-process scheduler, asynchronous/blocking user API, VFS, signals, CoW/fork,
+device/timer delivery waits until the run returns. The static ELF loader does
+not add a process scheduler, asynchronous/blocking user API, VFS, signals, CoW/fork,
 demand paging, SMP, Linux userspace ABI, TLS or FPU/SIMD context switching.
 The permanent TSS entry stack, like the existing exception stacks, has no guard
 page. Normal boot runs no userspace demo or fixture.

@@ -13,6 +13,7 @@ use kutox::user_state::{
     USER_END, plan_copy, user_flags, valid_user_return,
 };
 use moss_libkernel::memory::address_space::{PageInfo, UserAddressSpace};
+use moss_libkernel::task::elf;
 use x86_64::registers::{
     control::{Cr0, Cr0Flags, Cr2, Cr4, Cr4Flags},
     model_specific::{FsBase, GsBase},
@@ -61,6 +62,24 @@ static mut ACTIVE: *mut Run = core::ptr::null_mut();
 unsafe extern "C" {
     fn kutox_user_enter(entry: u64, stack: u64, code: u64, data: u64, saved_rsp: *mut u64);
     fn kutox_user_resume();
+}
+
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".text.kutox_user_load_elf")]
+pub fn kutox_user_load_elf<'a, 'storage>(
+    boot: &crate::boot::BootInfo,
+    allocator: &'a crate::memory::PhysicalFrames<'storage>,
+    bytes: &[u8],
+    argv: &[&str],
+    envp: &[&str],
+) -> Result<elf::Loaded<AddressSpace<'a, 'storage>>, Failure> {
+    let image = elf::Image::parse(bytes, USER_BASE, USER_END)
+        .map_err(|error| Failure::new("user_elf_layout", error as i32))?;
+    let space = AddressSpace::new(boot, allocator)?;
+    image.load(space, argv, envp).map_err(|error| match error {
+        elf::Error::Memory(error) => error,
+        elf::Error::Stack(error) => Failure::new("user_elf_stack", error as i32),
+    })
 }
 
 #[unsafe(no_mangle)]

@@ -427,10 +427,21 @@ def validate_user_runs(lines, names):
             "# USER_STACK source=moss cpl=3 argc=2 envc=1 auxv=entry,pagesz,null aligned=16 epochs=16 frames=balanced",
             "# USER_STACK_LIMIT bytes=4096 overflow=rejected cpl=3 exit=43 frames=balanced",
         ],
+        "user.elf": [
+            *(["# USER_ELF_WRITE hello"] * 16),
+            "# USER_ELF source=moss format=elf64 cpl=3 exit=44 load_pages=6 stack_pages=1 bss=8192 epochs=16 frames=balanced",
+            "# USER_ELF_FAULT code cpl=3 vector=14 error=7",
+            "# USER_ELF_FAULT data cpl=3 vector=14 error=21",
+            "# USER_ELF_WRITE hello",
+            "# USER_ELF_RECOVERY cpl=3 exit=44 frames=balanced",
+        ],
+        "user.elf_rollback": [
+            "# USER_ELF_ROLLBACK pools=11 failures=10 malformed=4 stack=rejected frames=balanced",
+        ],
     }
 
     def relevant(line):
-        return line.startswith(("# USER_RUN", "# USER_FAULT", "# USER_RETURN", "# USER_WRITE", "# USER_STACK", "# b")) or line == "# x"
+        return line.startswith(("# USER_RUN", "# USER_FAULT", "# USER_RETURN", "# USER_WRITE", "# USER_STACK", "# USER_ELF", "# b")) or line == "# x"
 
     if [line for line in lines if relevant(line)] != [
         line for block in evidence.values() for line in block

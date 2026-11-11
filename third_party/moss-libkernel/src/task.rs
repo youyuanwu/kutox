@@ -3,6 +3,7 @@
 //! Task lifecycle and startup-stack primitives adapted from Moss.
 
 pub mod async_state;
+pub mod elf;
 pub mod user_stack;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

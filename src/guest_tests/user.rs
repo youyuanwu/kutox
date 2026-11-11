@@ -94,10 +94,18 @@ fn execute(space: &mut AddressSpace<'_, '_>) -> Result<Report, Failure> {
 }
 
 fn execute_stack(space: &mut AddressSpace<'_, '_>, stack: u64) -> Result<Report, Failure> {
+    execute_entry(space, USER_BASE, stack)
+}
+
+pub(super) fn execute_entry(
+    space: &mut AddressSpace<'_, '_>,
+    entry: u64,
+    stack: u64,
+) -> Result<Report, Failure> {
     let root = Cr3::read();
     let cr0 = Cr0::read();
     let flags = rflags::read();
-    let report = user::kutox_user_bringup(space, USER_BASE, stack)?;
+    let report = user::kutox_user_bringup(space, entry, stack)?;
     assert_eq!(report.cpl, 3);
     assert_eq!(Cr3::read(), root);
     assert_eq!(Cr0::read(), cr0);
@@ -111,7 +119,7 @@ fn execute_stack(space: &mut AddressSpace<'_, '_>, stack: u64) -> Result<Report,
     Ok(report)
 }
 
-fn exited(
+pub(super) fn exited(
     report: Report,
     status: u64,
     calls: usize,

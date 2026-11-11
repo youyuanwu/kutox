@@ -85,6 +85,8 @@ KERNEL_TEST_NAMES = (
     "user.faults",
     "user.reclamation",
     "user.startup_stack",
+    "user.elf",
+    "user.elf_rollback",
 )
 
 

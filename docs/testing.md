@@ -91,6 +91,22 @@ rollback. The host requires the exact Moss/CPL3/layout/alignment/epoch proof.
 The actual ELF gate retains `kutox_user_bringup` in both profiles and requires
 the embedded startup program only in ON. No boot selector or dependency is added.
 
+[Static ELF acceptance](kernel-implementation.md#bounded-moss-elf-loading)
+adds `user.elf` and `user.elf_rollback` to those same suites (seventy cases).
+The ON build assembles and separately links a real ELF fixture with the existing
+Clang/`ld.lld` tools. CPL3 checks argc/argv/envp/auxv, initialized cross-page data,
+8192 zeroed BSS bytes and writable data, then writes and exits 44. Sixteen
+fresh loads, actual code-write/data-execution faults and recovery must reclaim
+every frame. Eleven tiny physical pools cover OOM through stack creation;
+malformed files and stack failure preserve an unrelated live space.
+Portable tests cover checked headers, unsupported formats, permission/window/
+alignment/overlap/entry validation, full page capacity and every injected
+allocation/map failure. The host rejects missing, duplicate, reordered or
+out-of-case ELF evidence. The actual build gate requires `kutox_user_load_elf`
+in both profiles and the fixture/image symbols only in ON; production boot
+rejects guest evidence. No new selector, catalog registration or dependency
+is added. These remain finite, interrupt-disabled executions.
+
 ## Validation tiers
 
 ```sh

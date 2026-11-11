@@ -19,4 +19,5 @@ sources = [
     "libkernel/src/sync/waker_set.rs",
     "src/sched/sched_task/state.rs",
     "src/process/exec.rs",
+    "libkernel/src/memory/proc_vm/vmarea.rs",
 ]

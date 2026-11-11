@@ -350,6 +350,17 @@ def user_log(name):
             "# USER_STACK source=moss cpl=3 argc=2 envc=1 auxv=entry,pagesz,null aligned=16 epochs=16 frames=balanced",
             "# USER_STACK_LIMIT bytes=4096 overflow=rejected cpl=3 exit=43 frames=balanced",
         ],
+        "user.elf": [
+            *(["# USER_ELF_WRITE hello"] * 16),
+            "# USER_ELF source=moss format=elf64 cpl=3 exit=44 load_pages=6 stack_pages=1 bss=8192 epochs=16 frames=balanced",
+            "# USER_ELF_FAULT code cpl=3 vector=14 error=7",
+            "# USER_ELF_FAULT data cpl=3 vector=14 error=21",
+            "# USER_ELF_WRITE hello",
+            "# USER_ELF_RECOVERY cpl=3 exit=44 frames=balanced",
+        ],
+        "user.elf_rollback": [
+            "# USER_ELF_ROLLBACK pools=11 failures=10 malformed=4 stack=rejected frames=balanced",
+        ],
     }[name]
 
 
@@ -395,7 +406,7 @@ def suite_log(case="kernel-tests"):
 class KernelSuiteTests(unittest.TestCase):
     def test_user_run_proofs_require_cpl3_exact_bounds_faults_recovery_and_order(self):
         names = ("user.entry_exit", "user.syscalls", "user.faults", "user.reclamation")
-        self.assertEqual(KERNEL_TEST_NAMES[-5:-1], names)
+        self.assertEqual(KERNEL_TEST_NAMES[-7:-3], names)
         output = suite_log()
         for name in names:
             for marker in user_log(name):
@@ -422,7 +433,7 @@ class KernelSuiteTests(unittest.TestCase):
             "memory.user_switching", "memory.user_permissions",
             "memory.user_rollback", "memory.user_reclamation",
         )
-        self.assertEqual(KERNEL_TEST_NAMES[-9:-5], names)
+        self.assertEqual(KERNEL_TEST_NAMES[-11:-7], names)
         output = suite_log()
         validate_result("kernel-tests", 1, output)
         for name in names:
@@ -431,7 +442,7 @@ class KernelSuiteTests(unittest.TestCase):
                 validate_result("kernel-tests", 1, output.replace(f"ok {index} {name}\n", ""))
 
     def test_moss_startup_stack_requires_actual_cpl3_layout_and_reclamation_proof(self):
-        self.assertEqual(KERNEL_TEST_NAMES[-1], "user.startup_stack")
+        self.assertEqual(KERNEL_TEST_NAMES[-3], "user.startup_stack")
         output = suite_log()
         marker = user_log("user.startup_stack")[0]
         for replacement in (
@@ -452,6 +463,28 @@ class KernelSuiteTests(unittest.TestCase):
         ):
             with self.subTest(replacement=replacement), self.assertRaises(AssertionError):
                 validate_result("kernel-tests", 1, output.replace(limit, replacement))
+
+    def test_elf_requires_loading_execution_bss_fault_recovery_and_rollback_proofs(self):
+        self.assertEqual(KERNEL_TEST_NAMES[-2:], ("user.elf", "user.elf_rollback"))
+        output = suite_log()
+        for name in ("user.elf", "user.elf_rollback"):
+            for marker in user_log(name):
+                for replacement in ("", marker + "\n" + marker):
+                    with self.subTest(marker=marker), self.assertRaises(AssertionError):
+                        validate_result("kernel-tests", 1, output.replace(marker, replacement, 1))
+        for before, after in (
+            ("format=elf64", "format=raw"), ("exit=44", "exit=99"),
+            ("load_pages=6", "load_pages=5"), ("stack_pages=1", "stack_pages=0"),
+            ("bss=8192", "bss=8191"), ("pools=11", "pools=10"),
+            ("failures=10", "failures=9"), ("malformed=4", "malformed=3"),
+            ("stack=rejected", "stack=accepted"),
+        ):
+            with self.subTest(before=before), self.assertRaises(AssertionError):
+                validate_result("kernel-tests", 1, output.replace(before, after, 1))
+        marker = user_log("user.elf")[-1]
+        result = f"ok {KERNEL_TEST_NAMES.index('user.elf') + 1} user.elf"
+        with self.assertRaises(AssertionError):
+            validate_result("kernel-tests", 1, output.replace(marker + "\n" + result, result + "\n" + marker))
 
     def test_pci_hierarchy_rejects_missing_duplicate_and_wrong_identity(self):
         case = "kernel-tests-nested"

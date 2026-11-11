@@ -37,6 +37,8 @@ GUEST_SYMBOLS = {
     "kutox_guest_http_client",
     "kutox_guest_address_spaces",
     "kutox_guest_userspace",
+    "kutox_guest_elf",
+    "kutox_guest_user_elf",
     "kutox_guest_async_hardening",
 } | NATIVE_INIT_SYMBOLS | USER_PROGRAM_SYMBOLS
 RUNTIME_SYMBOLS = {
@@ -54,6 +56,7 @@ RUNTIME_SYMBOLS = {
     "kutox::net_dns::CONTROL",
     "kutox::net_tcp::CONTROL",
     "kutox_user_bringup", "kutox_user_enter", "kutox_user_resume", "kutox_user_dispatch",
+    "kutox_user_load_elf",
 }
 GUEST_ONLY_PATTERN = re.compile(
     r"::(?:guest_tests|tests|wait_tests|irq_tests|test_cleanup)::|"

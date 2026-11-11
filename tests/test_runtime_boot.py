@@ -148,6 +148,8 @@ class RuntimeBootTests(unittest.TestCase):
             "# HTTP_TEST_EPOCH epoch=1",
             "# USER_RUN entry cpl=3 exit=33 calls=1 writes=0 bytes=0",
             "# USER_RETURN cpl=3 noncanonical=rejected nt=cleared recovery=33",
+            "# USER_ELF_WRITE hello",
+            "# USER_ELF_ROLLBACK pools=11 failures=10 malformed=4 stack=rejected frames=balanced",
         ]:
             with self.subTest(extra=extra), self.assertRaises(AssertionError):
                 runner.validate_live_boot("driver-runtime-default", live_log() + extra + "\n", SYMBOLS)
