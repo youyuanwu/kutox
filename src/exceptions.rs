@@ -101,15 +101,36 @@ impl Gate {
 }
 
 #[repr(C)]
-struct ExceptionFrame {
-    registers: [u64; 15],
-    vector: u64,
-    error: u64,
-    instruction_pointer: u64,
-    code_segment: u64,
-    flags: u64,
-    stack_pointer: u64,
-    stack_segment: u64,
+pub(crate) struct ExceptionFrame {
+    pub(crate) registers: [u64; 15],
+    pub(crate) vector: u64,
+    pub(crate) error: u64,
+    pub(crate) instruction_pointer: u64,
+    pub(crate) code_segment: u64,
+    pub(crate) flags: u64,
+    pub(crate) stack_pointer: u64,
+    pub(crate) stack_segment: u64,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct UserSelectors {
+    pub(crate) kernel_code: u16,
+    pub(crate) kernel_data: u16,
+    pub(crate) user_code: u16,
+    pub(crate) user_data: u16,
+}
+
+static mut USER_SELECTORS: Option<UserSelectors> = None;
+
+pub(crate) fn user_selectors() -> Result<UserSelectors, Failure> {
+    unsafe { addr_of!(USER_SELECTORS).read() }
+        .ok_or(Failure::new("user_selectors_not_initialized", -1))
+}
+
+pub(crate) fn on_user_entry_stack(frame: &ExceptionFrame) -> bool {
+    let base = unsafe { addr_of!(STACKS).cast::<Stack>().add(3) } as usize;
+    let address = frame as *const ExceptionFrame as usize;
+    base <= address && address + size_of::<ExceptionFrame>() <= base + STACK_SIZE
 }
 
 const _: () = {
@@ -144,6 +165,14 @@ pub fn initialize() -> Result<(), Failure> {
         let code = gdt.append(Descriptor::kernel_code_segment());
         let data = gdt.append(Descriptor::kernel_data_segment());
         let tss_selector = gdt.append(Descriptor::tss_segment(&*addr_of!(TSS)));
+        let user_data = gdt.append(Descriptor::user_data_segment());
+        let user_code = gdt.append(Descriptor::user_code_segment());
+        addr_of_mut!(USER_SELECTORS).write(Some(UserSelectors {
+            kernel_code: code.0,
+            kernel_data: data.0,
+            user_code: user_code.0,
+            user_data: user_data.0,
+        }));
         gdt.load_unsafe();
         CS::set_reg(code);
         SS::set_reg(data);
@@ -159,6 +188,9 @@ pub fn initialize() -> Result<(), Failure> {
                 _ => 0,
             };
             *entry = Gate::new(kutox_exception_entries[vector], code.0, ist);
+            if vector == crate::user::SYSCALL_VECTOR {
+                entry.attributes = 0xee;
+            }
         }
         lidt(&DescriptorTablePointer {
             limit: (size_of::<[Gate; 256]>() - 1) as u16,
@@ -174,7 +206,7 @@ pub fn initialize() -> Result<(), Failure> {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn kutox_exception_dispatch(frame: &ExceptionFrame) {
+extern "C" fn kutox_exception_dispatch(frame: &mut ExceptionFrame) {
     if DISPATCHING.swap(true, Ordering::AcqRel) {
         serial::print(format_args!("{FAILURE_PREFIX} stage=nested_exception\n"));
         io::finish(false);
@@ -185,7 +217,13 @@ extern "C" fn kutox_exception_dispatch(frame: &ExceptionFrame) {
         irq::TIMER_VECTOR | irq::DEVICE_VECTOR | irq::SPURIOUS_VECTOR
     ) {
         HARDWARE_IRQ.store(true, Ordering::Release);
-        match irq::dispatch(vector, frame.flags) {
+        let result = irq::dispatch(vector, frame.flags).and_then(|()| {
+            if frame.code_segment & 3 == 3 && !crate::user::kutox_user_dispatch(frame)? {
+                return Err(Failure::new("user_irq_context", -1));
+            }
+            Ok(())
+        });
+        match result {
             Ok(()) => {
                 HARDWARE_IRQ.store(false, Ordering::Release);
                 DISPATCHING.store(false, Ordering::Release);
@@ -199,6 +237,17 @@ extern "C" fn kutox_exception_dispatch(frame: &ExceptionFrame) {
                 io::finish(false);
             }
         }
+    }
+    let handled = crate::user::kutox_user_dispatch(frame).unwrap_or_else(|error| {
+        serial::print(format_args!(
+            "{FAILURE_PREFIX} stage={} code={} vector={vector}\n",
+            error.stage, error.code
+        ));
+        io::finish(false);
+    });
+    if handled {
+        DISPATCHING.store(false, Ordering::Release);
+        return;
     }
     #[cfg(feature = "guest-tests")]
     let expected = EXPECTED_VECTOR.load(Ordering::Acquire) == vector;

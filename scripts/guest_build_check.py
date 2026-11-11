@@ -10,6 +10,11 @@ from linux_driver_check import Elf
 from make_iso import validate_image
 
 NATIVE_INIT_SYMBOLS = {f"kutox_guest_native_init_{identity}" for identity in (10, 20, 30, 40)}
+USER_PROGRAM_SYMBOLS = {
+    f"kutox_guest_user_{name}{suffix}"
+    for name in ("exit", "syscalls", "read", "code_write", "nx", "cli", "io", "ud", "fpu", "limit", "bounds", "bad_context", "nt", "startup", "startup_full", "irq_wait", "irq_bad_stack")
+    for suffix in ("", "_end")
+}
 INIT_MAGIC = 0x4b44494e
 INIT_RECORD_BYTES = 24
 
@@ -29,8 +34,15 @@ GUEST_SYMBOLS = {
     "kutox_guest_dhcp_client",
     "kutox_guest_dns_client",
     "kutox_guest_tcp_client",
+    "kutox_guest_http_client",
+    "kutox_guest_address_spaces",
+    "kutox_guest_userspace",
+    "kutox_guest_elf",
+    "kutox_guest_user_elf",
+    "kutox_guest_user_timeout",
+    "kutox_guest_user_tasks",
     "kutox_guest_async_hardening",
-} | NATIVE_INIT_SYMBOLS
+} | NATIVE_INIT_SYMBOLS | USER_PROGRAM_SYMBOLS
 RUNTIME_SYMBOLS = {
     "e1000_probe", "e1000_open", "e1000_close", "e1000_xmit_frame",
     "e1000_intr", "e1000_clean", "kutox_driver_alloc", "kutox_driver_free",
@@ -45,6 +57,10 @@ RUNTIME_SYMBOLS = {
     "kutox::net_udp::CONTROL",
     "kutox::net_dns::CONTROL",
     "kutox::net_tcp::CONTROL",
+    "kutox_user_bringup", "kutox_user_enter", "kutox_user_resume", "kutox_user_dispatch",
+    "kutox_user_load_elf",
+    "kutox_user_dispatch_next",
+    "kutox_runtime_users",
 }
 GUEST_ONLY_PATTERN = re.compile(
     r"::(?:guest_tests|tests|wait_tests|irq_tests|test_cleanup)::|"

@@ -7,7 +7,7 @@ import subprocess
 import network_packets as ip_packets
 from qemu_scenarios import *
 from qemu_scenarios import TEST_OPTIONS_FAILURES
-from qemu_scenarios import UDP_CASES, DHCP_CASES, DHCP_LIVE_CASES, DNS_CASES, TCP_CASES
+from qemu_scenarios import UDP_CASES, DHCP_CASES, DHCP_LIVE_CASES, DNS_CASES, TCP_CASES, HTTP_CASES
 from qemu_protocols import *
 
 
@@ -258,6 +258,87 @@ def validate_tcp_suite(case, returncode, output):
         raise AssertionError("TCP success preceded joined cleanup")
 
 
+def validate_http_suite(case, returncode, output):
+    import http_packets
+
+    lines = output.splitlines()
+    validate_boot_preamble(lines, "http-tests")
+    if validate_ktap(driver_ktap_lines(lines), returncode, ("http.exchange",)):
+        raise KernelSuiteFailure("HTTP integration failed")
+    if any(line.startswith(("E1000_", "CPU_EXCEPTION", "Bail out!", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "# DHCP_ERROR", "# DHCP_REJECT", "# DHCP_DECONFIG", "# DNS_ERROR", "# DNS_REJECT", "# NETWORK_STACK_ERROR", "# ASYNC_ERROR", "# RUNTIME_ERROR")) for line in lines):
+        raise AssertionError("HTTP integration reached an unrelated failure/production path")
+    previous = -1
+    runtime_evidence = []
+    for epoch in (1, 2):
+        server = "1.1.1.1" if epoch == 1 else "8.8.8.8"
+        start = f"# HTTP_TEST_EPOCH epoch={epoch}"
+        ready = f"# HTTP_TEST_READY epoch={epoch} generation=1 cidr=10.0.2.{epoch + 14}/24 dns={server} router=10.0.2.2"
+        join = f"# HTTP_TEST_JOIN epoch={epoch} success=2 timeout=1 connections=0 queries=0 frame=balanced heap=balanced"
+        if any(lines.count(marker) != 1 for marker in (start, ready, join)):
+            raise AssertionError("HTTP configuration or joined-cleanup evidence missing/duplicated")
+        begin, end = lines.index(start), lines.index(join)
+        if not previous < begin < lines.index(ready) < end:
+            raise AssertionError("HTTP runtime epochs overlap or configuration is reordered")
+        previous = end
+        block = lines[begin:end]
+        deadlines = f"# USER_RUNTIME_DEADLINES epoch={epoch} sleeps=8 requested_us=1000 elapsed_us=1000..19999 quantum_us=20000"
+        users = [line for line in block if line.startswith("# USER_RUNTIME ")]
+        pattern = rf"# USER_RUNTIME epoch={epoch} source=moss-dispatch tasks=2 slices=(\d+) early=(\d+) memory=isolated progress=2 fault=isolated timeout=isolated survivor=66 cancel=paused stale=rejected shutdown=2 handler=delivered locks=0"
+        if lines.count(deadlines) != 1 or deadlines not in block or len(users) != 1 or (match := re.fullmatch(pattern, users[0])) is None:
+            raise AssertionError("missing user/kernel runtime lifetime or deadline proof")
+        if not 8 <= int(match[1]) <= 100000 or not 1 <= int(match[2]) <= int(match[1]):
+            raise AssertionError("userspace did not resume or yield to earlier kernel work")
+        runtime_evidence.extend([deadlines, users[0]])
+        configs = [line for line in block if line.startswith("# DHCP_CONFIG ")]
+        suffix = f"generation=1 cidr=10.0.2.{epoch + 14}/24 router=Some(10.0.2.2) dns=[Some({server}), None]"
+        if len(configs) != 1 or re.fullmatch(r"# DHCP_CONFIG identity=[1-9]\d* " + re.escape(suffix), configs[0]) is None:
+            raise AssertionError("HTTP DHCP address, gateway or server mismatch")
+        for prefix, pattern, ceiling in (
+            ("# DHCP_STORAGE ", r"# DHCP_STORAGE charged=(\d+) limit=32768 sockets=1 dns=2", 32768),
+            ("# DNS_STORAGE ", r"# DNS_STORAGE charged=(\d+) limit=32768 queries=4 results=4", 32768),
+            ("# TCP_STORAGE ", r"# TCP_STORAGE charged=(\d+) limit=131072 connections=4 buffer=4096", 131072),
+        ):
+            storage = [line for line in block if line.startswith(prefix)]
+            if len(storage) != 1 or (match := re.fullmatch(pattern, storage[0])) is None or not 0 <= int(match[1]) <= ceiling:
+                raise AssertionError("HTTP composition storage proof missing or unbounded")
+        stage_end = lines.index(ready)
+        for stage in (1, 2, 3):
+            dns = f"# HTTP_TEST_DNS epoch={epoch} stage={stage} address=1.2.3.{epoch + 3} servers=dhcp"
+            fragment = f"# HTTP_TEST_FRAGMENT epoch={epoch} stage={stage} bytes=7"
+            closed = f"# HTTP_TEST_CLOSED epoch={epoch} stage={stage} connections=0 queries=0 tx_grants=0"
+            if any(lines.count(marker) != 1 for marker in (dns, fragment, closed)):
+                raise AssertionError("HTTP DNS/fragment/retirement proof missing or duplicated")
+            if stage == 2:
+                found = [line for line in block if line.startswith("# HTTP_TEST_TIMEOUT ")]
+                pattern = rf"# HTTP_TEST_TIMEOUT epoch={epoch} stage=2 request={len(http_packets.REQUEST)} received={len(http_packets.HEADER) + 113} deadline_ms=200 elapsed_ms=(\d+) polls=(\d+) eof=0"
+                delay = f"# HTTP_TEST_DELAY epoch={epoch} stage=2 delay_ms=150"
+                if lines.count(delay) != 1 or not lines.index(dns) < lines.index(delay) < lines.index(fragment):
+                    raise AssertionError("HTTP absolute deadline did not cover fragment delay")
+                if len(found) != 1 or (match := re.fullmatch(pattern, found[0])) is None or not 200 <= int(match[1]) < 325 or not 1 <= int(match[2]) <= 256:
+                    raise AssertionError("HTTP absolute deadline or idle budget proof mismatch")
+            else:
+                found = [line for line in block if line.startswith(f"# HTTP_TEST_RESPONSE epoch={epoch} stage={stage} ")]
+                pattern = rf"# HTTP_TEST_RESPONSE epoch={epoch} stage={stage} request={len(http_packets.REQUEST)} writes=(\d+) status=200 header={len(http_packets.HEADER)} body=6144 reads=(\d+) eof=1"
+                if len(found) != 1 or (match := re.fullmatch(pattern, found[0])) is None or not 2 <= int(match[1]) <= len(http_packets.REQUEST) or not (len(http_packets.HEADER) + 6144 + 36) // 37 <= int(match[2]) <= len(http_packets.HEADER) + 6145:
+                    raise AssertionError("HTTP response size, partial-I/O or EOF proof mismatch")
+            positions = [lines.index(marker) for marker in (dns, fragment, found[0], closed)]
+            if positions != sorted(positions) or not stage_end < positions[0] or positions[-1] >= end:
+                raise AssertionError("HTTP stages or cleanup are reordered")
+            progress = [line for line in block if line.startswith(f"# USER_RUNTIME_NETWORK epoch={epoch} stage={stage} ")]
+            pattern = rf"# USER_RUNTIME_NETWORK epoch={epoch} stage={stage} slices=([1-9]\d*) progress=([1-9]\d*) survivor=running"
+            if len(progress) != 1 or (overlap := re.fullmatch(pattern, progress[0])) is None or not 1 <= int(overlap[2]) <= int(overlap[1]) or not positions[-1] < lines.index(progress[0]) < lines.index(users[0]):
+                raise AssertionError("HTTP traffic did not overlap live user tasks")
+            runtime_evidence.extend(progress)
+            stage_end = positions[-1]
+        errors = [line for line in block if line.startswith("# TCP_ERROR ")]
+        if errors != ["# TCP_ERROR operation=read error=TimedOut"]:
+            raise AssertionError("HTTP deadline did not produce the expected native read error")
+    if previous >= lines.index("ok 1 http.exchange"):
+        raise AssertionError("HTTP success preceded joined resource release")
+    if Counter(line for line in lines if line.startswith("# USER_")) != Counter(runtime_evidence):
+        raise AssertionError("unknown, duplicate or out-of-epoch userspace runtime evidence")
+
+
 def validate_pci_hierarchy(lines, case):
     root, leaf, parents = pci_layout(case)
     matches = [line for line in lines if line.startswith("# PCI_HIERARCHY")]
@@ -325,9 +406,15 @@ def validate_kernel_suite(case, returncode, output):
         expected_names = ("harness.intentional_failure", *expected_names)
     if lines.count("# linux format=-7/0000002A/4294967296/12:34:56:78:9a:bc/end") != 1:
         raise AssertionError("missing, duplicate, or incorrect driver diagnostic formatting")
-    failures = validate_ktap(lines, returncode, expected_names)
+    begin = [index for index, line in enumerate(lines) if line == "# USER_RUNTIME_ERRORS_BEGIN"]
+    end = [index for index, line in enumerate(lines) if line.startswith("# USER_RUNTIME_ERRORS ")]
+    if len(begin) != 1 or len(end) != 1 or begin[0] >= end[0]:
+        raise AssertionError("missing or misplaced runtime cleanup boundary")
+    normalized = [*lines[:begin[0]], *driver_ktap_lines(lines[begin[0]:end[0]]), *lines[end[0]:]]
+    failures = validate_ktap(normalized, returncode, expected_names)
     validate_linux_callbacks(output)
     validate_native_drivers(lines, case)
+    validate_user_runs(lines, expected_names)
     if case == "kernel-tests-fail" and failures != {"harness.intentional_failure"}:
         raise AssertionError("intentional failure did not fire or another test failed")
     if case == "kernel-tests-fail":
@@ -341,6 +428,78 @@ def validate_kernel_suite(case, returncode, output):
             raise AssertionError("intentional assertion or cleaned-error failure proof is missing")
     if failures:
         raise KernelSuiteFailure(f"kernel suite failed: {', '.join(sorted(failures))}")
+
+
+def validate_user_runs(lines, names):
+    evidence = {
+        "user.entry_exit": ["# USER_RUN entry cpl=3 exit=33 calls=1 writes=0 bytes=0"],
+        "user.syscalls": [
+            "# USER_WRITE hello", "# x",
+            "# USER_RUN syscalls cpl=3 exit=0 calls=11 writes=3 bytes=23",
+            *(["# " + "b" * 253] * 4),
+            "# USER_RUN bounds cpl=3 exit=0 calls=6 writes=4 bytes=1024",
+        ],
+        "user.faults": [
+            f"# USER_FAULT case={index} cpl=3 vector={vector} error={error} recovery=33"
+            for index, (vector, error) in enumerate(((14, 5), (14, 5), (14, 7), (14, 21), (13, 0), (13, 0), (6, 0), (7, 0)))
+        ] + ["# USER_RETURN cpl=3 noncanonical=rejected nt=cleared recovery=33"],
+        "user.reclamation": ["# USER_RUN reclamation cpl=3 epochs=16 limit=32 frames=balanced"],
+        "user.startup_stack": [
+            "# USER_STACK source=moss cpl=3 argc=2 envc=1 auxv=entry,pagesz,null aligned=16 epochs=16 frames=balanced",
+            "# USER_STACK_LIMIT bytes=4096 overflow=rejected cpl=3 exit=43 frames=balanced",
+        ],
+        "user.elf": [
+            *(["# USER_ELF_WRITE hello"] * 16),
+            "# USER_ELF source=moss format=elf64 cpl=3 exit=44 load_pages=6 stack_pages=1 bss=8192 epochs=16 frames=balanced",
+            "# USER_ELF_FAULT code cpl=3 vector=14 error=7",
+            "# USER_ELF_FAULT data cpl=3 vector=14 error=21",
+            "# USER_ELF_WRITE hello",
+            "# USER_ELF_RECOVERY cpl=3 exit=44 frames=balanced",
+        ],
+        "user.elf_rollback": [
+            "# USER_ELF_ROLLBACK pools=11 failures=10 malformed=4 stack=rejected frames=balanced",
+        ],
+        "user.timeout": [
+            "# USER_TIMEOUT source=moss-boundary cpl=3 format=elf64 budget_us=5000 elapsed_us=5000..99999 calls=0 epochs=16 timer=reusable handler=preserved frames=balanced",
+        ],
+        "user.device_irq": [
+            "# USER_IRQ source=moss-boundary cpl=3 timer=delivered device=e1000 delivered=1 resumed=45 gprs=preserved df=preserved if=enabled locks=0",
+            "# USER_IRQ_RETURN cpl=3 timer=delivered noncanonical=rejected calls=0 recovery=33",
+        ],
+        "user.tasks": [
+            "# USER_TASKS source=moss-context format=elf64 tasks=2 fifo=alternating epochs=8 slices=64 quanta=48 exits=65,66 memory=isolated context=continued rsp=unaligned df=preserved if=enabled kernel_work=64 frames=balanced",
+        ],
+        "user.task_limits": [
+            "# USER_TASK_LIMITS capacity=2 stale=rejected retry=preserved cancel=paused irq_context=rejected resume_fault=contained budgets=cumulative gaps_us=10000 timeouts=2 fault=isolated survivor=66 syscall_limit=32 writes=32 bytes=0 frames=balanced",
+        ],
+        "user.runtime_cleanup": [
+            "# USER_RUNTIME_ERRORS_BEGIN",
+            "# RUNTIME_ERROR stage=user_task_duration code=-1",
+            "# RUNTIME_ERROR stage=user_task_duration code=-1",
+            "# RUNTIME_ERROR stage=runtime_startup_injected code=-210",
+            "# RUNTIME_ERROR stage=user_runtime_observer_injected code=-399",
+            "# RUNTIME_ERROR stage=user_run_stack code=-1",
+            "# RUNTIME_ERROR stage=runtime_startup_injected code=-210",
+            "# RUNTIME_ERROR stage=runtime_start code=-210",
+            "# USER_RUNTIME_ERRORS invalid=2 admission=joined observer=joined entry=joined startup=joined callbacks=1 frames=balanced",
+        ],
+    }
+
+    def relevant(line):
+        return line.startswith(("# USER_", "# RUNTIME_ERROR", "# b")) or line == "# x"
+
+    if [line for line in lines if relevant(line)] != [
+        line for block in evidence.values() for line in block
+    ]:
+        raise AssertionError("missing, malformed, duplicate or reordered user-run evidence")
+    for name, expected in evidence.items():
+        number = names.index(name) + 1
+        end = next(index for index, line in enumerate(lines) if line in (
+            f"ok {number} {name}", f"not ok {number} {name}",
+        ))
+        start = max(index for index, line in enumerate(lines[:end]) if line.startswith(("ok ", "not ok ")))
+        if [line for line in lines[start + 1:end] if relevant(line)] != expected:
+            raise AssertionError("user-run evidence outside its KTAP case")
 
 
 def validate_ktap(lines, returncode, expected_names):
@@ -915,6 +1074,9 @@ def validate_thread_guard(returncode, output):
 
 
 def validate_result(case, returncode, output):
+    if case in HTTP_CASES:
+        validate_http_suite(case, returncode, output)
+        return
     if case in TCP_CASES:
         validate_tcp_suite(case, returncode, output)
         return
@@ -961,7 +1123,7 @@ def validate_result(case, returncode, output):
         if any(line.startswith(("BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "# DRIVER_", "# KERNEL_SERVICES", "# NETWORK_STACK")) for line in lines):
             raise AssertionError("invalid CIDR reached allocation or source admission")
         return
-    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled", "async-network-tests-disabled", "network-tests-disabled", "udp-tests-disabled", "dhcp-tests-disabled", "dns-tests-disabled", "tcp-tests-disabled", "async-hardening-tests-disabled"):
+    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled", "async-network-tests-disabled", "network-tests-disabled", "udp-tests-disabled", "dhcp-tests-disabled", "dns-tests-disabled", "tcp-tests-disabled", "http-tests-disabled", "async-hardening-tests-disabled"):
         lines = output.splitlines()
         expected = "E1000_MAC_FAIL stage=boot_mode code=-25"
         if returncode != 3 or not lines or lines[-1] != expected:
@@ -970,7 +1132,7 @@ def validate_result(case, returncode, output):
             raise AssertionError("missing pinned-source feature-off boot marker")
         if [line for line in lines if line.startswith("E1000_")] != [expected] or any(
             line.startswith(("BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "THREAD_", "Bail out!",
-                             "# RUNTIME_", "# NATIVE_", "# LINUX_", "# ASYNC_", "# NET_IP_", "# NETWORK_STACK_", "# UDP_", "# DHCP_", "# DNS_", "# TCP_"))
+                             "# RUNTIME_", "# NATIVE_", "# LINUX_", "# ASYNC_", "# NET_IP_", "# NETWORK_STACK_", "# UDP_", "# DHCP_", "# DNS_", "# TCP_", "# HTTP_", "# USER_"))
             for line in lines
         ):
             raise AssertionError("feature-off test mode reached initialization or guest fixtures")
@@ -1660,7 +1822,7 @@ def validate_live_boot(case, output, symbols):
     validate_boot_preamble(lines, mode or "run", "fw_cfg" if mode else "default")
     validate_allocator(lines, 32 if case.endswith("low-memory") else 128)
     if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "KERNEL_RUNTIME_", "THREAD_", "KTAP", "ok ", "not ok ",
-                            "Bail out!", "KERNEL_PANIC", "# LINUX_CALLBACK", "# LINUX_FAULT", "# LINUX_RX_", "# LINUX_HARD_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR", "# NET_IP_", "# ASYNC_NET_", "# ASYNC_ERROR", "# NETWORK_STACK_ERROR", "# NETWORK_STACK_STOP", "# HOST_", "# DHCP_ERROR", "# DHCP_REJECT", "# DHCP_TEST_", "# DNS_", "# TCP_")) for line in lines):
+                            "Bail out!", "KERNEL_PANIC", "# LINUX_CALLBACK", "# LINUX_FAULT", "# LINUX_RX_", "# LINUX_HARD_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR", "# NET_IP_", "# ASYNC_NET_", "# ASYNC_ERROR", "# NETWORK_STACK_ERROR", "# NETWORK_STACK_STOP", "# HOST_", "# DHCP_ERROR", "# DHCP_REJECT", "# DHCP_TEST_", "# DNS_", "# TCP_", "# HTTP_", "# USER_")) for line in lines):
         raise AssertionError("default runtime exited, failed, or entered a probe/fixture path")
     bound = int(LIVE_CASES[case][1])
     normalized = [line.removeprefix("# ") for line in lines]

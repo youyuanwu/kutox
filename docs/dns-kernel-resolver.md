@@ -18,6 +18,8 @@ additional Moss networking, VFS, or syscall source is copied.
 
 The subsequent [native TCP extension](tcp-kernel-clients.md) is separate:
 it does not add TCP fallback or HTTP acceptance to this resolver.
+The subsequent [HTTP guest acceptance](http-network-acceptance.md) exercises
+the composition through the existing native resolver and TCP APIs.
 
 The added dependency features are `socket-dns`, `dns-max-server-count-2`, and
 `dns-max-result-count-4`. Defaults remain disabled and the version is unchanged.

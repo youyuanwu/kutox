@@ -44,7 +44,8 @@ class SelectionTests(unittest.TestCase):
             runner.validate_test_listing(1, "limine: unknown output\n" + output)
         for before, after in [
             ("speed=normal", "speed=slow"), ("isolated=1", "isolated=0"),
-            ("suite=cpu", "suite=heap"), ("total=59", "total=58"),
+            ("suite=cpu", "suite=heap"),
+            (f"total={len(runner.KERNEL_TEST_NAMES)}", f"total={len(runner.KERNEL_TEST_NAMES) - 1}"),
             ("name=cpu.irq_lock_restore", "name=cpu.unknown"),
         ]:
             with self.subTest(before=before), self.assertRaises(AssertionError):

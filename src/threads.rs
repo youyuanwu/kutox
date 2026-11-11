@@ -50,6 +50,7 @@ pub enum SwitchError {
     InterruptContext = -57,
     DeferredContext = -58,
     AsyncContext = -59,
+    UserAddressSpaceActive = -60,
 }
 
 fn switch_allowed() -> Result<(), SwitchError> {
@@ -67,6 +68,9 @@ fn switch_allowed() -> Result<(), SwitchError> {
     }
     if cpu::interrupts_enabled() {
         return Err(SwitchError::InterruptsEnabled);
+    }
+    if !memory::user::quiescent() {
+        return Err(SwitchError::UserAddressSpaceActive);
     }
     Ok(())
 }
@@ -233,6 +237,15 @@ pub(crate) fn check_boot_or_thread_context() -> Result<bool, SwitchError> {
     Ok(true)
 }
 
+pub(crate) fn check_user_dispatch_context() -> Result<(), SwitchError> {
+    switch_allowed()?;
+    if is_quiescent() || is_dispatcher_context() {
+        Ok(())
+    } else {
+        Err(SwitchError::NotRunning)
+    }
+}
+
 pub fn current_task_handle() -> Result<TaskHandle, SwitchError> {
     check_thread_context()?;
     Ok(active()?.handle)
@@ -361,6 +374,14 @@ pub(crate) fn timer_tick() {
 pub(crate) fn has_ready() -> bool {
     let dispatch = DISPATCH.lock_save_irq();
     dispatch.bound && dispatch.queue.ready_count() != 0
+}
+
+pub(crate) fn next_dispatch_deadline() -> Option<u64> {
+    let dispatch = DISPATCH.lock_save_irq();
+    dispatch
+        .bound
+        .then(|| dispatch.queue.next_deadline())
+        .flatten()
 }
 
 struct Running<'q> {
@@ -533,7 +554,7 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
     }
 
     pub fn run(&mut self) -> Result<RunStats, Failure> {
-        self.run_inner(None, IdleMode::Finite, None)
+        self.run_inner(None, IdleMode::Finite, None, None)
     }
 
     pub fn discard_unstarted(&mut self, handle: TaskHandle) -> Result<(), Failure> {
@@ -554,7 +575,7 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
     }
 
     pub fn run_with_timer(&mut self, timer: &irq::Timer<'_, '_>) -> Result<RunStats, Failure> {
-        self.run_inner(Some(timer), IdleMode::Finite, None)
+        self.run_inner(Some(timer), IdleMode::Finite, None, None)
     }
 
     pub fn run_persistent(
@@ -562,7 +583,16 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
         timer: &irq::Timer<'_, '_>,
         stopped: &AtomicBool,
     ) -> Result<RunStats, Failure> {
-        self.run_inner(Some(timer), IdleMode::Persistent, Some(stopped))
+        self.run_inner(Some(timer), IdleMode::Persistent, Some(stopped), None)
+    }
+
+    pub(crate) fn run_persistent_with_work(
+        &mut self,
+        timer: &irq::Timer<'_, '_>,
+        stopped: &AtomicBool,
+        work: &mut dyn FnMut() -> Result<bool, Failure>,
+    ) -> Result<RunStats, Failure> {
+        self.run_inner(Some(timer), IdleMode::Persistent, Some(stopped), Some(work))
     }
 
     pub fn discard_all_unstarted(&mut self) -> Result<(), Failure> {
@@ -604,6 +634,7 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
         timer: Option<&irq::Timer<'_, '_>>,
         mode: IdleMode,
         stopped: Option<&AtomicBool>,
+        mut work: Option<&mut dyn FnMut() -> Result<bool, Failure>>,
     ) -> Result<RunStats, Failure> {
         switch_allowed().map_err(|error| Failure::new("thread_run_context", error as i32))?;
         if RUNNING
@@ -645,7 +676,26 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
             peak_tasks: self.tasks.iter().flatten().count(),
             ..RunStats::default()
         };
+        let mut kernel_turns = 0;
         loop {
+            {
+                let mut dispatch = DISPATCH.lock_save_irq();
+                dispatch.expire(time::now_ticks());
+            }
+            let user_turn = {
+                let dispatch = DISPATCH.lock_save_irq();
+                !dispatch.queue.has_pending_wake()
+                    && (kernel_turns == 0 || dispatch.queue.ready_count() == 0)
+            };
+            let worked = match work.as_mut() {
+                Some(work) if user_turn => {
+                    let worked = work()?;
+                    kernel_turns = DISPATCH.lock_save_irq().queue.ready_count();
+                    worked
+                }
+                None => false,
+                Some(_) => false,
+            };
             let (next, empty, deadline) = {
                 let mut dispatch = DISPATCH.lock_save_irq();
                 dispatch.expire(time::now_ticks());
@@ -675,6 +725,9 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
                 )
             };
             let Some((id, reason, handle)) = next else {
+                if worked {
+                    continue;
+                }
                 #[cfg(feature = "guest-tests")]
                 if let Some(timer) = timer {
                     crate::guest_tests::async_hardening::before_idle(timer)?;
@@ -744,6 +797,7 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
                 unsafe { addr_of_mut!(ACTIVE).write(None) };
             }
             stats.dispatches += 1;
+            kernel_turns = kernel_turns.saturating_sub(1);
             let event = EVENT.swap(0, Ordering::AcqRel);
             let request = unsafe { addr_of_mut!(REQUEST).replace(None) };
             {

@@ -42,6 +42,117 @@ socket/PCAP correspondence. It also checks native capacity/TIME-WAIT and joined
 lease/source lifetimes. OFF rejects `tcp-tests` early and omits the fixture.
 Production boots must allocate no TCP stream buffers or start a demo/client.
 
+[HTTP integration acceptance](http-network-acceptance.md) composes DHCP,
+DNS and routed TCP with fixed, bounded HTTP request/response streams.
+`http-tests*` runs only in ON at 128/32 MiB and nested bridges, including
+low-memory smoke CI. OFF rejects `http-tests` early and omits its fixture.
+The isolated peer checks exact stream/PCAP bytes, partial I/O, a total
+transaction deadline, retry after abort and joined two-epoch resource balance.
+No HTTP demo, production client or parser library is added. The same workload
+now also exercises the explicit persistent user-task integration described below.
+
+[Owned-address-space acceptance](kernel-implementation.md#owned-user-address-spaces)
+adds `memory.user_switching`, `memory.user_permissions`, `memory.user_rollback`
+and `memory.user_reclamation` to the existing full kernel suite. These run at
+128/32 MiB and the existing bridge topologies, without a new boot selector or
+test manager. They cover actual CR3 switching, all-level permission inspection,
+late kernel mapping creation/removal, zeroed private RAM, real bounded-allocator
+exhaustion, unmap/remap ownership transfer between spaces, failed-map page
+release and exact repeated frame reclamation. Translation now explicitly covers
+byte addresses as well as aligned pages. This does not claim ring-3
+fault isolation. The fixture and its entry symbol are absent from OFF; normal
+boot does not run it.
+
+```sh
+python3 scripts/check.py full --profiles ON --scope guest \
+  --select kernel-suite --select kernel-suite-low-memory \
+  --select kernel-suite-nested-low-memory
+```
+
+[Timer-bounded user-run acceptance](kernel-implementation.md#timer-bounded-ring-3-runs)
+adds `user.entry_exit`, `user.syscalls`, `user.faults` and `user.reclamation`
+to those same full kernel suites. Native CPL3/TSS entry, register/DF restoration,
+write/exit and error returns, exact output limits, cross-page validation,
+supervisor/RO/NX protection, CLI/I/O and FPU rejection, kernel recovery and
+sixteen bounded-run cleanup epochs are checked in the guest. The host requires
+exact ordered user evidence inside each KTAP case and rejects malformed,
+missing, duplicate or moved proofs. The actual ELF gate requires native
+entry/dispatch in both profiles and every embedded program symbol only in ON.
+The fixture remains absent from OFF and normal boot. All these cases now run
+with user interrupts enabled and an explicit budget.
+
+[Moss startup-stack acceptance](kernel-implementation.md#moss-startup-stack-port)
+adds `user.startup_stack` to the same full kernel suites. Portable Moss tests
+check exact argc/argv/envp/auxv bytes and pointers, alignment, maximum counts,
+the exact one-page fit/overflow boundary, invalid strings/auxv and page-owner
+cleanup on allocation/mapping failure. The guest consumes the generated layout
+in CPL3, exits with status 42, then repeats after a rejected replacement across
+sixteen resource-balanced epochs. Tiny real frame pools verify partial-table OOM
+rollback. The host requires the exact Moss/CPL3/layout/alignment/epoch proof.
+The actual ELF gate retains `kutox_user_bringup` in both profiles and requires
+the embedded startup program only in ON. No boot selector or dependency is added.
+
+[Static ELF acceptance](kernel-implementation.md#bounded-moss-elf-loading)
+adds `user.elf` and `user.elf_rollback` to those same suites.
+The ON build assembles and separately links a real ELF fixture with the existing
+Clang/`ld.lld` tools. CPL3 checks argc/argv/envp/auxv, initialized cross-page data,
+8192 zeroed BSS bytes and writable data, then writes and exits 44. Sixteen
+fresh loads, actual code-write/data-execution faults and recovery must reclaim
+every frame. Eleven tiny physical pools cover OOM through stack creation;
+malformed files and stack failure preserve an unrelated live space.
+Portable tests cover checked headers, unsupported formats, permission/window/
+alignment/overlap/entry validation, full page capacity and every injected
+allocation/map failure. The host rejects missing, duplicate, reordered or
+out-of-case ELF evidence. The actual build gate requires `kutox_user_load_elf`
+in both profiles and the fixture/image symbols only in ON; production boot
+rejects guest evidence. No new selector, catalog registration or dependency
+is added. These use the interruptible bounded runner.
+
+[User IRQ acceptance](kernel-implementation.md#timer-bounded-ring-3-runs)
+adds `user.timeout` and `user.device_irq`. A real
+ELF loops without syscalls and must time out across sixteen 5-ms epochs,
+each measured at >=5 ms and <100 ms, with restored CR3/CR0/IF, exact frame
+balance, a reusable timer and a preserved future handler. Invalid budgets,
+held locks, enabled caller IF and an already armed timer are rejected.
+The existing DMA-disabled e1000 IRQ fixture is triggered by a due timer handler
+only after user readiness. CPL3 code verifies seeded GPRs and DF/IF after
+timer/device return and exits 45. An early timer IRQ also stops a noncanonical
+user stack before `iretq`, then a valid run exits 33. Native memory acceptance
+checks off-lock activation, nested/scheduling rejection and blocked kernel
+mapping/stack mutation with no frame changes. Portable tests cover exact
+deadline boundaries and forced-IF flag sanitization. Strict host journals
+require all ordered proofs inside their own cases, and reject unknown user
+evidence. ON/OFF symbol and production-boot gates cover the new fixtures.
+This tests bounded user execution, not a multi-task process scheduler.
+
+[Resumable-task acceptance](kernel-implementation.md#resumable-user-tasks)
+adds `user.tasks` and `user.task_limits`, without
+a new boot selector or catalog registration. Two real ELF tasks alternate
+over eight epochs and 64 slices, preserving 48 quantum contexts, independent
+same-VA counters, seeded GPRs/DF/IF and an intentionally unaligned resumed SP.
+Both tasks exit correctly, with a real kernel worker run between every slice.
+Limit tests cover capacity and stale handles, failed setup/retry, paused
+cancellation, rejected noncanonical IRQ contexts, contained resume-fetch faults,
+cumulative total budgets with uncharged 10-ms kernel gaps, a faulting task
+while its peer survives, and 32 writes across quanta before the syscall cap.
+The portable Moss test checks owned save/restore copying, and portable budget
+tests cover exact quantum/final-slice boundaries and overrun saturation.
+Frame balance, strict ordered host evidence and actual ON/OFF symbol gates
+remain mandatory. Normal boot still creates no user dispatcher or task.
+
+[Persistent-user integration](kernel-implementation.md#userspace-in-the-persistent-runtime)
+extends the existing HTTP case with two isolated ELF tasks, live task progress
+in every HTTP transfer, contained fault/timeout, paused cancellation/stale
+handles, registered-handler delivery, kernel deadlines shorter than the user
+quantum and two parked owners cancelled at shutdown. Strict journals require
+these proofs within each runtime epoch, alongside the unchanged independent
+wire/PCAP oracle and exact resource balance. `user.runtime_cleanup` brings the
+kernel suite to seventy-five cases and verifies invalid preflight plus joined
+admission/observer/native-entry/startup failures. The portable FIFO test checks
+that a pending wake remains visible until its thread actually receives it.
+The native runtime entry is required in both profile ELFs; no new selector,
+ISO or test manager is introduced.
+
 ## Validation tiers
 
 ```sh
@@ -83,6 +194,14 @@ checkout, and uploads reports, guest journals, PCAPs and image manifests even
 after failures. It does not build Linux or require a sibling repository.
 Portable CI calls `fast` once; profile jobs use `--scope guest` and never repeat
 the portable checks. `--scope host` selects shared checks only.
+Both job types initialize the pinned, shallow Linux submodule before validation.
+They share a three-attempt fetch step with a 180-second limit per attempt and
+10-second retry delays. CI uses the `gregkh/linux` GitHub stable-tree mirror
+for the identical gitlink commit; the canonical kernel.org URL in `.gitmodules`
+and source pin remain unchanged. Failed or hung fetches cannot retry forever;
+exhausted retries still fail the job. Guest jobs
+explicitly install LLD as well as Clang because the ON build links a standalone
+ELF fixture using `ld.lld`; installing Clang alone does not supply that linker.
 CMake `FetchContent` downloads the pinned Limine release and verifies its SHA256.
 There is no custom downloader or download test layer.
 

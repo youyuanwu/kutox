@@ -23,9 +23,10 @@ syscalls, user-pointer handling or listen/backlog scaffolding. No additional
 Moss source is copied. The only added dependency feature is `socket-tcp`;
 the exact version and disabled defaults are unchanged.
 
-This milestone deliberately excludes listeners, TLS, userspace/POSIX APIs,
-and DNS-to-TCP-to-HTTP acceptance. The [DNS resolver](dns-kernel-resolver.md)
-continues without TCP fallback.
+This milestone deliberately excludes listeners, TLS and userspace/POSIX APIs.
+The subsequent [HTTP guest acceptance](http-network-acceptance.md) composes
+DHCP, DNS and TCP without adding a production HTTP client.
+The [DNS resolver](dns-kernel-resolver.md) continues without TCP fallback.
 
 ## API
 

@@ -322,6 +322,10 @@ impl<const N: usize> RunQueue<N> {
         self.length
     }
 
+    pub fn has_pending_wake(&self) -> bool {
+        self.wake_reasons.iter().any(Option::is_some)
+    }
+
     pub fn remove_runnable(&mut self, handle: TaskHandle) -> Result<(), Error> {
         let id = TaskId(handle.slot());
         if self.handle(id)? != handle {
@@ -388,6 +392,34 @@ impl<const N: usize> RunQueue<N> {
 mod tests {
     use super::*;
     use std::{collections::VecDeque, vec::Vec};
+
+    #[test]
+    fn pending_wake_remains_visible_until_its_fifo_turn() {
+        let mut queue = RunQueue::<2>::new();
+        queue.add(TaskId(0)).unwrap();
+        queue.add(TaskId(1)).unwrap();
+        assert_eq!(queue.dispatch(), Ok(Some(TaskId(0))));
+        queue.block_running(None, Some(10)).unwrap();
+        assert_eq!(queue.expire(10), 1);
+        assert!(queue.has_pending_wake());
+        assert_eq!(queue.dispatch(), Ok(Some(TaskId(1))));
+        assert_eq!(queue.take_wake_reason(TaskId(1)), Ok(None));
+        queue.yield_running().unwrap();
+        assert!(queue.has_pending_wake());
+        assert_eq!(queue.dispatch(), Ok(Some(TaskId(0))));
+        assert_eq!(
+            queue.take_wake_reason(TaskId(0)),
+            Ok(Some(WakeReason::TimedOut))
+        );
+        assert!(!queue.has_pending_wake());
+        queue.block_running(Some(WaitKey(1)), None).unwrap();
+        queue.wake_all(WaitKey(1));
+        assert!(queue.has_pending_wake());
+        let handle = queue.handle(TaskId(0)).unwrap();
+        queue.remove_runnable(handle).unwrap();
+        assert!(!queue.has_pending_wake());
+        queue.check_invariants().unwrap();
+    }
 
     #[test]
     fn finite_idle_preserves_completion_deadlock_deadlines_and_real_irq_waits() {

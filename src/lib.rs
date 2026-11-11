@@ -23,6 +23,7 @@ pub mod tcp_state;
 pub mod test_cleanup;
 pub mod test_selection;
 pub mod udp_state;
+pub mod user_state;
 
 #[cfg(test)]
 extern crate std;

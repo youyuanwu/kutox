@@ -3,6 +3,406 @@
 Detailed foundation and driver-service contracts, moved from the README.
 For current boot and network behavior, see the [async/network guide](async-kernel-networking.md).
 
+## Owned user address spaces
+
+[The native memory service](../src/user_memory.rs) adapts Moss's
+[permission types](../third_party/moss-libkernel/src/memory/permissions.rs) and
+[reduced address-space contract](../third_party/moss-libkernel/src/memory/address_space.rs).
+It keeps the existing `x86_64` mapper and exclusive Moss-derived frame guards;
+no upstream ARM entry code or second page-table implementation is imported.
+
+Each non-transferable address-space owner has one private PML4 and at most
+sixteen eager 4-KiB RAM pages in
+`0x0000100000000000..0x0000100000010000`. The entire containing PML4 slot must
+be unused in the kernel root. Mapping/protection/unmapping addresses must be
+page-aligned and inside that window. Initial bytes are copied into zeroed owned RAM; oversize payloads,
+duplicate mappings and unsupported permissions fail explicitly. Read-only,
+read/write and read/execute user mappings are supported; writable executable
+and supervisor mappings are rejected. Translation reports effective permissions
+across all four table levels, accepting byte addresses and returning the
+containing physical frame. Protection changes and unmapping apply only to
+owned pages, with missing mappings diagnosed.
+
+The selected portable contract now follows Moss's claimed-page mapping flow:
+`allocate_zeroed_page` returns an exclusive page with bounded mutable byte access,
+`map_page(page, address, permissions)` transfers that owner into the address
+space, and `unmap` returns the detached owner. RAM stays allocated until that
+owner drops or is moved into another address space; failed mapping consumes and
+releases the supplied page while preserving existing mappings. The native
+`map_initialized` convenience method performs allocation/initialization before
+calling the same owned-page operation. Neither the space nor its pages promise
+Send/Sync; no raw PFN leak/reconstruction API, CoW or placeholder trait method
+is introduced. This is a useful subset, not the full upstream VM trait.
+
+The root and at most three intermediate tables use buddy guards, not heap
+payloads. A first-map allocation failure detaches its partial subtree before
+releasing frames and leaves the space reusable. Removing the last page also
+reclaims the three tables. Full capacity costs twenty physical pages including
+the root. Drop requires the space to be inactive and releases all owned RAM;
+borrowed kernel subtrees are never freed.
+
+`with_active` temporarily switches CR3 under the existing page-table IRQ lock.
+Its callback must be synchronous and must not map, block or enable interrupts.
+Native scheduling and nested address-space activation are rejected while the
+lock is held. A private guard restores the original CR3 before restoring the
+caller's IRQ state, including ordinary callback error returns. User entries
+are never global, and switching flushes their TLB entries; PCID and five-level
+paging are rejected. Supervisor write protection and NX must already be enabled.
+
+The runner uses a separate `with_user_active` scope: refresh and CR3 changes
+are locked, but the lock is released before entering CPL3. The exclusive space
+borrow pins its root, tables and payloads throughout IRQ delivery. A user-root
+activation flag rejects kernel scheduling, nested activation and kernel-window/
+stack mapping changes; the generic kernel mapper also rejects operations under
+that root. IRQ callbacks may notify existing work, not switch tasks or mutate
+kernel mappings. The native continuation returns with IF clear; the original
+root is restored under the mapping lock before any pending timer is drained.
+
+Before activation, every non-user PML4 entry is refreshed from the live kernel
+root, with user access masked off. This preserves kernel text, direct-map,
+exception stacks and the existing lower-half device/thread-stack windows,
+including mappings created or removed after the space was constructed.
+Kernel mapping ownership and teardown therefore remain unchanged.
+
+[Four guest cases](../src/guest_tests/user_memory.rs) in the full kernel suite
+exercise different contents at the same VA, actual CR3 switching, kernel
+mapping refresh, W^X/effective flags, zero-fill, partial-allocation rollback,
+exhausted-pool recovery, cross-space page-owner transfer and sixteen full-capacity reclamation epochs. They use
+the existing per-case exact physical-frame and heap boundary.
+
+The [timer-bounded ring-3 service](#timer-bounded-ring-3-runs) builds on these
+scoped mappings. Normal boot creates no user address space or acceptance workload.
+
+## Moss startup-stack port
+
+[The MIT-licensed portable builder](../third_party/moss-libkernel/src/task/user_stack.rs)
+adapts pinned Moss's `setup_user_stack` rather than rebuilding the layout in the
+x86_64 runner. It receives the selected address-space capability, stack end,
+argv/envp and caller auxv; it builds one zeroed page before allocating or mapping.
+The layout is argc, argv pointers/null, envp pointers/null, caller auxv,
+`AT_PAGESZ`, `AT_NULL`, padding and NUL-terminated strings. Strings retain
+Moss's top-down placement and SP is aligned down to 16 bytes.
+
+The selected profile permits eight arguments, eight environment strings and
+eight caller auxv pairs within a single 4096-byte RW/NX page. Stack-end alignment,
+checked subtraction, total image size, embedded NULs, reserved/duplicate auxv
+tags and capacities are validated before allocation. An exact fitting image
+is accepted and executed in CPL3 with SP at the stack page's base; one additional
+byte is rejected without disturbing that mapped image. `AT_RANDOM` is not emitted:
+upstream's placeholder is deliberately not reused without an entropy source.
+Explicit `AT_RANDOM`, `AT_NULL` or `AT_PAGESZ` overrides fail.
+
+The builder has no heap, VFS, ProcessVM or architecture dependency. It requests
+an initialized claimed page, fills it and transfers ownership on mapping.
+Allocation/map errors propagate, releasing unpublished pages; an occupied stack
+page is never replaced. Host tests inspect exact bytes and lifetimes, while
+`user.startup_stack` has real CPL3 code consume argc=2, argv, envp and auxv,
+then verifies duplicate-map preservation and frame balance across sixteen epochs.
+The existing small-pool guest tests also exercise real stack-mapping OOM rollback.
+
+This component is startup-stack reuse only. The bounded ELF adaptation below
+uses it without importing a process scheduler, VFS, TLS, signals, CoW/fork or
+general Linux userspace ABI.
+
+## Bounded Moss ELF loading
+
+The [portable ELF adaptation](../third_party/moss-libkernel/src/task/elf.rs)
+follows pinned Moss's `exec_elf`/`process_prog_headers` and adapts
+`VMArea::from_pheader`/`resolve_fault` for eager owned pages. Moss's complete
+exec path requires inodes, file-backed VMAs, demand paging and scheduled process
+contexts; these are not imported. A small checked ELF decoder replaces its
+`object` parser dependency. The existing native x86_64 mapper and CPU entry
+remain unchanged.
+
+The selected format is System V, little-endian ELF64, x86_64 `ET_EXEC` with
+standard 64-byte file and 56-byte program headers. At most sixteen program
+headers, eight nonempty load segments and fifteen image pages are admitted;
+the last user-window page is reserved for the RW/NX startup stack. Section
+headers are not used. NULL, NOTE and PHDR entries require no extra mappings;
+a GNU_STACK entry is accepted only without executable/unknown permission bits.
+Dynamic/interpreter/TLS and other unsupported program headers, PIE, extended
+header numbering and nonzero architecture flags fail explicitly.
+
+Before any native frame allocation, validation checks the whole program table,
+file offsets/sizes, `filesz <= memsz`, address overflow/window bounds,
+power-of-two alignment and file/VA congruence. Page-rounded segment overlaps,
+including otherwise disjoint segments sharing a page, are rejected rather than
+merging permissions. Every load segment must be readable and obey W^X. Entry
+must lie in file-backed bytes of an executable segment, not padding or BSS.
+As in Moss's mappable VMA, an unaligned segment includes the preceding file
+prefix back to the page boundary. Page allocation starts zeroed; only the
+file/page intersection is copied, leaving mixed-page and whole-page BSS zero.
+
+`user::kutox_user_load_elf` parses first, creates a new scratch address space,
+then eagerly maps the image and invokes the ported startup-stack builder.
+Auxv contains PHNUM, PHENT and ENTRY; PHDR is included only when the complete
+program table is actually mapped. PAGESZ/NULL come from the stack builder;
+there is no fabricated random pointer. The portable loader consumes the
+unpublished space: allocation, mapping or stack failure drops the whole space,
+including partial page tables, without replacing an existing live image.
+Success returns its owned space, entry, stack pointer and image-page count;
+entering ring 3 is a separate explicit operation.
+
+[Two guest cases](../src/guest_tests/user_elf.rs) use a real ELF assembled by
+Clang and linked separately by `ld.lld` from the guest-only
+[program](../src/guest_tests/user_elf.S) and [linker script](../src/guest_tests/user_elf.ld).
+It has RO headers, an unaligned RX entry, unaligned initialized RW data crossing
+a page, and 8192 BSS bytes across partial and full pages. CPL3 code checks the
+startup layout, data/BSS, writable data, write/exit and status 44 over sixteen
+fresh loads. Hardware rejects code writes and data execution; a subsequent
+fresh load succeeds. Eleven tiny real frame pools exercise every allocation
+boundary through stack creation, with exact reclamation and a live old space
+remaining intact. Portable tests cover malformed images and injected map errors.
+
+The native loader is retained in both profiles; the linked ELF and acceptance
+entry exist only in ON. Normal boot loads no program. This is not general
+`execve`, a dynamic linker, filesystem loading, ASLR, Linux binary compatibility
+or a process scheduler. Execution uses the bounded runner below.
+
+## Timer-bounded ring-3 runs
+
+[The native service](../src/user.rs), explicitly named `kutox_user_bringup`,
+runs one program synchronously in an exclusively borrowed owned address space.
+It now requires a calibrated, stopped `irq::Timer` and a budget of
+1..=1,000,000 microseconds. The current bring-up caller is quiescent boot context,
+not a scheduled kernel/user task. Caller IF must be clear with no locks held;
+invalid budgets, contexts or an already armed timer fail without entering CPL3
+or replacing the timer's existing event. The entry must be an executable,
+non-writable user mapping; the initial stack must be 16-byte aligned and point
+into (or immediately above) a writable, non-executable user page. This permits
+both an empty stack top and Moss's argc-at-SP layout, including an exactly full
+page. A full initial page has no push headroom; overflowing below it remains a
+contained user fault. Invalid admission returns a
+kernel error without entering user mode or publishing active state.
+
+[Native assembly](../src/user_entry.S) saves the kernel's callee-saved registers
+and continuation stack, clears all user general registers, and uses `iretq`
+with user GDT selectors, IOPL zero and IF set. The existing supervisor-only
+16-KiB TSS RSP0 stack receives user exceptions and the DPL3 interrupt gate at
+vector `0x80`. Other IDT gates remain DPL0. Existing exception assembly clears
+DF before entering Rust and preserves user registers across returning traps.
+Exit/fault/timeout handling constructs an IF-clear kernel return frame, resumes
+the saved continuation and restores CR0, segment selectors and CR3 off the user
+path. User `write` can preserve DF in its saved flags without
+violating the kernel Rust ABI.
+
+The trap boundary adapts pinned Moss's ARM64 `el0_sync`/`el0_irq` control flow:
+handle the trap/controller IRQ, then pass every CPL3 return through a common
+decision gate. Moss's `dispatch_userspace_task` selects tasks, polls kernel work
+and restores user contexts; this single-task adaptation instead checks a fixed
+deadline and return context, then resumes the same frame or returns to its
+kernel caller. No ARM assembly or full Moss process scheduler is copied.
+Kernel-origin IRQs retain their original dispatch/return behavior.
+
+The timer is borrowed, not recreated per syscall. Its initial one-shot targets
+the earlier of the run deadline and an existing scheduled handler. After the
+normal timer dispatcher expires waits, invokes due handlers and acknowledges
+EOI, a still-valid user return rearms toward that same fixed deadline or the
+remaining handler. Early timer delivery never extends the execution budget.
+Device IRQs use the existing controller dispatch and EOI before the same return
+gate. Timeout returns `Stop::TimedOut`, including for an infinite loop making no
+syscall. A not-yet-due handler remains registered after an earlier user stop;
+the timer owner may cancel or service it normally. Once the slice is armed,
+every exit, fault, timeout or activation failure stops/drains the borrowed timer
+after restoring the kernel root. Admission rejection never drains an existing
+caller-owned event. Pending device IRQs remain owned by their existing route.
+
+This is a **native 64-bit int80 ABI**, not Linux's 32-bit int80 ABI or a promise
+of Linux binary compatibility:
+
+| RAX | Operation | Arguments | Result |
+|---|---|---|---|
+| 1 | serial write | RDI = fd 1 or 2, RSI = user address, RDX = byte length | RAX = bytes written or negative error |
+| 60 | exit | RDI = status | Returns to the kernel caller, not to user code |
+
+Other general registers are preserved on syscall return. Unknown numbers
+return `-38`; unsupported descriptors return `-9`. Writes are all-or-error,
+at most 256 bytes each and 1024 bytes total per run. Oversize or over-budget
+requests return `-22`. A zero-length write to a valid descriptor succeeds
+without dereferencing its pointer. Invalid/unmapped/supervisor ranges, including
+integer overflow, return `-14` without emitting a partial prefix. Up to 32
+syscalls are processed; the next trap stops the run with `SyscallLimit`.
+Returning calls require RIP and RSP inside the native user window (RSP may equal
+its exclusive end); invalid return state stops with `InvalidContext` before
+side effects. Return flags preserve arithmetic flags, DF and supported debug
+bits, force IF set and IOPL/NT/VM/reserved bits clear, preventing a user-supplied
+noncanonical stack or NT flag from faulting a kernel `iretq`. Exit needs no
+user return and always builds the kernel continuation frame.
+The same bounds/flag gate protects returning hardware IRQs. Deadline checks
+also occur before syscall work and before resuming after that work.
+
+The [portable user-copy planner](../src/user_state.rs) checks the entire range
+against a snapshot of owned, effectively readable user mappings before copying
+at most two physical segments through the kernel direct map. The exclusive
+address-space borrow pins these frames throughout the run; no raw user pointer
+is dereferenced in the kernel and no page-fault recovery is required for copy.
+
+The dispatcher accepts user traps only from CPL3 on the TSS entry stack with
+the expected user selectors and a live native run. Ordinary user exceptions
+return a structured fault, including page-fault error bits/CR2 and the user RIP.
+Kernel faults, nested faults, NMI, double fault and machine check retain the
+existing fatal policy. FPU/SIMD state is not exposed: CR0.TS is set for the run,
+so floating-point use traps rather than changing the kernel's state. Nonzero
+FS/GS bases and enabled FSGSBASE are rejected; there is no TLS or `swapgs` path.
+
+[Guest-only bytecode](../src/guest_tests/user_programs.S) and
+[five acceptance cases](../src/guest_tests/user.rs) verify zeroed initial
+registers/CPL3, native write/exit and error returns, discontiguous cross-page
+copies, exact 256/1024-byte bounds, kernel text/direct-map protection, RO/NX
+faults, privileged CLI/I/O, invalid opcode, FPU rejection, recovery and sixteen
+syscall-limit/reclamation epochs. Noncanonical user RSP rejection and NT
+sanitization are also exercised on real transitions. Journals require exact ordered evidence
+within each KTAP case. OFF retains the native entry/dispatch code but omits
+all embedded program bytes and guest entry symbols.
+[Two IRQ cases](../src/guest_tests/user_interrupts.rs) stop a real looping ELF
+without syscalls across sixteen balanced 5-ms epochs, require elapsed time
+within 5..100 ms, preserve a future handler and reuse the stopped timer.
+A due handler triggers a DMA-disabled e1000 IRQ only after user readiness;
+the user resumes with seeded GPRs/DF/IF intact and exits 45. A separate timer
+IRQ rejects a noncanonical user RSP before `iretq`, followed by a successful
+fresh entry/exit. Existing ELF, write/fault and stack cases now use the same
+budgeted interruptible runner.
+The runner remains a bring-up boundary, not Moss's persistent user context,
+scheduled process loop or asynchronous syscall machinery. The portable stack
+builder is independent of this runner and can be reused by a future process layer.
+
+**Limitations:** this single-run frontend has a wall-clock budget enforced at
+CPL3 timer/trap return; it does not requeue a context. The separate resumable
+layer below reuses the same trap engine. This is not kernel preemption. Kernel trap work keeps
+IF clear and must remain bounded; expiry cannot interrupt a stuck kernel handler.
+Ready kernel workers run only after the user call returns. There is no
+asynchronous/blocking user API, VFS, signals, CoW/fork,
+demand paging, SMP, Linux userspace ABI, TLS or FPU/SIMD context switching.
+The permanent TSS entry stack, like the existing exception stacks, has no guard
+page. Normal boot runs no userspace demo or fixture.
+
+## Resumable user tasks
+
+The [bounded dispatcher](../src/user_tasks.rs) owns at most two address spaces
+and saved user contexts. Its [context port](../third_party/moss-libkernel/src/task/context.rs)
+adapts pinned Moss's `src/process/ctx.rs`: `from_user_ctx`, user access, save
+and restore retain owned snapshot semantics, but typed `Copy` values replace
+raw-pointer copies and no signal/kernel futures are imported. The existing
+[FIFO](../src/run_queue.rs), already built on ported Moss `TaskState`, supplies
+runnable/running/finished transitions, generation-bearing handles and reaping.
+There is no second ready-queue or task-state implementation.
+
+`Dispatcher::admit` consumes a loaded ELF owner and a cumulative execution
+budget. Rejection, including capacity and invalid duration, drops that
+unpublished owner. `kutox_user_dispatch_next` runs the next ready task for one
+quantum and returns a handle, cumulative report and measured slice ticks.
+Both budget and quantum requests use 1..=1,000,000 microseconds, converted to
+calibrated ticks. An empty dispatcher returns `None`. After every step the
+original kernel CR3/CR0/segments and IF-clear state are restored, the timer is
+stopped/drained and all user/mapper locks are released. The caller may then run
+kernel work, including the existing cooperative kernel scheduler, before the
+next step. This explicit stepping API remains available; the persistent runtime
+can now own the same stepping boundary as described below.
+
+A native 144-byte x86_64 context contains fifteen GPRs, RIP, RSP and RFLAGS.
+Compile-time size/offset assertions match the entry assembly. Fresh contexts
+start with zeroed GPRs; resume restores all saved GPRs rather than clearing
+them. Initial entry keeps its RX/W^X and aligned writable-stack admission;
+resume validates the user-window return addresses without requiring the
+initial SP alignment. Fetch/access failures then occur as contained CPL3
+faults, including when a parked task's code is unmapped. No selectors, TSS
+frame pointer or borrowed payload pointer is stored in the portable context.
+Return flags are sanitized and IF forced set on every entry.
+
+Quantum expiry saves the user frame before constructing the kernel continuation
+and returns `Stop::QuantumExpired`; that task goes to the FIFO tail. The owned
+root, tables, stack and image RAM remain alive while parked. An invalid return
+frame is terminal rather than being saved for retry. Exit, fault, syscall limit,
+invalid context and total-budget exhaustion finish/reap the slot and immediately
+release its address space. The native entry/context owner remains non-transferable;
+no FPU/TLS/SMP state or unsafe Send/Sync is introduced.
+
+The total budget decreases by measured ticks from slice arming to the stop trap,
+including entry and IRQ/syscall work, but not cleanup or kernel work between
+slices. The next slice uses the smaller of the remaining budget and requested
+quantum. Measured overruns saturate the remaining budget at zero and return
+terminal `TimedOut`; yielding cannot reset it. Syscall/write/output/IRQ counts
+also persist across quanta, preserving the 32-call and 1024-byte task limits.
+A trapped bounded syscall completes before a resumable quantum yield, so the
+saved RIP never skips an unexecuted syscall or loses its return value.
+
+Invalid quantum requests leave the queue unchanged. Ordinary native setup
+errors requeue the unchanged task for retry without charging execution time;
+they never replace or drain an already armed caller event. An error after handing control
+to native user entry retires the task rather than replaying a stale frame;
+the error is still propagated to the caller. Cancellation can remove a
+runnable task whether fresh or paused; stale handles are rejected after slot
+reuse. Dropping the dispatcher releases any remaining parked owners without
+reentering userspace.
+
+[Two guest cases](../src/guest_tests/user_tasks.rs) run real linked ELF tasks
+with independent data at the same VA. Eight epochs prove exact alternation,
+64 slices/48 retained quanta, increasing independent counters, preserved
+registers/DF/IF and an 8-byte-aligned resumed stack, exits 65/66 and 64 actual
+kernel-worker turns between slices. The limit case verifies paused cancellation,
+capacity/stale/busy-timer rejection, noncanonical IRQ context rejection,
+contained instruction-fetch failure on resume, cumulative 5/8-ms budgets with
+uncharged 10-ms gaps, one task faulting while another exits, and 32 successful
+zero-length writes across quanta before the cumulative syscall limit. Every
+case checks exact frame reclamation; the host requires ordered in-case proofs.
+The dispatcher frontend exists in both profiles, but fixtures remain ON-only.
+
+This is not full Moss process VM, VFS, signals, fork, blocking syscalls, priority
+scheduling or a Linux process ABI. Kernel trap work remains non-preemptive and
+must be bounded; ready kernel workers run only between explicit steps.
+
+## Userspace in the persistent runtime
+
+`Resources::run_network_with_users` exclusively borrows a bounded dispatcher
+through startup, normal service and joined shutdown. It starts the existing
+kernel/async/broker workers without allocating another thread or stack for
+userspace. The scoped callback receives the dispatcher and `Option<Event>`:
+`Some` reports a completed slice, while `None` allows bounded admission when
+no users are ready. It runs only on the dispatcher stack, under the kernel
+root, with IF clear and no locks held. It must not block or retain borrows
+into the task owners. Admission/cancellation and observers therefore need
+no global payload pointer, unsafe `Send`/`Sync` or second user queue.
+
+This follows pinned Moss's `src/sched/uspc_ret.rs`
+`PickNewTask -> ProcessKernelWork -> ReturnToUserspace` ordering, rather than
+porting its process-bound futures, signals, EEVDF/SMP scheduler or ARM assembly.
+The existing cooperative scheduler grants the ready kernel batch a turn
+between user slices. A pending notification/timeout wake is delivered in
+kernel FIFO order before another slice begins. Runnable users prevent idle
+sleep; an empty user dispatcher preserves the original persistent idle policy.
+Kernel threads still cannot be switched while a user root is active.
+
+The shared one-shot timer targets the earliest of the slice deadline, blocked
+kernel-thread deadline and registered handler, including when rearming an
+early IRQ. Kernel deadlines also represent sleeping executor futures and
+network timeouts. Timer/device IRQs complete their normal notification and
+EOI path first. A valid user return that wakes kernel work saves the context
+and yields even if the quantum or final execution-budget slice has not
+expired. Only actual cumulative-budget exhaustion is terminal. A due deadline
+is armed for immediate delivery; it is not discarded as an elapsed setup
+error. After root restoration the existing stop/drain path handles pending
+interrupts, so a handler may run either in CPL3's IRQ or during safe kernel
+cleanup, but is never overwritten or duplicated.
+
+A shutdown request closes user dispatch before another slice or admission
+callback. Fresh and parked owners are cancelled as all original services join. Native setup/observer errors likewise cancel users, request and join
+shutdown, then propagate the original error with a diagnostic; they never
+abandon suspended Rust stacks. Startup/admission errors release the borrowed
+user owners after rollback. Invalid quantum/context preflight rejects before
+runtime ownership and leaves the caller's tasks unchanged.
+
+The existing guest-only HTTP workload now proves this boundary at 128/32 MiB
+and nested bridges: two isolated ELF contexts progress during real
+DHCP/DNS/TCP/HTTP traffic, one faults, a replacement times out, and its peer
+continues through all three transfers before exiting 66. It checks paused
+cancellation/stale handles, a registered timer handler, eight 1-ms kernel
+sleeps completing below the requested 20-ms user quantum, and cancellation of
+two paused tasks at shutdown. Every epoch balances frames/heap. A separate
+`user.runtime_cleanup` kernel case covers invalid preflight, service-admission
+rollback, observer failure, native pre-entry failure and startup failure.
+Normal boot still admits no user program; the native integration remains in
+both builds, with all images and acceptance code ON-only.
+
 ## Implementation boundaries
 
 - [CPU support](../src/cpu.rs) implements `CpuOps` for the BSP. It requires one
@@ -15,14 +415,15 @@ For current boot and network behavior, see the [async/network guide](async-kerne
   [Assembly entry stubs](../src/exception_entry.S) normalize hardware error codes,
   preserve general-purpose registers, clear DF for the Rust ABI, align the call
   stack, and return via `iretq` for an expected breakpoint or an owned APIC timer/
-  device/spurious interrupt. Unexpected interrupts/exceptions fail explicitly.
+  device/spurious interrupt. The separate cooperative user boundary handles
+  owned user traps; unexpected kernel interrupts/exceptions still fail explicitly.
 - [IRQ support](../src/irq.rs) reference-counts ownership of the BSP's xAPIC through a
   separate supervisor-only writable/NX, uncacheable mapping. All local interrupt
   sources start masked, and only the timer is intentionally unmasked. The legacy
   PIC stays fully masked; the local APIC is disabled at boot and between tests.
   [Owned I/O APIC claims](../src/external_irq.rs) separately enable the selected
   device vector; timer teardown does not disable a controller still in use.
-  AP startup, x2APIC, broader device routing, userspace entry, FPU/SIMD switching,
+  AP startup, x2APIC, broader device routing, independently scheduled userspace, FPU/SIMD switching,
   and preemptive scheduling remain unsupported.
 - The timer uses divide-by-16 one-shots calibrated against an approximately
   10 ms PIT channel 2 interval, sharing the existing bounded PIT/TSC calibration
@@ -269,7 +670,7 @@ For current boot and network behavior, see the [async/network guide](async-kerne
   registers and RSP; the saved return address resumes execution. The initial
   trampoline verifies SysV stack alignment. All switching requires interrupts
   disabled, no held IRQ guards, no interrupt/exception dispatch, and no nested dispatcher. There is no timer
-  preemption, migration, userspace, or FPU/SIMD state switch.
+  preemption, migration, user-task scheduling, or FPU/SIMD state switch.
   A thread that never yields can monopolize the CPU. Panics abort the guest.
 - [Stack mappings](../src/memory.rs) provide each thread a 16 KiB writable/NX
   supervisor stack between unmapped lower and upper guards in a private virtual
@@ -322,6 +723,8 @@ For current boot and network behavior, see the [async/network guide](async-kerne
 - The MMIO mapper owns its initially unused PML4 slot and its intermediate
   table frames. It unmaps leaves, detaches the private subtree, flushes the TLB,
   and only then releases frames. Failed mappings follow the same cleanup path.
+- [Owned user address spaces](#owned-user-address-spaces) add bounded private RAM
+  mappings and scoped CR3 switching, without changing the existing MMIO mapper.
 - [Rust platform code](../src) provides Limine requests, polled serial output,
   bus-aware CF8/CFC PCI hierarchy discovery, selected BAR/parent-window validation, an owned uncacheable MMIO
   mapping,   and PIT-channel-2-calibrated TSC delays. The boot MAC platform path needs no

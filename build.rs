@@ -66,6 +66,9 @@ fn main() {
     }
     let flags = fs::read_to_string("compat/cflags.txt").expect("cannot read freestanding C flags");
     let guest_tests = env::var_os("CARGO_FEATURE_GUEST_TESTS").is_some();
+    if guest_tests {
+        build_user_elf();
+    }
     let guest_define = if guest_tests { "1" } else { "0" };
     let mut build = cc::Build::new();
     build
@@ -81,6 +84,34 @@ fn main() {
         .warnings_into_errors(true);
     for flag in flags.lines() {
         build.flag(flag);
+    }
+
+    fn build_user_elf() {
+        let source = "src/guest_tests/user_elf.S";
+        let linker = "src/guest_tests/user_elf.ld";
+        println!("cargo:rerun-if-changed={source}");
+        println!("cargo:rerun-if-changed={linker}");
+        let output = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+        let object = output.join("user_elf.o");
+        let status = Command::new("clang")
+            .args(["--target=x86_64-unknown-none", "-c", source, "-o"])
+            .arg(&object)
+            .status()
+            .expect("clang is required to assemble the guest ELF");
+        assert!(status.success(), "guest ELF assembly failed");
+        let status = Command::new("ld.lld")
+            .args([
+                "--build-id=none",
+                "--fatal-warnings",
+                "--script",
+                linker,
+                "-o",
+            ])
+            .arg(output.join("user.elf"))
+            .arg(object)
+            .status()
+            .expect("ld.lld is required to link the guest ELF");
+        assert!(status.success(), "guest ELF linking failed");
     }
     build.compile("kutox_runtime");
     let source_include = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("source-include");

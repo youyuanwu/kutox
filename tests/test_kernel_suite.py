@@ -332,6 +332,62 @@ def pci_log(case):
     return lines
 
 
+def user_log(name):
+    return {
+        "user.entry_exit": ["# USER_RUN entry cpl=3 exit=33 calls=1 writes=0 bytes=0"],
+        "user.syscalls": [
+            "# USER_WRITE hello", "# x",
+            "# USER_RUN syscalls cpl=3 exit=0 calls=11 writes=3 bytes=23",
+            *(["# " + "b" * 253] * 4),
+            "# USER_RUN bounds cpl=3 exit=0 calls=6 writes=4 bytes=1024",
+        ],
+        "user.faults": [
+            f"# USER_FAULT case={index} cpl=3 vector={vector} error={error} recovery=33"
+            for index, (vector, error) in enumerate(((14, 5), (14, 5), (14, 7), (14, 21), (13, 0), (13, 0), (6, 0), (7, 0)))
+        ] + ["# USER_RETURN cpl=3 noncanonical=rejected nt=cleared recovery=33"],
+        "user.reclamation": ["# USER_RUN reclamation cpl=3 epochs=16 limit=32 frames=balanced"],
+        "user.startup_stack": [
+            "# USER_STACK source=moss cpl=3 argc=2 envc=1 auxv=entry,pagesz,null aligned=16 epochs=16 frames=balanced",
+            "# USER_STACK_LIMIT bytes=4096 overflow=rejected cpl=3 exit=43 frames=balanced",
+        ],
+        "user.elf": [
+            *(["# USER_ELF_WRITE hello"] * 16),
+            "# USER_ELF source=moss format=elf64 cpl=3 exit=44 load_pages=6 stack_pages=1 bss=8192 epochs=16 frames=balanced",
+            "# USER_ELF_FAULT code cpl=3 vector=14 error=7",
+            "# USER_ELF_FAULT data cpl=3 vector=14 error=21",
+            "# USER_ELF_WRITE hello",
+            "# USER_ELF_RECOVERY cpl=3 exit=44 frames=balanced",
+        ],
+        "user.elf_rollback": [
+            "# USER_ELF_ROLLBACK pools=11 failures=10 malformed=4 stack=rejected frames=balanced",
+        ],
+        "user.timeout": [
+            "# USER_TIMEOUT source=moss-boundary cpl=3 format=elf64 budget_us=5000 elapsed_us=5000..99999 calls=0 epochs=16 timer=reusable handler=preserved frames=balanced",
+        ],
+        "user.device_irq": [
+            "# USER_IRQ source=moss-boundary cpl=3 timer=delivered device=e1000 delivered=1 resumed=45 gprs=preserved df=preserved if=enabled locks=0",
+            "# USER_IRQ_RETURN cpl=3 timer=delivered noncanonical=rejected calls=0 recovery=33",
+        ],
+        "user.tasks": [
+            "# USER_TASKS source=moss-context format=elf64 tasks=2 fifo=alternating epochs=8 slices=64 quanta=48 exits=65,66 memory=isolated context=continued rsp=unaligned df=preserved if=enabled kernel_work=64 frames=balanced",
+        ],
+        "user.task_limits": [
+            "# USER_TASK_LIMITS capacity=2 stale=rejected retry=preserved cancel=paused irq_context=rejected resume_fault=contained budgets=cumulative gaps_us=10000 timeouts=2 fault=isolated survivor=66 syscall_limit=32 writes=32 bytes=0 frames=balanced",
+        ],
+        "user.runtime_cleanup": [
+            "# USER_RUNTIME_ERRORS_BEGIN",
+            "# RUNTIME_ERROR stage=user_task_duration code=-1",
+            "# RUNTIME_ERROR stage=user_task_duration code=-1",
+            "# RUNTIME_ERROR stage=runtime_startup_injected code=-210",
+            "# RUNTIME_ERROR stage=user_runtime_observer_injected code=-399",
+            "# RUNTIME_ERROR stage=user_run_stack code=-1",
+            "# RUNTIME_ERROR stage=runtime_startup_injected code=-210",
+            "# RUNTIME_ERROR stage=runtime_start code=-210",
+            "# USER_RUNTIME_ERRORS invalid=2 admission=joined observer=joined entry=joined startup=joined callbacks=1 frames=balanced",
+        ],
+    }[name]
+
+
 def suite_log(case="kernel-tests"):
     names = KERNEL_TEST_NAMES
     if case == "kernel-tests-fail":
@@ -345,6 +401,8 @@ def suite_log(case="kernel-tests"):
         "# linux format=-7/0000002A/4294967296/12:34:56:78:9a:bc/end",
     ]
     for index, name in enumerate(names, 1):
+        if name.startswith("user."):
+            lines.extend(user_log(name))
         if name == "pci.hierarchy":
             lines.extend(pci_log(case))
         if name.startswith("native."):
@@ -370,6 +428,178 @@ def suite_log(case="kernel-tests"):
 
 
 class KernelSuiteTests(unittest.TestCase):
+    def test_user_run_proofs_require_cpl3_exact_bounds_faults_recovery_and_order(self):
+        names = ("user.entry_exit", "user.syscalls", "user.faults", "user.reclamation")
+        self.assertEqual(KERNEL_TEST_NAMES[-12:-8], names)
+        output = suite_log()
+        for name in names:
+            for marker in user_log(name):
+                for replacement in ("", marker + "\n" + marker):
+                    with self.subTest(name=name, marker=marker), self.assertRaises(AssertionError):
+                        validate_result("kernel-tests", 1, output.replace(marker, replacement, 1))
+        for before, after in (
+            ("cpl=3", "cpl=0"), ("exit=33", "exit=99"),
+            ("calls=11", "calls=10"), ("bytes=23", "bytes=22"),
+            ("bytes=1024", "bytes=1025"), ("error=21", "error=5"),
+            ("recovery=33", "recovery=0"), ("epochs=16", "epochs=15"),
+            ("limit=32", "limit=31"),
+            ("noncanonical=rejected", "noncanonical=accepted"), ("nt=cleared", "nt=retained"),
+        ):
+            with self.subTest(before=before), self.assertRaises(AssertionError):
+                validate_result("kernel-tests", 1, output.replace(before, after, 1))
+        marker = user_log("user.entry_exit")[0]
+        result = f"ok {KERNEL_TEST_NAMES.index('user.entry_exit') + 1} user.entry_exit"
+        with self.assertRaises(AssertionError):
+            validate_result("kernel-tests", 1, output.replace(marker + "\n" + result, result + "\n" + marker))
+
+    def test_user_address_spaces_are_required_full_suite_cases(self):
+        names = (
+            "memory.user_switching", "memory.user_permissions",
+            "memory.user_rollback", "memory.user_reclamation",
+        )
+        self.assertEqual(KERNEL_TEST_NAMES[-16:-12], names)
+        output = suite_log()
+        validate_result("kernel-tests", 1, output)
+        for name in names:
+            index = KERNEL_TEST_NAMES.index(name) + 1
+            with self.subTest(name=name), self.assertRaises(AssertionError):
+                validate_result("kernel-tests", 1, output.replace(f"ok {index} {name}\n", ""))
+
+    def test_moss_startup_stack_requires_actual_cpl3_layout_and_reclamation_proof(self):
+        self.assertEqual(KERNEL_TEST_NAMES[-8], "user.startup_stack")
+        output = suite_log()
+        marker = user_log("user.startup_stack")[0]
+        for replacement in (
+            "", marker + "\n" + marker, marker.replace("source=moss", "source=native"),
+            marker.replace("cpl=3", "cpl=0"), marker.replace("argc=2", "argc=1"),
+            marker.replace("envc=1", "envc=0"), marker.replace("aligned=16", "aligned=8"),
+            marker.replace("epochs=16", "epochs=15"),
+            marker.replace("auxv=entry,pagesz,null", "auxv=entry,random,null"),
+            marker.replace("frames=balanced", "frames=leaked"),
+        ):
+            with self.subTest(replacement=replacement), self.assertRaises(AssertionError):
+                validate_result("kernel-tests", 1, output.replace(marker, replacement))
+        limit = user_log("user.startup_stack")[1]
+        for replacement in (
+            "", limit + "\n" + limit, limit.replace("4096", "4095"),
+            limit.replace("overflow=rejected", "overflow=accepted"),
+            limit.replace("cpl=3", "cpl=0"), limit.replace("exit=43", "exit=99"),
+        ):
+            with self.subTest(replacement=replacement), self.assertRaises(AssertionError):
+                validate_result("kernel-tests", 1, output.replace(limit, replacement))
+
+    def test_elf_requires_loading_execution_bss_fault_recovery_and_rollback_proofs(self):
+        self.assertEqual(KERNEL_TEST_NAMES[-7:-5], ("user.elf", "user.elf_rollback"))
+        output = suite_log()
+        for name in ("user.elf", "user.elf_rollback"):
+            for marker in user_log(name):
+                for replacement in ("", marker + "\n" + marker):
+                    with self.subTest(marker=marker), self.assertRaises(AssertionError):
+                        validate_result("kernel-tests", 1, output.replace(marker, replacement, 1))
+        for before, after in (
+            ("format=elf64", "format=raw"), ("exit=44", "exit=99"),
+            ("load_pages=6", "load_pages=5"), ("stack_pages=1", "stack_pages=0"),
+            ("bss=8192", "bss=8191"), ("pools=11", "pools=10"),
+            ("failures=10", "failures=9"), ("malformed=4", "malformed=3"),
+            ("stack=rejected", "stack=accepted"),
+        ):
+            with self.subTest(before=before), self.assertRaises(AssertionError):
+                validate_result("kernel-tests", 1, output.replace(before, after, 1))
+        marker = user_log("user.elf")[-1]
+        result = f"ok {KERNEL_TEST_NAMES.index('user.elf') + 1} user.elf"
+        with self.assertRaises(AssertionError):
+            validate_result("kernel-tests", 1, output.replace(marker + "\n" + result, result + "\n" + marker))
+
+    def test_user_irq_proofs_require_exact_budget_device_return_and_cleanup(self):
+        self.assertEqual(KERNEL_TEST_NAMES[-5:-3], ("user.timeout", "user.device_irq"))
+        output = suite_log()
+        for name in KERNEL_TEST_NAMES[-5:-3]:
+            marker = user_log(name)[0]
+            changes = [
+                "", marker + "\n" + marker, marker.replace("cpl=3", "cpl=0"),
+                marker.replace("source=moss-boundary", "source=unrelated"),
+            ]
+            for before, after in (
+                ("budget_us=5000", "budget_us=0"), ("elapsed_us=5000..99999", "elapsed_us=0..99999"),
+                ("elapsed_us=5000..99999", "elapsed_us=5000..100000"),
+                ("calls=0", "calls=1"), ("epochs=16", "epochs=15"),
+                ("timer=reusable", "timer=armed"), ("handler=preserved", "handler=lost"),
+                ("frames=balanced", "frames=leaked"), ("timer=delivered", "timer=missing"),
+                ("delivered=1", "delivered=0"), ("resumed=45", "resumed=99"),
+                ("gprs=preserved", "gprs=clobbered"), ("df=preserved", "df=cleared"),
+                ("if=enabled", "if=disabled"), ("locks=0", "locks=1"),
+            ):
+                if before in marker:
+                    changes.append(marker.replace(before, after))
+            for replacement in changes:
+                with self.subTest(name=name, replacement=replacement), self.assertRaises(AssertionError):
+                    validate_result("kernel-tests", 1, output.replace(marker, replacement))
+            result = f"ok {KERNEL_TEST_NAMES.index(name) + 1} {name}"
+            terminal = user_log(name)[-1]
+            with self.assertRaises(AssertionError):
+                validate_result("kernel-tests", 1, output.replace(terminal + "\n" + result, result + "\n" + terminal))
+        with self.assertRaises(AssertionError):
+            validate_result("kernel-tests", 1, output.replace("KTAP version 1\n", "KTAP version 1\n# USER_UNKNOWN extra=1\n"))
+        marker = user_log("user.device_irq")[1]
+        for replacement in (
+            "", marker + "\n" + marker, marker.replace("noncanonical=rejected", "noncanonical=accepted"),
+            marker.replace("recovery=33", "recovery=99"), marker.replace("calls=0", "calls=1"),
+        ):
+            with self.subTest(replacement=replacement), self.assertRaises(AssertionError):
+                validate_result("kernel-tests", 1, output.replace(marker, replacement))
+
+    def test_resumable_tasks_require_exact_continuation_fairness_and_limit_proofs(self):
+        self.assertEqual(KERNEL_TEST_NAMES[-3:], ("user.tasks", "user.task_limits", "user.runtime_cleanup"))
+        output = suite_log()
+        for name in KERNEL_TEST_NAMES[-3:]:
+            marker = user_log(name)[-1]
+            changes = ["", marker + "\n" + marker]
+            for before, after in (
+                ("source=moss-context", "source=unrelated"), ("tasks=2", "tasks=1"),
+                ("fifo=alternating", "fifo=starved"), ("epochs=8", "epochs=7"),
+                ("slices=64", "slices=63"), ("quanta=48", "quanta=47"),
+                ("exits=65,66", "exits=99,99"), ("memory=isolated", "memory=shared"),
+                ("context=continued", "context=restarted"), ("rsp=unaligned", "rsp=aligned"),
+                ("df=preserved", "df=cleared"), ("if=enabled", "if=disabled"),
+                ("kernel_work=64", "kernel_work=0"), ("frames=balanced", "frames=leaked"),
+                ("capacity=2", "capacity=3"), ("stale=rejected", "stale=accepted"),
+                ("retry=preserved", "retry=lost"), ("budgets=cumulative", "budgets=reset"),
+                ("cancel=paused", "cancel=never-run"), ("irq_context=rejected", "irq_context=accepted"),
+                ("resume_fault=contained", "resume_fault=retried"),
+                ("gaps_us=10000", "gaps_us=0"), ("timeouts=2", "timeouts=0"),
+                ("fault=isolated", "fault=fatal"), ("survivor=66", "survivor=99"),
+                ("syscall_limit=32", "syscall_limit=33"), ("writes=32", "writes=0"),
+                ("bytes=0", "bytes=1"),
+                ("invalid=2", "invalid=0"), ("observer=joined", "observer=abandoned"),
+                ("entry=joined", "entry=abandoned"), ("admission=joined", "admission=abandoned"),
+                ("startup=joined", "startup=abandoned"), ("callbacks=1", "callbacks=0"),
+            ):
+                if before in marker:
+                    changes.append(marker.replace(before, after))
+            for changed in changes:
+                with self.subTest(name=name, changed=changed), self.assertRaises(AssertionError):
+                    validate_result("kernel-tests", 1, output.replace(marker, changed))
+            result = f"ok {KERNEL_TEST_NAMES.index(name) + 1} {name}"
+            with self.assertRaises(AssertionError):
+                validate_result("kernel-tests", 1, output.replace(marker + "\n" + result, result + "\n" + marker))
+
+    def test_runtime_cleanup_keeps_driver_diagnostics_and_errors_scoped(self):
+        output = suite_log()
+        begin = "# USER_RUNTIME_ERRORS_BEGIN"
+        banner = "Intel(R) PRO/1000 Network Driver"
+        validate_result("kernel-tests", 1, output.replace(begin, begin + "\n" + banner))
+        for changed in (
+            output.replace(begin, banner + "\n" + begin),
+            output.replace(begin, begin + "\nunknown output"),
+            output.replace(begin, ""),
+            output.replace(begin, begin + "\n" + begin),
+            output.replace("# RUNTIME_ERROR stage=user_run_stack code=-1", ""),
+            output.replace("stage=user_run_stack code=-1", "stage=unrelated code=-1"),
+            output + "# RUNTIME_ERROR stage=hidden code=-1\n",
+        ):
+            with self.subTest(changed=changed), self.assertRaises(AssertionError):
+                validate_result("kernel-tests", 1, changed)
+
     def test_pci_hierarchy_rejects_missing_duplicate_and_wrong_identity(self):
         case = "kernel-tests-nested"
         output = suite_log(case)

@@ -174,6 +174,22 @@ mod serial;
 )]
 mod threads;
 mod time;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "User programs are started explicitly by kernel clients"
+    )
+)]
+mod user;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "User tasks are admitted explicitly by native clients"
+    )
+)]
+mod user_tasks;
 
 use core::{arch::asm, ffi::CStr, panic::PanicInfo};
 use kutox::fw_cfg::BootMode;
@@ -279,6 +295,7 @@ fn probe() -> Result<BootOutcome, Failure> {
             | BootMode::DhcpTests
             | BootMode::DnsTests
             | BootMode::TcpTests
+            | BootMode::HttpTests
             | BootMode::AsyncHardeningTests
     ) {
         guest_tests::run(&boot);

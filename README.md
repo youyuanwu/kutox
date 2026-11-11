@@ -32,6 +32,30 @@ reclamation after a thread returns. Native wait queues, cancellation, and timed
 sleep can now suspend these stacks. This is not timer preemption, SMP or a
 general Linux binary ABI.
 
+Owned, eager [user address spaces](docs/kernel-implementation.md#owned-user-address-spaces)
+now adapt Moss's permission types and reduced address-space contract. Each has
+up to sixteen private 4-KiB pages, W^X permissions, scoped CR3 activation and
+complete frame reclamation. Kernel mappings remain supervisor-only.
+The mapping boundary now transfers claimed-page ownership, matching the flow
+used by the ported [Moss startup-stack builder](docs/kernel-implementation.md#moss-startup-stack-port)
+for argc/argv/envp/auxv.
+An explicit [timer-bounded user run](docs/kernel-implementation.md#timer-bounded-ring-3-runs)
+can now enter ring 3 and use native `int 0x80` write/exit syscalls. Hardware user
+faults end that run without stopping the kernel. Normal boot starts no user
+program; guest-only embedded programs exercise the boundary. This is not a
+full process runtime or Linux userspace ABI. A bounded
+[Moss-derived static ELF loader](docs/kernel-implementation.md#bounded-moss-elf-loading)
+now maps embedded x86_64 executables, zeroes BSS and builds the initial stack.
+User execution enables timer/device IRQs and has an explicit execution budget;
+even a syscall-free infinite loop returns a timeout. A bounded
+[resumable user dispatcher](docs/kernel-implementation.md#resumable-user-tasks)
+now alternates two owned ELF tasks without restarting them and returns to kernel
+work between quanta. An explicit
+[persistent-runtime integration](docs/kernel-implementation.md#userspace-in-the-persistent-runtime)
+now runs these slices alongside Linux-backed networking, honoring kernel
+deadlines and joined shutdown. Blocking syscalls and a full process runtime
+remain absent.
+
 The scoped [kernel runtime](src/kernel_runtime.rs) now retains the dispatcher,
 native manager, APIC/timer/controllers and shared Linux workers through client
 return and idle. Its persistent policy sleeps without inventing periodic work;
@@ -158,11 +182,18 @@ the existing protocol owner, retaining retiring/TIME-WAIT slots until safe
 reuse. Moss supplies the ownership/buffer-size reference; smoltcp implements
 TCP. Normal boot allocates no stream payload buffers.
 
+Guest-only [HTTP integration acceptance](docs/http-network-acceptance.md)
+now composes DHCP, DNS and routed TCP into an exact HTTP exchange, including
+partial I/O, a total deadline, retry and two-epoch cleanup. It adds no
+production HTTP client or userspace.
+
 ## Requirements
 
 - Linux host with rustup; the repository pins Rust `1.99.1` and the
   `x86_64-unknown-none` target.
 - Clang, an archiver, and GNU binutils (`nm`, `ld`).
+- LLD (`ld.lld`) to link the embedded ELF fixture in guest-enabled builds
+  (the default); on Debian/Ubuntu install the `lld` package separately from Clang.
 - CMake 3.24+, Ninja, Python 3, and xorriso.
 - `qemu-system-x86_64` with user-mode networking.
 - Network access on initial setup for Cargo dependencies and the

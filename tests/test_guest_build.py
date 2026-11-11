@@ -66,10 +66,22 @@ class GuestBuildTests(unittest.TestCase):
 
     def test_enabled_requires_runtime_and_guest_code(self):
         self.assertIn("kutox_guest_udp_client", GUEST_SYMBOLS)
+        self.assertIn("kutox_guest_address_spaces", GUEST_SYMBOLS)
+        self.assertIn("kutox_guest_userspace", GUEST_SYMBOLS)
+        self.assertTrue({"kutox_guest_elf", "kutox_guest_user_elf"} <= GUEST_SYMBOLS)
+        self.assertTrue({"kutox_guest_user_timeout", "kutox_guest_user_irq_wait", "kutox_guest_user_irq_wait_end"} <= GUEST_SYMBOLS)
+        self.assertIn("kutox_guest_user_tasks", GUEST_SYMBOLS)
+        self.assertIn("kutox_user_dispatch_next", RUNTIME_SYMBOLS)
+        self.assertIn("kutox_runtime_users", RUNTIME_SYMBOLS)
+        self.assertTrue({"kutox_user_bringup", "kutox_user_load_elf", "kutox_user_enter", "kutox_user_resume", "kutox_user_dispatch"} <= RUNTIME_SYMBOLS)
         self.assertIn("kutox::net_udp::CONTROL", RUNTIME_SYMBOLS)
         validate_symbols(RUNTIME_SYMBOLS | GUEST_SYMBOLS, True)
         with self.assertRaises(AssertionError):
             validate_symbols(RUNTIME_SYMBOLS, True)
+        with self.assertRaises(AssertionError):
+            validate_symbols((RUNTIME_SYMBOLS | GUEST_SYMBOLS) - {"kutox_guest_address_spaces"}, True)
+        with self.assertRaises(AssertionError):
+            validate_symbols((RUNTIME_SYMBOLS | GUEST_SYMBOLS) - {"kutox_guest_userspace"}, True)
 
     def test_disabled_retains_runtime_and_rejects_fixtures_faults_and_inspectors(self):
         validate_symbols(RUNTIME_SYMBOLS, False)

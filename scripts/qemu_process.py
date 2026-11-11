@@ -17,6 +17,7 @@ import udp_packets
 import dhcp_packets
 import dns_packets
 import tcp_packets
+import http_packets
 from qemu_scenarios import *
 from qemu_scenarios import SCENARIOS
 from qemu_scenarios import DHCP_LIVE_CASES
@@ -181,6 +182,7 @@ def execute_suite(args, case, capture):
     dhcp_network = kind == "dhcp"
     dns_network = kind == "dns"
     tcp_network = kind == "tcp"
+    http_network = kind == "http"
     ambiguous = case.endswith("ambiguous")
     expected = async_hardening_packets() if async_hardening else ip_packets.replies() if ip_network else async_network_tx_packets() if asynchronous else [managed_hard_packet(sequence) for sequence in range(1, 5)] if hardening else [] if network and ambiguous else [network_packet(epoch, sequence) for epoch in (1, 2) for sequence in range(1, 7)] if network else expected_tx_packets()
     if udp_network:
@@ -202,7 +204,7 @@ def execute_suite(args, case, capture):
                 if monitor_path is not None:
                     monitor = QMP(monitor_path)
                     monitor.connect(process, deadline)
-                protocols = (tcp_packets.Protocol(host.sendall, monitor),) if tcp_network else (dns_packets.Protocol(host.sendall, monitor),) if dns_network else (dhcp_packets.Protocol(host.sendall, monitor),) if dhcp_network else (udp_packets.Protocol(host.sendall),) if udp_network else (AsyncHardProtocol(host.sendall, monitor),) if async_hardening else (IPProtocol(host.sendall),) if ip_network else (AsyncNetworkProtocol(host.sendall),) if asynchronous else (ManagedHardProtocol(host.sendall),) if hardening else (NetworkProtocol(host.sendall, ambiguous),) if network else (RXProtocol(host.sendall), HardProtocol(host.sendall))
+                protocols = (http_packets.Protocol(host.sendall),) if http_network else (tcp_packets.Protocol(host.sendall, monitor),) if tcp_network else (dns_packets.Protocol(host.sendall, monitor),) if dns_network else (dhcp_packets.Protocol(host.sendall, monitor),) if dhcp_network else (udp_packets.Protocol(host.sendall),) if udp_network else (AsyncHardProtocol(host.sendall, monitor),) if async_hardening else (IPProtocol(host.sendall),) if ip_network else (AsyncNetworkProtocol(host.sendall),) if asynchronous else (ManagedHardProtocol(host.sendall),) if hardening else (NetworkProtocol(host.sendall, ambiguous),) if network else (RXProtocol(host.sendall), HardProtocol(host.sendall))
                 with selectors.DefaultSelector() as selector:
                     selector.register(process.stdout, selectors.EVENT_READ, "serial")
                     selector.register(host, selectors.EVENT_READ, "network")
@@ -237,10 +239,10 @@ def execute_suite(args, case, capture):
                                     if len(network_pending) < size + 4:
                                         break
                                     transmitted.append(bytes(network_pending[4:size + 4]))
-                                    if ip_network or udp_network or dhcp_network or dns_network or tcp_network:
+                                    if ip_network or udp_network or dhcp_network or dns_network or tcp_network or http_network:
                                         protocols[0].transmit(transmitted[-1])
                                     del network_pending[:size + 4]
-                                    if len(transmitted) > (500 if tcp_network else 128 if dhcp_network or dns_network else len(expected)):
+                                    if len(transmitted) > (500 if tcp_network or http_network else 128 if dhcp_network or dns_network else len(expected)):
                                         raise AssertionError("unexpected guest packet on isolated socket")
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
@@ -248,7 +250,7 @@ def execute_suite(args, case, capture):
                     returncode = process.wait(timeout=remaining)
                     if serial_pending or network_pending:
                         raise AssertionError("truncated guest serial/socket output")
-                    if dhcp_network or dns_network or tcp_network:
+                    if dhcp_network or dns_network or tcp_network or http_network:
                         expected = protocols[0].expected_packets
                     if transmitted != expected:
                         raise AssertionError("isolated socket did not carry the exact Linux TX frames")
@@ -277,6 +279,8 @@ def execute_suite(args, case, capture):
             completed.dns_packets = expected
         if tcp_network:
             completed.tcp_packets = expected
+        if http_network:
+            completed.http_packets = expected
         return completed
 
 __all__ = ['execute_live', 'QMP', 'execute_suite']

@@ -63,8 +63,14 @@ Moss component or vendor-driver source is imported.
   [kernel heap](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/allocators/slab/heap.rs),
   [addresses](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/address.rs),
   [regions](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/region.rs),
+  [page permissions](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/paging/permissions.rs),
+  [address-space contract](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/address_space.rs),
+  [startup-stack construction](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/process/exec.rs#L288),
+  [ELF exec flow](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/process/exec.rs#L52),
+  [ELF VMA construction and file/page resolution](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/proc_vm/vmarea.rs),
   [CpuOps in lib.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/lib.rs),
   [task lifecycle states](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/sched/sched_task/state.rs),
+  [user-context ownership](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/process/ctx.rs),
   [waker registration](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/waker_set.rs),
   [spinlock.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/spinlock.rs),
   and [mutex.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/mutex.rs).
@@ -78,6 +84,115 @@ libkernel. It is not the complete upstream library. One license and one pinned
 provenance record cover these components; host tests exercise them together.
 The mutex's kernel-specific ownership/wait integration is described separately
 below; it does not add a task-runtime dependency to the portable crate.
+
+### User address-space boundary
+
+The [permission port](third_party/moss-libkernel/src/memory/permissions.rs)
+retains Moss's read/write/execute/user representation and constructors, omits
+CoW, and adds a readable-user/W^X admission predicate. Its raw constructor is
+public for native hardware permission decoding.
+The [address-space contract](third_party/moss-libkernel/src/memory/address_space.rs)
+retains mapping, unmapping, protection and translation concepts but is a reduced
+adaptation, not an upstream-compatible trait. It uses checked native `u64`
+addresses and associated error/page types. The allocation capability returns a
+zeroed claimed page; mapping consumes it, and unmapping returns its owner.
+This follows Moss's
+[claimed-page flow](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/claimed_page.rs),
+but retains an exclusive native guard instead of leaking/reconstituting a raw
+frame number. Failed maps drop the supplied page without changing existing
+mappings. `map_initialized` remains a separate native convenience operation.
+Translation accepts byte addresses and reports the containing frame's permissions.
+It omits Send/Sync, ranges, CoW and unsafely persistent activation; the native
+service instead supplies non-transferable ownership and scoped activation.
+The [native implementation](src/user_memory.rs) and guest acceptance are kutox
+integration using the existing `x86_64` mapper. No Moss x86/ARM page-table
+algorithm, userspace entry, process VM, VFS or complete ELF loader is copied.
+See the [implementation scope](docs/kernel-implementation.md#owned-user-address-spaces).
+
+### User startup stack
+
+The [startup-stack port](third_party/moss-libkernel/src/task/user_stack.rs) adapts
+`setup_user_stack` from pinned Moss's
+[exec support](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/process/exec.rs#L288).
+It retains top-down argument/environment strings, argc/pointer/null layout,
+caller auxv followed by page size/termination, 16-byte SP alignment and a
+zeroed stack image copied into a claimed page before mapping.
+The adaptation removes VFS/ProcessVM/architecture coupling and dynamic vectors,
+uses one bounded 4-KiB page, checks capacities/arithmetic/NULs/auxv, serializes
+64-bit words explicitly little-endian, and transfers the page owner on map.
+It omits upstream's placeholder `AT_RANDOM` rather than claiming entropy;
+caller-supplied `AT_RANDOM`, duplicate tags and overrides of default tags fail.
+It imports no ELF parser, interpreter loader, process scheduler or CoW behavior.
+The original MIT notice is retained in the port and shared license file.
+
+### Static ELF loading
+
+The [bounded ELF adaptation](third_party/moss-libkernel/src/task/elf.rs) follows
+`exec_elf`/`process_prog_headers` and adapts the permission conversion,
+page-rounded file prefix and zeroed file/page intersection from
+`VMArea::from_pheader`/`resolve_fault` at the pinned revision. It uses eager owned
+pages and the existing stack port instead of inodes, VMAs, fault-driven reads
+and process replacement. Its checked System V/x86_64 ELF decoder, hard limits,
+W^X/window/overlap/entry validation and unpublished-space failure ownership are
+kutox adaptations, not an unchanged upstream loader or a copy of `object`.
+It does not import interpreter/PIE loading, VFS, TLS, CoW or process scheduling.
+The [native loader frontend](src/user.rs), separately linked
+[ELF fixture](src/guest_tests/user_elf.S), [fixture linker](src/guest_tests/user_elf.ld)
+and guest/host acceptance are kutox integration code. The original MIT notice
+is retained in the portable port and shared license file.
+
+The [cooperative user-run service](src/user.rs), its
+[x86_64 entry/return assembly](src/user_entry.S),
+[portable copy planner](src/user_state.rs) and embedded acceptance programs
+are kutox implementations. They use the adapted memory boundary and startup
+stack, but import no Moss CPU entry/return, syscall or process-runtime source.
+The native entry is explicitly named `kutox_user_bringup`, not a replacement
+for Moss's scheduled process return path.
+
+### Interruptible user boundary
+
+The [native trap service](src/user.rs) now adapts the ordering in pinned Moss's
+[ARM64 user sync/IRQ entries](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/arch/arm64/exceptions/mod.rs#L179)
+and [common userspace return gateway](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/sched/uspc_ret.rs#L83):
+handle the trap/IRQ, then make one common decision before restoring userspace.
+The x86_64 register frame, `iretq`/IF handling, checked return policy, fixed
+execution budget, local-APIC deadline arbitration/drain and off-lock scoped
+CR3 lifetime are kutox implementations of that boundary. No ARM assembly,
+Moss scheduler, signal dispatcher, future polling loop or resumable process
+context is imported. Timeout returns to the synchronous kernel caller rather
+than selecting another user task. The [guest IRQ acceptance](src/guest_tests/user_interrupts.rs)
+uses existing DMA-disabled e1000 interrupt scaffolding, not a replacement for
+the unchanged Linux driver's packet path.
+
+### Resumable user contexts
+
+The [user-context port](third_party/moss-libkernel/src/task/context.rs) adapts
+pinned Moss's `src/process/ctx.rs`. It retains owned user-state construction,
+access, save and restore while replacing raw pointer copying with typed `Copy`
+snapshots; restore returns a value instead of writing to a raw destination.
+Signal/kernel future storage is omitted. The original MIT notice is retained
+in the port and shared license file, with the source in crate provenance.
+
+The [native two-task dispatcher](src/user_tasks.rs), x86_64 saved register layout,
+entry/return assembly, cumulative execution accounting and
+[guest acceptance](src/guest_tests/user_tasks.rs) are kutox integration.
+They reuse the existing FIFO and previously adapted Moss `TaskState`; no second
+queue policy, full Moss scheduler or ARM user-context/assembly is imported.
+The complete process VM, signals, VFS, blocking syscall work and FPU/TLS context
+switching remain outside this subset.
+
+### Persistent user dispatch
+
+The [runtime integration](src/kernel_runtime.rs) and
+[kernel dispatcher boundary](src/threads.rs) follow pinned Moss's
+[userspace gateway](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/sched/uspc_ret.rs):
+select work, process kernel work outside scheduler borrows, then restore owned
+user context. They are native kutox integration, not copied process/future,
+signal, ARM or EEVDF/SMP scheduler implementations. Kernel-ready batching,
+pending-wake visibility, shared local-APIC deadline arbitration, scoped
+admission/event callbacks and joined shutdown use the existing kutox services.
+The previously ported Moss contexts and task states remain unchanged. The
+guest HTTP/task fixtures and strict host journals are kutox acceptance code.
 
 ### Bootstrap memory allocator
 

@@ -76,6 +76,22 @@ KERNEL_TEST_NAMES = (
     "native.initializers",
     "native.probes",
     "native.dependencies",
+    "memory.user_switching",
+    "memory.user_permissions",
+    "memory.user_rollback",
+    "memory.user_reclamation",
+    "user.entry_exit",
+    "user.syscalls",
+    "user.faults",
+    "user.reclamation",
+    "user.startup_stack",
+    "user.elf",
+    "user.elf_rollback",
+    "user.timeout",
+    "user.device_irq",
+    "user.tasks",
+    "user.task_limits",
+    "user.runtime_cleanup",
 )
 
 
@@ -134,6 +150,7 @@ UDP_CASES = {"udp-tests", "udp-tests-low-memory", "udp-tests-nested-low-memory"}
 DHCP_CASES = {"dhcp-tests", "dhcp-tests-low-memory", "dhcp-tests-nested-low-memory"}
 DNS_CASES = {"dns-tests", "dns-tests-low-memory", "dns-tests-nested-low-memory"}
 TCP_CASES = {"tcp-tests", "tcp-tests-low-memory", "tcp-tests-nested-low-memory"}
+HTTP_CASES = {"http-tests", "http-tests-low-memory", "http-tests-nested-low-memory"}
 DHCP_LIVE_CASES = {"network-dhcp", "network-dhcp-low-memory"}
 
 ASYNC_HARD_CASES = {case: "async-hardening-tests" for case in (
@@ -229,6 +246,7 @@ CASES = {
     "dhcp-tests-disabled": (None, "boot_mode"),
     "dns-tests-disabled": (None, "boot_mode"),
     "tcp-tests-disabled": (None, "boot_mode"),
+    "http-tests-disabled": (None, "boot_mode"),
     "async-hardening-tests-disabled": (None, "boot_mode"),
     "network-default-ambiguous": (None, "runtime_e1000_inventory"),
     **{case: (None, "boot_ipv4") for case in CONFIG_FAILURES},
@@ -251,6 +269,7 @@ CASES = {
     **{case: (None, None) for case in DHCP_CASES},
     **{case: (None, None) for case in DNS_CASES},
     **{case: (None, None) for case in TCP_CASES},
+    **{case: (None, None) for case in HTTP_CASES},
 }
 
 
@@ -337,7 +356,7 @@ def qemu_command(args, case, capture=None, net_fd=None):
         command += ["-fw_cfg", f"name=opt/kutox/ipv4,string={cidr}"]
     elif scenario.mode is not None:
         command += ["-fw_cfg", f"name=opt/kutox/test-mode,string={scenario.mode}"]
-    if case in DHCP_CASES | DHCP_LIVE_CASES | DNS_CASES | TCP_CASES:
+    if case in DHCP_CASES | DHCP_LIVE_CASES | DNS_CASES | TCP_CASES | HTTP_CASES:
         command += ["-fw_cfg", "name=opt/kutox/ipv4,string=dhcp"]
     if scenario.transport == "user":
         model = scenario.nic
@@ -403,6 +422,7 @@ def _scenario(case):
         **{name: "dhcp-tests" for name in DHCP_CASES},
         **{name: "dns-tests" for name in DNS_CASES},
         **{name: "tcp-tests" for name in TCP_CASES},
+        **{name: "http-tests" for name in HTTP_CASES},
         **{name: name for name in FAULT_RESULTS},
         **{name: name.removesuffix("-disabled") for name in CASES if name.endswith("-tests-disabled")},
         "guest-tests-disabled": "kernel-tests",
@@ -413,7 +433,7 @@ def _scenario(case):
         **{name: value[0] for name, value in LIVE_CASES.items()},
     }.get(case, "probe")
     protocol = next((kind for cases, kind in (
-        (TCP_CASES, "tcp"), (DNS_CASES, "dns"), (DHCP_CASES, "dhcp"), (UDP_CASES, "udp"), (ASYNC_HARD_CASES, "async-hardening"), (IP_SUITE_CASES, "ip"),
+        (HTTP_CASES, "http"), (TCP_CASES, "tcp"), (DNS_CASES, "dns"), (DHCP_CASES, "dhcp"), (UDP_CASES, "udp"), (ASYNC_HARD_CASES, "async-hardening"), (IP_SUITE_CASES, "ip"),
         (ASYNC_NETWORK_CASES, "async-network"), (HARDENING_CASES, "managed-hardening"),
         (NETWORK_SUITE_CASES | RUNTIME_NETWORK_CASES, "network"),
         (KERNEL_SUITE_CASES, "kernel"),

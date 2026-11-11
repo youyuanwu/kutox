@@ -26,8 +26,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Initialize pinned driver source
-        run: git submodule update --init --depth 1 linux
+      - &driver-source
+        name: Initialize pinned driver source
+        run: |
+          for attempt in 1 2 3; do
+            if timeout 180 git \
+              -c submodule.linux.url=https://github.com/gregkh/linux.git \
+              submodule update --init --depth 1 linux; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::Pinned Linux source initialization failed after three bounded attempts"
+              exit 1
+            fi
+            echo "::warning::Linux source fetch failed or timed out (attempt $attempt/3); retrying in 10 seconds"
+            sleep 10
+          done
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.99.1'
@@ -49,15 +63,14 @@ jobs:
         profile: ['ON', 'OFF']
     steps:
       - uses: actions/checkout@v6
-      - name: Initialize pinned driver source
-        run: git submodule update --init --depth 1 linux
+      - *driver-source
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.99.1'
           targets: x86_64-unknown-none
           components: rustfmt, clippy
       - name: Install build and guest tools
-        run: sudo apt-get update && sudo apt-get install -y clang cmake ninja-build xorriso qemu-system-x86 binutils
+        run: sudo apt-get update && sudo apt-get install -y clang lld cmake ninja-build xorriso qemu-system-x86 binutils
       - name: Run serial profile checks
         env:
           PROFILE: ${{ matrix.profile }}

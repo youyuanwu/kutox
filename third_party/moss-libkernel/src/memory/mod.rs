@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2025 Matthew Leach
 //! Bootstrap, physical frame, and kernel heap allocation adapted from Moss.
+pub mod address_space;
 pub mod allocators;
+pub mod permissions;
 
 pub const PAGE_SIZE: usize = 4096;
 

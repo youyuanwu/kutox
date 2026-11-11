@@ -8,6 +8,7 @@ mod dhcp;
 mod dns;
 mod driver_services;
 pub(crate) mod e1000_irq;
+mod http;
 pub(crate) mod linux_e1000;
 mod linux_execution;
 pub(crate) mod linux_hardening;
@@ -16,6 +17,9 @@ pub(crate) mod network_stack;
 pub(crate) mod support;
 mod tcp;
 mod udp;
+mod user;
+pub(crate) mod user_elf;
+mod user_interrupts;
 
 use self::{
     driver_services as driver_service_tests, linux_e1000 as linux_driver,
@@ -291,6 +295,70 @@ static TESTS: &[TestCase] = &[
         name: "native.dependencies",
         run: native_drivers::dependencies,
     },
+    TestCase {
+        name: "memory.user_switching",
+        run: memory::user::tests::kutox_guest_address_spaces,
+    },
+    TestCase {
+        name: "memory.user_permissions",
+        run: memory::user::tests::permissions,
+    },
+    TestCase {
+        name: "memory.user_rollback",
+        run: memory::user::tests::rollback,
+    },
+    TestCase {
+        name: "memory.user_reclamation",
+        run: memory::user::tests::reclamation,
+    },
+    TestCase {
+        name: "user.entry_exit",
+        run: user::kutox_guest_userspace,
+    },
+    TestCase {
+        name: "user.syscalls",
+        run: user::syscalls,
+    },
+    TestCase {
+        name: "user.faults",
+        run: user::faults,
+    },
+    TestCase {
+        name: "user.reclamation",
+        run: user::reclamation,
+    },
+    TestCase {
+        name: "user.startup_stack",
+        run: user::startup_stack,
+    },
+    TestCase {
+        name: "user.elf",
+        run: user_elf::kutox_guest_elf,
+    },
+    TestCase {
+        name: "user.elf_rollback",
+        run: user_elf::rollback,
+    },
+    TestCase {
+        name: "user.timeout",
+        run: user_interrupts::kutox_guest_user_timeout,
+    },
+    TestCase {
+        name: "user.device_irq",
+        run: user_interrupts::device,
+    },
+    TestCase {
+        name: "user.tasks",
+        run: crate::user_tasks::tests::kutox_guest_user_tasks,
+    },
+    TestCase {
+        name: "user.task_limits",
+        run: crate::user_tasks::tests::limits,
+    },
+    TestCase {
+        name: "user.runtime_cleanup",
+        run: crate::user_tasks::tests::runtime_cleanup,
+    },
 ];
 
 static INTENTIONAL_FAILURE: TestCase = TestCase {
@@ -394,6 +462,8 @@ pub fn run(boot: &BootInfo) -> ! {
         dns::TESTS
     } else if boot.mode == BootMode::TcpTests {
         tcp::TESTS
+    } else if boot.mode == BootMode::HttpTests {
+        http::TESTS
     } else if boot.mode == BootMode::AsyncHardeningTests {
         async_hardening::TESTS
     } else {
