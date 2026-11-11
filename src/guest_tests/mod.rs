@@ -17,6 +17,7 @@ pub(crate) mod network_stack;
 pub(crate) mod support;
 mod tcp;
 mod udp;
+mod user;
 
 use self::{
     driver_services as driver_service_tests, linux_e1000 as linux_driver,
@@ -307,6 +308,22 @@ static TESTS: &[TestCase] = &[
     TestCase {
         name: "memory.user_reclamation",
         run: memory::user::tests::reclamation,
+    },
+    TestCase {
+        name: "user.entry_exit",
+        run: user::kutox_guest_userspace,
+    },
+    TestCase {
+        name: "user.syscalls",
+        run: user::syscalls,
+    },
+    TestCase {
+        name: "user.faults",
+        run: user::faults,
+    },
+    TestCase {
+        name: "user.reclamation",
+        run: user::reclamation,
     },
 ];
 

@@ -99,6 +99,14 @@ integration using the existing `x86_64` mapper. No Moss x86/ARM page-table
 algorithm, userspace entry, process VM, VFS or ELF-exec implementation is copied.
 See the [implementation scope](docs/kernel-implementation.md#owned-user-address-spaces).
 
+The [cooperative user-run service](src/user.rs), its
+[x86_64 entry/return assembly](src/user_entry.S),
+[portable copy planner](src/user_state.rs) and embedded acceptance programs
+are kutox implementations. They build on the adapted address-space boundary;
+no additional Moss userspace, syscall, process, architecture or ELF source is
+copied. Moss remains the architectural reference, not an attribution claim for
+this native x86_64 implementation.
+
 ### Bootstrap memory allocator
 
 This is a fixed-capacity adaptation, not an unchanged copy of libkernel.

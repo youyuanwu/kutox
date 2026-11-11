@@ -36,7 +36,11 @@ Owned, eager [user address spaces](docs/kernel-implementation.md#owned-user-addr
 now adapt Moss's permission types and reduced address-space contract. Each has
 up to sixteen private 4-KiB pages, W^X permissions, scoped CR3 activation and
 complete frame reclamation. Kernel mappings remain supervisor-only.
-This is a memory foundation, not ring-3 execution, processes, syscalls or ELF loading.
+An explicit [cooperative user run](docs/kernel-implementation.md#cooperative-ring-3-runs)
+can now enter ring 3 and use native `int 0x80` write/exit syscalls. Hardware user
+faults end that run without stopping the kernel. Normal boot starts no user
+program; guest-only embedded programs exercise the boundary. This is not a
+process scheduler, Linux userspace ABI or ELF loader.
 
 The scoped [kernel runtime](src/kernel_runtime.rs) now retains the dispatcher,
 native manager, APIC/timer/controllers and shared Linux workers through client

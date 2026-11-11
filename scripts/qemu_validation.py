@@ -393,6 +393,7 @@ def validate_kernel_suite(case, returncode, output):
     failures = validate_ktap(lines, returncode, expected_names)
     validate_linux_callbacks(output)
     validate_native_drivers(lines, case)
+    validate_user_runs(lines, expected_names)
     if case == "kernel-tests-fail" and failures != {"harness.intentional_failure"}:
         raise AssertionError("intentional failure did not fire or another test failed")
     if case == "kernel-tests-fail":
@@ -406,6 +407,39 @@ def validate_kernel_suite(case, returncode, output):
             raise AssertionError("intentional assertion or cleaned-error failure proof is missing")
     if failures:
         raise KernelSuiteFailure(f"kernel suite failed: {', '.join(sorted(failures))}")
+
+
+def validate_user_runs(lines, names):
+    evidence = {
+        "user.entry_exit": ["# USER_RUN entry cpl=3 exit=33 calls=1 writes=0 bytes=0"],
+        "user.syscalls": [
+            "# USER_WRITE hello", "# x",
+            "# USER_RUN syscalls cpl=3 exit=0 calls=11 writes=3 bytes=23",
+            *(["# " + "b" * 253] * 4),
+            "# USER_RUN bounds cpl=3 exit=0 calls=6 writes=4 bytes=1024",
+        ],
+        "user.faults": [
+            f"# USER_FAULT case={index} cpl=3 vector={vector} error={error} recovery=33"
+            for index, (vector, error) in enumerate(((14, 5), (14, 5), (14, 7), (14, 21), (13, 0), (13, 0), (6, 0), (7, 0)))
+        ] + ["# USER_RETURN cpl=3 noncanonical=rejected nt=cleared recovery=33"],
+        "user.reclamation": ["# USER_RUN reclamation cpl=3 epochs=16 limit=32 frames=balanced"],
+    }
+
+    def relevant(line):
+        return line.startswith(("# USER_RUN", "# USER_FAULT", "# USER_RETURN", "# USER_WRITE", "# b")) or line == "# x"
+
+    if [line for line in lines if relevant(line)] != [
+        line for block in evidence.values() for line in block
+    ]:
+        raise AssertionError("missing, malformed, duplicate or reordered user-run evidence")
+    for name, expected in evidence.items():
+        number = names.index(name) + 1
+        end = next(index for index, line in enumerate(lines) if line in (
+            f"ok {number} {name}", f"not ok {number} {name}",
+        ))
+        start = max(index for index, line in enumerate(lines[:end]) if line.startswith(("ok ", "not ok ")))
+        if [line for line in lines[start + 1:end] if relevant(line)] != expected:
+            raise AssertionError("user-run evidence outside its KTAP case")
 
 
 def validate_ktap(lines, returncode, expected_names):
@@ -1038,7 +1072,7 @@ def validate_result(case, returncode, output):
             raise AssertionError("missing pinned-source feature-off boot marker")
         if [line for line in lines if line.startswith("E1000_")] != [expected] or any(
             line.startswith(("BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "THREAD_", "Bail out!",
-                             "# RUNTIME_", "# NATIVE_", "# LINUX_", "# ASYNC_", "# NET_IP_", "# NETWORK_STACK_", "# UDP_", "# DHCP_", "# DNS_", "# TCP_", "# HTTP_"))
+                             "# RUNTIME_", "# NATIVE_", "# LINUX_", "# ASYNC_", "# NET_IP_", "# NETWORK_STACK_", "# UDP_", "# DHCP_", "# DNS_", "# TCP_", "# HTTP_", "# USER_"))
             for line in lines
         ):
             raise AssertionError("feature-off test mode reached initialization or guest fixtures")
@@ -1728,7 +1762,7 @@ def validate_live_boot(case, output, symbols):
     validate_boot_preamble(lines, mode or "run", "fw_cfg" if mode else "default")
     validate_allocator(lines, 32 if case.endswith("low-memory") else 128)
     if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "KERNEL_RUNTIME_", "THREAD_", "KTAP", "ok ", "not ok ",
-                            "Bail out!", "KERNEL_PANIC", "# LINUX_CALLBACK", "# LINUX_FAULT", "# LINUX_RX_", "# LINUX_HARD_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR", "# NET_IP_", "# ASYNC_NET_", "# ASYNC_ERROR", "# NETWORK_STACK_ERROR", "# NETWORK_STACK_STOP", "# HOST_", "# DHCP_ERROR", "# DHCP_REJECT", "# DHCP_TEST_", "# DNS_", "# TCP_", "# HTTP_")) for line in lines):
+                            "Bail out!", "KERNEL_PANIC", "# LINUX_CALLBACK", "# LINUX_FAULT", "# LINUX_RX_", "# LINUX_HARD_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR", "# NET_IP_", "# ASYNC_NET_", "# ASYNC_ERROR", "# NETWORK_STACK_ERROR", "# NETWORK_STACK_STOP", "# HOST_", "# DHCP_ERROR", "# DHCP_REJECT", "# DHCP_TEST_", "# DNS_", "# TCP_", "# HTTP_", "# USER_")) for line in lines):
         raise AssertionError("default runtime exited, failed, or entered a probe/fixture path")
     bound = int(LIVE_CASES[case][1])
     normalized = [line.removeprefix("# ") for line in lines]

@@ -80,6 +80,10 @@ KERNEL_TEST_NAMES = (
     "memory.user_permissions",
     "memory.user_rollback",
     "memory.user_reclamation",
+    "user.entry_exit",
+    "user.syscalls",
+    "user.faults",
+    "user.reclamation",
 )
 
 

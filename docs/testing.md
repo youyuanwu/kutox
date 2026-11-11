@@ -66,6 +66,18 @@ python3 scripts/check.py full --profiles ON --scope guest \
   --select kernel-suite-nested-low-memory
 ```
 
+[Cooperative user-run acceptance](kernel-implementation.md#cooperative-ring-3-runs)
+adds `user.entry_exit`, `user.syscalls`, `user.faults` and `user.reclamation`
+to those same full kernel suites. Native CPL3/TSS entry, register/DF restoration,
+write/exit and error returns, exact output limits, cross-page validation,
+supervisor/RO/NX protection, CLI/I/O and FPU rejection, kernel recovery and
+sixteen bounded-run cleanup epochs are checked in the guest. The host requires
+exact ordered user evidence inside each KTAP case and rejects malformed,
+missing, duplicate or moved proofs. The actual ELF gate requires native
+entry/dispatch in both profiles and every embedded program symbol only in ON.
+The fixture remains absent from OFF and normal boot. Infinite-loop recovery
+and timer preemption are not tested or provided.
+
 ## Validation tiers
 
 ```sh

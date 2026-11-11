@@ -9,9 +9,7 @@ use x86_64::registers::{
     model_specific::{Efer, EferFlags},
 };
 
-pub const USER_BASE: u64 = 0x1000_0000_0000;
-pub const MAX_PAGES: usize = 16;
-pub const USER_END: u64 = USER_BASE + (MAX_PAGES * PAGE_SIZE) as u64;
+pub use kutox::user_state::{MAX_PAGES, USER_BASE, USER_END};
 const _: () = assert!(USER_BASE / 0x20_0000 == (USER_END - 1) / 0x20_0000);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
@@ -85,6 +83,10 @@ impl<'a, 'storage> AddressSpace<'a, 'storage> {
 
     fn root_address(&self) -> u64 {
         self.root.region().start_address().value() as u64
+    }
+
+    pub(crate) fn hhdm_offset(&self) -> u64 {
+        self.tables.hhdm_offset
     }
 
     fn root_table(&mut self) -> &mut PageTable {

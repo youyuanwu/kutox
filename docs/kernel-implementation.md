@@ -49,10 +49,82 @@ mapping refresh, W^X/effective flags, zero-fill, partial-allocation rollback,
 exhausted-pool recovery and sixteen full-capacity reclamation epochs. They use
 the existing per-case exact physical-frame and heap boundary.
 
-This is not ring-3 execution or a process scheduler. Hardware user-mode fault
-isolation, syscall/user-copy entry, ELF loading, demand paging, CoW/fork, VFS,
-SMP and independently scheduled user tasks remain unimplemented. Normal boot
-creates no user address space or acceptance workload.
+The [cooperative ring-3 service](#cooperative-ring-3-runs) builds on these
+scoped mappings. Normal boot creates no user address space or acceptance workload.
+
+## Cooperative ring-3 runs
+
+[The native service](../src/user.rs) runs one finite program synchronously in an
+exclusively borrowed owned address space. The entry must be an executable,
+non-writable user mapping; the initial stack must be 16-byte aligned, with its
+last byte in a writable, non-executable user page. Invalid admission returns a
+kernel error without entering user mode or publishing active state.
+
+[Native assembly](../src/user_entry.S) saves the kernel's callee-saved registers
+and continuation stack, clears all user general registers, and uses `iretq`
+with user GDT selectors, IOPL zero and IF clear. The existing supervisor-only
+16-KiB TSS RSP0 stack receives user exceptions and the DPL3 interrupt gate at
+vector `0x80`. Other IDT gates remain DPL0. Existing exception assembly clears
+DF before entering Rust and preserves user registers across a returning call.
+Exit/fault handling constructs a kernel return frame, resumes the saved kernel
+continuation and restores CR0, segment selectors and CR3 before releasing the
+page-table IRQ lock. User `write` can preserve DF in its saved flags without
+violating the kernel Rust ABI.
+
+This is a **native 64-bit int80 ABI**, not Linux's 32-bit int80 ABI or a promise
+of Linux binary compatibility:
+
+| RAX | Operation | Arguments | Result |
+|---|---|---|---|
+| 1 | serial write | RDI = fd 1 or 2, RSI = user address, RDX = byte length | RAX = bytes written or negative error |
+| 60 | exit | RDI = status | Returns to the kernel caller, not to user code |
+
+Other general registers are preserved on syscall return. Unknown numbers
+return `-38`; unsupported descriptors return `-9`. Writes are all-or-error,
+at most 256 bytes each and 1024 bytes total per run. Oversize or over-budget
+requests return `-22`. A zero-length write to a valid descriptor succeeds
+without dereferencing its pointer. Invalid/unmapped/supervisor ranges, including
+integer overflow, return `-14` without emitting a partial prefix. Up to 32
+syscalls are processed; the next trap stops the run with `SyscallLimit`.
+Returning calls require RIP and RSP inside the native user window (RSP may equal
+its exclusive end); invalid return state stops with `InvalidContext` before
+side effects. Return flags preserve arithmetic flags, DF and supported debug
+bits but force IF/IOPL/NT/VM and reserved bits clear, preventing a user-supplied
+noncanonical stack or NT flag from faulting a kernel `iretq`. Exit needs no
+user return and always builds the kernel continuation frame.
+
+The [portable user-copy planner](../src/user_state.rs) checks the entire range
+against a snapshot of owned, effectively readable user mappings before copying
+at most two physical segments through the kernel direct map. The exclusive
+address-space borrow pins these frames throughout the run; no raw user pointer
+is dereferenced in the kernel and no page-fault recovery is required for copy.
+
+The dispatcher accepts user traps only from CPL3 on the TSS entry stack with
+the expected user selectors and a live native run. Ordinary user exceptions
+return a structured fault, including page-fault error bits/CR2 and the user RIP.
+Kernel faults, nested faults, NMI, double fault and machine check retain the
+existing fatal policy. FPU/SIMD state is not exposed: CR0.TS is set for the run,
+so floating-point use traps rather than changing the kernel's state. Nonzero
+FS/GS bases and enabled FSGSBASE are rejected; there is no TLS or `swapgs` path.
+
+[Guest-only bytecode](../src/guest_tests/user_programs.S) and
+[four acceptance cases](../src/guest_tests/user.rs) verify zeroed initial
+registers/CPL3, native write/exit and error returns, discontiguous cross-page
+copies, exact 256/1024-byte bounds, kernel text/direct-map protection, RO/NX
+faults, privileged CLI/I/O, invalid opcode, FPU rejection, recovery and sixteen
+syscall-limit/reclamation epochs. Noncanonical user RSP rejection and NT
+sanitization are also exercised on real transitions. Journals require exact ordered evidence
+within each KTAP case. OFF retains the native entry/dispatch code but omits
+all embedded program bytes and guest entry symbols.
+
+**Limitations:** IF remains clear and there is no preemption, runtime deadline,
+or recovery from a user loop that makes no syscall. This interface is for finite
+controlled programs, not arbitrary untrusted workloads or concurrent user tasks;
+device/timer delivery waits until the run returns. There is no ELF loading,
+process scheduler, asynchronous/blocking user API, VFS, signals, CoW/fork,
+demand paging, SMP, Linux userspace ABI, TLS or FPU/SIMD context switching.
+The permanent TSS entry stack, like the existing exception stacks, has no guard
+page. Normal boot runs no userspace demo or fixture.
 
 ## Implementation boundaries
 
@@ -66,14 +138,15 @@ creates no user address space or acceptance workload.
   [Assembly entry stubs](../src/exception_entry.S) normalize hardware error codes,
   preserve general-purpose registers, clear DF for the Rust ABI, align the call
   stack, and return via `iretq` for an expected breakpoint or an owned APIC timer/
-  device/spurious interrupt. Unexpected interrupts/exceptions fail explicitly.
+  device/spurious interrupt. The separate cooperative user boundary handles
+  owned user traps; unexpected kernel interrupts/exceptions still fail explicitly.
 - [IRQ support](../src/irq.rs) reference-counts ownership of the BSP's xAPIC through a
   separate supervisor-only writable/NX, uncacheable mapping. All local interrupt
   sources start masked, and only the timer is intentionally unmasked. The legacy
   PIC stays fully masked; the local APIC is disabled at boot and between tests.
   [Owned I/O APIC claims](../src/external_irq.rs) separately enable the selected
   device vector; timer teardown does not disable a controller still in use.
-  AP startup, x2APIC, broader device routing, userspace entry, FPU/SIMD switching,
+  AP startup, x2APIC, broader device routing, independently scheduled userspace, FPU/SIMD switching,
   and preemptive scheduling remain unsupported.
 - The timer uses divide-by-16 one-shots calibrated against an approximately
   10 ms PIT channel 2 interval, sharing the existing bounded PIT/TSC calibration
@@ -320,7 +393,7 @@ creates no user address space or acceptance workload.
   registers and RSP; the saved return address resumes execution. The initial
   trampoline verifies SysV stack alignment. All switching requires interrupts
   disabled, no held IRQ guards, no interrupt/exception dispatch, and no nested dispatcher. There is no timer
-  preemption, migration, userspace, or FPU/SIMD state switch.
+  preemption, migration, user-task scheduling, or FPU/SIMD state switch.
   A thread that never yields can monopolize the CPU. Panics abort the guest.
 - [Stack mappings](../src/memory.rs) provide each thread a 16 KiB writable/NX
   supervisor stack between unmapped lower and upper guards in a private virtual

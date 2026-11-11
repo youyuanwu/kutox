@@ -332,6 +332,23 @@ def pci_log(case):
     return lines
 
 
+def user_log(name):
+    return {
+        "user.entry_exit": ["# USER_RUN entry cpl=3 exit=33 calls=1 writes=0 bytes=0"],
+        "user.syscalls": [
+            "# USER_WRITE hello", "# x",
+            "# USER_RUN syscalls cpl=3 exit=0 calls=11 writes=3 bytes=23",
+            *(["# " + "b" * 253] * 4),
+            "# USER_RUN bounds cpl=3 exit=0 calls=6 writes=4 bytes=1024",
+        ],
+        "user.faults": [
+            f"# USER_FAULT case={index} cpl=3 vector={vector} error={error} recovery=33"
+            for index, (vector, error) in enumerate(((14, 5), (14, 5), (14, 7), (14, 21), (13, 0), (13, 0), (6, 0), (7, 0)))
+        ] + ["# USER_RETURN cpl=3 noncanonical=rejected nt=cleared recovery=33"],
+        "user.reclamation": ["# USER_RUN reclamation cpl=3 epochs=16 limit=32 frames=balanced"],
+    }[name]
+
+
 def suite_log(case="kernel-tests"):
     names = KERNEL_TEST_NAMES
     if case == "kernel-tests-fail":
@@ -345,6 +362,8 @@ def suite_log(case="kernel-tests"):
         "# linux format=-7/0000002A/4294967296/12:34:56:78:9a:bc/end",
     ]
     for index, name in enumerate(names, 1):
+        if name.startswith("user."):
+            lines.extend(user_log(name))
         if name == "pci.hierarchy":
             lines.extend(pci_log(case))
         if name.startswith("native."):
@@ -370,12 +389,36 @@ def suite_log(case="kernel-tests"):
 
 
 class KernelSuiteTests(unittest.TestCase):
+    def test_user_run_proofs_require_cpl3_exact_bounds_faults_recovery_and_order(self):
+        names = ("user.entry_exit", "user.syscalls", "user.faults", "user.reclamation")
+        self.assertEqual(KERNEL_TEST_NAMES[-4:], names)
+        output = suite_log()
+        for name in names:
+            for marker in user_log(name):
+                for replacement in ("", marker + "\n" + marker):
+                    with self.subTest(name=name, marker=marker), self.assertRaises(AssertionError):
+                        validate_result("kernel-tests", 1, output.replace(marker, replacement, 1))
+        for before, after in (
+            ("cpl=3", "cpl=0"), ("exit=33", "exit=99"),
+            ("calls=11", "calls=10"), ("bytes=23", "bytes=22"),
+            ("bytes=1024", "bytes=1025"), ("error=21", "error=5"),
+            ("recovery=33", "recovery=0"), ("epochs=16", "epochs=15"),
+            ("limit=32", "limit=31"),
+            ("noncanonical=rejected", "noncanonical=accepted"), ("nt=cleared", "nt=retained"),
+        ):
+            with self.subTest(before=before), self.assertRaises(AssertionError):
+                validate_result("kernel-tests", 1, output.replace(before, after, 1))
+        marker = user_log("user.entry_exit")[0]
+        result = f"ok {KERNEL_TEST_NAMES.index('user.entry_exit') + 1} user.entry_exit"
+        with self.assertRaises(AssertionError):
+            validate_result("kernel-tests", 1, output.replace(marker + "\n" + result, result + "\n" + marker))
+
     def test_user_address_spaces_are_required_full_suite_cases(self):
         names = (
             "memory.user_switching", "memory.user_permissions",
             "memory.user_rollback", "memory.user_reclamation",
         )
-        self.assertEqual(KERNEL_TEST_NAMES[-4:], names)
+        self.assertEqual(KERNEL_TEST_NAMES[-8:-4], names)
         output = suite_log()
         validate_result("kernel-tests", 1, output)
         for name in names:

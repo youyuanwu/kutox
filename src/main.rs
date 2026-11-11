@@ -174,6 +174,14 @@ mod serial;
 )]
 mod threads;
 mod time;
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "User programs are started explicitly by kernel clients"
+    )
+)]
+mod user;
 
 use core::{arch::asm, ffi::CStr, panic::PanicInfo};
 use kutox::fw_cfg::BootMode;
