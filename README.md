@@ -192,6 +192,8 @@ production HTTP client or userspace.
 - Linux host with rustup; the repository pins Rust `1.99.1` and the
   `x86_64-unknown-none` target.
 - Clang, an archiver, and GNU binutils (`nm`, `ld`).
+- LLD (`ld.lld`) to link the embedded ELF fixture in guest-enabled builds
+  (the default); on Debian/Ubuntu install the `lld` package separately from Clang.
 - CMake 3.24+, Ninja, Python 3, and xorriso.
 - `qemu-system-x86_64` with user-mode networking.
 - Network access on initial setup for Cargo dependencies and the

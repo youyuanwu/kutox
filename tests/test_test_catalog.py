@@ -1,9 +1,11 @@
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
+import textwrap
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -24,6 +26,61 @@ class CatalogTests(unittest.TestCase):
                         portable.index("python3 scripts/check.py fast"))
         self.assertIn("name: results-portable", portable)
         self.assertIn("if: always()", portable)
+
+    def test_guest_ci_installs_lld_and_reuses_pinned_source_initialization(self):
+        workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/check.yml").read_text()
+        portable, guest = workflow.split("\n  guest:", 1)
+        self.assertIn("- &driver-source\n", portable)
+        self.assertIn("- *driver-source\n", guest)
+        self.assertRegex(guest, r"apt-get install[^\n]*\blld\b")
+        self.assertEqual(workflow.count("git submodule update --init --depth 1 linux"), 1)
+
+    def test_ci_source_fetch_retries_are_bounded_and_propagate_exhaustion(self):
+        workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/check.yml").read_text()
+        portable = workflow.split("  portable:", 1)[1].split("\n  guest:", 1)[0]
+        script = textwrap.dedent(re.search(
+            r"(?m)^        run: \|\n((?:          .*\n)+)", portable,
+        )[1])
+        for failures, calls, sleeps, returncode in ((0, 1, 0, 0), (2, 3, 2, 0), (3, 3, 2, 1)):
+            with self.subTest(failures=failures), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                git = root / "git"
+                git.write_text(f"""#!{sys.executable}
+import json
+import os
+from pathlib import Path
+import sys
+log = Path(os.environ["GIT_CALLS"])
+with log.open("a") as stream:
+    stream.write(json.dumps(sys.argv[1:]) + "\\n")
+print("mock source fetch", file=sys.stderr)
+sys.exit(int(len(log.read_text().splitlines()) <= int(os.environ["FETCH_FAILURES"])))
+""")
+                sleep = root / "sleep"
+                sleep.write_text(f"""#!{sys.executable}
+import os
+from pathlib import Path
+import sys
+with Path(os.environ["SLEEP_CALLS"]).open("a") as stream:
+    stream.write(" ".join(sys.argv[1:]) + "\\n")
+""")
+                git.chmod(0o755)
+                sleep.chmod(0o755)
+                git_calls, sleep_calls = root / "git-calls", root / "sleep-calls"
+                result = subprocess.run(
+                    ["bash", "-e", "-o", "pipefail", "-c", script],
+                    env={**os.environ, "PATH": f"{root}{os.pathsep}{os.environ['PATH']}",
+                         "GIT_CALLS": str(git_calls), "SLEEP_CALLS": str(sleep_calls),
+                         "FETCH_FAILURES": str(failures)},
+                    capture_output=True, text=True, timeout=5,
+                )
+                self.assertEqual(result.returncode, returncode, result.stdout + result.stderr)
+                self.assertEqual([json.loads(line) for line in git_calls.read_text().splitlines()],
+                                 [["submodule", "update", "--init", "--depth", "1", "linux"]] * calls)
+                self.assertEqual(sleep_calls.read_text().splitlines() if sleep_calls.exists() else [],
+                                 ["10"] * sleeps)
+                self.assertEqual(result.stdout.count("::warning::"), sleeps)
+                self.assertEqual(result.stderr.count("mock source fetch"), calls)
 
     def test_guest_inventory_preserves_both_profiles_and_names_are_unique(self):
         self.assertEqual(len({item.name for item in CHECKS}), len(CHECKS))
