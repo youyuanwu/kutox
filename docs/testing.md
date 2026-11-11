@@ -48,7 +48,8 @@ DNS and routed TCP with fixed, bounded HTTP request/response streams.
 low-memory smoke CI. OFF rejects `http-tests` early and omits its fixture.
 The isolated peer checks exact stream/PCAP bytes, partial I/O, a total
 transaction deadline, retry after abort and joined two-epoch resource balance.
-No HTTP demo, production client, parser library or userspace is added.
+No HTTP demo, production client or parser library is added. The same workload
+now also exercises the explicit persistent user-task integration described below.
 
 [Owned-address-space acceptance](kernel-implementation.md#owned-user-address-spaces)
 adds `memory.user_switching`, `memory.user_permissions`, `memory.user_rollback`
@@ -125,7 +126,7 @@ evidence. ON/OFF symbol and production-boot gates cover the new fixtures.
 This tests bounded user execution, not a multi-task process scheduler.
 
 [Resumable-task acceptance](kernel-implementation.md#resumable-user-tasks)
-adds `user.tasks` and `user.task_limits` (seventy-four kernel cases), without
+adds `user.tasks` and `user.task_limits`, without
 a new boot selector or catalog registration. Two real ELF tasks alternate
 over eight epochs and 64 slices, preserving 48 quantum contexts, independent
 same-VA counters, seeded GPRs/DF/IF and an intentionally unaligned resumed SP.
@@ -138,6 +139,19 @@ The portable Moss test checks owned save/restore copying, and portable budget
 tests cover exact quantum/final-slice boundaries and overrun saturation.
 Frame balance, strict ordered host evidence and actual ON/OFF symbol gates
 remain mandatory. Normal boot still creates no user dispatcher or task.
+
+[Persistent-user integration](kernel-implementation.md#userspace-in-the-persistent-runtime)
+extends the existing HTTP case with two isolated ELF tasks, live task progress
+in every HTTP transfer, contained fault/timeout, paused cancellation/stale
+handles, registered-handler delivery, kernel deadlines shorter than the user
+quantum and two parked owners cancelled at shutdown. Strict journals require
+these proofs within each runtime epoch, alongside the unchanged independent
+wire/PCAP oracle and exact resource balance. `user.runtime_cleanup` brings the
+kernel suite to seventy-five cases and verifies invalid preflight plus joined
+admission/observer/native-entry/startup failures. The portable FIFO test checks
+that a pending wake remains visible until its thread actually receives it.
+The native runtime entry is required in both profile ELFs; no new selector,
+ISO or test manager is introduced.
 
 ## Validation tiers
 

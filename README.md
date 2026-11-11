@@ -50,7 +50,11 @@ User execution enables timer/device IRQs and has an explicit execution budget;
 even a syscall-free infinite loop returns a timeout. A bounded
 [resumable user dispatcher](docs/kernel-implementation.md#resumable-user-tasks)
 now alternates two owned ELF tasks without restarting them and returns to kernel
-work between quanta. Blocking syscalls and a full process runtime remain absent.
+work between quanta. An explicit
+[persistent-runtime integration](docs/kernel-implementation.md#userspace-in-the-persistent-runtime)
+now runs these slices alongside Linux-backed networking, honoring kernel
+deadlines and joined shutdown. Blocking syscalls and a full process runtime
+remain absent.
 
 The scoped [kernel runtime](src/kernel_runtime.rs) now retains the dispatcher,
 native manager, APIC/timer/controllers and shared Linux workers through client

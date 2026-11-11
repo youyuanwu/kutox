@@ -60,6 +60,7 @@ RUNTIME_SYMBOLS = {
     "kutox_user_bringup", "kutox_user_enter", "kutox_user_resume", "kutox_user_dispatch",
     "kutox_user_load_elf",
     "kutox_user_dispatch_next",
+    "kutox_runtime_users",
 }
 GUEST_ONLY_PATTERN = re.compile(
     r"::(?:guest_tests|tests|wait_tests|irq_tests|test_cleanup)::|"

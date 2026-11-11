@@ -26,6 +26,7 @@ def transcript():
         server = "1.1.1.1" if epoch == 1 else "8.8.8.8"
         lines += [
             f"# HTTP_TEST_EPOCH epoch={epoch}",
+            f"# USER_RUNTIME_DEADLINES epoch={epoch} sleeps=8 requested_us=1000 elapsed_us=1000..19999 quantum_us=20000",
             "# DHCP_STORAGE charged=0 limit=32768 sockets=1 dns=2",
             f"# DHCP_CONFIG identity={epoch + 5} generation=1 cidr=10.0.2.{epoch + 14}/24 router=Some(10.0.2.2) dns=[Some({server}), None]",
             f"# HTTP_TEST_READY epoch={epoch} generation=1 cidr=10.0.2.{epoch + 14}/24 dns={server} router=10.0.2.2",
@@ -45,7 +46,11 @@ def transcript():
             else:
                 lines += [f"# HTTP_TEST_RESPONSE epoch={epoch} stage={stage} request={len(http.REQUEST)} writes=2 status=200 header={len(http.HEADER)} body=6144 reads=175 eof=1"]
             lines += [f"# HTTP_TEST_CLOSED epoch={epoch} stage={stage} connections=0 queries=0 tx_grants=0"]
-        lines += [f"# HTTP_TEST_JOIN epoch={epoch} success=2 timeout=1 connections=0 queries=0 frame=balanced heap=balanced"]
+            lines += [f"# USER_RUNTIME_NETWORK epoch={epoch} stage={stage} slices=3 progress=2 survivor=running"]
+        lines += [
+            f"# USER_RUNTIME epoch={epoch} source=moss-dispatch tasks=2 slices=32 early=8 memory=isolated progress=2 fault=isolated timeout=isolated survivor=66 cancel=paused stale=rejected shutdown=2 handler=delivered locks=0",
+            f"# HTTP_TEST_JOIN epoch={epoch} success=2 timeout=1 connections=0 queries=0 frame=balanced heap=balanced",
+        ]
     return "\n".join([*lines, "ok 1 http.exchange", "# Totals: pass:1 fail:0 skip:0 total:1", ""])
 
 
@@ -190,7 +195,8 @@ class HttpTests(unittest.TestCase):
         for prefix in ("# HTTP_TEST_EPOCH", "# HTTP_TEST_READY", "# DHCP_CONFIG", "# DNS_STORAGE",
                        "# TCP_STORAGE", "# HTTP_TEST_DNS", "# HTTP_TEST_DELAY", "# HTTP_TEST_FRAGMENT",
                        "# HTTP_TEST_RESPONSE", "# HTTP_TEST_TIMEOUT", "# HTTP_TEST_CLOSED",
-                       "# HTTP_TEST_JOIN", "# TCP_ERROR"):
+                       "# HTTP_TEST_JOIN", "# TCP_ERROR", "# USER_RUNTIME_DEADLINES",
+                       "# USER_RUNTIME_NETWORK", "# USER_RUNTIME "):
             line = next(line for line in text.splitlines() if line.startswith(prefix))
             for replacement in ("", line + "\n" + line):
                 with self.subTest(prefix=prefix, duplicate=bool(replacement)), self.assertRaises(AssertionError):
@@ -200,6 +206,28 @@ class HttpTests(unittest.TestCase):
         lines[first], lines[first + 1] = lines[first + 1], lines[first]
         with self.assertRaises(AssertionError):
             validate_http_suite("http-tests", 1, "\n".join(lines))
+
+    def test_user_runtime_proofs_require_real_overlap_and_joined_ownership(self):
+        text = transcript()
+        for old, new in (
+            ("slices=32", "slices=0"), ("early=8", "early=0"),
+            ("slices=3 progress", "slices=0 progress"),
+            ("progress=2 survivor=running", "progress=0 survivor=running"),
+            ("progress=2 survivor=running", "progress=4 survivor=running"),
+            ("fault=isolated", "fault=global"), ("timeout=isolated", "timeout=reset"),
+            ("shutdown=2", "shutdown=0"), ("cancel=paused", "cancel=fresh"),
+            ("handler=delivered", "handler=lost"), ("locks=0", "locks=1"),
+            ("elapsed_us=1000..19999", "elapsed_us=20000..39999"),
+            ("# USER_RUNTIME epoch=1", "# USER_RUNTIME epoch=2"),
+        ):
+            with self.subTest(old=old), self.assertRaises(AssertionError):
+                validate_http_suite("http-tests", 1, text.replace(old, new, 1))
+        for extra in ("# USER_RUNTIME_UNKNOWN hidden=1", "# USER_TASKS extra=1"):
+            with self.subTest(extra=extra), self.assertRaises(AssertionError):
+                validate_http_suite("http-tests", 1, text + extra + "\n")
+        marker = next(line for line in text.splitlines() if line.startswith("# USER_RUNTIME_NETWORK"))
+        with self.assertRaises(AssertionError):
+            validate_http_suite("http-tests", 1, text.replace(marker + "\n", "") + marker + "\n")
 
     def test_profile_and_all_topologies_use_guest_only_shared_image(self):
         validate_http_suite("http-tests", 1, transcript().replace("charged=16384", "charged=0"))

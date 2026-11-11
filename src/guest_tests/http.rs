@@ -9,6 +9,7 @@ use crate::{
     memory, net_async, net_dns, net_stack,
     net_tcp::{self, Endpoint, Error},
     serial, time,
+    user_tasks::{Dispatcher, tests as user_tasks},
 };
 use core::sync::atomic::{AtomicUsize, Ordering};
 use kutox::{async_state::Outcome, network_config::Mode};
@@ -77,6 +78,7 @@ async fn fetch(
     deadline: u64,
     transfer: &mut Transfer,
 ) -> Result<(), Error> {
+    let user_progress = user_tasks::runtime_progress();
     let answer = net_dns::resolve("http.test", remaining(deadline)?)
         .await
         .expect("HTTP DNS resolution");
@@ -141,6 +143,10 @@ async fn fetch(
                     "# HTTP_TEST_DELAY epoch={epoch} stage=2 delay_ms=150\n"
                 ));
             }
+            while user_tasks::runtime_progress() == user_progress {
+                remaining(deadline)?;
+                async_sync::sleep_us(10_000).unwrap().await.unwrap();
+            }
             serial::print(format_args!(
                 "# HTTP_TEST_FRAGMENT epoch={epoch} stage={stage} bytes=7\n"
             ));
@@ -174,6 +180,8 @@ async fn exercise() -> Result<(), async_runtime::TaskFailure> {
         server[3],
     ));
     for stage in 1..=3 {
+        let user_before = user_tasks::runtime_slices();
+        let progress_before = user_tasks::runtime_progress();
         let mut transfer = Transfer::default();
         let start = millis();
         let polls = async_runtime::stats().polls;
@@ -213,7 +221,18 @@ async fn exercise() -> Result<(), async_runtime::TaskFailure> {
         serial::print(format_args!(
             "# HTTP_TEST_CLOSED epoch={epoch} stage={stage} connections=0 queries=0 tx_grants=0\n"
         ));
+        let slices = user_tasks::runtime_slices() - user_before;
+        let progress = user_tasks::runtime_progress() - progress_before;
+        assert!(slices > 0, "HTTP transfer ran without userspace progress");
+        assert!(
+            progress > 0,
+            "surviving ELF task did not advance during HTTP"
+        );
+        serial::print(format_args!(
+            "# USER_RUNTIME_NETWORK epoch={epoch} stage={stage} slices={slices} progress={progress} survivor=running\n"
+        ));
     }
+    user_tasks::network_done();
     Ok(())
 }
 
@@ -221,8 +240,35 @@ async fn exercise() -> Result<(), async_runtime::TaskFailure> {
 pub fn kutox_guest_http_client(_: usize) {
     let protocol = net_stack::start(Mode::Dhcp).unwrap();
     let task = async_runtime::spawn(exercise()).unwrap();
+    let deadline = time::deadline_after_us(6_000_000).unwrap();
+    while !net_stack::snapshot().ready || user_tasks::runtime_slices() == 0 {
+        assert!(
+            time::now_ticks() < deadline,
+            "user/network startup deadline"
+        );
+        crate::threads::sleep_us(1_000).unwrap();
+    }
+    for _ in 0..8 {
+        let start = time::now_ticks();
+        crate::threads::sleep_us(1_000).unwrap();
+        let elapsed = time::now_ticks() - start;
+        assert!(elapsed >= time::ticks_for_us(1_000).unwrap());
+        assert!(
+            elapsed < time::ticks_for_us(20_000).unwrap(),
+            "user quantum hid a kernel deadline"
+        );
+    }
+    serial::print(format_args!(
+        "# USER_RUNTIME_DEADLINES epoch={} sleeps=8 requested_us=1000 elapsed_us=1000..19999 quantum_us=20000\n",
+        EPOCH.load(Ordering::Acquire),
+    ));
     assert_eq!(task.wait(), Ok(Outcome::Complete));
     drop(task);
+    let deadline = time::deadline_after_us(1_000_000).unwrap();
+    while !user_tasks::runtime_parked() {
+        assert!(time::now_ticks() < deadline, "user runtime join deadline");
+        crate::threads::sleep_us(1_000).unwrap();
+    }
     let runtime = kernel_runtime::current_handle();
     runtime.request_shutdown().unwrap();
     runtime.wait_stopped().unwrap();
@@ -239,13 +285,41 @@ fn exchange(
     time::calibrate()?;
     for epoch in 1..=2 {
         EPOCH.store(epoch, Ordering::Release);
+        user_tasks::reset_runtime();
         let before = memory::allocation_snapshot(frames);
         let heap_before = heap::global().stats();
         serial::print(format_args!("# HTTP_TEST_EPOCH epoch={epoch}\n"));
         let resources = Resources::start(boot, frames)?;
+        let mut users = Dispatcher::new();
+        let mut proof = None;
         let mut clients = Clients::new();
         clients.add(kutox_guest_http_client, 0)?;
-        let stats = resources.run_network(clients)?;
+        let mut handler = false;
+        let stats = resources.run_network_with_users(
+            clients,
+            &mut users,
+            20_000,
+            &mut |users, event| {
+                if proof.is_none() && net_stack::snapshot().ready {
+                    proof = Some(user_tasks::RuntimeProof::new(boot, frames, users)?);
+                }
+                if let Some(event) = event {
+                    proof
+                        .as_mut()
+                        .expect("admitted runtime user tasks")
+                        .observe(users, event)?;
+                }
+                if event.is_some() && !handler {
+                    resources.async_test_irq(time::now_ticks(), user_tasks::runtime_handler)?;
+                    handler = true;
+                }
+                Ok(())
+            },
+        )?;
+        proof
+            .expect("runtime user acceptance started")
+            .finish(&mut users, epoch)?;
+        drop(users);
         drop(resources);
         assert_eq!((stats.finished, stats.peak_tasks), (6, 6));
         assert!(

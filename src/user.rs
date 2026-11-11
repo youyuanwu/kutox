@@ -115,6 +115,7 @@ struct Run {
     deadline_stop: Stop,
     saved: UserContext,
     ended: u64,
+    kernel_dispatch: bool,
 }
 
 static mut ACTIVE: *mut Run = core::ptr::null_mut();
@@ -154,6 +155,8 @@ pub fn kutox_user_bringup(
     if budget_us == 0 || budget_us > MAX_RUN_US {
         return Err(Failure::new("user_run_budget", -1));
     }
+    crate::threads::check_boot_or_thread_context()
+        .map_err(|error| Failure::new("user_run_context", error as i32))?;
     let plan = SlicePlan {
         ticks: time::ticks_for_us(budget_us)?,
         final_slice: true,
@@ -183,7 +186,7 @@ pub(crate) fn run_context(
     entered: &mut bool,
 ) -> Result<(Report, u64), Failure> {
     *entered = false;
-    crate::threads::check_boot_or_thread_context()
+    crate::threads::check_user_dispatch_context()
         .map_err(|error| Failure::new("user_run_context", error as i32))?;
     if !quiescent()
         || Cr4::read().contains(Cr4Flags::FSGSBASE)
@@ -246,6 +249,7 @@ pub(crate) fn run_context(
             },
             saved: *context,
             ended: 0,
+            kernel_dispatch: crate::threads::is_dispatcher_context(),
         };
         space.with_user_active(|| {
             let segments = (DS::get_reg(), ES::get_reg(), FS::get_reg(), GS::get_reg());
@@ -293,6 +297,10 @@ impl Run {
             ReturnAction::TimedOut => self.finish(frame, self.deadline_stop),
             ReturnAction::InvalidContext => self.finish(frame, Stop::InvalidContext),
             ReturnAction::Resume => {
+                if self.kernel_dispatch && crate::threads::has_ready() {
+                    self.finish(frame, Stop::QuantumExpired);
+                    return false;
+                }
                 frame.flags = user_flags(frame.flags);
                 return true;
             }

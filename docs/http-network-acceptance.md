@@ -5,7 +5,8 @@
 The guest-only [HTTP fixture](../src/guest_tests/http.rs) composes the existing
 production DHCP, DNS and TCP APIs through smoltcp and unchanged Linux e1000.
 It is a fixed HTTP/1.1 wire workload, not a general HTTP client, parser,
-production demo, userspace program, or new network service.
+production demo or new network service. The HTTP client remains a kernel
+client; separate guest-only ELF tasks now run alongside it.
 
 No dependency feature, smoltcp version, protocol-owner task or Linux packet
 algorithm changes. Moss's existing socket/readiness architecture remains the
@@ -50,6 +51,31 @@ request's dropped socket requests abort. After each attempt, no query,
 connection or TX grant remains. At epoch end, the fixture shuts down and joins
 the existing protocol/broker/driver runtime and verifies exact frame/heap
 balance through the common guest fixture boundary.
+
+## Concurrent user-task acceptance
+
+The same case now uses the explicit
+[persistent user integration](kernel-implementation.md#userspace-in-the-persistent-runtime).
+After network readiness, two ELF tasks with isolated data at the same virtual
+address run under a requested 20-ms quantum. One faults after continued
+execution; its replacement exhausts a cumulative 5-ms budget while the other
+task survives and progresses during every HTTP transaction. A further task is
+cancelled while paused, with its stale handle rejected. The surviving original
+task exits 66 only after all HTTP transactions complete.
+Before acknowledging each seven-byte response fragment, the client waits for
+an observed increase in that ELF task's counter. This synchronizes live CPU
+and TCP progress while the independent peer holds the remaining response,
+instead of assuming a fast transfer lasts long enough to contain a user slice.
+The wait remains charged to the original absolute transaction deadline.
+
+Eight 1-ms kernel sleeps must each finish in 1..20 ms (exclusive upper bound),
+proving kernel wake delivery is not deferred behind a fresh user quantum.
+A separately registered timer handler must run exactly once; early slices
+prove that user quanta yield to earlier kernel work. Finally, two new infinite
+ELF tasks are paused and cancelled by runtime shutdown. Exact frame/heap
+balance includes every user image. The host rejects missing, duplicate,
+unknown, out-of-epoch and malformed user evidence, including absent per-stage
+user progress. The wire peer and PCAP expectations are unchanged.
 
 No TLS, redirects, chunked encoding, caching, header negotiation, arbitrary
 response parsing, filesystem or userspace interface is introduced.

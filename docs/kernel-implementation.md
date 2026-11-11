@@ -296,8 +296,8 @@ calibrated ticks. An empty dispatcher returns `None`. After every step the
 original kernel CR3/CR0/segments and IF-clear state are restored, the timer is
 stopped/drained and all user/mapper locks are released. The caller may then run
 kernel work, including the existing cooperative kernel scheduler, before the
-next step. This is an explicit boot-context dispatcher, not a background task
-or integration with the persistent networking runtime.
+next step. This explicit stepping API remains available; the persistent runtime
+can now own the same stepping boundary as described below.
 
 A native 144-byte x86_64 context contains fifteen GPRs, RIP, RSP and RFLAGS.
 Compile-time size/offset assertions match the entry assembly. Fresh contexts
@@ -350,6 +350,58 @@ The dispatcher frontend exists in both profiles, but fixtures remain ON-only.
 This is not full Moss process VM, VFS, signals, fork, blocking syscalls, priority
 scheduling or a Linux process ABI. Kernel trap work remains non-preemptive and
 must be bounded; ready kernel workers run only between explicit steps.
+
+## Userspace in the persistent runtime
+
+`Resources::run_network_with_users` exclusively borrows a bounded dispatcher
+through startup, normal service and joined shutdown. It starts the existing
+kernel/async/broker workers without allocating another thread or stack for
+userspace. The scoped callback receives the dispatcher and `Option<Event>`:
+`Some` reports a completed slice, while `None` allows bounded admission when
+no users are ready. It runs only on the dispatcher stack, under the kernel
+root, with IF clear and no locks held. It must not block or retain borrows
+into the task owners. Admission/cancellation and observers therefore need
+no global payload pointer, unsafe `Send`/`Sync` or second user queue.
+
+This follows pinned Moss's `src/sched/uspc_ret.rs`
+`PickNewTask -> ProcessKernelWork -> ReturnToUserspace` ordering, rather than
+porting its process-bound futures, signals, EEVDF/SMP scheduler or ARM assembly.
+The existing cooperative scheduler grants the ready kernel batch a turn
+between user slices. A pending notification/timeout wake is delivered in
+kernel FIFO order before another slice begins. Runnable users prevent idle
+sleep; an empty user dispatcher preserves the original persistent idle policy.
+Kernel threads still cannot be switched while a user root is active.
+
+The shared one-shot timer targets the earliest of the slice deadline, blocked
+kernel-thread deadline and registered handler, including when rearming an
+early IRQ. Kernel deadlines also represent sleeping executor futures and
+network timeouts. Timer/device IRQs complete their normal notification and
+EOI path first. A valid user return that wakes kernel work saves the context
+and yields even if the quantum or final execution-budget slice has not
+expired. Only actual cumulative-budget exhaustion is terminal. A due deadline
+is armed for immediate delivery; it is not discarded as an elapsed setup
+error. After root restoration the existing stop/drain path handles pending
+interrupts, so a handler may run either in CPL3's IRQ or during safe kernel
+cleanup, but is never overwritten or duplicated.
+
+A shutdown request closes user dispatch before another slice or admission
+callback. Fresh and parked owners are cancelled as all original services join. Native setup/observer errors likewise cancel users, request and join
+shutdown, then propagate the original error with a diagnostic; they never
+abandon suspended Rust stacks. Startup/admission errors release the borrowed
+user owners after rollback. Invalid quantum/context preflight rejects before
+runtime ownership and leaves the caller's tasks unchanged.
+
+The existing guest-only HTTP workload now proves this boundary at 128/32 MiB
+and nested bridges: two isolated ELF contexts progress during real
+DHCP/DNS/TCP/HTTP traffic, one faults, a replacement times out, and its peer
+continues through all three transfers before exiting 66. It checks paused
+cancellation/stale handles, a registered timer handler, eight 1-ms kernel
+sleeps completing below the requested 20-ms user quantum, and cancellation of
+two paused tasks at shutdown. Every epoch balances frames/heap. A separate
+`user.runtime_cleanup` kernel case covers invalid preflight, service-admission
+rollback, observer failure, native pre-entry failure and startup failure.
+Normal boot still admits no user program; the native integration remains in
+both builds, with all images and acceptance code ON-only.
 
 ## Implementation boundaries
 

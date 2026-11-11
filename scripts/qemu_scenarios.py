@@ -91,6 +91,7 @@ KERNEL_TEST_NAMES = (
     "user.device_irq",
     "user.tasks",
     "user.task_limits",
+    "user.runtime_cleanup",
 )
 
 

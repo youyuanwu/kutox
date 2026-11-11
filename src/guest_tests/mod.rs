@@ -355,6 +355,10 @@ static TESTS: &[TestCase] = &[
         name: "user.task_limits",
         run: crate::user_tasks::tests::limits,
     },
+    TestCase {
+        name: "user.runtime_cleanup",
+        run: crate::user_tasks::tests::runtime_cleanup,
+    },
 ];
 
 static INTENTIONAL_FAILURE: TestCase = TestCase {

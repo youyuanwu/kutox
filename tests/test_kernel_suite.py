@@ -374,6 +374,17 @@ def user_log(name):
         "user.task_limits": [
             "# USER_TASK_LIMITS capacity=2 stale=rejected retry=preserved cancel=paused irq_context=rejected resume_fault=contained budgets=cumulative gaps_us=10000 timeouts=2 fault=isolated survivor=66 syscall_limit=32 writes=32 bytes=0 frames=balanced",
         ],
+        "user.runtime_cleanup": [
+            "# USER_RUNTIME_ERRORS_BEGIN",
+            "# RUNTIME_ERROR stage=user_task_duration code=-1",
+            "# RUNTIME_ERROR stage=user_task_duration code=-1",
+            "# RUNTIME_ERROR stage=runtime_startup_injected code=-210",
+            "# RUNTIME_ERROR stage=user_runtime_observer_injected code=-399",
+            "# RUNTIME_ERROR stage=user_run_stack code=-1",
+            "# RUNTIME_ERROR stage=runtime_startup_injected code=-210",
+            "# RUNTIME_ERROR stage=runtime_start code=-210",
+            "# USER_RUNTIME_ERRORS invalid=2 admission=joined observer=joined entry=joined startup=joined callbacks=1 frames=balanced",
+        ],
     }[name]
 
 
@@ -419,7 +430,7 @@ def suite_log(case="kernel-tests"):
 class KernelSuiteTests(unittest.TestCase):
     def test_user_run_proofs_require_cpl3_exact_bounds_faults_recovery_and_order(self):
         names = ("user.entry_exit", "user.syscalls", "user.faults", "user.reclamation")
-        self.assertEqual(KERNEL_TEST_NAMES[-11:-7], names)
+        self.assertEqual(KERNEL_TEST_NAMES[-12:-8], names)
         output = suite_log()
         for name in names:
             for marker in user_log(name):
@@ -446,7 +457,7 @@ class KernelSuiteTests(unittest.TestCase):
             "memory.user_switching", "memory.user_permissions",
             "memory.user_rollback", "memory.user_reclamation",
         )
-        self.assertEqual(KERNEL_TEST_NAMES[-15:-11], names)
+        self.assertEqual(KERNEL_TEST_NAMES[-16:-12], names)
         output = suite_log()
         validate_result("kernel-tests", 1, output)
         for name in names:
@@ -455,7 +466,7 @@ class KernelSuiteTests(unittest.TestCase):
                 validate_result("kernel-tests", 1, output.replace(f"ok {index} {name}\n", ""))
 
     def test_moss_startup_stack_requires_actual_cpl3_layout_and_reclamation_proof(self):
-        self.assertEqual(KERNEL_TEST_NAMES[-7], "user.startup_stack")
+        self.assertEqual(KERNEL_TEST_NAMES[-8], "user.startup_stack")
         output = suite_log()
         marker = user_log("user.startup_stack")[0]
         for replacement in (
@@ -478,7 +489,7 @@ class KernelSuiteTests(unittest.TestCase):
                 validate_result("kernel-tests", 1, output.replace(limit, replacement))
 
     def test_elf_requires_loading_execution_bss_fault_recovery_and_rollback_proofs(self):
-        self.assertEqual(KERNEL_TEST_NAMES[-6:-4], ("user.elf", "user.elf_rollback"))
+        self.assertEqual(KERNEL_TEST_NAMES[-7:-5], ("user.elf", "user.elf_rollback"))
         output = suite_log()
         for name in ("user.elf", "user.elf_rollback"):
             for marker in user_log(name):
@@ -500,9 +511,9 @@ class KernelSuiteTests(unittest.TestCase):
             validate_result("kernel-tests", 1, output.replace(marker + "\n" + result, result + "\n" + marker))
 
     def test_user_irq_proofs_require_exact_budget_device_return_and_cleanup(self):
-        self.assertEqual(KERNEL_TEST_NAMES[-4:-2], ("user.timeout", "user.device_irq"))
+        self.assertEqual(KERNEL_TEST_NAMES[-5:-3], ("user.timeout", "user.device_irq"))
         output = suite_log()
-        for name in KERNEL_TEST_NAMES[-4:-2]:
+        for name in KERNEL_TEST_NAMES[-5:-3]:
             marker = user_log(name)[0]
             changes = [
                 "", marker + "\n" + marker, marker.replace("cpl=3", "cpl=0"),
@@ -538,10 +549,10 @@ class KernelSuiteTests(unittest.TestCase):
                 validate_result("kernel-tests", 1, output.replace(marker, replacement))
 
     def test_resumable_tasks_require_exact_continuation_fairness_and_limit_proofs(self):
-        self.assertEqual(KERNEL_TEST_NAMES[-2:], ("user.tasks", "user.task_limits"))
+        self.assertEqual(KERNEL_TEST_NAMES[-3:], ("user.tasks", "user.task_limits", "user.runtime_cleanup"))
         output = suite_log()
-        for name in KERNEL_TEST_NAMES[-2:]:
-            marker = user_log(name)[0]
+        for name in KERNEL_TEST_NAMES[-3:]:
+            marker = user_log(name)[-1]
             changes = ["", marker + "\n" + marker]
             for before, after in (
                 ("source=moss-context", "source=unrelated"), ("tasks=2", "tasks=1"),
@@ -559,6 +570,9 @@ class KernelSuiteTests(unittest.TestCase):
                 ("fault=isolated", "fault=fatal"), ("survivor=66", "survivor=99"),
                 ("syscall_limit=32", "syscall_limit=33"), ("writes=32", "writes=0"),
                 ("bytes=0", "bytes=1"),
+                ("invalid=2", "invalid=0"), ("observer=joined", "observer=abandoned"),
+                ("entry=joined", "entry=abandoned"), ("admission=joined", "admission=abandoned"),
+                ("startup=joined", "startup=abandoned"), ("callbacks=1", "callbacks=0"),
             ):
                 if before in marker:
                     changes.append(marker.replace(before, after))
@@ -568,6 +582,23 @@ class KernelSuiteTests(unittest.TestCase):
             result = f"ok {KERNEL_TEST_NAMES.index(name) + 1} {name}"
             with self.assertRaises(AssertionError):
                 validate_result("kernel-tests", 1, output.replace(marker + "\n" + result, result + "\n" + marker))
+
+    def test_runtime_cleanup_keeps_driver_diagnostics_and_errors_scoped(self):
+        output = suite_log()
+        begin = "# USER_RUNTIME_ERRORS_BEGIN"
+        banner = "Intel(R) PRO/1000 Network Driver"
+        validate_result("kernel-tests", 1, output.replace(begin, begin + "\n" + banner))
+        for changed in (
+            output.replace(begin, banner + "\n" + begin),
+            output.replace(begin, begin + "\nunknown output"),
+            output.replace(begin, ""),
+            output.replace(begin, begin + "\n" + begin),
+            output.replace("# RUNTIME_ERROR stage=user_run_stack code=-1", ""),
+            output.replace("stage=user_run_stack code=-1", "stage=unrelated code=-1"),
+            output + "# RUNTIME_ERROR stage=hidden code=-1\n",
+        ):
+            with self.subTest(changed=changed), self.assertRaises(AssertionError):
+                validate_result("kernel-tests", 1, changed)
 
     def test_pci_hierarchy_rejects_missing_duplicate_and_wrong_identity(self):
         case = "kernel-tests-nested"

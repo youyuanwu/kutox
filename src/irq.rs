@@ -239,6 +239,17 @@ fn deadline_counts(remaining: u64, counts: u32, ticks: u64) -> u32 {
         .clamp(1, u128::from(u32::MAX)) as u32
 }
 
+fn user_deadline(deadline: u64) -> u64 {
+    let handler = HANDLER
+        .lock_save_irq()
+        .as_ref()
+        .map(|handler| handler.deadline);
+    [handler, threads::next_dispatch_deadline()]
+        .into_iter()
+        .flatten()
+        .fold(deadline, u64::min)
+}
+
 impl UserSlice {
     pub(crate) fn rearm_from_irq(&self) -> Result<(), Failure> {
         if !exceptions::is_hardware_irq()
@@ -255,10 +266,7 @@ impl UserSlice {
         {
             return Err(Failure::new("user_timer_rearm_busy", -1));
         }
-        let deadline = HANDLER
-            .lock_save_irq()
-            .as_ref()
-            .map_or(self.deadline, |handler| self.deadline.min(handler.deadline));
+        let deadline = user_deadline(self.deadline);
         let remaining = deadline.saturating_sub(time::now_ticks());
         write(address, LVT_TIMER, TIMER_VECTOR as u32);
         write(
@@ -395,12 +403,12 @@ impl<'a, 'storage> Timer<'a, 'storage> {
         let deadline = started
             .checked_add(duration)
             .ok_or(Failure::new("user_run_deadline", -1))?;
-        let first = self
-            .handler_deadline()
-            .map_or(deadline, |when| when.min(deadline));
-        if !self.arm_for_idle(first)? {
-            return Err(Failure::new("user_timer_elapsed", -1));
-        }
+        let first = user_deadline(deadline);
+        self.arm_count(deadline_counts(
+            first.saturating_sub(time::now_ticks()),
+            self.interval_counts,
+            self.interval_ticks,
+        ))?;
         let result = run(UserSlice {
             started,
             deadline,

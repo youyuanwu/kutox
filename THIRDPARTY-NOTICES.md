@@ -181,6 +181,19 @@ queue policy, full Moss scheduler or ARM user-context/assembly is imported.
 The complete process VM, signals, VFS, blocking syscall work and FPU/TLS context
 switching remain outside this subset.
 
+### Persistent user dispatch
+
+The [runtime integration](src/kernel_runtime.rs) and
+[kernel dispatcher boundary](src/threads.rs) follow pinned Moss's
+[userspace gateway](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/sched/uspc_ret.rs):
+select work, process kernel work outside scheduler borrows, then restore owned
+user context. They are native kutox integration, not copied process/future,
+signal, ARM or EEVDF/SMP scheduler implementations. Kernel-ready batching,
+pending-wake visibility, shared local-APIC deadline arbitration, scoped
+admission/event callbacks and joined shutdown use the existing kutox services.
+The previously ported Moss contexts and task states remain unchanged. The
+guest HTTP/task fixtures and strict host journals are kutox acceptance code.
+
 ### Bootstrap memory allocator
 
 This is a fixed-capacity adaptation, not an unchanged copy of libkernel.

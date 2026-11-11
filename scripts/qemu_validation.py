@@ -268,6 +268,7 @@ def validate_http_suite(case, returncode, output):
     if any(line.startswith(("E1000_", "CPU_EXCEPTION", "Bail out!", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "# DHCP_ERROR", "# DHCP_REJECT", "# DHCP_DECONFIG", "# DNS_ERROR", "# DNS_REJECT", "# NETWORK_STACK_ERROR", "# ASYNC_ERROR", "# RUNTIME_ERROR")) for line in lines):
         raise AssertionError("HTTP integration reached an unrelated failure/production path")
     previous = -1
+    runtime_evidence = []
     for epoch in (1, 2):
         server = "1.1.1.1" if epoch == 1 else "8.8.8.8"
         start = f"# HTTP_TEST_EPOCH epoch={epoch}"
@@ -280,6 +281,14 @@ def validate_http_suite(case, returncode, output):
             raise AssertionError("HTTP runtime epochs overlap or configuration is reordered")
         previous = end
         block = lines[begin:end]
+        deadlines = f"# USER_RUNTIME_DEADLINES epoch={epoch} sleeps=8 requested_us=1000 elapsed_us=1000..19999 quantum_us=20000"
+        users = [line for line in block if line.startswith("# USER_RUNTIME ")]
+        pattern = rf"# USER_RUNTIME epoch={epoch} source=moss-dispatch tasks=2 slices=(\d+) early=(\d+) memory=isolated progress=2 fault=isolated timeout=isolated survivor=66 cancel=paused stale=rejected shutdown=2 handler=delivered locks=0"
+        if lines.count(deadlines) != 1 or deadlines not in block or len(users) != 1 or (match := re.fullmatch(pattern, users[0])) is None:
+            raise AssertionError("missing user/kernel runtime lifetime or deadline proof")
+        if not 8 <= int(match[1]) <= 100000 or not 1 <= int(match[2]) <= int(match[1]):
+            raise AssertionError("userspace did not resume or yield to earlier kernel work")
+        runtime_evidence.extend([deadlines, users[0]])
         configs = [line for line in block if line.startswith("# DHCP_CONFIG ")]
         suffix = f"generation=1 cidr=10.0.2.{epoch + 14}/24 router=Some(10.0.2.2) dns=[Some({server}), None]"
         if len(configs) != 1 or re.fullmatch(r"# DHCP_CONFIG identity=[1-9]\d* " + re.escape(suffix), configs[0]) is None:
@@ -315,12 +324,19 @@ def validate_http_suite(case, returncode, output):
             positions = [lines.index(marker) for marker in (dns, fragment, found[0], closed)]
             if positions != sorted(positions) or not stage_end < positions[0] or positions[-1] >= end:
                 raise AssertionError("HTTP stages or cleanup are reordered")
+            progress = [line for line in block if line.startswith(f"# USER_RUNTIME_NETWORK epoch={epoch} stage={stage} ")]
+            pattern = rf"# USER_RUNTIME_NETWORK epoch={epoch} stage={stage} slices=([1-9]\d*) progress=([1-9]\d*) survivor=running"
+            if len(progress) != 1 or (overlap := re.fullmatch(pattern, progress[0])) is None or not 1 <= int(overlap[2]) <= int(overlap[1]) or not positions[-1] < lines.index(progress[0]) < lines.index(users[0]):
+                raise AssertionError("HTTP traffic did not overlap live user tasks")
+            runtime_evidence.extend(progress)
             stage_end = positions[-1]
         errors = [line for line in block if line.startswith("# TCP_ERROR ")]
         if errors != ["# TCP_ERROR operation=read error=TimedOut"]:
             raise AssertionError("HTTP deadline did not produce the expected native read error")
     if previous >= lines.index("ok 1 http.exchange"):
         raise AssertionError("HTTP success preceded joined resource release")
+    if Counter(line for line in lines if line.startswith("# USER_")) != Counter(runtime_evidence):
+        raise AssertionError("unknown, duplicate or out-of-epoch userspace runtime evidence")
 
 
 def validate_pci_hierarchy(lines, case):
@@ -390,7 +406,12 @@ def validate_kernel_suite(case, returncode, output):
         expected_names = ("harness.intentional_failure", *expected_names)
     if lines.count("# linux format=-7/0000002A/4294967296/12:34:56:78:9a:bc/end") != 1:
         raise AssertionError("missing, duplicate, or incorrect driver diagnostic formatting")
-    failures = validate_ktap(lines, returncode, expected_names)
+    begin = [index for index, line in enumerate(lines) if line == "# USER_RUNTIME_ERRORS_BEGIN"]
+    end = [index for index, line in enumerate(lines) if line.startswith("# USER_RUNTIME_ERRORS ")]
+    if len(begin) != 1 or len(end) != 1 or begin[0] >= end[0]:
+        raise AssertionError("missing or misplaced runtime cleanup boundary")
+    normalized = [*lines[:begin[0]], *driver_ktap_lines(lines[begin[0]:end[0]]), *lines[end[0]:]]
+    failures = validate_ktap(normalized, returncode, expected_names)
     validate_linux_callbacks(output)
     validate_native_drivers(lines, case)
     validate_user_runs(lines, expected_names)
@@ -451,10 +472,21 @@ def validate_user_runs(lines, names):
         "user.task_limits": [
             "# USER_TASK_LIMITS capacity=2 stale=rejected retry=preserved cancel=paused irq_context=rejected resume_fault=contained budgets=cumulative gaps_us=10000 timeouts=2 fault=isolated survivor=66 syscall_limit=32 writes=32 bytes=0 frames=balanced",
         ],
+        "user.runtime_cleanup": [
+            "# USER_RUNTIME_ERRORS_BEGIN",
+            "# RUNTIME_ERROR stage=user_task_duration code=-1",
+            "# RUNTIME_ERROR stage=user_task_duration code=-1",
+            "# RUNTIME_ERROR stage=runtime_startup_injected code=-210",
+            "# RUNTIME_ERROR stage=user_runtime_observer_injected code=-399",
+            "# RUNTIME_ERROR stage=user_run_stack code=-1",
+            "# RUNTIME_ERROR stage=runtime_startup_injected code=-210",
+            "# RUNTIME_ERROR stage=runtime_start code=-210",
+            "# USER_RUNTIME_ERRORS invalid=2 admission=joined observer=joined entry=joined startup=joined callbacks=1 frames=balanced",
+        ],
     }
 
     def relevant(line):
-        return line.startswith(("# USER_", "# b")) or line == "# x"
+        return line.startswith(("# USER_", "# RUNTIME_ERROR", "# b")) or line == "# x"
 
     if [line for line in lines if relevant(line)] != [
         line for block in evidence.values() for line in block

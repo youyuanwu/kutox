@@ -43,6 +43,10 @@ pub(crate) struct AddressSpace<'a, 'storage> {
 }
 
 fn context() -> Result<(), Failure> {
+    if crate::threads::is_dispatcher_context() {
+        return crate::threads::check_user_dispatch_context()
+            .map_err(|error| Failure::new("user_memory_context", error as i32));
+    }
     crate::threads::check_boot_or_thread_context()
         .map(|_| ())
         .map_err(|error| Failure::new("user_memory_context", error as i32))

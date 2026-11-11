@@ -475,15 +475,70 @@ impl<'a> Resources<'a> {
     }
 
     pub fn run(&self, clients: Clients) -> Result<threads::RunStats, Failure> {
-        self.run_inner(clients, false, false).inspect_err(report)
+        self.run_inner(clients, false, false, None)
+            .inspect_err(report)
     }
 
     pub fn run_async(&self, clients: Clients) -> Result<threads::RunStats, Failure> {
-        self.run_inner(clients, true, false).inspect_err(report)
+        self.run_inner(clients, true, false, None)
+            .inspect_err(report)
     }
 
     pub fn run_network(&self, clients: Clients) -> Result<threads::RunStats, Failure> {
-        self.run_inner(clients, true, true).inspect_err(report)
+        self.run_inner(clients, true, true, None)
+            .inspect_err(report)
+    }
+
+    #[unsafe(export_name = "kutox_runtime_users")]
+    #[unsafe(link_section = ".text.kutox_runtime_users")]
+    pub fn run_network_with_users<'u, 'storage>(
+        &self,
+        clients: Clients,
+        users: &mut crate::user_tasks::Dispatcher<'u, 'storage>,
+        quantum_us: u64,
+        observe: &mut crate::user_tasks::RuntimeCallback<'_, 'u, 'storage>,
+    ) -> Result<threads::RunStats, Failure> {
+        let run = || {
+            crate::threads::check_user_dispatch_context()
+                .map_err(|error| Failure::new("runtime_user_context", error as i32))?;
+            crate::user_tasks::duration(quantum_us)?;
+            let mut failure = None;
+            let mut work = || {
+                if CONTROL.request.load(Ordering::Acquire)
+                    || CONTROL.stopping.load(Ordering::Acquire)
+                    || CONTROL.stopped.load(Ordering::Acquire)
+                {
+                    users.cancel_all()?;
+                    return Ok(false);
+                }
+                if !CONTROL.ready.load(Ordering::Acquire) {
+                    return Ok(false);
+                }
+                let step =
+                    crate::user_tasks::kutox_user_dispatch_next(users, &self.timer, quantum_us)
+                        .and_then(|event| {
+                            observe(users, event)?;
+                            Ok(event.is_some() || !users.is_empty())
+                        });
+                match step {
+                    Ok(worked) => Ok(worked),
+                    Err(error) => {
+                        failure = Some(error);
+                        users.cancel_all()?;
+                        CONTROL.request.store(true, Ordering::Release);
+                        notify(&CONTROL.event)?;
+                        Ok(false)
+                    }
+                }
+            };
+            let result = self.run_inner(clients, true, true, Some(&mut work));
+            users.cancel_all()?;
+            match failure {
+                Some(error) => Err(error),
+                None => result,
+            }
+        };
+        run().inspect_err(report)
     }
 
     #[cfg(feature = "guest-tests")]
@@ -500,6 +555,7 @@ impl<'a> Resources<'a> {
         clients: Clients,
         asynchronous: bool,
         network: bool,
+        work: Option<&mut dyn FnMut() -> Result<bool, Failure>>,
     ) -> Result<threads::RunStats, Failure> {
         if asynchronous && clients.entries.iter().flatten().count() > 1 {
             return Err(Failure::new("runtime_async_client_capacity", -203));
@@ -594,14 +650,16 @@ impl<'a> Resources<'a> {
             ));
         }
         CONTROL.running.store(true, Ordering::Release);
-        let stats = scheduler
-            .run_persistent(&self.timer, &CONTROL.stopped)
-            .unwrap_or_else(|error| {
-                panic!(
-                    "runtime dispatcher failed stage={} code={}; suspended owners retained",
-                    error.stage, error.code
-                )
-            });
+        let run = match work {
+            Some(work) => scheduler.run_persistent_with_work(&self.timer, &CONTROL.stopped, work),
+            None => scheduler.run_persistent(&self.timer, &CONTROL.stopped),
+        };
+        let stats = run.unwrap_or_else(|error| {
+            panic!(
+                "runtime dispatcher failed stage={} code={}; suspended owners retained",
+                error.stage, error.code
+            )
+        });
         CONTROL.running.store(false, Ordering::Release);
         assert!(
             CONTROL.stopped.load(Ordering::Acquire)

@@ -33,16 +33,15 @@ pub struct Event {
     pub elapsed_ticks: u64,
 }
 
+pub type RuntimeCallback<'scope, 'a, 'storage> =
+    dyn FnMut(&mut Dispatcher<'a, 'storage>, Option<Event>) -> Result<(), Failure> + 'scope;
+
 fn context() -> Result<(), Failure> {
-    if threads::check_boot_or_thread_context()
-        .map_err(|error| Failure::new("user_task_context", error as i32))?
-    {
-        return Err(Failure::new("user_task_boot_context", -1));
-    }
-    Ok(())
+    threads::check_user_dispatch_context()
+        .map_err(|error| Failure::new("user_task_context", error as i32))
 }
 
-fn duration(usec: u64) -> Result<u64, Failure> {
+pub(crate) fn duration(usec: u64) -> Result<u64, Failure> {
     if usec == 0 || usec > MAX_RUN_US {
         return Err(Failure::new("user_task_duration", -1));
     }
@@ -95,6 +94,24 @@ impl<'a, 'storage> Dispatcher<'a, 'storage> {
             .remove_runnable(task)
             .map_err(|error| Failure::new("user_task_cancel", error as i32))?;
         drop(self.tasks[task.slot()].take());
+        Ok(())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+
+    pub(crate) fn cancel_all(&mut self) -> Result<(), Failure> {
+        context()?;
+        for slot in 0..CAPACITY {
+            if self.tasks[slot].is_some() {
+                let handle = self
+                    .queue
+                    .handle(TaskId(slot))
+                    .map_err(|error| Failure::new("user_task_cancel_handle", error as i32))?;
+                self.cancel(handle)?;
+            }
+        }
         Ok(())
     }
 
