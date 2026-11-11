@@ -7,7 +7,7 @@ from dataclasses import dataclass
 ROOT = Path(__file__).resolve().parents[1]
 
 
-REVISION = "79a907609d53d5cd645b42c11550d295d43abf99"
+REVISION = "c03c1a14507dfaf8b856c2608f9ac216021fc222"
 
 
 MOSS_REVISION = "1358b5d78b9151e382dc60ccda7fe0de191e56af"

@@ -29,9 +29,8 @@ jobs:
       - &driver-source
         name: Initialize pinned driver source
         run: |
-          cmake -S . -B build/source -DKUTOX_SOURCE_ONLY=ON
           for attempt in 1 2 3; do
-            if timeout 180 cmake --build build/source --target linux-source --parallel 1; then
+            if timeout 180 bash scripts/linux_source.sh; then
               exit 0
             fi
             if [ "$attempt" -eq 3 ]; then

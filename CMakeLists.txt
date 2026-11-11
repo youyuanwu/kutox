@@ -4,31 +4,6 @@ project(kutox NONE)
 # Remove obsolete generated registrations when reusing an older build directory.
 file(REMOVE "${CMAKE_BINARY_DIR}/CTestTestfile.cmake" "${CMAKE_BINARY_DIR}/DartConfiguration.tcl")
 
-find_package(Git 2.36 REQUIRED)
-execute_process(
-    COMMAND "${GIT_EXECUTABLE}" rev-parse HEAD:linux
-    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    OUTPUT_VARIABLE LINUX_REVISION OUTPUT_STRIP_TRAILING_WHITESPACE
-    COMMAND_ERROR_IS_FATAL ANY
-)
-add_custom_target(linux-source
-    COMMAND "${GIT_EXECUTABLE}" submodule init linux
-    COMMAND "${GIT_EXECUTABLE}" init linux
-    COMMAND "${GIT_EXECUTABLE}" -C linux config remote.origin.url https://github.com/gregkh/linux.git
-    COMMAND "${GIT_EXECUTABLE}" -C linux sparse-checkout set --cone
-        drivers/net/ethernet/intel/e1000 include arch/x86/include
-    COMMAND "${GIT_EXECUTABLE}" -C linux fetch --depth 1 --filter=blob:none origin "${LINUX_REVISION}"
-    COMMAND "${GIT_EXECUTABLE}" -C linux checkout --detach "${LINUX_REVISION}"
-    COMMAND "${GIT_EXECUTABLE}" submodule absorbgitdirs linux
-    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    USES_TERMINAL
-    VERBATIM
-)
-option(KUTOX_SOURCE_ONLY "Configure only Linux source preparation" OFF)
-if(KUTOX_SOURCE_ONLY)
-    return()
-endif()
-
 find_program(CARGO cargo REQUIRED)
 find_program(XORRISO xorriso REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
