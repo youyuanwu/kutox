@@ -1,6 +1,8 @@
 //! A single protocol future; all Linux calls stay on the packet broker.
 
-use crate::{Failure, async_runtime, async_sync, net_async, net_udp, serial, time};
+use crate::{
+    Failure, async_runtime, async_sync, net_async, net_dns, net_tcp, net_udp, serial, time,
+};
 use alloc::{alloc::alloc, boxed::Box};
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::{alloc::Layout, future::poll_fn, mem::size_of_val, pin::Pin, task::Poll};
@@ -87,7 +89,11 @@ impl TxBacking for net_async::TxReservation {
 struct State {
     _claim: Claim,
     _udp: net_udp::Service,
+    _dns: net_dns::Service,
+    _tcp: net_tcp::Service,
     udp: Option<Engine>,
+    dns: Option<kutox::dns_state::Engine>,
+    tcp: Option<kutox::tcp_state::Engine>,
     identity: u64,
     interface: Option<Interface>,
     mode: Mode,
@@ -131,6 +137,8 @@ fn deconfigure(state: &mut State, reason: &str) -> Result<(), async_runtime::Tas
     net_stack_state::apply_settings(state.interface.as_mut().expect("owned interface"), None)
         .map_err(|error| failure("deconfigure", error))?;
     net_udp::configure(None, &mut state.udp);
+    net_dns::configure(None);
+    net_tcp::configure(None);
     publish(state, false);
     serial::print(format_args!(
         "# DHCP_DECONFIG identity={} generation={} reason={reason}\n",
@@ -162,6 +170,8 @@ fn poll_dhcp(state: &mut State) -> Result<(), async_runtime::TaskFailure> {
                 .map_err(|error| failure("dhcp_configure", error))?;
                 state.settings = Some(settings);
                 net_udp::configure(Some(settings), &mut state.udp);
+                net_dns::configure(Some(settings));
+                net_tcp::configure(Some(settings));
                 serial::print(format_args!(
                     "# DHCP_CONFIG identity={} generation={} cidr={} router={:?} dns={:?}\n",
                     state.identity,
@@ -225,6 +235,18 @@ pub(crate) fn start(config: impl Into<Mode>) -> Result<async_runtime::Task, Fail
         ));
         Failure::new("network_udp_start", -290)
     })?;
+    let dns = net_dns::start().map_err(|error| {
+        serial::print(format_args!(
+            "# NETWORK_STACK_ERROR operation=dns error={error:?}\n"
+        ));
+        Failure::new("network_dns_start", -296)
+    })?;
+    let tcp = net_tcp::start(mode.address()).map_err(|error| {
+        serial::print(format_args!(
+            "# NETWORK_STACK_ERROR operation=tcp error={error:?}\n"
+        ));
+        Failure::new("network_tcp_start", -298)
+    })?;
     *STATUS.lock_save_irq() = Snapshot::default();
     let before = crate::heap::global().stats();
     #[cfg(feature = "guest-tests")]
@@ -239,7 +261,11 @@ pub(crate) fn start(config: impl Into<Mode>) -> Result<async_runtime::Task, Fail
         pointer.write(State {
             _claim: claim,
             _udp: udp,
+            _dns: dns,
+            _tcp: tcp,
             udp: None,
+            dns: None,
+            tcp: None,
             identity: 0,
             interface: None,
             mode,
@@ -273,6 +299,8 @@ pub(crate) fn start(config: impl Into<Mode>) -> Result<async_runtime::Task, Fail
         + net_async::METADATA_BYTES
         + METADATA_BYTES
         + net_udp::METADATA_BYTES
+        + net_dns::METADATA_BYTES
+        + net_tcp::METADATA_BYTES
         + async_runtime::FUTURE_STORAGE_BYTES
         + net_async::PACKET_STORAGE_BYTES
         + 2 * async_runtime::STACK_BYTES
@@ -359,13 +387,18 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
     let mut empty_sockets = SocketSet::new(alloc::vec::Vec::<SocketStorage<'static>>::new());
     loop {
         let mut udp_work = net_udp::work();
+        let mut dns_work = net_dns::work();
+        let mut tcp_work = net_tcp::work();
         let mut changed = session
             .changed()
             .map_err(|error| failure("changed", error))?;
         net_udp::drive(&mut state.udp);
+        drive_dns(&mut state);
+        drive_tcp(&mut state);
         let info = session.info().map_err(|error| failure("info", error))?;
         if !info.ready || !info.link {
             if !waiting_link {
+                net_tcp::configure(None);
                 if state.dhcp.is_some() {
                     deconfigure(&mut state, "link")?;
                     state.dhcp.as_mut().expect("DHCP state").socket().reset();
@@ -382,7 +415,13 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
                 if let Poll::Ready(result) = Pin::new(&mut changed).poll(cx) {
                     return Poll::Ready(result);
                 }
-                Pin::new(&mut udp_work).poll(cx)
+                if let Poll::Ready(result) = Pin::new(&mut udp_work).poll(cx) {
+                    return Poll::Ready(result);
+                }
+                if let Poll::Ready(result) = Pin::new(&mut dns_work).poll(cx) {
+                    return Poll::Ready(result);
+                }
+                Pin::new(&mut tcp_work).poll(cx)
             })
             .await
             .map_err(async_runtime::Error::task_failure)?;
@@ -405,6 +444,39 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
             }
         }
         poll_dhcp(&mut state)?;
+        net_tcp::configure(state.settings);
+        drive_tcp(&mut state);
+        {
+            let State { tcp, interface, .. } = &mut *state;
+            if let Some(tcp) = tcp {
+                interface.as_mut().expect("owned interface").poll_egress(
+                    now()?,
+                    &mut Adapter {
+                        rx: &mut rx,
+                        backing: &mut backing,
+                        pending: &mut pending,
+                    },
+                    &mut tcp.sockets,
+                );
+            }
+        }
+        drive_tcp(&mut state);
+        drive_dns(&mut state);
+        {
+            let State { dns, interface, .. } = &mut *state;
+            if let Some(dns) = dns {
+                dns.egress(
+                    interface.as_mut().expect("owned interface"),
+                    now()?,
+                    &mut Adapter {
+                        rx: &mut rx,
+                        backing: &mut backing,
+                        pending: &mut pending,
+                    },
+                );
+            }
+        }
+        drive_dns(&mut state);
         if state.generation != reported_generation {
             reported_ready = false;
         }
@@ -451,6 +523,27 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
                     (a, b) => a.or(b),
                 };
             }
+            if let Some(dns) = &state.dns {
+                let dns_delay = dns.delay(
+                    state.interface.as_mut().expect("owned interface"),
+                    timestamp,
+                );
+                delay = match (delay, dns_delay) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                };
+            }
+            if let Some(tcp) = &state.tcp {
+                let tcp_delay = state
+                    .interface
+                    .as_mut()
+                    .expect("owned interface")
+                    .poll_delay(timestamp, &tcp.sockets);
+                delay = match (delay, tcp_delay) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                };
+            }
             let mut receive = session.receive();
             let mut sleep = delay
                 .map(|delay| {
@@ -491,6 +584,20 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
                             .map_err(async_runtime::Error::task_failure),
                     );
                 }
+                if let Poll::Ready(result) = Pin::new(&mut dns_work).poll(cx) {
+                    return Poll::Ready(
+                        result
+                            .map(|()| None)
+                            .map_err(async_runtime::Error::task_failure),
+                    );
+                }
+                if let Poll::Ready(result) = Pin::new(&mut tcp_work).poll(cx) {
+                    return Poll::Ready(
+                        result
+                            .map(|()| None)
+                            .map_err(async_runtime::Error::task_failure),
+                    );
+                }
                 Poll::Pending
             })
             .await?;
@@ -513,7 +620,7 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
         backing = match session.reserve_tx() {
             Ok(backing) => Some(backing),
             Err(net_async::Error::Busy | net_async::Error::NoMemory) => {
-                if state.dhcp.is_some() {
+                if state.dhcp.is_some() || state.tcp.is_some() {
                     // Lease maintenance must progress even when all TX grants are held.
                     let mut changed = changed;
                     let mut retry =
@@ -534,6 +641,8 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
             Err(error) => return Err(failure("reserve", error)),
         };
         net_udp::drive(&mut state.udp);
+        drive_dns(&mut state);
+        drive_tcp(&mut state);
         if let Some(packet) = &rx {
             let admission = net_stack_state::admission_mode(
                 packet.bytes(),
@@ -541,6 +650,15 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
                 state.dhcp.is_some(),
                 state.mac,
             );
+            let dns_admission = if admission == Admission::Other {
+                let State { dns, udp, .. } = &mut *state;
+                dns.as_mut()
+                    .map_or(kutox::dns_state::Admission::Other, |dns| {
+                        net_dns::admission(dns, udp.as_ref(), packet.bytes())
+                    })
+            } else {
+                kutox::dns_state::Admission::Other
+            };
             #[cfg(feature = "guest-tests")]
             crate::guest_tests::network_stack::retain(rx.as_ref().expect("staged RX"));
             #[cfg(feature = "guest-tests")]
@@ -552,9 +670,53 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
                 Admission::Rejected => state.rejected += 1,
                 Admission::Other | Admission::Dhcp => {}
             }
-            if admission == Admission::Rejected {
+            if dns_admission == kutox::dns_state::Admission::Rejected {
+                state.rejected += 1;
+            }
+            if admission == Admission::Rejected
+                || matches!(
+                    dns_admission,
+                    kutox::dns_state::Admission::Rejected
+                        | kutox::dns_state::Admission::Finished(..)
+                )
+            {
                 rx = None;
                 drop(backing.take());
+            } else if let kutox::dns_state::Admission::Accepted(index) = dns_admission {
+                let State { dns, interface, .. } = &mut *state;
+                let result = dns.as_mut().expect("DNS admission").ingress(
+                    index,
+                    interface.as_mut().expect("owned interface"),
+                    now()?,
+                    &mut Adapter {
+                        rx: &mut rx,
+                        backing: &mut backing,
+                        pending: &mut pending,
+                    },
+                );
+                assert_ne!(
+                    result,
+                    PollIngressSingleResult::None,
+                    "DNS pair not consumed"
+                );
+            } else if let Some(reset) = kutox::tcp_state::packet(packet.bytes())
+                && let Some(tcp) = &mut state.tcp
+            {
+                let result = tcp.ingress(
+                    state.interface.as_mut().expect("owned interface"),
+                    now()?,
+                    &mut Adapter {
+                        rx: &mut rx,
+                        backing: &mut backing,
+                        pending: &mut pending,
+                    },
+                    reset,
+                );
+                assert_ne!(
+                    result,
+                    PollIngressSingleResult::None,
+                    "TCP pair not consumed"
+                );
             } else {
                 let sockets = if admission == Admission::Dhcp {
                     &mut state.dhcp.as_mut().expect("DHCP admission").sockets
@@ -603,6 +765,36 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
         }
         // DHCP dispatch can expire a lease; revoke old queues before UDP egress.
         poll_dhcp(&mut state)?;
+        drive_dns(&mut state);
+        drive_tcp(&mut state);
+        if pending.is_none() && backing.is_some() {
+            let State { tcp, interface, .. } = &mut *state;
+            if let Some(tcp) = tcp {
+                interface.as_mut().expect("owned interface").poll_egress(
+                    now()?,
+                    &mut Adapter {
+                        rx: &mut rx,
+                        backing: &mut backing,
+                        pending: &mut pending,
+                    },
+                    &mut tcp.sockets,
+                );
+            }
+        }
+        if pending.is_none() && backing.is_some() {
+            let State { dns, interface, .. } = &mut *state;
+            if let Some(dns) = dns {
+                dns.egress(
+                    interface.as_mut().expect("owned interface"),
+                    now()?,
+                    &mut Adapter {
+                        rx: &mut rx,
+                        backing: &mut backing,
+                        pending: &mut pending,
+                    },
+                );
+            }
+        }
         if pending.is_none() && backing.is_some() {
             let sockets = state
                 .udp
@@ -625,6 +817,8 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
         drop(backing.take());
         poll_dhcp(&mut state)?;
         net_udp::drive(&mut state.udp);
+        drive_dns(&mut state);
+        drive_tcp(&mut state);
         if let Some(result) = pending.take() {
             result
                 .map_err(|error| failure("commit", error))?
@@ -632,11 +826,24 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
                 .map_err(|error| failure("transmit", error))?;
             state.tx += 1;
         }
+
         publish(&state, true);
         processed += 1;
         if processed == RX_PER_TURN {
             processed = 0;
             async_sync::yield_now().await;
+        }
+    }
+
+    fn drive_dns(state: &mut State) {
+        if let Some(interface) = &mut state.interface {
+            net_dns::drive(&mut state.dns, interface);
+        }
+    }
+
+    fn drive_tcp(state: &mut State) {
+        if let Some(interface) = &mut state.interface {
+            net_tcp::drive(&mut state.tcp, interface);
         }
     }
 }

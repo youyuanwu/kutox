@@ -6,6 +6,7 @@ pub mod async_state;
 pub mod completion_state;
 pub mod deferred_state;
 pub mod dma_state;
+pub mod dns_state;
 pub mod driver_registry;
 pub mod drivers;
 pub mod fw_cfg;
@@ -17,6 +18,7 @@ pub mod net_state;
 pub mod network_config;
 pub mod pci_state;
 pub mod run_queue;
+pub mod tcp_state;
 #[cfg(feature = "guest-tests")]
 pub mod test_cleanup;
 pub mod test_selection;

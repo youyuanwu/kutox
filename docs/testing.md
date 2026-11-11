@@ -28,6 +28,20 @@ ARP/ICMP service in both profiles without a guest client. Low-memory DHCP
 lifecycle and production cases run in smoke CI; wire expectations remain in
 the independent stdlib server rather than the scheduling catalog.
 
+[DNS acceptance](dns-kernel-resolver.md) follows the same guest-only split:
+`dns-tests*` covers the ON IPv4 resolver at 128/32 MiB and nested bridges;
+`dns-tests-low-memory` also runs in smoke CI. `dns-tests-disabled` checks
+early OFF rejection. An independent DHCP/DNS peer and exact TX PCAP ledger
+cover bounded requests, malformed responses, configuration changes and joined
+shutdown. Production static/DHCP boots must allocate no DNS query sockets.
+
+[TCP acceptance](tcp-kernel-clients.md) adds guest-only `tcp-tests*` at
+128/32 MiB and nested bridges, including low-memory smoke CI. The independent
+peer validates streams, retransmissions, windows and FIN/RST, with exact
+socket/PCAP correspondence. It also checks native capacity/TIME-WAIT and joined
+lease/source lifetimes. OFF rejects `tcp-tests` early and omits the fixture.
+Production boots must allocate no TCP stream buffers or start a demo/client.
+
 ## Validation tiers
 
 ```sh

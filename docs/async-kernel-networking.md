@@ -40,7 +40,13 @@ The subsequent [DHCP extension](dhcp-ipv4.md) adds opt-in dynamic configuration,
 gateway/DNS publication and lease-driven UDP lifetime policy; static boot remains
 the default.
 
-TCP, IPv6, VFS/filesystems, processes/userspace, additional drivers,
+The subsequent [DNS extension](dns-kernel-resolver.md) adds bounded, cancellable
+IPv4 lookups using DHCP-provided servers, without another protocol thread.
+
+The subsequent [TCP extension](tcp-kernel-clients.md) adds bounded outbound
+streams with partial I/O, cancellation and safe transport retirement.
+
+IPv6, VFS/filesystems, processes/userspace, additional drivers,
 SMP/preemption and broader hardware are subsequent work, not this milestone.
 
 ## Shared core, two execution models

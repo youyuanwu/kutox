@@ -147,6 +147,17 @@ Opt-in [DHCPv4 configuration](docs/dhcp-ipv4.md) now uses the same protocol owne
 to acquire, renew and revoke an address, default gateway and bounded DNS list.
 Static boot remains the default; DHCP does not start an application client.
 
+Bounded [async DNS resolution](docs/dns-kernel-resolver.md) now uses smoltcp
+and DHCP-provided servers. Four cancellable, deadline-bound IPv4 lookups
+share the protocol owner, with guest-only wire/lifecycle acceptance.
+Normal boot allocates no DNS query sockets; static mode has no DNS fallback.
+
+Bounded [async TCP clients](docs/tcp-kernel-clients.md) now support outbound
+connect, partial read/write, graceful close and abort. Four connections share
+the existing protocol owner, retaining retiring/TIME-WAIT slots until safe
+reuse. Moss supplies the ownership/buffer-size reference; smoltcp implements
+TCP. Normal boot allocates no stream payload buffers.
+
 ## Requirements
 
 - Linux host with rustup; the repository pins Rust `1.99.1` and the

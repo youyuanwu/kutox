@@ -55,6 +55,8 @@ pub(crate) fn quiescent(boot: &BootInfo) -> bool {
         && crate::async_runtime::quiescent()
         && crate::net_async::quiescent()
         && crate::net_udp::quiescent()
+        && crate::net_dns::quiescent()
+        && crate::net_tcp::quiescent()
         && irq::is_quiescent()
         && completion::tests::quiescent()
         && threads::irq_tests::quiescent()
