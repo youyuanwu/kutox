@@ -36,6 +36,9 @@ Owned, eager [user address spaces](docs/kernel-implementation.md#owned-user-addr
 now adapt Moss's permission types and reduced address-space contract. Each has
 up to sixteen private 4-KiB pages, W^X permissions, scoped CR3 activation and
 complete frame reclamation. Kernel mappings remain supervisor-only.
+The mapping boundary now transfers claimed-page ownership, matching the flow
+used by the ported [Moss startup-stack builder](docs/kernel-implementation.md#moss-startup-stack-port)
+for argc/argv/envp/auxv.
 An explicit [cooperative user run](docs/kernel-implementation.md#cooperative-ring-3-runs)
 can now enter ring 3 and use native `int 0x80` write/exit syscalls. Hardware user
 faults end that run without stopping the kernel. Normal boot starts no user

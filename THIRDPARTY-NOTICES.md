@@ -65,6 +65,7 @@ Moss component or vendor-driver source is imported.
   [regions](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/region.rs),
   [page permissions](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/paging/permissions.rs),
   [address-space contract](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/address_space.rs),
+  [startup-stack construction](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/process/exec.rs#L288),
   [CpuOps in lib.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/lib.rs),
   [task lifecycle states](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/sched/sched_task/state.rs),
   [waker registration](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/waker_set.rs),
@@ -90,22 +91,44 @@ public for native hardware permission decoding.
 The [address-space contract](third_party/moss-libkernel/src/memory/address_space.rs)
 retains mapping, unmapping, protection and translation concepts but is a reduced
 adaptation, not an upstream-compatible trait. It uses checked native `u64`
-addresses and an associated error type. Implementations allocate, initialize
-and own their physical pages instead of accepting caller-owned frame numbers.
+addresses and associated error/page types. The allocation capability returns a
+zeroed claimed page; mapping consumes it, and unmapping returns its owner.
+This follows Moss's
+[claimed-page flow](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/claimed_page.rs),
+but retains an exclusive native guard instead of leaking/reconstituting a raw
+frame number. Failed maps drop the supplied page without changing existing
+mappings. `map_initialized` remains a separate native convenience operation.
+Translation accepts byte addresses and reports the containing frame's permissions.
 It omits Send/Sync, ranges, CoW and unsafely persistent activation; the native
 service instead supplies non-transferable ownership and scoped activation.
 The [native implementation](src/user_memory.rs) and guest acceptance are kutox
 integration using the existing `x86_64` mapper. No Moss x86/ARM page-table
-algorithm, userspace entry, process VM, VFS or ELF-exec implementation is copied.
+algorithm, userspace entry, process VM, VFS or complete ELF loader is copied.
 See the [implementation scope](docs/kernel-implementation.md#owned-user-address-spaces).
+
+### User startup stack
+
+The [startup-stack port](third_party/moss-libkernel/src/task/user_stack.rs) adapts
+`setup_user_stack` from pinned Moss's
+[exec support](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/process/exec.rs#L288).
+It retains top-down argument/environment strings, argc/pointer/null layout,
+caller auxv followed by page size/termination, 16-byte SP alignment and a
+zeroed stack image copied into a claimed page before mapping.
+The adaptation removes VFS/ProcessVM/architecture coupling and dynamic vectors,
+uses one bounded 4-KiB page, checks capacities/arithmetic/NULs/auxv, serializes
+64-bit words explicitly little-endian, and transfers the page owner on map.
+It omits upstream's placeholder `AT_RANDOM` rather than claiming entropy;
+caller-supplied `AT_RANDOM`, duplicate tags and overrides of default tags fail.
+It imports no ELF parser, interpreter loader, process scheduler or CoW behavior.
+The original MIT notice is retained in the port and shared license file.
 
 The [cooperative user-run service](src/user.rs), its
 [x86_64 entry/return assembly](src/user_entry.S),
 [portable copy planner](src/user_state.rs) and embedded acceptance programs
-are kutox implementations. They build on the adapted address-space boundary;
-no additional Moss userspace, syscall, process, architecture or ELF source is
-copied. Moss remains the architectural reference, not an attribution claim for
-this native x86_64 implementation.
+are kutox implementations. They use the adapted memory boundary and startup
+stack, but import no Moss CPU entry/return, syscall or process-runtime source.
+The native entry is explicitly named `kutox_user_bringup`, not a replacement
+for Moss's scheduled process return path.
 
 ### Bootstrap memory allocator
 

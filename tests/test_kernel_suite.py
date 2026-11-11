@@ -346,6 +346,10 @@ def user_log(name):
             for index, (vector, error) in enumerate(((14, 5), (14, 5), (14, 7), (14, 21), (13, 0), (13, 0), (6, 0), (7, 0)))
         ] + ["# USER_RETURN cpl=3 noncanonical=rejected nt=cleared recovery=33"],
         "user.reclamation": ["# USER_RUN reclamation cpl=3 epochs=16 limit=32 frames=balanced"],
+        "user.startup_stack": [
+            "# USER_STACK source=moss cpl=3 argc=2 envc=1 auxv=entry,pagesz,null aligned=16 epochs=16 frames=balanced",
+            "# USER_STACK_LIMIT bytes=4096 overflow=rejected cpl=3 exit=43 frames=balanced",
+        ],
     }[name]
 
 
@@ -391,7 +395,7 @@ def suite_log(case="kernel-tests"):
 class KernelSuiteTests(unittest.TestCase):
     def test_user_run_proofs_require_cpl3_exact_bounds_faults_recovery_and_order(self):
         names = ("user.entry_exit", "user.syscalls", "user.faults", "user.reclamation")
-        self.assertEqual(KERNEL_TEST_NAMES[-4:], names)
+        self.assertEqual(KERNEL_TEST_NAMES[-5:-1], names)
         output = suite_log()
         for name in names:
             for marker in user_log(name):
@@ -418,13 +422,36 @@ class KernelSuiteTests(unittest.TestCase):
             "memory.user_switching", "memory.user_permissions",
             "memory.user_rollback", "memory.user_reclamation",
         )
-        self.assertEqual(KERNEL_TEST_NAMES[-8:-4], names)
+        self.assertEqual(KERNEL_TEST_NAMES[-9:-5], names)
         output = suite_log()
         validate_result("kernel-tests", 1, output)
         for name in names:
             index = KERNEL_TEST_NAMES.index(name) + 1
             with self.subTest(name=name), self.assertRaises(AssertionError):
                 validate_result("kernel-tests", 1, output.replace(f"ok {index} {name}\n", ""))
+
+    def test_moss_startup_stack_requires_actual_cpl3_layout_and_reclamation_proof(self):
+        self.assertEqual(KERNEL_TEST_NAMES[-1], "user.startup_stack")
+        output = suite_log()
+        marker = user_log("user.startup_stack")[0]
+        for replacement in (
+            "", marker + "\n" + marker, marker.replace("source=moss", "source=native"),
+            marker.replace("cpl=3", "cpl=0"), marker.replace("argc=2", "argc=1"),
+            marker.replace("envc=1", "envc=0"), marker.replace("aligned=16", "aligned=8"),
+            marker.replace("epochs=16", "epochs=15"),
+            marker.replace("auxv=entry,pagesz,null", "auxv=entry,random,null"),
+            marker.replace("frames=balanced", "frames=leaked"),
+        ):
+            with self.subTest(replacement=replacement), self.assertRaises(AssertionError):
+                validate_result("kernel-tests", 1, output.replace(marker, replacement))
+        limit = user_log("user.startup_stack")[1]
+        for replacement in (
+            "", limit + "\n" + limit, limit.replace("4096", "4095"),
+            limit.replace("overflow=rejected", "overflow=accepted"),
+            limit.replace("cpl=3", "cpl=0"), limit.replace("exit=43", "exit=99"),
+        ):
+            with self.subTest(replacement=replacement), self.assertRaises(AssertionError):
+                validate_result("kernel-tests", 1, output.replace(limit, replacement))
 
     def test_pci_hierarchy_rejects_missing_duplicate_and_wrong_identity(self):
         case = "kernel-tests-nested"

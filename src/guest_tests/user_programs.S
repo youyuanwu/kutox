@@ -210,3 +210,77 @@ BEGIN kutox_guest_user_nt
 .Lnt_bad:
     EXIT 99
 END kutox_guest_user_nt
+
+BEGIN kutox_guest_user_startup
+    test rsp, 15
+    jnz .Lstartup_bad
+    cmp qword ptr [rsp], 2
+    jne .Lstartup_bad
+    mov rax, [rsp + 8]
+    cmp dword ptr [rax], 0x626f7270
+    jne .Lstartup_bad
+    cmp word ptr [rax + 4], 0x65
+    jne .Lstartup_bad
+    mov rax, [rsp + 16]
+    cmp dword ptr [rax], 0x00677261
+    jne .Lstartup_bad
+    cmp qword ptr [rsp + 24], 0
+    jne .Lstartup_bad
+    mov rax, [rsp + 32]
+    cmp dword ptr [rax], 0x3d59454b
+    jne .Lstartup_bad
+    cmp dword ptr [rax + 4], 0x756c6176
+    jne .Lstartup_bad
+    cmp word ptr [rax + 8], 0x65
+    jne .Lstartup_bad
+    cmp qword ptr [rsp + 40], 0
+    jne .Lstartup_bad
+    cmp qword ptr [rsp + 48], 9
+    jne .Lstartup_bad
+    mov rax, USER_CODE
+    cmp [rsp + 56], rax
+    jne .Lstartup_bad
+    cmp qword ptr [rsp + 64], 6
+    jne .Lstartup_bad
+    cmp qword ptr [rsp + 72], 4096
+    jne .Lstartup_bad
+    cmp qword ptr [rsp + 80], 0
+    jne .Lstartup_bad
+    cmp qword ptr [rsp + 88], 0
+    jne .Lstartup_bad
+    EXIT 42
+.Lstartup_bad:
+    EXIT 99
+END kutox_guest_user_startup
+
+BEGIN kutox_guest_user_startup_full
+    mov rax, USER_STACK
+    cmp rsp, rax
+    jne .Lstartup_full_bad
+    cmp qword ptr [rsp], 1
+    jne .Lstartup_full_bad
+    lea rax, [rsp + 64]
+    cmp [rsp + 8], rax
+    jne .Lstartup_full_bad
+    cmp byte ptr [rax], 0x61
+    jne .Lstartup_full_bad
+    cmp byte ptr [rax + 4030], 0x61
+    jne .Lstartup_full_bad
+    cmp byte ptr [rax + 4031], 0
+    jne .Lstartup_full_bad
+    cmp qword ptr [rsp + 16], 0
+    jne .Lstartup_full_bad
+    cmp qword ptr [rsp + 24], 0
+    jne .Lstartup_full_bad
+    cmp qword ptr [rsp + 32], 6
+    jne .Lstartup_full_bad
+    cmp qword ptr [rsp + 40], 4096
+    jne .Lstartup_full_bad
+    cmp qword ptr [rsp + 48], 0
+    jne .Lstartup_full_bad
+    cmp qword ptr [rsp + 56], 0
+    jne .Lstartup_full_bad
+    EXIT 43
+.Lstartup_full_bad:
+    EXIT 99
+END kutox_guest_user_startup_full

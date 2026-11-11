@@ -1,7 +1,7 @@
 use super::*;
 use core::marker::PhantomData;
 use moss_libkernel::memory::{
-    address_space::{PageInfo, UserAddressSpace},
+    address_space::{OwnedPage, PageInfo, UserAddressSpace},
     permissions::PtePermissions,
 };
 use x86_64::registers::{
@@ -13,10 +13,30 @@ pub use kutox::user_state::{MAX_PAGES, USER_BASE, USER_END};
 const _: () = assert!(USER_BASE / 0x20_0000 == (USER_END - 1) / 0x20_0000);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
+#[must_use]
+pub(crate) struct ClaimedPage<'a, 'storage> {
+    allocation: PageAllocation<'a, 'storage, X86Cpu>,
+    hhdm_offset: u64,
+    _local: PhantomData<*mut ()>,
+}
+
+impl ClaimedPage<'_, '_> {
+    pub fn physical_address(&self) -> u64 {
+        self.allocation.region().start_address().value() as u64
+    }
+}
+
+impl OwnedPage for ClaimedPage<'_, '_> {
+    fn as_slice_mut(&mut self) -> &mut [u8; PAGE_SIZE] {
+        // Only unmapped, exclusively owned pages expose a mutable slice.
+        unsafe { &mut *((self.physical_address() + self.hhdm_offset) as *mut [u8; PAGE_SIZE]) }
+    }
+}
+
 pub(crate) struct AddressSpace<'a, 'storage> {
     root: PageAllocation<'a, 'storage, X86Cpu>,
     tables: TableFrames<'a, 'storage>,
-    pages: [Option<PageAllocation<'a, 'storage, X86Cpu>>; MAX_PAGES],
+    pages: [Option<ClaimedPage<'a, 'storage>>; MAX_PAGES],
     kernel_root: PhysFrame,
     _local: PhantomData<*mut ()>,
 }
@@ -89,6 +109,35 @@ impl<'a, 'storage> AddressSpace<'a, 'storage> {
         self.tables.hhdm_offset
     }
 
+    fn prepare_mapping(
+        &self,
+        address: u64,
+        permissions: PtePermissions,
+    ) -> Result<(usize, PageTableFlags), Failure> {
+        self.inactive()?;
+        let index = slot(address)?;
+        let flags = flags(permissions)?;
+        if self.pages[index].is_some() {
+            return Err(Failure::new("user_memory_already_mapped", -1));
+        }
+        Ok((index, flags))
+    }
+
+    pub fn map_initialized(
+        &mut self,
+        address: u64,
+        permissions: PtePermissions,
+        initial: &[u8],
+    ) -> Result<(), Failure> {
+        self.prepare_mapping(address, permissions)?;
+        if initial.len() > PAGE_SIZE {
+            return Err(Failure::new("user_memory_initial_length", -1));
+        }
+        let mut page = self.allocate_zeroed_page()?;
+        page.as_slice_mut()[..initial.len()].copy_from_slice(initial);
+        self.map_page(page, address, permissions)
+    }
+
     fn root_table(&mut self) -> &mut PageTable {
         unsafe { &mut *((self.root_address() + self.tables.hhdm_offset) as *mut PageTable) }
     }
@@ -154,36 +203,37 @@ impl Drop for RestoreRoot {
     }
 }
 
-impl UserAddressSpace for AddressSpace<'_, '_> {
+impl<'a, 'storage> UserAddressSpace for AddressSpace<'a, 'storage> {
     type Error = Failure;
+    type Page = ClaimedPage<'a, 'storage>;
+
+    fn allocate_zeroed_page(&self) -> Result<Self::Page, Failure> {
+        self.inactive()?;
+        let mut page = ClaimedPage {
+            allocation: self
+                .tables
+                .allocator
+                .alloc_frames(0)
+                .map_err(frame_failure)?,
+            hhdm_offset: self.tables.hhdm_offset,
+            _local: PhantomData,
+        };
+        page.as_slice_mut().fill(0);
+        Ok(page)
+    }
 
     fn map_page(
         &mut self,
+        page: Self::Page,
         address: u64,
         permissions: PtePermissions,
-        initial: &[u8],
     ) -> Result<(), Failure> {
-        self.inactive()?;
-        let index = slot(address)?;
-        let flags = flags(permissions)?;
-        if initial.len() > PAGE_SIZE {
-            return Err(Failure::new("user_memory_initial_length", -1));
-        }
-        if self.pages[index].is_some() {
-            return Err(Failure::new("user_memory_already_mapped", -1));
+        let (index, flags) = self.prepare_mapping(address, permissions)?;
+        if page.hhdm_offset != self.tables.hhdm_offset {
+            return Err(Failure::new("user_memory_page_context", -1));
         }
         let _lock = PAGE_TABLE_LOCK.lock_save_irq();
-        let page = self
-            .tables
-            .allocator
-            .alloc_frames(0)
-            .map_err(frame_failure)?;
-        let physical = page.region().start_address().value() as u64;
-        unsafe {
-            let pointer = (physical + self.tables.hhdm_offset) as *mut u8;
-            pointer.write_bytes(0, PAGE_SIZE);
-            core::ptr::copy_nonoverlapping(initial.as_ptr(), pointer, initial.len());
-        }
+        let physical = page.physical_address();
         let had_tables = self.tables.count != 0;
         let root =
             unsafe { &mut *((self.root_address() + self.tables.hhdm_offset) as *mut PageTable) };
@@ -220,7 +270,7 @@ impl UserAddressSpace for AddressSpace<'_, '_> {
         Ok(())
     }
 
-    fn unmap(&mut self, address: u64) -> Result<(), Failure> {
+    fn unmap(&mut self, address: u64) -> Result<Self::Page, Failure> {
         self.inactive()?;
         let index = slot(address)?;
         if self.pages[index].is_none() {
@@ -234,12 +284,12 @@ impl UserAddressSpace for AddressSpace<'_, '_> {
             .map_err(|_| Failure::new("user_memory_unmap", -1))?
             .1
             .ignore();
-        drop(self.pages[index].take());
+        let page = self.pages[index].take().expect("checked mapped user page");
         if self.pages.iter().all(Option::is_none) {
             self.root_table()[VirtAddr::new(USER_BASE).p4_index()].set_unused();
             self.tables.release();
         }
-        Ok(())
+        Ok(page)
     }
 
     fn protect(&mut self, address: u64, permissions: PtePermissions) -> Result<(), Failure> {
@@ -265,7 +315,10 @@ impl UserAddressSpace for AddressSpace<'_, '_> {
 
     fn translate(&self, address: u64) -> Result<Option<PageInfo>, Failure> {
         self.inactive()?;
-        let index = slot(address)?;
+        if !(USER_BASE..USER_END).contains(&address) {
+            return Err(Failure::new("user_memory_address", -1));
+        }
+        let index = ((address - USER_BASE) / PAGE_SIZE as u64) as usize;
         if self.pages[index].is_none() {
             return Ok(None);
         }

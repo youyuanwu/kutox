@@ -15,7 +15,7 @@ SECTIONS {
         /* Production services exist before default boot activation. */
         KEEP(*(.text.kutox_async_executor))
         KEEP(*(.text.kutox_packet_broker))
-        KEEP(*(.text.kutox_user_run))
+        KEEP(*(.text.kutox_user_bringup))
         *(.text .text.*)
         _kernel_text_end = .;
     } :text

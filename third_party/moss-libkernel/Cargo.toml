@@ -18,4 +18,5 @@ sources = [
     "libkernel/src/sync/spinlock.rs",
     "libkernel/src/sync/waker_set.rs",
     "src/sched/sched_task/state.rs",
+    "src/process/exec.rs",
 ]

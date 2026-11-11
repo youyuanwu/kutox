@@ -423,10 +423,14 @@ def validate_user_runs(lines, names):
             for index, (vector, error) in enumerate(((14, 5), (14, 5), (14, 7), (14, 21), (13, 0), (13, 0), (6, 0), (7, 0)))
         ] + ["# USER_RETURN cpl=3 noncanonical=rejected nt=cleared recovery=33"],
         "user.reclamation": ["# USER_RUN reclamation cpl=3 epochs=16 limit=32 frames=balanced"],
+        "user.startup_stack": [
+            "# USER_STACK source=moss cpl=3 argc=2 envc=1 auxv=entry,pagesz,null aligned=16 epochs=16 frames=balanced",
+            "# USER_STACK_LIMIT bytes=4096 overflow=rejected cpl=3 exit=43 frames=balanced",
+        ],
     }
 
     def relevant(line):
-        return line.startswith(("# USER_RUN", "# USER_FAULT", "# USER_RETURN", "# USER_WRITE", "# b")) or line == "# x"
+        return line.startswith(("# USER_RUN", "# USER_FAULT", "# USER_RETURN", "# USER_WRITE", "# USER_STACK", "# b")) or line == "# x"
 
     if [line for line in lines if relevant(line)] != [
         line for block in evidence.values() for line in block

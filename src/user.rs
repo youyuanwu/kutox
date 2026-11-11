@@ -64,8 +64,8 @@ unsafe extern "C" {
 }
 
 #[unsafe(no_mangle)]
-#[unsafe(link_section = ".text.kutox_user_run")]
-pub fn kutox_user_run(
+#[unsafe(link_section = ".text.kutox_user_bringup")]
+pub fn kutox_user_bringup(
     space: &mut AddressSpace<'_, '_>,
     entry: u64,
     stack: u64,
@@ -94,12 +94,16 @@ pub fn kutox_user_run(
     }) {
         return Err(Failure::new("user_run_entry", -1));
     }
-    if !stack.is_multiple_of(16)
-        || !stack.checked_sub(1).and_then(mapped).is_some_and(|page| {
+    let writable_stack = |address| {
+        mapped(address).is_some_and(|page| {
             page.permissions.is_user()
                 && page.permissions.is_write()
                 && !page.permissions.is_execute()
         })
+    };
+    if !stack.is_multiple_of(16)
+        || !valid_user_return(entry, stack)
+        || !(writable_stack(stack) || stack.checked_sub(1).is_some_and(writable_stack))
     {
         return Err(Failure::new("user_run_stack", -1));
     }

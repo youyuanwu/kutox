@@ -56,7 +56,9 @@ and `memory.user_reclamation` to the existing full kernel suite. These run at
 128/32 MiB and the existing bridge topologies, without a new boot selector or
 test manager. They cover actual CR3 switching, all-level permission inspection,
 late kernel mapping creation/removal, zeroed private RAM, real bounded-allocator
-exhaustion and exact repeated frame reclamation. This does not claim ring-3
+exhaustion, unmap/remap ownership transfer between spaces, failed-map page
+release and exact repeated frame reclamation. Translation now explicitly covers
+byte addresses as well as aligned pages. This does not claim ring-3
 fault isolation. The fixture and its entry symbol are absent from OFF; normal
 boot does not run it.
 
@@ -77,6 +79,17 @@ missing, duplicate or moved proofs. The actual ELF gate requires native
 entry/dispatch in both profiles and every embedded program symbol only in ON.
 The fixture remains absent from OFF and normal boot. Infinite-loop recovery
 and timer preemption are not tested or provided.
+
+[Moss startup-stack acceptance](kernel-implementation.md#moss-startup-stack-port)
+adds `user.startup_stack` to the same full kernel suites. Portable Moss tests
+check exact argc/argv/envp/auxv bytes and pointers, alignment, maximum counts,
+the exact one-page fit/overflow boundary, invalid strings/auxv and page-owner
+cleanup on allocation/mapping failure. The guest consumes the generated layout
+in CPL3, exits with status 42, then repeats after a rejected replacement across
+sixteen resource-balanced epochs. Tiny real frame pools verify partial-table OOM
+rollback. The host requires the exact Moss/CPL3/layout/alignment/epoch proof.
+The actual ELF gate retains `kutox_user_bringup` in both profiles and requires
+the embedded startup program only in ON. No boot selector or dependency is added.
 
 ## Validation tiers
 

@@ -325,6 +325,10 @@ static TESTS: &[TestCase] = &[
         name: "user.reclamation",
         run: user::reclamation,
     },
+    TestCase {
+        name: "user.startup_stack",
+        run: user::startup_stack,
+    },
 ];
 
 static INTENTIONAL_FAILURE: TestCase = TestCase {

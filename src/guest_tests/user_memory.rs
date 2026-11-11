@@ -27,8 +27,8 @@ pub fn kutox_guest_address_spaces(
     let original = Cr3::read();
     let mut first = AddressSpace::new(boot, allocator)?;
     let mut second = AddressSpace::new(boot, allocator)?;
-    first.map_page(USER_BASE, PtePermissions::rw(true), &[11])?;
-    second.map_page(USER_BASE, PtePermissions::rw(true), &[22])?;
+    first.map_initialized(USER_BASE, PtePermissions::rw(true), &[11])?;
+    second.map_initialized(USER_BASE, PtePermissions::rw(true), &[22])?;
     assert_eq!(
         info(&first, USER_BASE)?.physical_address == info(&second, USER_BASE)?.physical_address,
         false
@@ -106,8 +106,9 @@ pub fn permissions(
     let original = Cr3::read();
     let code = USER_BASE;
     let data = USER_BASE + PAGE_SIZE as u64;
-    space.map_page(code, PtePermissions::rx(true), &[0xc3])?;
-    space.map_page(data, PtePermissions::rw(true), &[3, 4])?;
+    space.map_initialized(code, PtePermissions::rx(true), &[0xc3])?;
+    space.map_initialized(data, PtePermissions::rw(true), &[3, 4])?;
+    assert_eq!(info(&space, code + 1)?, info(&space, code)?);
     assert_eq!(info(&space, code)?.permissions, PtePermissions::rx(true));
     assert_eq!(info(&space, data)?.permissions, PtePermissions::rw(true));
     let physical = info(&space, data)?.physical_address;
@@ -149,7 +150,7 @@ pub fn permissions(
         u64::MAX,
     ] {
         error(
-            space.map_page(address, PtePermissions::rw(true), &[]),
+            space.map_initialized(address, PtePermissions::rw(true), &[]),
             "user_memory_address",
         )?;
         error(space.unmap(address), "user_memory_address")?;
@@ -157,7 +158,9 @@ pub fn permissions(
             space.protect(address, PtePermissions::ro(true)),
             "user_memory_address",
         )?;
-        error(space.translate(address), "user_memory_address")?;
+        if address != USER_BASE + 1 {
+            error(space.translate(address), "user_memory_address")?;
+        }
     }
     for invalid in [
         PtePermissions::rw(false),
@@ -165,17 +168,17 @@ pub fn permissions(
         PtePermissions::from_raw_bits(false, false, true, true),
     ] {
         error(
-            space.map_page(USER_BASE + 2 * PAGE_SIZE as u64, invalid, &[]),
+            space.map_initialized(USER_BASE + 2 * PAGE_SIZE as u64, invalid, &[]),
             "user_memory_permissions",
         )?;
         error(space.protect(data, invalid), "user_memory_permissions")?;
     }
     error(
-        space.map_page(data, PtePermissions::rw(true), &[]),
+        space.map_initialized(data, PtePermissions::rw(true), &[]),
         "user_memory_already_mapped",
     )?;
     error(
-        space.map_page(
+        space.map_initialized(
             USER_BASE + 2 * PAGE_SIZE as u64,
             PtePermissions::rw(true),
             &[0; PAGE_SIZE + 1],
@@ -184,16 +187,44 @@ pub fn permissions(
     )?;
     assert_eq!(allocator.stats(), before);
     assert_eq!(info(&space, data)?.permissions, PtePermissions::rw(true));
-    space.unmap(data)?;
+    drop(space.unmap(data)?);
     assert_eq!(space.translate(data)?, None);
     error(space.unmap(data), "user_memory_not_mapped")?;
     error(
         space.protect(data, PtePermissions::ro(true)),
         "user_memory_not_mapped",
     )?;
-    space.map_page(data, PtePermissions::rw(true), &[])?;
+    space.map_initialized(data, PtePermissions::rw(true), &[])?;
     space.with_active(|| -> Result<(), Failure> {
         unsafe { assert_eq!((data as *const u8).read_volatile(), 0) };
+        Ok(())
+    })??;
+    let before_transfer = allocator.stats();
+    let mut page = space.unmap(data)?;
+    assert_eq!(allocator.stats(), before_transfer);
+    assert_eq!(page.as_slice_mut()[0], 0);
+    page.as_slice_mut()[0] = 0x55;
+    let physical = page.physical_address();
+    let mut other = AddressSpace::new(boot, allocator)?;
+    other.map_page(page, USER_BASE, PtePermissions::rw(true))?;
+    assert_eq!(info(&other, USER_BASE)?.physical_address, physical);
+    other.with_active(|| -> Result<(), Failure> {
+        unsafe { assert_eq!((USER_BASE as *const u8).read_volatile(), 0x55) };
+        Ok(())
+    })??;
+    let page = other.unmap(USER_BASE)?;
+    drop(other);
+    space.map_page(page, data, PtePermissions::rw(true))?;
+    assert_eq!(info(&space, data)?.physical_address, physical);
+    let duplicate = space.allocate_zeroed_page()?;
+    assert_eq!(allocator.stats().free_pages + 1, before_transfer.free_pages);
+    error(
+        space.map_page(duplicate, data, PtePermissions::rw(true)),
+        "user_memory_already_mapped",
+    )?;
+    assert_eq!(allocator.stats(), before_transfer);
+    space.with_active(|| -> Result<(), Failure> {
+        unsafe { assert_eq!((data as *const u8).read_volatile(), 0x55) };
         Ok(())
     })??;
     static WINDOW: AtomicBool = AtomicBool::new(false);
@@ -234,7 +265,7 @@ pub fn rollback(
         {
             let mut space = AddressSpace::new(boot, &limited)?;
             let root_only = limited.stats();
-            let result = space.map_page(USER_BASE, PtePermissions::rw(true), &[0x55]);
+            let result = space.map_initialized(USER_BASE, PtePermissions::rw(true), &[0x55]);
             if count < 5 {
                 error(result, "frame_allocator")?;
                 assert_eq!(space.translate(USER_BASE)?, None);
@@ -245,15 +276,32 @@ pub fn rollback(
                 );
                 assert_eq!(limited.stats(), root_only);
                 error(
-                    space.map_page(USER_BASE, PtePermissions::rw(true), &[]),
+                    space.map_initialized(USER_BASE, PtePermissions::rw(true), &[]),
                     "frame_allocator",
                 )?;
                 assert_eq!(limited.stats(), root_only);
+                let result = moss_libkernel::task::user_stack::setup_user_stack(
+                    &mut space,
+                    USER_END,
+                    &["probe"],
+                    &[],
+                    &[],
+                );
+                let Err(moss_libkernel::task::user_stack::Error::Memory(failure)) = result else {
+                    return Err(Failure::new("user_stack_expected_exhaustion", -1));
+                };
+                assert_eq!(failure.stage, "frame_allocator");
+                assert_eq!(limited.stats(), root_only);
+                assert_eq!(space.translate(USER_END - PAGE_SIZE as u64)?, None);
             } else {
                 result?;
                 let mapped = limited.stats();
                 error(
-                    space.map_page(USER_BASE + PAGE_SIZE as u64, PtePermissions::rw(true), &[]),
+                    space.map_initialized(
+                        USER_BASE + PAGE_SIZE as u64,
+                        PtePermissions::rw(true),
+                        &[],
+                    ),
                     "frame_allocator",
                 )?;
                 assert_eq!(limited.stats(), mapped);
@@ -261,9 +309,9 @@ pub fn rollback(
                     unsafe { assert_eq!((USER_BASE as *const u8).read_volatile(), 0x55) };
                     Ok(())
                 })??;
-                space.unmap(USER_BASE)?;
+                drop(space.unmap(USER_BASE)?);
                 assert_eq!(limited.stats(), root_only);
-                space.map_page(USER_BASE, PtePermissions::rw(true), &[])?;
+                space.map_initialized(USER_BASE, PtePermissions::rw(true), &[])?;
             }
         }
         assert_eq!(limited.stats(), before);
@@ -290,7 +338,7 @@ pub fn reclamation(
         let mut space = AddressSpace::new(boot, allocator)?;
         let root_only = allocator.stats();
         for index in 0..MAX_PAGES {
-            space.map_page(
+            space.map_initialized(
                 USER_BASE + (index * PAGE_SIZE) as u64,
                 PtePermissions::rw(true),
                 &[epoch],
@@ -312,7 +360,7 @@ pub fn reclamation(
             Ok(())
         })??;
         for index in (0..MAX_PAGES).rev() {
-            space.unmap(USER_BASE + (index * PAGE_SIZE) as u64)?;
+            drop(space.unmap(USER_BASE + (index * PAGE_SIZE) as u64)?);
         }
         assert_eq!(allocator.stats(), root_only);
         drop(space);

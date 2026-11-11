@@ -14,13 +14,25 @@ no upstream ARM entry code or second page-table implementation is imported.
 Each non-transferable address-space owner has one private PML4 and at most
 sixteen eager 4-KiB RAM pages in
 `0x0000100000000000..0x0000100000010000`. The entire containing PML4 slot must
-be unused in the kernel root. Addresses must be page-aligned and inside that
-window. Initial bytes are copied into zeroed owned RAM; oversize payloads,
+be unused in the kernel root. Mapping/protection/unmapping addresses must be
+page-aligned and inside that window. Initial bytes are copied into zeroed owned RAM; oversize payloads,
 duplicate mappings and unsupported permissions fail explicitly. Read-only,
 read/write and read/execute user mappings are supported; writable executable
 and supervisor mappings are rejected. Translation reports effective permissions
-across all four table levels. Protection changes and unmapping apply only to
+across all four table levels, accepting byte addresses and returning the
+containing physical frame. Protection changes and unmapping apply only to
 owned pages, with missing mappings diagnosed.
+
+The selected portable contract now follows Moss's claimed-page mapping flow:
+`allocate_zeroed_page` returns an exclusive page with bounded mutable byte access,
+`map_page(page, address, permissions)` transfers that owner into the address
+space, and `unmap` returns the detached owner. RAM stays allocated until that
+owner drops or is moved into another address space; failed mapping consumes and
+releases the supplied page while preserving existing mappings. The native
+`map_initialized` convenience method performs allocation/initialization before
+calling the same owned-page operation. Neither the space nor its pages promise
+Send/Sync; no raw PFN leak/reconstruction API, CoW or placeholder trait method
+is introduced. This is a useful subset, not the full upstream VM trait.
 
 The root and at most three intermediate tables use buddy guards, not heap
 payloads. A first-map allocation failure detaches its partial subtree before
@@ -46,18 +58,52 @@ Kernel mapping ownership and teardown therefore remain unchanged.
 [Four guest cases](../src/guest_tests/user_memory.rs) in the full kernel suite
 exercise different contents at the same VA, actual CR3 switching, kernel
 mapping refresh, W^X/effective flags, zero-fill, partial-allocation rollback,
-exhausted-pool recovery and sixteen full-capacity reclamation epochs. They use
+exhausted-pool recovery, cross-space page-owner transfer and sixteen full-capacity reclamation epochs. They use
 the existing per-case exact physical-frame and heap boundary.
 
 The [cooperative ring-3 service](#cooperative-ring-3-runs) builds on these
 scoped mappings. Normal boot creates no user address space or acceptance workload.
 
+## Moss startup-stack port
+
+[The MIT-licensed portable builder](../third_party/moss-libkernel/src/task/user_stack.rs)
+adapts pinned Moss's `setup_user_stack` rather than rebuilding the layout in the
+x86_64 runner. It receives the selected address-space capability, stack end,
+argv/envp and caller auxv; it builds one zeroed page before allocating or mapping.
+The layout is argc, argv pointers/null, envp pointers/null, caller auxv,
+`AT_PAGESZ`, `AT_NULL`, padding and NUL-terminated strings. Strings retain
+Moss's top-down placement and SP is aligned down to 16 bytes.
+
+The selected profile permits eight arguments, eight environment strings and
+eight caller auxv pairs within a single 4096-byte RW/NX page. Stack-end alignment,
+checked subtraction, total image size, embedded NULs, reserved/duplicate auxv
+tags and capacities are validated before allocation. An exact fitting image
+is accepted and executed in CPL3 with SP at the stack page's base; one additional
+byte is rejected without disturbing that mapped image. `AT_RANDOM` is not emitted:
+upstream's placeholder is deliberately not reused without an entropy source.
+Explicit `AT_RANDOM`, `AT_NULL` or `AT_PAGESZ` overrides fail.
+
+The builder has no heap, VFS, ProcessVM or architecture dependency. It requests
+an initialized claimed page, fills it and transfers ownership on mapping.
+Allocation/map errors propagate, releasing unpublished pages; an occupied stack
+page is never replaced. Host tests inspect exact bytes and lifetimes, while
+`user.startup_stack` has real CPL3 code consume argc=2, argv, envp and auxv,
+then verifies duplicate-map preservation and frame balance across sixteen epochs.
+The existing small-pool guest tests also exercise real stack-mapping OOM rollback.
+
+This is startup-stack reuse only: no ELF parsing/loading, process scheduler,
+VFS, TLS, signals, CoW/fork or general Linux userspace ABI is imported.
+
 ## Cooperative ring-3 runs
 
-[The native service](../src/user.rs) runs one finite program synchronously in an
+[The native service](../src/user.rs), explicitly named `kutox_user_bringup`,
+runs one finite program synchronously in an
 exclusively borrowed owned address space. The entry must be an executable,
-non-writable user mapping; the initial stack must be 16-byte aligned, with its
-last byte in a writable, non-executable user page. Invalid admission returns a
+non-writable user mapping; the initial stack must be 16-byte aligned and point
+into (or immediately above) a writable, non-executable user page. This permits
+both an empty stack top and Moss's argc-at-SP layout, including an exactly full
+page. A full initial page has no push headroom; overflowing below it remains a
+contained user fault. Invalid admission returns a
 kernel error without entering user mode or publishing active state.
 
 [Native assembly](../src/user_entry.S) saves the kernel's callee-saved registers
@@ -108,7 +154,7 @@ so floating-point use traps rather than changing the kernel's state. Nonzero
 FS/GS bases and enabled FSGSBASE are rejected; there is no TLS or `swapgs` path.
 
 [Guest-only bytecode](../src/guest_tests/user_programs.S) and
-[four acceptance cases](../src/guest_tests/user.rs) verify zeroed initial
+[five acceptance cases](../src/guest_tests/user.rs) verify zeroed initial
 registers/CPL3, native write/exit and error returns, discontiguous cross-page
 copies, exact 256/1024-byte bounds, kernel text/direct-map protection, RO/NX
 faults, privileged CLI/I/O, invalid opcode, FPU rejection, recovery and sixteen
@@ -116,6 +162,9 @@ syscall-limit/reclamation epochs. Noncanonical user RSP rejection and NT
 sanitization are also exercised on real transitions. Journals require exact ordered evidence
 within each KTAP case. OFF retains the native entry/dispatch code but omits
 all embedded program bytes and guest entry symbols.
+The runner remains a bring-up boundary, not Moss's persistent user context,
+scheduled process loop or asynchronous syscall machinery. The portable stack
+builder is independent of this runner and can be reused by a future process layer.
 
 **Limitations:** IF remains clear and there is no preemption, runtime deadline,
 or recovery from a user loop that makes no syscall. This interface is for finite

@@ -52,6 +52,10 @@ unsafe extern "C" {
     static kutox_guest_user_bad_context_end: u8;
     static kutox_guest_user_nt: u8;
     static kutox_guest_user_nt_end: u8;
+    static kutox_guest_user_startup: u8;
+    static kutox_guest_user_startup_end: u8;
+    static kutox_guest_user_startup_full: u8;
+    static kutox_guest_user_startup_full_end: u8;
 }
 
 fn program(start: *const u8, end: *const u8) -> &'static [u8] {
@@ -73,23 +77,27 @@ fn space<'a, 's>(
     pointer: u64,
 ) -> Result<AddressSpace<'a, 's>, Failure> {
     let mut space = AddressSpace::new(boot, allocator)?;
-    space.map_page(USER_BASE, PtePermissions::rx(true), code)?;
+    space.map_initialized(USER_BASE, PtePermissions::rx(true), code)?;
     let mut data = [0; PAGE_SIZE];
     data[..8].copy_from_slice(&pointer.to_le_bytes());
     data[PAGE_SIZE - 2..].copy_from_slice(b"# ");
-    space.map_page(DATA, PtePermissions::ro(true), &data)?;
+    space.map_initialized(DATA, PtePermissions::ro(true), &data)?;
     let mut next = [0; PAGE_SIZE];
     next[..2].copy_from_slice(b"x\n");
-    space.map_page(NEXT, PtePermissions::ro(true), &next)?;
-    space.map_page(STACK, PtePermissions::rw(true), &[0xc3])?;
+    space.map_initialized(NEXT, PtePermissions::ro(true), &next)?;
+    space.map_initialized(STACK, PtePermissions::rw(true), &[0xc3])?;
     Ok(space)
 }
 
 fn execute(space: &mut AddressSpace<'_, '_>) -> Result<Report, Failure> {
+    execute_stack(space, USER_END)
+}
+
+fn execute_stack(space: &mut AddressSpace<'_, '_>, stack: u64) -> Result<Report, Failure> {
     let root = Cr3::read();
     let cr0 = Cr0::read();
     let flags = rflags::read();
-    let report = user::kutox_user_run(space, USER_BASE, USER_END)?;
+    let report = user::kutox_user_bringup(space, USER_BASE, stack)?;
     assert_eq!(report.cpl, 3);
     assert_eq!(Cr3::read(), root);
     assert_eq!(Cr0::read(), cr0);
@@ -145,7 +153,7 @@ pub fn kutox_guest_userspace(
             "user_run_stack",
         ),
     ] {
-        match user::kutox_user_run(&mut space, entry, stack) {
+        match user::kutox_user_bringup(&mut space, entry, stack) {
             Err(error) if error.stage == expected => (),
             _ => return Err(Failure::new("user_expected_admission_error", -1)),
         }
@@ -180,11 +188,11 @@ pub fn syscalls(
         code!(kutox_guest_user_bounds, kutox_guest_user_bounds_end),
         0,
     )?;
-    bounded.unmap(DATA)?;
+    drop(bounded.unmap(DATA)?);
     let mut output = [b'b'; 256];
     output[..2].copy_from_slice(b"# ");
     output[255] = b'\n';
-    bounded.map_page(DATA, PtePermissions::ro(true), &output)?;
+    bounded.map_initialized(DATA, PtePermissions::ro(true), &output)?;
     exited(execute(&mut bounded)?, 0, 6, 4, 1024)?;
     serial::print(format_args!(
         "# USER_RUN bounds cpl=3 exit=0 calls=6 writes=4 bytes=1024\n"
@@ -338,6 +346,91 @@ pub fn reclamation(
     }
     serial::print(format_args!(
         "# USER_RUN reclamation cpl=3 epochs=16 limit=32 frames=balanced\n"
+    ));
+    Ok(())
+}
+
+pub fn startup_stack(
+    boot: &BootInfo,
+    allocator: &'static memory::PhysicalFrames<'static>,
+) -> Result<(), Failure> {
+    use moss_libkernel::task::user_stack::{AT_ENTRY, Error, setup_user_stack};
+    let before = allocator.stats();
+    for _ in 0..16 {
+        let mut space = AddressSpace::new(boot, allocator)?;
+        space.map_initialized(
+            USER_BASE,
+            PtePermissions::rx(true),
+            code!(kutox_guest_user_startup, kutox_guest_user_startup_end),
+        )?;
+        let stack = setup_user_stack(
+            &mut space,
+            USER_END,
+            &["probe", "arg"],
+            &["KEY=value"],
+            &[(AT_ENTRY, USER_BASE)],
+        )
+        .map_err(|error| match error {
+            Error::Memory(error) => error,
+            Error::Layout(error) => Failure::new("user_stack_layout", error as i32),
+        })?;
+        assert_eq!(stack, USER_END - 128);
+        assert_eq!(
+            space.translate(STACK)?.map(|page| page.permissions),
+            Some(PtePermissions::rw(true))
+        );
+        exited(execute_stack(&mut space, stack)?, 42, 1, 0, 0)?;
+        let mapped = allocator.stats();
+        match setup_user_stack(&mut space, USER_END, &["replacement"], &[], &[]) {
+            Err(Error::Memory(error)) if error.stage == "user_memory_already_mapped" => (),
+            _ => return Err(Failure::new("user_stack_expected_duplicate", -1)),
+        }
+        assert_eq!(allocator.stats(), mapped);
+        exited(execute_stack(&mut space, stack)?, 42, 1, 0, 0)?;
+        drop(space);
+        assert_eq!(allocator.stats(), before);
+        allocator
+            .check_invariants()
+            .map_err(|error| Failure::new("user_stack_reclamation", error as i32))?;
+    }
+    serial::print(format_args!(
+        "# USER_STACK source=moss cpl=3 argc=2 envc=1 auxv=entry,pagesz,null aligned=16 epochs=16 frames=balanced\n"
+    ));
+    {
+        let mut space = AddressSpace::new(boot, allocator)?;
+        space.map_initialized(
+            USER_BASE,
+            PtePermissions::rx(true),
+            code!(
+                kutox_guest_user_startup_full,
+                kutox_guest_user_startup_full_end
+            ),
+        )?;
+        let string = [b'a'; PAGE_SIZE - 64];
+        let fitting = core::str::from_utf8(&string[..string.len() - 1])
+            .map_err(|_| Failure::new("user_stack_test_string", -1))?;
+        let stack =
+            setup_user_stack(&mut space, USER_END, &[fitting], &[], &[]).map_err(|error| {
+                match error {
+                    Error::Memory(error) => error,
+                    Error::Layout(error) => Failure::new("user_stack_layout", error as i32),
+                }
+            })?;
+        assert_eq!(stack, STACK);
+        exited(execute_stack(&mut space, stack)?, 43, 1, 0, 0)?;
+        let mapped = allocator.stats();
+        let oversized = core::str::from_utf8(&string)
+            .map_err(|_| Failure::new("user_stack_test_string", -1))?;
+        match setup_user_stack(&mut space, USER_END, &[oversized], &[], &[]) {
+            Err(Error::Layout(moss_libkernel::task::user_stack::LayoutError::TooLarge)) => (),
+            _ => return Err(Failure::new("user_stack_expected_overflow", -1)),
+        }
+        assert_eq!(allocator.stats(), mapped);
+        exited(execute_stack(&mut space, stack)?, 43, 1, 0, 0)?;
+    }
+    assert_eq!(allocator.stats(), before);
+    serial::print(format_args!(
+        "# USER_STACK_LIMIT bytes=4096 overflow=rejected cpl=3 exit=43 frames=balanced\n"
     ));
     Ok(())
 }

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2025 Matthew Leach
-//! Synchronous subset of Moss's sched_task/state.rs lifecycle.
+//! Task lifecycle and startup-stack primitives adapted from Moss.
 
 pub mod async_state;
+pub mod user_stack;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TaskState {
