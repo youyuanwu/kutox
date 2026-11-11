@@ -158,6 +158,11 @@ the existing protocol owner, retaining retiring/TIME-WAIT slots until safe
 reuse. Moss supplies the ownership/buffer-size reference; smoltcp implements
 TCP. Normal boot allocates no stream payload buffers.
 
+Guest-only [HTTP integration acceptance](docs/http-network-acceptance.md)
+now composes DHCP, DNS and routed TCP into an exact HTTP exchange, including
+partial I/O, a total deadline, retry and two-epoch cleanup. It adds no
+production HTTP client or userspace.
+
 ## Requirements
 
 - Linux host with rustup; the repository pins Rust `1.99.1` and the

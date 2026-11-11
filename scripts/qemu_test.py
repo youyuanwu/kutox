@@ -13,10 +13,10 @@ import network_packets as ip_packets
 import udp_packets
 from qemu_scenarios import *
 from qemu_scenarios import SCENARIOS
-from qemu_scenarios import UDP_CASES, DHCP_CASES, DHCP_LIVE_CASES, DNS_CASES, TCP_CASES
+from qemu_scenarios import UDP_CASES, DHCP_CASES, DHCP_LIVE_CASES, DNS_CASES, TCP_CASES, HTTP_CASES
 from qemu_protocols import *
 from qemu_validation import *
-from qemu_validation import validate_udp_suite, validate_dhcp_suite, validate_dns_suite, validate_tcp_suite
+from qemu_validation import validate_udp_suite, validate_dhcp_suite, validate_dns_suite, validate_tcp_suite, validate_http_suite
 from qemu_process import *
 from test_reports import Result, accepted_results, write_reports
 
@@ -90,6 +90,8 @@ def run_case(args, case, index=0):
                     expected = completed.dns_packets
                 if case in TCP_CASES:
                     expected = completed.tcp_packets
+                if case in HTTP_CASES:
+                    expected = completed.http_packets
                 if case in ASYNC_HARD_CASES:
                     expected = async_hardening_packets()
                 if case in LIVE_CASES:
@@ -116,6 +118,8 @@ def run_case(args, case, index=0):
                 validate_dns_suite(case, completed.returncode, output)
             elif case in TCP_CASES:
                 validate_tcp_suite(case, completed.returncode, output)
+            elif case in HTTP_CASES:
+                validate_http_suite(case, completed.returncode, output)
             elif case in ASYNC_HARD_CASES:
                 validate_async_hardening(case, completed.returncode, output, symbols)
             else:

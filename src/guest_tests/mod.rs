@@ -8,6 +8,7 @@ mod dhcp;
 mod dns;
 mod driver_services;
 pub(crate) mod e1000_irq;
+mod http;
 pub(crate) mod linux_e1000;
 mod linux_execution;
 pub(crate) mod linux_hardening;
@@ -394,6 +395,8 @@ pub fn run(boot: &BootInfo) -> ! {
         dns::TESTS
     } else if boot.mode == BootMode::TcpTests {
         tcp::TESTS
+    } else if boot.mode == BootMode::HttpTests {
+        http::TESTS
     } else if boot.mode == BootMode::AsyncHardeningTests {
         async_hardening::TESTS
     } else {

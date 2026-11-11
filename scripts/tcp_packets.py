@@ -12,9 +12,9 @@ PORTS = [9000, 9002, 9003, 9004, 9005, 9006, 9007, 9008, 9010, 9011, 9012, 9015,
 
 
 def frame(local, local_port, remote_port, sequence, acknowledgement, flags,
-          window=4096, payload=b"", options=b"", outgoing=False):
+          window=4096, payload=b"", options=b"", outgoing=False, remote_ip=PEER_IP):
     # Keep both endpoint ports explicit at every peer call.
-    source_ip, target_ip = (dhcp.ip(local), PEER_IP) if outgoing else (PEER_IP, dhcp.ip(local))
+    source_ip, target_ip = (dhcp.ip(local), remote_ip) if outgoing else (remote_ip, dhcp.ip(local))
     source_port, target_port = (local_port, remote_port) if outgoing else (remote_port, local_port)
     header = struct.pack("!HHIIBBHHH", source_port, target_port, sequence & 0xffffffff,
                          acknowledgement & 0xffffffff, (20 + len(options)) << 2,

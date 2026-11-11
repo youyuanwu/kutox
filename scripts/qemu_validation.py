@@ -7,7 +7,7 @@ import subprocess
 import network_packets as ip_packets
 from qemu_scenarios import *
 from qemu_scenarios import TEST_OPTIONS_FAILURES
-from qemu_scenarios import UDP_CASES, DHCP_CASES, DHCP_LIVE_CASES, DNS_CASES, TCP_CASES
+from qemu_scenarios import UDP_CASES, DHCP_CASES, DHCP_LIVE_CASES, DNS_CASES, TCP_CASES, HTTP_CASES
 from qemu_protocols import *
 
 
@@ -256,6 +256,71 @@ def validate_tcp_suite(case, returncode, output):
             raise AssertionError("TCP link loss did not revoke configuration")
     if previous >= lines.index("ok 1 tcp.lifecycle"):
         raise AssertionError("TCP success preceded joined cleanup")
+
+
+def validate_http_suite(case, returncode, output):
+    import http_packets
+
+    lines = output.splitlines()
+    validate_boot_preamble(lines, "http-tests")
+    if validate_ktap(driver_ktap_lines(lines), returncode, ("http.exchange",)):
+        raise KernelSuiteFailure("HTTP integration failed")
+    if any(line.startswith(("E1000_", "CPU_EXCEPTION", "Bail out!", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "# DHCP_ERROR", "# DHCP_REJECT", "# DHCP_DECONFIG", "# DNS_ERROR", "# DNS_REJECT", "# NETWORK_STACK_ERROR", "# ASYNC_ERROR", "# RUNTIME_ERROR")) for line in lines):
+        raise AssertionError("HTTP integration reached an unrelated failure/production path")
+    previous = -1
+    for epoch in (1, 2):
+        server = "1.1.1.1" if epoch == 1 else "8.8.8.8"
+        start = f"# HTTP_TEST_EPOCH epoch={epoch}"
+        ready = f"# HTTP_TEST_READY epoch={epoch} generation=1 cidr=10.0.2.{epoch + 14}/24 dns={server} router=10.0.2.2"
+        join = f"# HTTP_TEST_JOIN epoch={epoch} success=2 timeout=1 connections=0 queries=0 frame=balanced heap=balanced"
+        if any(lines.count(marker) != 1 for marker in (start, ready, join)):
+            raise AssertionError("HTTP configuration or joined-cleanup evidence missing/duplicated")
+        begin, end = lines.index(start), lines.index(join)
+        if not previous < begin < lines.index(ready) < end:
+            raise AssertionError("HTTP runtime epochs overlap or configuration is reordered")
+        previous = end
+        block = lines[begin:end]
+        configs = [line for line in block if line.startswith("# DHCP_CONFIG ")]
+        suffix = f"generation=1 cidr=10.0.2.{epoch + 14}/24 router=Some(10.0.2.2) dns=[Some({server}), None]"
+        if len(configs) != 1 or re.fullmatch(r"# DHCP_CONFIG identity=[1-9]\d* " + re.escape(suffix), configs[0]) is None:
+            raise AssertionError("HTTP DHCP address, gateway or server mismatch")
+        for prefix, pattern, ceiling in (
+            ("# DHCP_STORAGE ", r"# DHCP_STORAGE charged=(\d+) limit=32768 sockets=1 dns=2", 32768),
+            ("# DNS_STORAGE ", r"# DNS_STORAGE charged=(\d+) limit=32768 queries=4 results=4", 32768),
+            ("# TCP_STORAGE ", r"# TCP_STORAGE charged=(\d+) limit=131072 connections=4 buffer=4096", 131072),
+        ):
+            storage = [line for line in block if line.startswith(prefix)]
+            if len(storage) != 1 or (match := re.fullmatch(pattern, storage[0])) is None or not 0 <= int(match[1]) <= ceiling:
+                raise AssertionError("HTTP composition storage proof missing or unbounded")
+        stage_end = lines.index(ready)
+        for stage in (1, 2, 3):
+            dns = f"# HTTP_TEST_DNS epoch={epoch} stage={stage} address=1.2.3.{epoch + 3} servers=dhcp"
+            fragment = f"# HTTP_TEST_FRAGMENT epoch={epoch} stage={stage} bytes=7"
+            closed = f"# HTTP_TEST_CLOSED epoch={epoch} stage={stage} connections=0 queries=0 tx_grants=0"
+            if any(lines.count(marker) != 1 for marker in (dns, fragment, closed)):
+                raise AssertionError("HTTP DNS/fragment/retirement proof missing or duplicated")
+            if stage == 2:
+                found = [line for line in block if line.startswith("# HTTP_TEST_TIMEOUT ")]
+                pattern = rf"# HTTP_TEST_TIMEOUT epoch={epoch} stage=2 request={len(http_packets.REQUEST)} received={len(http_packets.HEADER) + 113} deadline_ms=200 elapsed_ms=(\d+) polls=(\d+) eof=0"
+                delay = f"# HTTP_TEST_DELAY epoch={epoch} stage=2 delay_ms=150"
+                if lines.count(delay) != 1 or not lines.index(dns) < lines.index(delay) < lines.index(fragment):
+                    raise AssertionError("HTTP absolute deadline did not cover fragment delay")
+                if len(found) != 1 or (match := re.fullmatch(pattern, found[0])) is None or not 200 <= int(match[1]) < 325 or not 1 <= int(match[2]) <= 256:
+                    raise AssertionError("HTTP absolute deadline or idle budget proof mismatch")
+            else:
+                found = [line for line in block if line.startswith(f"# HTTP_TEST_RESPONSE epoch={epoch} stage={stage} ")]
+                pattern = rf"# HTTP_TEST_RESPONSE epoch={epoch} stage={stage} request={len(http_packets.REQUEST)} writes=(\d+) status=200 header={len(http_packets.HEADER)} body=6144 reads=(\d+) eof=1"
+                if len(found) != 1 or (match := re.fullmatch(pattern, found[0])) is None or not 2 <= int(match[1]) <= len(http_packets.REQUEST) or not (len(http_packets.HEADER) + 6144 + 36) // 37 <= int(match[2]) <= len(http_packets.HEADER) + 6145:
+                    raise AssertionError("HTTP response size, partial-I/O or EOF proof mismatch")
+            positions = [lines.index(marker) for marker in (dns, fragment, found[0], closed)]
+            if positions != sorted(positions) or not stage_end < positions[0] or positions[-1] >= end:
+                raise AssertionError("HTTP stages or cleanup are reordered")
+            stage_end = positions[-1]
+        errors = [line for line in block if line.startswith("# TCP_ERROR ")]
+        if errors != ["# TCP_ERROR operation=read error=TimedOut"]:
+            raise AssertionError("HTTP deadline did not produce the expected native read error")
+    if previous >= lines.index("ok 1 http.exchange"):
+        raise AssertionError("HTTP success preceded joined resource release")
 
 
 def validate_pci_hierarchy(lines, case):
@@ -915,6 +980,9 @@ def validate_thread_guard(returncode, output):
 
 
 def validate_result(case, returncode, output):
+    if case in HTTP_CASES:
+        validate_http_suite(case, returncode, output)
+        return
     if case in TCP_CASES:
         validate_tcp_suite(case, returncode, output)
         return
@@ -961,7 +1029,7 @@ def validate_result(case, returncode, output):
         if any(line.startswith(("BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "# DRIVER_", "# KERNEL_SERVICES", "# NETWORK_STACK")) for line in lines):
             raise AssertionError("invalid CIDR reached allocation or source admission")
         return
-    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled", "async-network-tests-disabled", "network-tests-disabled", "udp-tests-disabled", "dhcp-tests-disabled", "dns-tests-disabled", "tcp-tests-disabled", "async-hardening-tests-disabled"):
+    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled", "async-network-tests-disabled", "network-tests-disabled", "udp-tests-disabled", "dhcp-tests-disabled", "dns-tests-disabled", "tcp-tests-disabled", "http-tests-disabled", "async-hardening-tests-disabled"):
         lines = output.splitlines()
         expected = "E1000_MAC_FAIL stage=boot_mode code=-25"
         if returncode != 3 or not lines or lines[-1] != expected:
@@ -970,7 +1038,7 @@ def validate_result(case, returncode, output):
             raise AssertionError("missing pinned-source feature-off boot marker")
         if [line for line in lines if line.startswith("E1000_")] != [expected] or any(
             line.startswith(("BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "THREAD_", "Bail out!",
-                             "# RUNTIME_", "# NATIVE_", "# LINUX_", "# ASYNC_", "# NET_IP_", "# NETWORK_STACK_", "# UDP_", "# DHCP_", "# DNS_", "# TCP_"))
+                             "# RUNTIME_", "# NATIVE_", "# LINUX_", "# ASYNC_", "# NET_IP_", "# NETWORK_STACK_", "# UDP_", "# DHCP_", "# DNS_", "# TCP_", "# HTTP_"))
             for line in lines
         ):
             raise AssertionError("feature-off test mode reached initialization or guest fixtures")
@@ -1660,7 +1728,7 @@ def validate_live_boot(case, output, symbols):
     validate_boot_preamble(lines, mode or "run", "fw_cfg" if mode else "default")
     validate_allocator(lines, 32 if case.endswith("low-memory") else 128)
     if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "KERNEL_RUNTIME_", "THREAD_", "KTAP", "ok ", "not ok ",
-                            "Bail out!", "KERNEL_PANIC", "# LINUX_CALLBACK", "# LINUX_FAULT", "# LINUX_RX_", "# LINUX_HARD_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR", "# NET_IP_", "# ASYNC_NET_", "# ASYNC_ERROR", "# NETWORK_STACK_ERROR", "# NETWORK_STACK_STOP", "# HOST_", "# DHCP_ERROR", "# DHCP_REJECT", "# DHCP_TEST_", "# DNS_", "# TCP_")) for line in lines):
+                            "Bail out!", "KERNEL_PANIC", "# LINUX_CALLBACK", "# LINUX_FAULT", "# LINUX_RX_", "# LINUX_HARD_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR", "# NET_IP_", "# ASYNC_NET_", "# ASYNC_ERROR", "# NETWORK_STACK_ERROR", "# NETWORK_STACK_STOP", "# HOST_", "# DHCP_ERROR", "# DHCP_REJECT", "# DHCP_TEST_", "# DNS_", "# TCP_", "# HTTP_")) for line in lines):
         raise AssertionError("default runtime exited, failed, or entered a probe/fixture path")
     bound = int(LIVE_CASES[case][1])
     normalized = [line.removeprefix("# ") for line in lines]

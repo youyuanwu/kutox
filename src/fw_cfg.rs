@@ -30,6 +30,7 @@ pub enum BootMode {
     DhcpTests,
     DnsTests,
     TcpTests,
+    HttpTests,
     AsyncHardeningTests,
     HeapOom,
     ThreadStackGuard,
@@ -49,6 +50,7 @@ impl BootMode {
                     | Self::DhcpTests
                     | Self::DnsTests
                     | Self::TcpTests
+                    | Self::HttpTests
             )
     }
 
@@ -82,6 +84,7 @@ impl BootMode {
             Self::DhcpTests => "dhcp-tests",
             Self::DnsTests => "dns-tests",
             Self::TcpTests => "tcp-tests",
+            Self::HttpTests => "http-tests",
             Self::AsyncHardeningTests => "async-hardening-tests",
             Self::HeapOom => "heap-oom",
             Self::ThreadStackGuard => "thread-stack-guard",
@@ -125,6 +128,7 @@ impl BootMode {
                 | Self::DhcpTests
                 | Self::DnsTests
                 | Self::TcpTests
+                | Self::HttpTests
                 | Self::AsyncHardeningTests
                 | Self::HeapOom
                 | Self::ThreadStackGuard
@@ -195,6 +199,7 @@ pub fn read_mode(
         b"dhcp-tests" => Ok(Some(BootMode::DhcpTests)),
         b"dns-tests" => Ok(Some(BootMode::DnsTests)),
         b"tcp-tests" => Ok(Some(BootMode::TcpTests)),
+        b"http-tests" => Ok(Some(BootMode::HttpTests)),
         b"async-hardening-tests" => Ok(Some(BootMode::AsyncHardeningTests)),
         b"heap-oom" => Ok(Some(BootMode::HeapOom)),
         b"thread-stack-guard" => Ok(Some(BootMode::ThreadStackGuard)),
@@ -370,6 +375,7 @@ mod tests {
             BootMode::DhcpTests,
             BootMode::DnsTests,
             BootMode::TcpTests,
+            BootMode::HttpTests,
             BootMode::AsyncHardeningTests,
             BootMode::HeapOom,
             BootMode::ThreadStackGuard,
@@ -648,6 +654,7 @@ fn guest_modes_require_the_build_feature_without_changing_probe() {
         BootMode::DhcpTests,
         BootMode::DnsTests,
         BootMode::TcpTests,
+        BootMode::HttpTests,
         BootMode::AsyncHardeningTests,
         BootMode::EepromTimeout,
         BootMode::PageFault,

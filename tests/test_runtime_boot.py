@@ -145,6 +145,7 @@ class RuntimeBootTests(unittest.TestCase):
             "# TCP_STORAGE charged=0 limit=131072 connections=4 buffer=4096",
             "# TCP_ERROR operation=connect error=TimedOut",
             "# TCP_TEST_EPOCH epoch=1",
+            "# HTTP_TEST_EPOCH epoch=1",
         ]:
             with self.subTest(extra=extra), self.assertRaises(AssertionError):
                 runner.validate_live_boot("driver-runtime-default", live_log() + extra + "\n", SYMBOLS)

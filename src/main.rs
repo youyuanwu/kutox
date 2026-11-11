@@ -279,6 +279,7 @@ fn probe() -> Result<BootOutcome, Failure> {
             | BootMode::DhcpTests
             | BootMode::DnsTests
             | BootMode::TcpTests
+            | BootMode::HttpTests
             | BootMode::AsyncHardeningTests
     ) {
         guest_tests::run(&boot);

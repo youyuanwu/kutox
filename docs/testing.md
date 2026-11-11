@@ -42,6 +42,14 @@ socket/PCAP correspondence. It also checks native capacity/TIME-WAIT and joined
 lease/source lifetimes. OFF rejects `tcp-tests` early and omits the fixture.
 Production boots must allocate no TCP stream buffers or start a demo/client.
 
+[HTTP integration acceptance](http-network-acceptance.md) composes DHCP,
+DNS and routed TCP with fixed, bounded HTTP request/response streams.
+`http-tests*` runs only in ON at 128/32 MiB and nested bridges, including
+low-memory smoke CI. OFF rejects `http-tests` early and omits its fixture.
+The isolated peer checks exact stream/PCAP bytes, partial I/O, a total
+transaction deadline, retry after abort and joined two-epoch resource balance.
+No HTTP demo, production client, parser library or userspace is added.
+
 ## Validation tiers
 
 ```sh
