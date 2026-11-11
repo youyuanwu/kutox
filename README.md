@@ -240,9 +240,18 @@ This is one image per selected build profile, not separate images per test mode.
 ## Build and test
 
 ```sh
-git submodule update --init --depth 1 linux
+cmake -S . -B build/source -DKUTOX_SOURCE_ONLY=ON
+cmake --build build/source --target linux-source --parallel 1
 python3 scripts/check.py full
 ```
+
+The `linux-source` target uses Git 2.36+ to fetch the committed submodule pin
+with shallow, blob-filtered history and sparse checkout of e1000, `include`,
+and `arch/x86/include`. Run it on a clean Linux checkout. Source-only setup
+needs no kernel tools or Limine download. It uses the identical GitHub
+stable-tree mirror, which supports blob filtering; the canonical submodule URL
+in `.gitmodules` is unchanged.
+Existing Git objects are retained when converting a full checkout.
 
 The build produces:
 

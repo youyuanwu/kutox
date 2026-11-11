@@ -22,7 +22,7 @@ class CatalogTests(unittest.TestCase):
     def test_portable_ci_initializes_source_inputs_before_fast_checks(self):
         workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/check.yml").read_text()
         portable = workflow.split("  portable:", 1)[1].split("\n  guest:", 1)[0]
-        self.assertLess(portable.index("submodule update --init --depth 1 linux"),
+        self.assertLess(portable.index("cmake --build build/source --target linux-source --parallel 1"),
                         portable.index("python3 scripts/check.py fast"))
         self.assertIn("name: results-portable", portable)
         self.assertIn("if: always()", portable)
@@ -33,8 +33,10 @@ class CatalogTests(unittest.TestCase):
         self.assertIn("- &driver-source\n", portable)
         self.assertIn("- *driver-source\n", guest)
         self.assertRegex(guest, r"apt-get install[^\n]*\blld\b")
-        self.assertEqual(workflow.count("submodule update --init --depth 1 linux"), 1)
-        self.assertIn("submodule.linux.url=https://github.com/gregkh/linux.git", portable)
+        self.assertEqual(workflow.count("--target linux-source"), 1)
+        self.assertIn("-DKUTOX_SOURCE_ONLY=ON", portable)
+        cmake = (Path(__file__).resolve().parents[1] / "CMakeLists.txt").read_text()
+        self.assertIn("https://github.com/gregkh/linux.git", cmake)
 
     def test_ci_source_fetch_retries_are_bounded_and_propagate_exhaustion(self):
         workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/check.yml").read_text()
@@ -48,17 +50,20 @@ class CatalogTests(unittest.TestCase):
         ):
             with self.subTest(failures=failures, timeouts=timeouts), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
-                git = root / "git"
-                git.write_text(f"""#!{sys.executable}
+                cmake = root / "cmake"
+                cmake.write_text(f"""#!{sys.executable}
 import json
 import os
 from pathlib import Path
 import sys
-log = Path(os.environ["GIT_CALLS"])
+log = Path(os.environ["CMAKE_CALLS"])
 with log.open("a") as stream:
     stream.write(json.dumps(sys.argv[1:]) + "\\n")
+if sys.argv[1] == "-S":
+    sys.exit(0)
 print("mock source fetch", file=sys.stderr)
-sys.exit(int(len(log.read_text().splitlines()) <= int(os.environ["FETCH_FAILURES"])))
+builds = sum(json.loads(line)[0] == "--build" for line in log.read_text().splitlines())
+sys.exit(int(builds <= int(os.environ["FETCH_FAILURES"])))
 """)
                 sleep = root / "sleep"
                 sleep.write_text(f"""#!{sys.executable}
@@ -82,26 +87,26 @@ if len(log.read_text().splitlines()) <= int(os.environ["FETCH_TIMEOUTS"]):
     sys.exit(124)
 sys.exit(subprocess.call(sys.argv[2:]))
 """)
-                git.chmod(0o755)
+                cmake.chmod(0o755)
                 sleep.chmod(0o755)
                 timeout.chmod(0o755)
-                git_calls, sleep_calls = root / "git-calls", root / "sleep-calls"
+                cmake_calls, sleep_calls = root / "cmake-calls", root / "sleep-calls"
                 timeout_calls = root / "timeout-calls"
                 result = subprocess.run(
                     ["bash", "-e", "-o", "pipefail", "-c", script],
                     env={**os.environ, "PATH": f"{root}{os.pathsep}{os.environ['PATH']}",
-                         "GIT_CALLS": str(git_calls), "SLEEP_CALLS": str(sleep_calls),
+                         "CMAKE_CALLS": str(cmake_calls), "SLEEP_CALLS": str(sleep_calls),
                          "FETCH_FAILURES": str(failures), "FETCH_TIMEOUTS": str(timeouts),
                          "TIMEOUT_CALLS": str(timeout_calls)},
                     capture_output=True, text=True, timeout=5,
                 )
                 self.assertEqual(result.returncode, returncode, result.stdout + result.stderr)
-                command = ["-c", "submodule.linux.url=https://github.com/gregkh/linux.git",
-                           "submodule", "update", "--init", "--depth", "1", "linux"]
-                self.assertEqual([json.loads(line) for line in git_calls.read_text().splitlines()]
-                                 if git_calls.exists() else [], [command] * calls)
+                configure = ["-S", ".", "-B", "build/source", "-DKUTOX_SOURCE_ONLY=ON"]
+                command = ["--build", "build/source", "--target", "linux-source", "--parallel", "1"]
+                self.assertEqual([json.loads(line) for line in cmake_calls.read_text().splitlines()],
+                                 [configure] + [command] * calls)
                 self.assertEqual([json.loads(line) for line in timeout_calls.read_text().splitlines()],
-                                 [["180", "git", *command]] * (calls + timeouts))
+                                 [["180", "cmake", *command]] * (calls + timeouts))
                 self.assertEqual(sleep_calls.read_text().splitlines() if sleep_calls.exists() else [],
                                  ["10"] * sleeps)
                 self.assertEqual(result.stdout.count("::warning::"), sleeps)

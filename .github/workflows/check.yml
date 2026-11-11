@@ -29,10 +29,9 @@ jobs:
       - &driver-source
         name: Initialize pinned driver source
         run: |
+          cmake -S . -B build/source -DKUTOX_SOURCE_ONLY=ON
           for attempt in 1 2 3; do
-            if timeout 180 git \
-              -c submodule.linux.url=https://github.com/gregkh/linux.git \
-              submodule update --init --depth 1 linux; then
+            if timeout 180 cmake --build build/source --target linux-source --parallel 1; then
               exit 0
             fi
             if [ "$attempt" -eq 3 ]; then
