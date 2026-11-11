@@ -63,6 +63,8 @@ Moss component or vendor-driver source is imported.
   [kernel heap](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/allocators/slab/heap.rs),
   [addresses](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/address.rs),
   [regions](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/region.rs),
+  [page permissions](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/paging/permissions.rs),
+  [address-space contract](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/address_space.rs),
   [CpuOps in lib.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/lib.rs),
   [task lifecycle states](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/sched/sched_task/state.rs),
   [waker registration](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/waker_set.rs),
@@ -78,6 +80,24 @@ libkernel. It is not the complete upstream library. One license and one pinned
 provenance record cover these components; host tests exercise them together.
 The mutex's kernel-specific ownership/wait integration is described separately
 below; it does not add a task-runtime dependency to the portable crate.
+
+### User address-space boundary
+
+The [permission port](third_party/moss-libkernel/src/memory/permissions.rs)
+retains Moss's read/write/execute/user representation and constructors, omits
+CoW, and adds a readable-user/W^X admission predicate. Its raw constructor is
+public for native hardware permission decoding.
+The [address-space contract](third_party/moss-libkernel/src/memory/address_space.rs)
+retains mapping, unmapping, protection and translation concepts but is a reduced
+adaptation, not an upstream-compatible trait. It uses checked native `u64`
+addresses and an associated error type. Implementations allocate, initialize
+and own their physical pages instead of accepting caller-owned frame numbers.
+It omits Send/Sync, ranges, CoW and unsafely persistent activation; the native
+service instead supplies non-transferable ownership and scoped activation.
+The [native implementation](src/user_memory.rs) and guest acceptance are kutox
+integration using the existing `x86_64` mapper. No Moss x86/ARM page-table
+algorithm, userspace entry, process VM, VFS or ELF-exec implementation is copied.
+See the [implementation scope](docs/kernel-implementation.md#owned-user-address-spaces).
 
 ### Bootstrap memory allocator
 

@@ -3,6 +3,57 @@
 Detailed foundation and driver-service contracts, moved from the README.
 For current boot and network behavior, see the [async/network guide](async-kernel-networking.md).
 
+## Owned user address spaces
+
+[The native memory service](../src/user_memory.rs) adapts Moss's
+[permission types](../third_party/moss-libkernel/src/memory/permissions.rs) and
+[reduced address-space contract](../third_party/moss-libkernel/src/memory/address_space.rs).
+It keeps the existing `x86_64` mapper and exclusive Moss-derived frame guards;
+no upstream ARM entry code or second page-table implementation is imported.
+
+Each non-transferable address-space owner has one private PML4 and at most
+sixteen eager 4-KiB RAM pages in
+`0x0000100000000000..0x0000100000010000`. The entire containing PML4 slot must
+be unused in the kernel root. Addresses must be page-aligned and inside that
+window. Initial bytes are copied into zeroed owned RAM; oversize payloads,
+duplicate mappings and unsupported permissions fail explicitly. Read-only,
+read/write and read/execute user mappings are supported; writable executable
+and supervisor mappings are rejected. Translation reports effective permissions
+across all four table levels. Protection changes and unmapping apply only to
+owned pages, with missing mappings diagnosed.
+
+The root and at most three intermediate tables use buddy guards, not heap
+payloads. A first-map allocation failure detaches its partial subtree before
+releasing frames and leaves the space reusable. Removing the last page also
+reclaims the three tables. Full capacity costs twenty physical pages including
+the root. Drop requires the space to be inactive and releases all owned RAM;
+borrowed kernel subtrees are never freed.
+
+`with_active` temporarily switches CR3 under the existing page-table IRQ lock.
+Its callback must be synchronous and must not map, block or enable interrupts.
+Native scheduling and nested address-space activation are rejected while the
+lock is held. A private guard restores the original CR3 before restoring the
+caller's IRQ state, including ordinary callback error returns. User entries
+are never global, and switching flushes their TLB entries; PCID and five-level
+paging are rejected. Supervisor write protection and NX must already be enabled.
+
+Before activation, every non-user PML4 entry is refreshed from the live kernel
+root, with user access masked off. This preserves kernel text, direct-map,
+exception stacks and the existing lower-half device/thread-stack windows,
+including mappings created or removed after the space was constructed.
+Kernel mapping ownership and teardown therefore remain unchanged.
+
+[Four guest cases](../src/guest_tests/user_memory.rs) in the full kernel suite
+exercise different contents at the same VA, actual CR3 switching, kernel
+mapping refresh, W^X/effective flags, zero-fill, partial-allocation rollback,
+exhausted-pool recovery and sixteen full-capacity reclamation epochs. They use
+the existing per-case exact physical-frame and heap boundary.
+
+This is not ring-3 execution or a process scheduler. Hardware user-mode fault
+isolation, syscall/user-copy entry, ELF loading, demand paging, CoW/fork, VFS,
+SMP and independently scheduled user tasks remain unimplemented. Normal boot
+creates no user address space or acceptance workload.
+
 ## Implementation boundaries
 
 - [CPU support](../src/cpu.rs) implements `CpuOps` for the BSP. It requires one
@@ -322,6 +373,8 @@ For current boot and network behavior, see the [async/network guide](async-kerne
 - The MMIO mapper owns its initially unused PML4 slot and its intermediate
   table frames. It unmaps leaves, detaches the private subtree, flushes the TLB,
   and only then releases frames. Failed mappings follow the same cleanup path.
+- [Owned user address spaces](#owned-user-address-spaces) add bounded private RAM
+  mappings and scoped CR3 switching, without changing the existing MMIO mapper.
 - [Rust platform code](../src) provides Limine requests, polled serial output,
   bus-aware CF8/CFC PCI hierarchy discovery, selected BAR/parent-window validation, an owned uncacheable MMIO
   mapping,   and PIT-channel-2-calibrated TSC delays. The boot MAC platform path needs no

@@ -370,6 +370,19 @@ def suite_log(case="kernel-tests"):
 
 
 class KernelSuiteTests(unittest.TestCase):
+    def test_user_address_spaces_are_required_full_suite_cases(self):
+        names = (
+            "memory.user_switching", "memory.user_permissions",
+            "memory.user_rollback", "memory.user_reclamation",
+        )
+        self.assertEqual(KERNEL_TEST_NAMES[-4:], names)
+        output = suite_log()
+        validate_result("kernel-tests", 1, output)
+        for name in names:
+            index = KERNEL_TEST_NAMES.index(name) + 1
+            with self.subTest(name=name), self.assertRaises(AssertionError):
+                validate_result("kernel-tests", 1, output.replace(f"ok {index} {name}\n", ""))
+
     def test_pci_hierarchy_rejects_missing_duplicate_and_wrong_identity(self):
         case = "kernel-tests-nested"
         output = suite_log(case)

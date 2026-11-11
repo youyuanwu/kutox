@@ -66,10 +66,13 @@ class GuestBuildTests(unittest.TestCase):
 
     def test_enabled_requires_runtime_and_guest_code(self):
         self.assertIn("kutox_guest_udp_client", GUEST_SYMBOLS)
+        self.assertIn("kutox_guest_address_spaces", GUEST_SYMBOLS)
         self.assertIn("kutox::net_udp::CONTROL", RUNTIME_SYMBOLS)
         validate_symbols(RUNTIME_SYMBOLS | GUEST_SYMBOLS, True)
         with self.assertRaises(AssertionError):
             validate_symbols(RUNTIME_SYMBOLS, True)
+        with self.assertRaises(AssertionError):
+            validate_symbols((RUNTIME_SYMBOLS | GUEST_SYMBOLS) - {"kutox_guest_address_spaces"}, True)
 
     def test_disabled_retains_runtime_and_rejects_fixtures_faults_and_inspectors(self):
         validate_symbols(RUNTIME_SYMBOLS, False)

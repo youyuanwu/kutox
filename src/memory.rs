@@ -26,6 +26,16 @@ use x86_64::{
     },
 };
 
+#[cfg_attr(
+    not(feature = "guest-tests"),
+    allow(
+        dead_code,
+        reason = "User address spaces are created explicitly by kernel clients"
+    )
+)]
+#[path = "user_memory.rs"]
+pub mod user;
+
 const MMIO_BASE: u64 = 0x4000_0000_0000;
 const APIC_BASE: u64 = 0x5000_0000_0000;
 const IOAPIC_BASE: u64 = 0x5800_0000_0000;

@@ -50,6 +50,22 @@ The isolated peer checks exact stream/PCAP bytes, partial I/O, a total
 transaction deadline, retry after abort and joined two-epoch resource balance.
 No HTTP demo, production client, parser library or userspace is added.
 
+[Owned-address-space acceptance](kernel-implementation.md#owned-user-address-spaces)
+adds `memory.user_switching`, `memory.user_permissions`, `memory.user_rollback`
+and `memory.user_reclamation` to the existing full kernel suite. These run at
+128/32 MiB and the existing bridge topologies, without a new boot selector or
+test manager. They cover actual CR3 switching, all-level permission inspection,
+late kernel mapping creation/removal, zeroed private RAM, real bounded-allocator
+exhaustion and exact repeated frame reclamation. This does not claim ring-3
+fault isolation. The fixture and its entry symbol are absent from OFF; normal
+boot does not run it.
+
+```sh
+python3 scripts/check.py full --profiles ON --scope guest \
+  --select kernel-suite --select kernel-suite-low-memory \
+  --select kernel-suite-nested-low-memory
+```
+
 ## Validation tiers
 
 ```sh

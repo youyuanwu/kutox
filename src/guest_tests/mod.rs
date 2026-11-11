@@ -292,6 +292,22 @@ static TESTS: &[TestCase] = &[
         name: "native.dependencies",
         run: native_drivers::dependencies,
     },
+    TestCase {
+        name: "memory.user_switching",
+        run: memory::user::tests::kutox_guest_address_spaces,
+    },
+    TestCase {
+        name: "memory.user_permissions",
+        run: memory::user::tests::permissions,
+    },
+    TestCase {
+        name: "memory.user_rollback",
+        run: memory::user::tests::rollback,
+    },
+    TestCase {
+        name: "memory.user_reclamation",
+        run: memory::user::tests::reclamation,
+    },
 ];
 
 static INTENTIONAL_FAILURE: TestCase = TestCase {

@@ -13,6 +13,8 @@ sources = [
     "libkernel/src/memory/allocators/smalloc.rs",
     "libkernel/src/memory/address.rs",
     "libkernel/src/memory/region.rs",
+    "libkernel/src/memory/address_space.rs",
+    "libkernel/src/memory/paging/permissions.rs",
     "libkernel/src/sync/spinlock.rs",
     "libkernel/src/sync/waker_set.rs",
     "src/sched/sched_task/state.rs",

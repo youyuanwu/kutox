@@ -32,6 +32,12 @@ reclamation after a thread returns. Native wait queues, cancellation, and timed
 sleep can now suspend these stacks. This is not timer preemption, SMP or a
 general Linux binary ABI.
 
+Owned, eager [user address spaces](docs/kernel-implementation.md#owned-user-address-spaces)
+now adapt Moss's permission types and reduced address-space contract. Each has
+up to sixteen private 4-KiB pages, W^X permissions, scoped CR3 activation and
+complete frame reclamation. Kernel mappings remain supervisor-only.
+This is a memory foundation, not ring-3 execution, processes, syscalls or ELF loading.
+
 The scoped [kernel runtime](src/kernel_runtime.rs) now retains the dispatcher,
 native manager, APIC/timer/controllers and shared Linux workers through client
 return and idle. Its persistent policy sleeps without inventing periodic work;
