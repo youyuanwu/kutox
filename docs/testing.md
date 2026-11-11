@@ -195,8 +195,11 @@ after failures. It does not build Linux or require a sibling repository.
 Portable CI calls `fast` once; profile jobs use `--scope guest` and never repeat
 the portable checks. `--scope host` selects shared checks only.
 Both job types initialize the pinned, shallow Linux submodule before validation.
-They share a bounded three-attempt fetch step with 10-second delays for
-transient upstream failures; exhausted retries still fail the job. Guest jobs
+They share a three-attempt fetch step with a 180-second limit per attempt and
+10-second retry delays. CI uses the `gregkh/linux` GitHub stable-tree mirror
+for the identical gitlink commit; the canonical kernel.org URL in `.gitmodules`
+and source pin remain unchanged. Failed or hung fetches cannot retry forever;
+exhausted retries still fail the job. Guest jobs
 explicitly install LLD as well as Clang because the ON build links a standalone
 ELF fixture using `ld.lld`; installing Clang alone does not supply that linker.
 CMake `FetchContent` downloads the pinned Limine release and verifies its SHA256.
