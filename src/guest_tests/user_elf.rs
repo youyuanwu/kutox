@@ -7,6 +7,7 @@ use super::{
 use crate::{
     Failure,
     boot::BootInfo,
+    irq::Timer,
     memory::{self, user::AddressSpace},
     serial, user,
 };
@@ -17,7 +18,7 @@ use moss_libkernel::memory::{
 };
 
 #[unsafe(export_name = "kutox_guest_user_elf")]
-static ELF: [u8; include_bytes!(concat!(env!("OUT_DIR"), "/user.elf")).len()] =
+pub(super) static ELF: [u8; include_bytes!(concat!(env!("OUT_DIR"), "/user.elf")).len()] =
     *include_bytes!(concat!(env!("OUT_DIR"), "/user.elf"));
 
 #[unsafe(no_mangle)]
@@ -25,6 +26,7 @@ pub fn kutox_guest_elf(
     boot: &BootInfo,
     allocator: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
+    let timer = Timer::start(boot, allocator)?;
     let before = allocator.stats();
     for _ in 0..16 {
         let mut loaded =
@@ -54,7 +56,13 @@ pub fn kutox_guest_elf(
             None
         );
         exited(
-            execute_entry(&mut loaded.space, loaded.entry, loaded.stack)?,
+            execute_entry(
+                &mut loaded.space,
+                loaded.entry,
+                loaded.stack,
+                &timer,
+                200_000,
+            )?,
             44,
             2,
             1,
@@ -75,7 +83,13 @@ pub fn kutox_guest_elf(
     ] {
         let mut loaded =
             user::kutox_user_load_elf(boot, allocator, &ELF, &["elf", argument], &["KEY=value"])?;
-        let report = execute_entry(&mut loaded.space, loaded.entry, loaded.stack)?;
+        let report = execute_entry(
+            &mut loaded.space,
+            loaded.entry,
+            loaded.stack,
+            &timer,
+            200_000,
+        )?;
         match report.stop {
             user::Stop::Fault {
                 vector: 14,
@@ -95,7 +109,13 @@ pub fn kutox_guest_elf(
     let mut loaded =
         user::kutox_user_load_elf(boot, allocator, &ELF, &["elf", "run"], &["KEY=value"])?;
     exited(
-        execute_entry(&mut loaded.space, loaded.entry, loaded.stack)?,
+        execute_entry(
+            &mut loaded.space,
+            loaded.entry,
+            loaded.stack,
+            &timer,
+            200_000,
+        )?,
         44,
         2,
         1,

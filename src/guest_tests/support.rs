@@ -75,6 +75,7 @@ pub(crate) fn quiescent(boot: &BootInfo) -> bool {
         && memory::mmio_window_unused(boot)
         && memory::user::quiescent()
         && crate::user::quiescent()
+        && user_interrupts::quiescent()
 }
 
 pub(crate) struct Fixture<'a> {

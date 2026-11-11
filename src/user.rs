@@ -1,16 +1,17 @@
 use crate::{
     Failure,
     exceptions::{self, ExceptionFrame, UserSelectors},
+    irq,
     memory::user::AddressSpace,
-    serial,
+    serial, time,
 };
 use core::{
     arch::global_asm,
     ptr::{addr_of, addr_of_mut},
 };
 use kutox::user_state::{
-    MAX_OUTPUT, MAX_PAGES, MAX_SYSCALLS, MAX_WRITE, PAGE_SIZE, SYS_EXIT, SYS_WRITE, USER_BASE,
-    USER_END, plan_copy, user_flags, valid_user_return,
+    MAX_OUTPUT, MAX_PAGES, MAX_SYSCALLS, MAX_WRITE, PAGE_SIZE, ReturnAction, SYS_EXIT, SYS_WRITE,
+    USER_BASE, USER_END, plan_copy, return_action, user_flags,
 };
 use moss_libkernel::memory::address_space::{PageInfo, UserAddressSpace};
 use moss_libkernel::task::elf;
@@ -34,6 +35,7 @@ pub enum Stop {
     },
     SyscallLimit,
     InvalidContext,
+    TimedOut,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,6 +45,8 @@ pub struct Report {
     pub syscalls: usize,
     pub writes: usize,
     pub bytes: usize,
+    pub timer_irqs: usize,
+    pub device_irqs: usize,
 }
 
 struct Run {
@@ -55,6 +59,9 @@ struct Run {
     syscalls: usize,
     writes: usize,
     bytes: usize,
+    timer_irqs: usize,
+    device_irqs: usize,
+    slice: irq::UserSlice,
 }
 
 static mut ACTIVE: *mut Run = core::ptr::null_mut();
@@ -88,6 +95,8 @@ pub fn kutox_user_bringup(
     space: &mut AddressSpace<'_, '_>,
     entry: u64,
     stack: u64,
+    timer: &irq::Timer<'_, '_>,
+    budget_us: u64,
 ) -> Result<Report, Failure> {
     crate::threads::check_boot_or_thread_context()
         .map_err(|error| Failure::new("user_run_context", error as i32))?;
@@ -121,57 +130,81 @@ pub fn kutox_user_bringup(
         })
     };
     if !stack.is_multiple_of(16)
-        || !valid_user_return(entry, stack)
+        || !kutox::user_state::valid_user_return(entry, stack)
         || !(writable_stack(stack) || stack.checked_sub(1).is_some_and(writable_stack))
     {
         return Err(Failure::new("user_run_stack", -1));
     }
     let selectors = exceptions::user_selectors()?;
-    let mut state = Run {
-        kernel_rsp: 0,
-        selectors,
-        hhdm: space.hhdm_offset(),
-        pages,
-        stop: None,
-        cpl: 0,
-        syscalls: 0,
-        writes: 0,
-        bytes: 0,
-    };
-    space.with_active(|| {
-        let segments = (DS::get_reg(), ES::get_reg(), FS::get_reg(), GS::get_reg());
-        let cr0 = Cr0::read();
-        unsafe {
-            addr_of_mut!(ACTIVE).write(addr_of_mut!(state));
-            // No FPU/SIMD context is exposed; user instructions fault with #NM.
-            Cr0::write(cr0 | Cr0Flags::TASK_SWITCHED);
-            kutox_user_enter(
-                entry,
-                stack,
-                u64::from(selectors.user_code),
-                u64::from(selectors.user_data),
-                addr_of_mut!(state.kernel_rsp),
-            );
-            addr_of_mut!(ACTIVE).write(core::ptr::null_mut());
-            Cr0::write(cr0);
-            DS::set_reg(segments.0);
-            ES::set_reg(segments.1);
-            FS::set_reg(segments.2);
-            GS::set_reg(segments.3);
-        }
-    })?;
-    Ok(Report {
-        stop: state
-            .stop
-            .ok_or(Failure::new("user_run_missing_stop", -1))?,
-        cpl: state.cpl,
-        syscalls: state.syscalls,
-        writes: state.writes,
-        bytes: state.bytes,
-    })
+    timer.with_user_slice(budget_us, |slice| {
+        let mut state = Run {
+            kernel_rsp: 0,
+            selectors,
+            hhdm: space.hhdm_offset(),
+            pages,
+            stop: None,
+            cpl: 0,
+            syscalls: 0,
+            writes: 0,
+            bytes: 0,
+            timer_irqs: 0,
+            device_irqs: 0,
+            slice,
+        };
+        space.with_user_active(|| {
+            let segments = (DS::get_reg(), ES::get_reg(), FS::get_reg(), GS::get_reg());
+            let cr0 = Cr0::read();
+            unsafe {
+                addr_of_mut!(ACTIVE).write(addr_of_mut!(state));
+                // No FPU/SIMD context is exposed; user instructions fault with #NM.
+                Cr0::write(cr0 | Cr0Flags::TASK_SWITCHED);
+                kutox_user_enter(
+                    entry,
+                    stack,
+                    u64::from(selectors.user_code),
+                    u64::from(selectors.user_data),
+                    addr_of_mut!(state.kernel_rsp),
+                );
+                addr_of_mut!(ACTIVE).write(core::ptr::null_mut());
+                Cr0::write(cr0);
+                DS::set_reg(segments.0);
+                ES::set_reg(segments.1);
+                FS::set_reg(segments.2);
+                GS::set_reg(segments.3);
+            }
+        })?;
+        Ok(Report {
+            stop: state
+                .stop
+                .ok_or(Failure::new("user_run_missing_stop", -1))?,
+            cpl: state.cpl,
+            syscalls: state.syscalls,
+            writes: state.writes,
+            bytes: state.bytes,
+            timer_irqs: state.timer_irqs,
+            device_irqs: state.device_irqs,
+        })
+    })?
 }
 
 impl Run {
+    fn prepare_return(&mut self, frame: &mut ExceptionFrame) -> bool {
+        match return_action(
+            frame.instruction_pointer,
+            frame.stack_pointer,
+            self.slice.deadline,
+            time::now_ticks(),
+        ) {
+            ReturnAction::TimedOut => self.finish(frame, Stop::TimedOut),
+            ReturnAction::InvalidContext => self.finish(frame, Stop::InvalidContext),
+            ReturnAction::Resume => {
+                frame.flags = user_flags(frame.flags);
+                return true;
+            }
+        }
+        false
+    }
+
     fn finish(&mut self, frame: &mut ExceptionFrame, stop: Stop) {
         self.stop = Some(stop);
         frame.registers.fill(0);
@@ -219,33 +252,48 @@ impl Run {
 
 #[unsafe(no_mangle)]
 #[inline(never)]
-pub(crate) fn kutox_user_dispatch(frame: &mut ExceptionFrame) -> bool {
+pub(crate) fn kutox_user_dispatch(frame: &mut ExceptionFrame) -> Result<bool, Failure> {
     if frame.code_segment & 3 != 3 {
-        return false;
+        return Ok(false);
     }
     let active = unsafe { addr_of!(ACTIVE).read() };
     if active.is_null() || !exceptions::on_user_entry_stack(frame) {
-        return false;
+        return Ok(false);
     }
     let state = unsafe { &mut *active };
     if frame.code_segment != u64::from(state.selectors.user_code)
         || frame.stack_segment != u64::from(state.selectors.user_data)
         || state.kernel_rsp == 0
     {
-        return false;
+        return Ok(false);
     }
     state.cpl = 3;
+    if matches!(
+        frame.vector as usize,
+        irq::TIMER_VECTOR | irq::DEVICE_VECTOR | irq::SPURIOUS_VECTOR
+    ) {
+        if frame.vector as usize == irq::TIMER_VECTOR {
+            state.timer_irqs += 1;
+        } else if frame.vector as usize == irq::DEVICE_VECTOR {
+            state.device_irqs += 1;
+        }
+        if state.prepare_return(frame) && frame.vector as usize == irq::TIMER_VECTOR {
+            state.slice.rearm_from_irq()?;
+        }
+        return Ok(true);
+    }
     if frame.vector == SYSCALL_VECTOR as u64 {
+        if time::now_ticks() >= state.slice.deadline {
+            state.finish(frame, Stop::TimedOut);
+            return Ok(true);
+        }
         if state.syscalls == MAX_SYSCALLS {
             state.finish(frame, Stop::SyscallLimit);
-            return true;
+            return Ok(true);
         }
         state.syscalls += 1;
-        if frame.registers[14] != SYS_EXIT
-            && !valid_user_return(frame.instruction_pointer, frame.stack_pointer)
-        {
-            state.finish(frame, Stop::InvalidContext);
-            return true;
+        if frame.registers[14] != SYS_EXIT && !state.prepare_return(frame) {
+            return Ok(true);
         }
         // Register order matches exception_entry.S: rax, rdi, rsi, rdx.
         match frame.registers[14] {
@@ -260,9 +308,9 @@ pub(crate) fn kutox_user_dispatch(frame: &mut ExceptionFrame) -> bool {
             _ => frame.registers[14] = (-38i64) as u64,
         }
         if state.stop.is_none() {
-            frame.flags = user_flags(frame.flags);
+            state.prepare_return(frame);
         }
-        return true;
+        return Ok(true);
     }
     if matches!(frame.vector, 0 | 1 | 3..=7 | 10..=14 | 16 | 17 | 19) {
         let stop = Stop::Fault {
@@ -272,9 +320,9 @@ pub(crate) fn kutox_user_dispatch(frame: &mut ExceptionFrame) -> bool {
             instruction: frame.instruction_pointer,
         };
         state.finish(frame, stop);
-        return true;
+        return Ok(true);
     }
-    false
+    Ok(false)
 }
 
 pub fn quiescent() -> bool {

@@ -1,4 +1,4 @@
-//! Portable bounds for the native, cooperative user-run boundary.
+//! Portable bounds for the native, timer-bounded user-run boundary.
 
 use moss_libkernel::memory::address_space::PageInfo;
 
@@ -10,11 +10,29 @@ pub const MAX_WRITE: usize = 256;
 const _: () = assert!(MAX_WRITE <= PAGE_SIZE);
 pub const MAX_OUTPUT: usize = 1024;
 pub const MAX_SYSCALLS: usize = 32;
+pub const MAX_RUN_US: u64 = 1_000_000;
 pub const SYS_WRITE: u64 = 1;
 pub const SYS_EXIT: u64 = 60;
 
 pub fn valid_user_return(instruction: u64, stack: u64) -> bool {
     (USER_BASE..USER_END).contains(&instruction) && USER_BASE < stack && stack <= USER_END
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReturnAction {
+    Resume,
+    InvalidContext,
+    TimedOut,
+}
+
+pub fn return_action(instruction: u64, stack: u64, deadline: u64, now: u64) -> ReturnAction {
+    if now >= deadline {
+        ReturnAction::TimedOut
+    } else if !valid_user_return(instruction, stack) {
+        ReturnAction::InvalidContext
+    } else {
+        ReturnAction::Resume
+    }
 }
 
 pub const fn user_flags(flags: u64) -> u64 {
@@ -29,7 +47,7 @@ pub const fn user_flags(flags: u64) -> u64 {
         | (1 << 16)
         | (1 << 18)
         | (1 << 21);
-    (flags & ALLOWED) | 2
+    (flags & ALLOWED) | 0x202
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -130,18 +148,43 @@ mod tests {
     }
 
     #[test]
-    fn returning_flags_keep_df_but_remove_if_iopl_nt_vm_and_reserved_bits() {
+    fn returning_flags_force_if_keep_df_and_remove_iopl_nt_vm_and_reserved_bits() {
         let sanitized = user_flags(u64::MAX);
-        assert_eq!(
-            sanitized & ((1 << 9) | (3 << 12) | (1 << 14) | (1 << 17)),
-            0
-        );
+        assert_eq!(sanitized & ((3 << 12) | (1 << 14) | (1 << 17)), 0);
         assert_ne!(sanitized & (1 << 10), 0);
         assert_eq!(sanitized >> 22, 0);
-        assert_eq!(user_flags(0), 2);
+        assert_eq!(user_flags(0), 0x202);
+        assert_ne!(sanitized & (1 << 9), 0);
         assert_eq!(user_flags(sanitized), sanitized);
     }
 
+    #[test]
+    fn common_return_gate_checks_exact_deadline_and_context_before_resuming() {
+        assert_eq!(
+            return_action(USER_BASE, USER_END, 100, 99),
+            ReturnAction::Resume
+        );
+        for now in [100, 101, u64::MAX] {
+            assert_eq!(
+                return_action(USER_BASE, USER_END, 100, now),
+                ReturnAction::TimedOut
+            );
+        }
+        assert_eq!(
+            return_action(USER_BASE, USER_END, u64::MAX, u64::MAX - 1),
+            ReturnAction::Resume
+        );
+        assert_eq!(
+            return_action(USER_BASE, USER_END, 0, 0),
+            ReturnAction::TimedOut
+        );
+        for (instruction, stack) in [(0, USER_END), (USER_BASE, 0x8000_0000_0000)] {
+            assert_eq!(
+                return_action(instruction, stack, 100, 99),
+                ReturnAction::InvalidContext
+            );
+        }
+    }
     #[test]
     fn copy_plans_boundaries_and_discontiguous_physical_pages() {
         let plan = plan_copy(USER_BASE + 4094, 4, |address| {

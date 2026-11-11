@@ -5,6 +5,7 @@ use crate::{
     Failure,
     boot::BootInfo,
     cpu, exceptions,
+    irq::Timer,
     memory::{self, user::AddressSpace},
     serial,
     user::{self, Report, Stop},
@@ -58,7 +59,7 @@ unsafe extern "C" {
     static kutox_guest_user_startup_full_end: u8;
 }
 
-fn program(start: *const u8, end: *const u8) -> &'static [u8] {
+pub(super) fn program(start: *const u8, end: *const u8) -> &'static [u8] {
     let length = end as usize - start as usize;
     assert!(length > 0 && length <= PAGE_SIZE);
     unsafe { core::slice::from_raw_parts(start, length) }
@@ -89,23 +90,29 @@ fn space<'a, 's>(
     Ok(space)
 }
 
-fn execute(space: &mut AddressSpace<'_, '_>) -> Result<Report, Failure> {
-    execute_stack(space, USER_END)
+fn execute(space: &mut AddressSpace<'_, '_>, timer: &Timer<'_, '_>) -> Result<Report, Failure> {
+    execute_stack(space, USER_END, timer)
 }
 
-fn execute_stack(space: &mut AddressSpace<'_, '_>, stack: u64) -> Result<Report, Failure> {
-    execute_entry(space, USER_BASE, stack)
+fn execute_stack(
+    space: &mut AddressSpace<'_, '_>,
+    stack: u64,
+    timer: &Timer<'_, '_>,
+) -> Result<Report, Failure> {
+    execute_entry(space, USER_BASE, stack, timer, 200_000)
 }
 
 pub(super) fn execute_entry(
     space: &mut AddressSpace<'_, '_>,
     entry: u64,
     stack: u64,
+    timer: &Timer<'_, '_>,
+    budget_us: u64,
 ) -> Result<Report, Failure> {
     let root = Cr3::read();
     let cr0 = Cr0::read();
     let flags = rflags::read();
-    let report = user::kutox_user_bringup(space, entry, stack)?;
+    let report = user::kutox_user_bringup(space, entry, stack, timer, budget_us)?;
     assert_eq!(report.cpl, 3);
     assert_eq!(Cr3::read(), root);
     assert_eq!(Cr0::read(), cr0);
@@ -127,14 +134,14 @@ pub(super) fn exited(
     bytes: usize,
 ) -> Result<(), Failure> {
     assert_eq!(
-        report,
-        Report {
-            stop: Stop::Exit(status),
-            cpl: 3,
-            syscalls: calls,
-            writes,
-            bytes
-        }
+        (
+            report.stop,
+            report.cpl,
+            report.syscalls,
+            report.writes,
+            report.bytes
+        ),
+        (Stop::Exit(status), 3, calls, writes, bytes)
     );
     Ok(())
 }
@@ -144,6 +151,7 @@ pub fn kutox_guest_userspace(
     boot: &BootInfo,
     allocator: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
+    let timer = Timer::start(boot, allocator)?;
     let mut space = space(
         boot,
         allocator,
@@ -161,13 +169,13 @@ pub fn kutox_guest_userspace(
             "user_run_stack",
         ),
     ] {
-        match user::kutox_user_bringup(&mut space, entry, stack) {
+        match user::kutox_user_bringup(&mut space, entry, stack, &timer, 200_000) {
             Err(error) if error.stage == expected => (),
             _ => return Err(Failure::new("user_expected_admission_error", -1)),
         }
         assert_eq!(user::quiescent(), true);
     }
-    exited(execute(&mut space)?, 33, 1, 0, 0)?;
+    exited(execute(&mut space, &timer)?, 33, 1, 0, 0)?;
     serial::print(format_args!(
         "# USER_RUN entry cpl=3 exit=33 calls=1 writes=0 bytes=0\n"
     ));
@@ -178,6 +186,7 @@ pub fn syscalls(
     boot: &BootInfo,
     allocator: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
+    let timer = Timer::start(boot, allocator)?;
     let kernel = exceptions::initialize as *const () as u64;
     let mut space = space(
         boot,
@@ -185,7 +194,7 @@ pub fn syscalls(
         code!(kutox_guest_user_syscalls, kutox_guest_user_syscalls_end),
         kernel,
     )?;
-    exited(execute(&mut space)?, 0, 11, 3, 23)?;
+    exited(execute(&mut space, &timer)?, 0, 11, 3, 23)?;
     serial::print(format_args!(
         "# USER_RUN syscalls cpl=3 exit=0 calls=11 writes=3 bytes=23\n"
     ));
@@ -201,7 +210,7 @@ pub fn syscalls(
     output[..2].copy_from_slice(b"# ");
     output[255] = b'\n';
     bounded.map_initialized(DATA, PtePermissions::ro(true), &output)?;
-    exited(execute(&mut bounded)?, 0, 6, 4, 1024)?;
+    exited(execute(&mut bounded, &timer)?, 0, 6, 4, 1024)?;
     serial::print(format_args!(
         "# USER_RUN bounds cpl=3 exit=0 calls=6 writes=4 bytes=1024\n"
     ));
@@ -212,6 +221,7 @@ pub fn faults(
     boot: &BootInfo,
     allocator: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
+    let timer = Timer::start(boot, allocator)?;
     let kernel = exceptions::initialize as *const () as u64;
     let direct = boot.hhdm_offset + boot.kernel_physical_start;
     let read = code!(kutox_guest_user_read, kutox_guest_user_read_end);
@@ -264,7 +274,7 @@ pub fn faults(
     for (index, (code, pointer, vector, error, address)) in cases.into_iter().enumerate() {
         {
             let mut space = space(boot, allocator, code, pointer)?;
-            let report = execute(&mut space)?;
+            let report = execute(&mut space, &timer)?;
             match report.stop {
                 Stop::Fault {
                     vector: actual_vector,
@@ -295,7 +305,7 @@ pub fn faults(
             code!(kutox_guest_user_exit, kutox_guest_user_exit_end),
             0,
         )?;
-        exited(execute(&mut recovery)?, 33, 1, 0, 0)?;
+        exited(execute(&mut recovery, &timer)?, 33, 1, 0, 0)?;
         exceptions::tests::test_breakpoint()?;
         serial::print(format_args!(
             "# USER_FAULT case={index} cpl=3 vector={vector} error={error} recovery=33\n"
@@ -310,7 +320,7 @@ pub fn faults(
         ),
         0,
     )?;
-    let report = execute(&mut invalid)?;
+    let report = execute(&mut invalid, &timer)?;
     assert_eq!(report.stop, Stop::InvalidContext);
     assert_eq!((report.syscalls, report.writes, report.bytes), (1, 0, 0));
     drop(invalid);
@@ -320,7 +330,7 @@ pub fn faults(
         code!(kutox_guest_user_nt, kutox_guest_user_nt_end),
         0,
     )?;
-    exited(execute(&mut flags)?, 33, 2, 0, 0)?;
+    exited(execute(&mut flags, &timer)?, 33, 2, 0, 0)?;
     serial::print(format_args!(
         "# USER_RETURN cpl=3 noncanonical=rejected nt=cleared recovery=33\n"
     ));
@@ -331,6 +341,7 @@ pub fn reclamation(
     boot: &BootInfo,
     allocator: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
+    let timer = Timer::start(boot, allocator)?;
     let before = allocator.stats();
     for _ in 0..16 {
         {
@@ -340,7 +351,7 @@ pub fn reclamation(
                 code!(kutox_guest_user_limit, kutox_guest_user_limit_end),
                 0,
             )?;
-            let report = execute(&mut space)?;
+            let report = execute(&mut space, &timer)?;
             assert_eq!(report.stop, Stop::SyscallLimit);
             assert_eq!(
                 (report.syscalls, report.writes, report.bytes),
@@ -362,6 +373,7 @@ pub fn startup_stack(
     boot: &BootInfo,
     allocator: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
+    let timer = Timer::start(boot, allocator)?;
     use moss_libkernel::task::user_stack::{AT_ENTRY, Error, setup_user_stack};
     let before = allocator.stats();
     for _ in 0..16 {
@@ -387,14 +399,14 @@ pub fn startup_stack(
             space.translate(STACK)?.map(|page| page.permissions),
             Some(PtePermissions::rw(true))
         );
-        exited(execute_stack(&mut space, stack)?, 42, 1, 0, 0)?;
+        exited(execute_stack(&mut space, stack, &timer)?, 42, 1, 0, 0)?;
         let mapped = allocator.stats();
         match setup_user_stack(&mut space, USER_END, &["replacement"], &[], &[]) {
             Err(Error::Memory(error)) if error.stage == "user_memory_already_mapped" => (),
             _ => return Err(Failure::new("user_stack_expected_duplicate", -1)),
         }
         assert_eq!(allocator.stats(), mapped);
-        exited(execute_stack(&mut space, stack)?, 42, 1, 0, 0)?;
+        exited(execute_stack(&mut space, stack, &timer)?, 42, 1, 0, 0)?;
         drop(space);
         assert_eq!(allocator.stats(), before);
         allocator
@@ -425,7 +437,7 @@ pub fn startup_stack(
                 }
             })?;
         assert_eq!(stack, STACK);
-        exited(execute_stack(&mut space, stack)?, 43, 1, 0, 0)?;
+        exited(execute_stack(&mut space, stack, &timer)?, 43, 1, 0, 0)?;
         let mapped = allocator.stats();
         let oversized = core::str::from_utf8(&string)
             .map_err(|_| Failure::new("user_stack_test_string", -1))?;
@@ -434,7 +446,7 @@ pub fn startup_stack(
             _ => return Err(Failure::new("user_stack_expected_overflow", -1)),
         }
         assert_eq!(allocator.stats(), mapped);
-        exited(execute_stack(&mut space, stack)?, 43, 1, 0, 0)?;
+        exited(execute_stack(&mut space, stack, &timer)?, 43, 1, 0, 0)?;
     }
     assert_eq!(allocator.stats(), before);
     serial::print(format_args!(

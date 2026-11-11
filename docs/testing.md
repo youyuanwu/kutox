@@ -68,7 +68,7 @@ python3 scripts/check.py full --profiles ON --scope guest \
   --select kernel-suite-nested-low-memory
 ```
 
-[Cooperative user-run acceptance](kernel-implementation.md#cooperative-ring-3-runs)
+[Timer-bounded user-run acceptance](kernel-implementation.md#timer-bounded-ring-3-runs)
 adds `user.entry_exit`, `user.syscalls`, `user.faults` and `user.reclamation`
 to those same full kernel suites. Native CPL3/TSS entry, register/DF restoration,
 write/exit and error returns, exact output limits, cross-page validation,
@@ -77,8 +77,8 @@ sixteen bounded-run cleanup epochs are checked in the guest. The host requires
 exact ordered user evidence inside each KTAP case and rejects malformed,
 missing, duplicate or moved proofs. The actual ELF gate requires native
 entry/dispatch in both profiles and every embedded program symbol only in ON.
-The fixture remains absent from OFF and normal boot. Infinite-loop recovery
-and timer preemption are not tested or provided.
+The fixture remains absent from OFF and normal boot. All these cases now run
+with user interrupts enabled and an explicit budget.
 
 [Moss startup-stack acceptance](kernel-implementation.md#moss-startup-stack-port)
 adds `user.startup_stack` to the same full kernel suites. Portable Moss tests
@@ -92,7 +92,7 @@ The actual ELF gate retains `kutox_user_bringup` in both profiles and requires
 the embedded startup program only in ON. No boot selector or dependency is added.
 
 [Static ELF acceptance](kernel-implementation.md#bounded-moss-elf-loading)
-adds `user.elf` and `user.elf_rollback` to those same suites (seventy cases).
+adds `user.elf` and `user.elf_rollback` to those same suites.
 The ON build assembles and separately links a real ELF fixture with the existing
 Clang/`ld.lld` tools. CPL3 checks argc/argv/envp/auxv, initialized cross-page data,
 8192 zeroed BSS bytes and writable data, then writes and exits 44. Sixteen
@@ -105,7 +105,24 @@ allocation/map failure. The host rejects missing, duplicate, reordered or
 out-of-case ELF evidence. The actual build gate requires `kutox_user_load_elf`
 in both profiles and the fixture/image symbols only in ON; production boot
 rejects guest evidence. No new selector, catalog registration or dependency
-is added. These remain finite, interrupt-disabled executions.
+is added. These use the interruptible bounded runner.
+
+[User IRQ acceptance](kernel-implementation.md#timer-bounded-ring-3-runs)
+adds `user.timeout` and `user.device_irq` (seventy-two kernel cases). A real
+ELF loops without syscalls and must time out across sixteen 5-ms epochs,
+each measured at >=5 ms and <100 ms, with restored CR3/CR0/IF, exact frame
+balance, a reusable timer and a preserved future handler. Invalid budgets,
+held locks, enabled caller IF and an already armed timer are rejected.
+The existing DMA-disabled e1000 IRQ fixture is triggered by a due timer handler
+only after user readiness. CPL3 code verifies seeded GPRs and DF/IF after
+timer/device return and exits 45. An early timer IRQ also stops a noncanonical
+user stack before `iretq`, then a valid run exits 33. Native memory acceptance
+checks off-lock activation, nested/scheduling rejection and blocked kernel
+mapping/stack mutation with no frame changes. Portable tests cover exact
+deadline boundaries and forced-IF flag sanitization. Strict host journals
+require all ordered proofs inside their own cases, and reject unknown user
+evidence. ON/OFF symbol and production-boot gates cover the new fixtures.
+This tests bounded user execution, not a multi-task process scheduler.
 
 ## Validation tiers
 

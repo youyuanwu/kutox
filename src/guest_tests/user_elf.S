@@ -14,6 +14,8 @@ _start:
     je .Lcode_fault
     cmp dword ptr [rax], 0x61746164
     je .Ldata_fault
+    cmp dword ptr [rax], 0x706f6f6c
+    je .Lforever
     cmp dword ptr [rax], 0x006e7572
     jne .Lbad
     cmp qword ptr [rsp + 24], 0
@@ -90,6 +92,8 @@ _start:
 .Ldata_fault:
     lea rax, [rip + initialized]
     jmp rax
+.Lforever:
+    jmp .Lforever
 .Lbad:
     mov edi, 99
 .Lexit:

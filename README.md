@@ -39,14 +39,16 @@ complete frame reclamation. Kernel mappings remain supervisor-only.
 The mapping boundary now transfers claimed-page ownership, matching the flow
 used by the ported [Moss startup-stack builder](docs/kernel-implementation.md#moss-startup-stack-port)
 for argc/argv/envp/auxv.
-An explicit [cooperative user run](docs/kernel-implementation.md#cooperative-ring-3-runs)
+An explicit [timer-bounded user run](docs/kernel-implementation.md#timer-bounded-ring-3-runs)
 can now enter ring 3 and use native `int 0x80` write/exit syscalls. Hardware user
 faults end that run without stopping the kernel. Normal boot starts no user
 program; guest-only embedded programs exercise the boundary. This is not a
 process scheduler or Linux userspace ABI. A bounded
 [Moss-derived static ELF loader](docs/kernel-implementation.md#bounded-moss-elf-loading)
 now maps embedded x86_64 executables, zeroes BSS and builds the initial stack.
-Execution is still limited to trusted, finite programs with interrupts disabled.
+User execution enables timer/device IRQs and has an explicit execution budget;
+even a syscall-free infinite loop returns a timeout. This is still single-task
+bring-up, not a scheduled process runtime.
 
 The scoped [kernel runtime](src/kernel_runtime.rs) now retains the dispatcher,
 native manager, APIC/timer/controllers and shared Linux workers through client

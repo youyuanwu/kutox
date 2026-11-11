@@ -217,7 +217,13 @@ extern "C" fn kutox_exception_dispatch(frame: &mut ExceptionFrame) {
         irq::TIMER_VECTOR | irq::DEVICE_VECTOR | irq::SPURIOUS_VECTOR
     ) {
         HARDWARE_IRQ.store(true, Ordering::Release);
-        match irq::dispatch(vector, frame.flags) {
+        let result = irq::dispatch(vector, frame.flags).and_then(|()| {
+            if frame.code_segment & 3 == 3 && !crate::user::kutox_user_dispatch(frame)? {
+                return Err(Failure::new("user_irq_context", -1));
+            }
+            Ok(())
+        });
+        match result {
             Ok(()) => {
                 HARDWARE_IRQ.store(false, Ordering::Release);
                 DISPATCHING.store(false, Ordering::Release);
@@ -232,7 +238,14 @@ extern "C" fn kutox_exception_dispatch(frame: &mut ExceptionFrame) {
             }
         }
     }
-    if crate::user::kutox_user_dispatch(frame) {
+    let handled = crate::user::kutox_user_dispatch(frame).unwrap_or_else(|error| {
+        serial::print(format_args!(
+            "{FAILURE_PREFIX} stage={} code={} vector={vector}\n",
+            error.stage, error.code
+        ));
+        io::finish(false);
+    });
+    if handled {
         DISPATCHING.store(false, Ordering::Release);
         return;
     }

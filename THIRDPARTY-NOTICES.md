@@ -148,6 +148,21 @@ stack, but import no Moss CPU entry/return, syscall or process-runtime source.
 The native entry is explicitly named `kutox_user_bringup`, not a replacement
 for Moss's scheduled process return path.
 
+### Interruptible user boundary
+
+The [native trap service](src/user.rs) now adapts the ordering in pinned Moss's
+[ARM64 user sync/IRQ entries](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/arch/arm64/exceptions/mod.rs#L179)
+and [common userspace return gateway](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/sched/uspc_ret.rs#L83):
+handle the trap/IRQ, then make one common decision before restoring userspace.
+The x86_64 register frame, `iretq`/IF handling, checked return policy, fixed
+execution budget, local-APIC deadline arbitration/drain and off-lock scoped
+CR3 lifetime are kutox implementations of that boundary. No ARM assembly,
+Moss scheduler, signal dispatcher, future polling loop or resumable process
+context is imported. Timeout returns to the synchronous kernel caller rather
+than selecting another user task. The [guest IRQ acceptance](src/guest_tests/user_interrupts.rs)
+uses existing DMA-disabled e1000 interrupt scaffolding, not a replacement for
+the unchanged Linux driver's packet path.
+
 ### Bootstrap memory allocator
 
 This is a fixed-capacity adaptation, not an unchanged copy of libkernel.

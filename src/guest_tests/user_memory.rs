@@ -81,6 +81,22 @@ pub fn kutox_guest_address_spaces(
     assert_eq!(sentinel, Err(7));
     assert_eq!(Cr3::read(), original);
     first.with_active(|| error(second.with_active(|| ()), "user_memory_context"))??;
+    let before = allocator.stats();
+    first.with_user_active(|| -> Result<(), Failure> {
+        assert_eq!(X86Cpu::irq_lock_depth(), 0);
+        assert_eq!(cpu::interrupts_enabled(), false);
+        assert_eq!(
+            crate::threads::yield_now(),
+            Err(crate::threads::SwitchError::UserAddressSpaceActive)
+        );
+        error(map_mmio(boot, 0xf000_0000, allocator), "memory_user_active")?;
+        error(StackSpace::new(boot, allocator), "memory_user_active")?;
+        error(stacks.allocate(1), "memory_user_active")?;
+        error(second.with_active(|| ()), "user_memory_context")?;
+        Ok(())
+    })??;
+    assert_eq!(Cr3::read(), original);
+    assert_eq!(allocator.stats(), before);
     drop(stack);
     drop(stacks);
     drop(mmio);

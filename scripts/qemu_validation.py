@@ -438,10 +438,17 @@ def validate_user_runs(lines, names):
         "user.elf_rollback": [
             "# USER_ELF_ROLLBACK pools=11 failures=10 malformed=4 stack=rejected frames=balanced",
         ],
+        "user.timeout": [
+            "# USER_TIMEOUT source=moss-boundary cpl=3 format=elf64 budget_us=5000 elapsed_us=5000..99999 calls=0 epochs=16 timer=reusable handler=preserved frames=balanced",
+        ],
+        "user.device_irq": [
+            "# USER_IRQ source=moss-boundary cpl=3 timer=delivered device=e1000 delivered=1 resumed=45 gprs=preserved df=preserved if=enabled locks=0",
+            "# USER_IRQ_RETURN cpl=3 timer=delivered noncanonical=rejected calls=0 recovery=33",
+        ],
     }
 
     def relevant(line):
-        return line.startswith(("# USER_RUN", "# USER_FAULT", "# USER_RETURN", "# USER_WRITE", "# USER_STACK", "# USER_ELF", "# b")) or line == "# x"
+        return line.startswith(("# USER_", "# b")) or line == "# x"
 
     if [line for line in lines if relevant(line)] != [
         line for block in evidence.values() for line in block

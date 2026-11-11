@@ -50,6 +50,7 @@ pub enum SwitchError {
     InterruptContext = -57,
     DeferredContext = -58,
     AsyncContext = -59,
+    UserAddressSpaceActive = -60,
 }
 
 fn switch_allowed() -> Result<(), SwitchError> {
@@ -67,6 +68,9 @@ fn switch_allowed() -> Result<(), SwitchError> {
     }
     if cpu::interrupts_enabled() {
         return Err(SwitchError::InterruptsEnabled);
+    }
+    if !memory::user::quiescent() {
+        return Err(SwitchError::UserAddressSpaceActive);
     }
     Ok(())
 }

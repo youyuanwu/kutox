@@ -87,6 +87,8 @@ KERNEL_TEST_NAMES = (
     "user.startup_stack",
     "user.elf",
     "user.elf_rollback",
+    "user.timeout",
+    "user.device_irq",
 )
 
 

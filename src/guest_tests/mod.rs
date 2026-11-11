@@ -19,6 +19,7 @@ mod tcp;
 mod udp;
 mod user;
 mod user_elf;
+mod user_interrupts;
 
 use self::{
     driver_services as driver_service_tests, linux_e1000 as linux_driver,
@@ -337,6 +338,14 @@ static TESTS: &[TestCase] = &[
     TestCase {
         name: "user.elf_rollback",
         run: user_elf::rollback,
+    },
+    TestCase {
+        name: "user.timeout",
+        run: user_interrupts::kutox_guest_user_timeout,
+    },
+    TestCase {
+        name: "user.device_irq",
+        run: user_interrupts::device,
     },
 ];
 

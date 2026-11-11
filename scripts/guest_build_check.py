@@ -12,7 +12,7 @@ from make_iso import validate_image
 NATIVE_INIT_SYMBOLS = {f"kutox_guest_native_init_{identity}" for identity in (10, 20, 30, 40)}
 USER_PROGRAM_SYMBOLS = {
     f"kutox_guest_user_{name}{suffix}"
-    for name in ("exit", "syscalls", "read", "code_write", "nx", "cli", "io", "ud", "fpu", "limit", "bounds", "bad_context", "nt", "startup", "startup_full")
+    for name in ("exit", "syscalls", "read", "code_write", "nx", "cli", "io", "ud", "fpu", "limit", "bounds", "bad_context", "nt", "startup", "startup_full", "irq_wait", "irq_bad_stack")
     for suffix in ("", "_end")
 }
 INIT_MAGIC = 0x4b44494e
@@ -39,6 +39,7 @@ GUEST_SYMBOLS = {
     "kutox_guest_userspace",
     "kutox_guest_elf",
     "kutox_guest_user_elf",
+    "kutox_guest_user_timeout",
     "kutox_guest_async_hardening",
 } | NATIVE_INIT_SYMBOLS | USER_PROGRAM_SYMBOLS
 RUNTIME_SYMBOLS = {

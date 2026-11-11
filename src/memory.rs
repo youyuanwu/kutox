@@ -185,6 +185,7 @@ pub fn allocation_snapshot(allocator: &PhysicalFrames<'_>) -> FrameAllocatorStat
 }
 
 fn with_mapper<R>(hhdm_offset: u64, run: impl FnOnce(&mut OffsetPageTable<'_>) -> R) -> R {
+    assert!(user::quiescent(), "kernel mapper under a user root");
     let _guard = PAGE_TABLE_LOCK.lock_save_irq();
     let root = Cr3::read().0.start_address().as_u64();
     let table = unsafe { &mut *((root + hhdm_offset) as *mut PageTable) };
@@ -425,6 +426,7 @@ fn map_window<'a, 'storage>(
     claimed: &'static AtomicBool,
     attributes: PageTableFlags,
 ) -> Result<MmioMapping<'a, 'storage>, Failure> {
+    kernel_mapping_context()?;
     let pat_low: u32;
     let pat_high: u32;
     unsafe {
@@ -490,8 +492,16 @@ pub struct StackSpace<'a, 'storage> {
     tables: SpinLockIrq<StackTables<'a, 'storage>, X86Cpu>,
 }
 
+fn kernel_mapping_context() -> Result<(), Failure> {
+    if !user::quiescent() {
+        return Err(Failure::new("memory_user_active", -1));
+    }
+    Ok(())
+}
+
 impl<'a, 'storage> StackSpace<'a, 'storage> {
     pub fn new(boot: &BootInfo, allocator: &'a PhysicalFrames<'storage>) -> Result<Self, Failure> {
+        kernel_mapping_context()?;
         if STACK_CLAIMED
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
@@ -511,6 +521,7 @@ impl<'a, 'storage> StackSpace<'a, 'storage> {
     }
 
     pub fn allocate(&self, slot: usize) -> Result<KernelStack<'_, 'a, 'storage>, Failure> {
+        kernel_mapping_context()?;
         if slot >= MAX_STACKS {
             return Err(Failure::new("stack_slot", -1));
         }

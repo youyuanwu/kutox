@@ -226,6 +226,49 @@ pub struct Timer<'a, 'storage> {
     _claim: TimerClaim,
 }
 
+pub(crate) struct UserSlice {
+    pub(crate) deadline: u64,
+    interval_counts: u32,
+    interval_ticks: u64,
+}
+
+fn deadline_counts(remaining: u64, counts: u32, ticks: u64) -> u32 {
+    (u128::from(remaining) * u128::from(counts))
+        .div_ceil(u128::from(ticks))
+        .clamp(1, u128::from(u32::MAX)) as u32
+}
+
+impl UserSlice {
+    pub(crate) fn rearm_from_irq(&self) -> Result<(), Failure> {
+        if !exceptions::is_hardware_irq()
+            || cpu::interrupts_enabled()
+            || X86Cpu::irq_lock_depth() != 0
+        {
+            return Err(Failure::new("user_timer_irq_context", -1));
+        }
+        let address = ADDRESS.load(Ordering::Acquire);
+        if address == 0
+            || read(address, LVT_TIMER) & MASKED == 0
+            || vector_set(address, IRR, TIMER_VECTOR)
+            || vector_set(address, ISR, TIMER_VECTOR)
+        {
+            return Err(Failure::new("user_timer_rearm_busy", -1));
+        }
+        let deadline = HANDLER
+            .lock_save_irq()
+            .as_ref()
+            .map_or(self.deadline, |handler| self.deadline.min(handler.deadline));
+        let remaining = deadline.saturating_sub(time::now_ticks());
+        write(address, LVT_TIMER, TIMER_VECTOR as u32);
+        write(
+            address,
+            INITIAL_COUNT,
+            deadline_counts(remaining, self.interval_counts, self.interval_ticks),
+        );
+        Ok(())
+    }
+}
+
 impl<'a, 'storage> Timer<'a, 'storage> {
     pub fn start(
         boot: &BootInfo,
@@ -333,11 +376,34 @@ impl<'a, 'storage> Timer<'a, 'storage> {
         if remaining == 0 {
             return Ok(false);
         }
-        let counts = (u128::from(remaining) * u128::from(self.interval_counts))
-            .div_ceil(u128::from(self.interval_ticks))
-            .clamp(1, u128::from(u32::MAX)) as u32;
+        let counts = deadline_counts(remaining, self.interval_counts, self.interval_ticks);
         self.arm_count(counts)?;
         Ok(true)
+    }
+
+    pub(crate) fn with_user_slice<R>(
+        &self,
+        budget_us: u64,
+        run: impl FnOnce(UserSlice) -> R,
+    ) -> Result<R, Failure> {
+        context()?;
+        if budget_us == 0 || budget_us > kutox::user_state::MAX_RUN_US {
+            return Err(Failure::new("user_run_budget", -1));
+        }
+        let deadline = time::deadline_after_us(budget_us)?;
+        let first = self
+            .handler_deadline()
+            .map_or(deadline, |when| when.min(deadline));
+        if !self.arm_for_idle(first)? {
+            return Err(Failure::new("user_timer_elapsed", -1));
+        }
+        let result = run(UserSlice {
+            deadline,
+            interval_counts: self.interval_counts,
+            interval_ticks: self.interval_ticks,
+        });
+        self.stop()?;
+        Ok(result)
     }
 
     fn arm_count(&self, counts: u32) -> Result<(), Failure> {

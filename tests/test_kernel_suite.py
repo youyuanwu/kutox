@@ -361,6 +361,13 @@ def user_log(name):
         "user.elf_rollback": [
             "# USER_ELF_ROLLBACK pools=11 failures=10 malformed=4 stack=rejected frames=balanced",
         ],
+        "user.timeout": [
+            "# USER_TIMEOUT source=moss-boundary cpl=3 format=elf64 budget_us=5000 elapsed_us=5000..99999 calls=0 epochs=16 timer=reusable handler=preserved frames=balanced",
+        ],
+        "user.device_irq": [
+            "# USER_IRQ source=moss-boundary cpl=3 timer=delivered device=e1000 delivered=1 resumed=45 gprs=preserved df=preserved if=enabled locks=0",
+            "# USER_IRQ_RETURN cpl=3 timer=delivered noncanonical=rejected calls=0 recovery=33",
+        ],
     }[name]
 
 
@@ -406,7 +413,7 @@ def suite_log(case="kernel-tests"):
 class KernelSuiteTests(unittest.TestCase):
     def test_user_run_proofs_require_cpl3_exact_bounds_faults_recovery_and_order(self):
         names = ("user.entry_exit", "user.syscalls", "user.faults", "user.reclamation")
-        self.assertEqual(KERNEL_TEST_NAMES[-7:-3], names)
+        self.assertEqual(KERNEL_TEST_NAMES[-9:-5], names)
         output = suite_log()
         for name in names:
             for marker in user_log(name):
@@ -433,7 +440,7 @@ class KernelSuiteTests(unittest.TestCase):
             "memory.user_switching", "memory.user_permissions",
             "memory.user_rollback", "memory.user_reclamation",
         )
-        self.assertEqual(KERNEL_TEST_NAMES[-11:-7], names)
+        self.assertEqual(KERNEL_TEST_NAMES[-13:-9], names)
         output = suite_log()
         validate_result("kernel-tests", 1, output)
         for name in names:
@@ -442,7 +449,7 @@ class KernelSuiteTests(unittest.TestCase):
                 validate_result("kernel-tests", 1, output.replace(f"ok {index} {name}\n", ""))
 
     def test_moss_startup_stack_requires_actual_cpl3_layout_and_reclamation_proof(self):
-        self.assertEqual(KERNEL_TEST_NAMES[-3], "user.startup_stack")
+        self.assertEqual(KERNEL_TEST_NAMES[-5], "user.startup_stack")
         output = suite_log()
         marker = user_log("user.startup_stack")[0]
         for replacement in (
@@ -465,7 +472,7 @@ class KernelSuiteTests(unittest.TestCase):
                 validate_result("kernel-tests", 1, output.replace(limit, replacement))
 
     def test_elf_requires_loading_execution_bss_fault_recovery_and_rollback_proofs(self):
-        self.assertEqual(KERNEL_TEST_NAMES[-2:], ("user.elf", "user.elf_rollback"))
+        self.assertEqual(KERNEL_TEST_NAMES[-4:-2], ("user.elf", "user.elf_rollback"))
         output = suite_log()
         for name in ("user.elf", "user.elf_rollback"):
             for marker in user_log(name):
@@ -485,6 +492,44 @@ class KernelSuiteTests(unittest.TestCase):
         result = f"ok {KERNEL_TEST_NAMES.index('user.elf') + 1} user.elf"
         with self.assertRaises(AssertionError):
             validate_result("kernel-tests", 1, output.replace(marker + "\n" + result, result + "\n" + marker))
+
+    def test_user_irq_proofs_require_exact_budget_device_return_and_cleanup(self):
+        self.assertEqual(KERNEL_TEST_NAMES[-2:], ("user.timeout", "user.device_irq"))
+        output = suite_log()
+        for name in KERNEL_TEST_NAMES[-2:]:
+            marker = user_log(name)[0]
+            changes = [
+                "", marker + "\n" + marker, marker.replace("cpl=3", "cpl=0"),
+                marker.replace("source=moss-boundary", "source=unrelated"),
+            ]
+            for before, after in (
+                ("budget_us=5000", "budget_us=0"), ("elapsed_us=5000..99999", "elapsed_us=0..99999"),
+                ("elapsed_us=5000..99999", "elapsed_us=5000..100000"),
+                ("calls=0", "calls=1"), ("epochs=16", "epochs=15"),
+                ("timer=reusable", "timer=armed"), ("handler=preserved", "handler=lost"),
+                ("frames=balanced", "frames=leaked"), ("timer=delivered", "timer=missing"),
+                ("delivered=1", "delivered=0"), ("resumed=45", "resumed=99"),
+                ("gprs=preserved", "gprs=clobbered"), ("df=preserved", "df=cleared"),
+                ("if=enabled", "if=disabled"), ("locks=0", "locks=1"),
+            ):
+                if before in marker:
+                    changes.append(marker.replace(before, after))
+            for replacement in changes:
+                with self.subTest(name=name, replacement=replacement), self.assertRaises(AssertionError):
+                    validate_result("kernel-tests", 1, output.replace(marker, replacement))
+            result = f"ok {KERNEL_TEST_NAMES.index(name) + 1} {name}"
+            terminal = user_log(name)[-1]
+            with self.assertRaises(AssertionError):
+                validate_result("kernel-tests", 1, output.replace(terminal + "\n" + result, result + "\n" + terminal))
+        with self.assertRaises(AssertionError):
+            validate_result("kernel-tests", 1, output.replace("KTAP version 1\n", "KTAP version 1\n# USER_UNKNOWN extra=1\n"))
+        marker = user_log("user.device_irq")[1]
+        for replacement in (
+            "", marker + "\n" + marker, marker.replace("noncanonical=rejected", "noncanonical=accepted"),
+            marker.replace("recovery=33", "recovery=99"), marker.replace("calls=0", "calls=1"),
+        ):
+            with self.subTest(replacement=replacement), self.assertRaises(AssertionError):
+                validate_result("kernel-tests", 1, output.replace(marker, replacement))
 
     def test_pci_hierarchy_rejects_missing_duplicate_and_wrong_identity(self):
         case = "kernel-tests-nested"

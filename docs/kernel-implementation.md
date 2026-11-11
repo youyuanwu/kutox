@@ -49,6 +49,15 @@ caller's IRQ state, including ordinary callback error returns. User entries
 are never global, and switching flushes their TLB entries; PCID and five-level
 paging are rejected. Supervisor write protection and NX must already be enabled.
 
+The runner uses a separate `with_user_active` scope: refresh and CR3 changes
+are locked, but the lock is released before entering CPL3. The exclusive space
+borrow pins its root, tables and payloads throughout IRQ delivery. A user-root
+activation flag rejects kernel scheduling, nested activation and kernel-window/
+stack mapping changes; the generic kernel mapper also rejects operations under
+that root. IRQ callbacks may notify existing work, not switch tasks or mutate
+kernel mappings. The native continuation returns with IF clear; the original
+root is restored under the mapping lock before any pending timer is drained.
+
 Before activation, every non-user PML4 entry is refreshed from the live kernel
 root, with user access masked off. This preserves kernel text, direct-map,
 exception stacks and the existing lower-half device/thread-stack windows,
@@ -61,7 +70,7 @@ mapping refresh, W^X/effective flags, zero-fill, partial-allocation rollback,
 exhausted-pool recovery, cross-space page-owner transfer and sixteen full-capacity reclamation epochs. They use
 the existing per-case exact physical-frame and heap boundary.
 
-The [cooperative ring-3 service](#cooperative-ring-3-runs) builds on these
+The [timer-bounded ring-3 service](#timer-bounded-ring-3-runs) builds on these
 scoped mappings. Normal boot creates no user address space or acceptance workload.
 
 ## Moss startup-stack port
@@ -148,13 +157,17 @@ remaining intact. Portable tests cover malformed images and injected map errors.
 The native loader is retained in both profiles; the linked ELF and acceptance
 entry exist only in ON. Normal boot loads no program. This is not general
 `execve`, a dynamic linker, filesystem loading, ASLR, Linux binary compatibility
-or a remedy for the finite-run limitation below.
+or a process scheduler. Execution uses the bounded runner below.
 
-## Cooperative ring-3 runs
+## Timer-bounded ring-3 runs
 
 [The native service](../src/user.rs), explicitly named `kutox_user_bringup`,
-runs one finite program synchronously in an
-exclusively borrowed owned address space. The entry must be an executable,
+runs one program synchronously in an exclusively borrowed owned address space.
+It now requires a calibrated, stopped `irq::Timer` and a budget of
+1..=1,000,000 microseconds. The current bring-up caller is quiescent boot context,
+not a scheduled kernel/user task. Caller IF must be clear with no locks held;
+invalid budgets, contexts or an already armed timer fail without entering CPL3
+or replacing the timer's existing event. The entry must be an executable,
 non-writable user mapping; the initial stack must be 16-byte aligned and point
 into (or immediately above) a writable, non-executable user page. This permits
 both an empty stack top and Moss's argc-at-SP layout, including an exactly full
@@ -164,14 +177,35 @@ kernel error without entering user mode or publishing active state.
 
 [Native assembly](../src/user_entry.S) saves the kernel's callee-saved registers
 and continuation stack, clears all user general registers, and uses `iretq`
-with user GDT selectors, IOPL zero and IF clear. The existing supervisor-only
+with user GDT selectors, IOPL zero and IF set. The existing supervisor-only
 16-KiB TSS RSP0 stack receives user exceptions and the DPL3 interrupt gate at
 vector `0x80`. Other IDT gates remain DPL0. Existing exception assembly clears
-DF before entering Rust and preserves user registers across a returning call.
-Exit/fault handling constructs a kernel return frame, resumes the saved kernel
-continuation and restores CR0, segment selectors and CR3 before releasing the
-page-table IRQ lock. User `write` can preserve DF in its saved flags without
+DF before entering Rust and preserves user registers across returning traps.
+Exit/fault/timeout handling constructs an IF-clear kernel return frame, resumes
+the saved continuation and restores CR0, segment selectors and CR3 off the user
+path. User `write` can preserve DF in its saved flags without
 violating the kernel Rust ABI.
+
+The trap boundary adapts pinned Moss's ARM64 `el0_sync`/`el0_irq` control flow:
+handle the trap/controller IRQ, then pass every CPL3 return through a common
+decision gate. Moss's `dispatch_userspace_task` selects tasks, polls kernel work
+and restores user contexts; this single-task adaptation instead checks a fixed
+deadline and return context, then resumes the same frame or returns to its
+kernel caller. No ARM assembly or full Moss process scheduler is copied.
+Kernel-origin IRQs retain their original dispatch/return behavior.
+
+The timer is borrowed, not recreated per syscall. Its initial one-shot targets
+the earlier of the run deadline and an existing scheduled handler. After the
+normal timer dispatcher expires waits, invokes due handlers and acknowledges
+EOI, a still-valid user return rearms toward that same fixed deadline or the
+remaining handler. Early timer delivery never extends the execution budget.
+Device IRQs use the existing controller dispatch and EOI before the same return
+gate. Timeout returns `Stop::TimedOut`, including for an infinite loop making no
+syscall. A not-yet-due handler remains registered after an earlier user stop;
+the timer owner may cancel or service it normally. Once the slice is armed,
+every exit, fault, timeout or activation failure stops/drains the borrowed timer
+after restoring the kernel root. Admission rejection never drains an existing
+caller-owned event. Pending device IRQs remain owned by their existing route.
 
 This is a **native 64-bit int80 ABI**, not Linux's 32-bit int80 ABI or a promise
 of Linux binary compatibility:
@@ -191,9 +225,11 @@ syscalls are processed; the next trap stops the run with `SyscallLimit`.
 Returning calls require RIP and RSP inside the native user window (RSP may equal
 its exclusive end); invalid return state stops with `InvalidContext` before
 side effects. Return flags preserve arithmetic flags, DF and supported debug
-bits but force IF/IOPL/NT/VM and reserved bits clear, preventing a user-supplied
+bits, force IF set and IOPL/NT/VM/reserved bits clear, preventing a user-supplied
 noncanonical stack or NT flag from faulting a kernel `iretq`. Exit needs no
 user return and always builds the kernel continuation frame.
+The same bounds/flag gate protects returning hardware IRQs. Deadline checks
+also occur before syscall work and before resuming after that work.
 
 The [portable user-copy planner](../src/user_state.rs) checks the entire range
 against a snapshot of owned, effectively readable user mappings before copying
@@ -218,15 +254,23 @@ syscall-limit/reclamation epochs. Noncanonical user RSP rejection and NT
 sanitization are also exercised on real transitions. Journals require exact ordered evidence
 within each KTAP case. OFF retains the native entry/dispatch code but omits
 all embedded program bytes and guest entry symbols.
+[Two IRQ cases](../src/guest_tests/user_interrupts.rs) stop a real looping ELF
+without syscalls across sixteen balanced 5-ms epochs, require elapsed time
+within 5..100 ms, preserve a future handler and reuse the stopped timer.
+A due handler triggers a DMA-disabled e1000 IRQ only after user readiness;
+the user resumes with seeded GPRs/DF/IF intact and exits 45. A separate timer
+IRQ rejects a noncanonical user RSP before `iretq`, followed by a successful
+fresh entry/exit. Existing ELF, write/fault and stack cases now use the same
+budgeted interruptible runner.
 The runner remains a bring-up boundary, not Moss's persistent user context,
 scheduled process loop or asynchronous syscall machinery. The portable stack
 builder is independent of this runner and can be reused by a future process layer.
 
-**Limitations:** IF remains clear and there is no preemption, runtime deadline,
-or recovery from a user loop that makes no syscall. This interface is for finite
-controlled programs, not arbitrary untrusted workloads or concurrent user tasks;
-device/timer delivery waits until the run returns. The static ELF loader does
-not add a process scheduler, asynchronous/blocking user API, VFS, signals, CoW/fork,
+**Limitations:** this is a wall-clock budget enforced at CPL3 timer/trap return,
+not kernel preemption or a resumable user-task scheduler. Kernel trap work keeps
+IF clear and must remain bounded; expiry cannot interrupt a stuck kernel handler.
+Ready kernel workers run only after the user call returns. There is no
+asynchronous/blocking user API, VFS, signals, CoW/fork,
 demand paging, SMP, Linux userspace ABI, TLS or FPU/SIMD context switching.
 The permanent TSS entry stack, like the existing exception stacks, has no guard
 page. Normal boot runs no userspace demo or fixture.

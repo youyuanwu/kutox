@@ -52,8 +52,10 @@ BEGIN kutox_guest_user_exit
     jne .Lentry_bad
     pushfq
     pop rax
-    test eax, 0x77700
+    test eax, 0x77500
     jnz .Lentry_bad
+    test eax, 0x200
+    jz .Lentry_bad
     EXIT 33
 .Lentry_bad:
     EXIT 99
@@ -284,3 +286,71 @@ BEGIN kutox_guest_user_startup_full
 .Lstartup_full_bad:
     EXIT 99
 END kutox_guest_user_startup_full
+
+BEGIN kutox_guest_user_irq_wait
+    mov eax, 0x10
+    mov ecx, 0x11
+    mov edx, 0x12
+    mov ebx, 0x13
+    mov ebp, 0x14
+    mov rsi, USER_DATA
+    mov edi, 0x16
+    mov r8d, 0x18
+    mov r9d, 0x19
+    mov r10d, 0x1a
+    mov r11d, 0x1b
+    mov r12d, 0x1c
+    mov r13d, 0x1d
+    mov r14d, 0x1e
+    mov r15d, 0x1f
+    std
+    mov byte ptr [rsi + 1], 1
+.Lirq_wait:
+    cmp byte ptr [rsi], 1
+    jne .Lirq_wait
+    cmp rax, 0x10
+    jne .Lirq_bad
+    cmp rcx, 0x11
+    jne .Lirq_bad
+    cmp rdx, 0x12
+    jne .Lirq_bad
+    cmp rbx, 0x13
+    jne .Lirq_bad
+    cmp rbp, 0x14
+    jne .Lirq_bad
+    cmp rdi, 0x16
+    jne .Lirq_bad
+    cmp r8, 0x18
+    jne .Lirq_bad
+    cmp r9, 0x19
+    jne .Lirq_bad
+    cmp r10, 0x1a
+    jne .Lirq_bad
+    cmp r11, 0x1b
+    jne .Lirq_bad
+    cmp r12, 0x1c
+    jne .Lirq_bad
+    cmp r13, 0x1d
+    jne .Lirq_bad
+    cmp r14, 0x1e
+    jne .Lirq_bad
+    cmp r15, 0x1f
+    jne .Lirq_bad
+    pushfq
+    pop rax
+    and eax, 0x600
+    cmp eax, 0x600
+    jne .Lirq_bad
+    cld
+    EXIT 45
+.Lirq_bad:
+    EXIT 99
+END kutox_guest_user_irq_wait
+
+BEGIN kutox_guest_user_irq_bad_stack
+    mov rax, USER_DATA
+    mov byte ptr [rax + 1], 1
+    mov rsp, 0x800000000000
+.Lirq_bad_stack_loop:
+    jmp .Lirq_bad_stack_loop
+END kutox_guest_user_irq_bad_stack

@@ -69,6 +69,7 @@ class GuestBuildTests(unittest.TestCase):
         self.assertIn("kutox_guest_address_spaces", GUEST_SYMBOLS)
         self.assertIn("kutox_guest_userspace", GUEST_SYMBOLS)
         self.assertTrue({"kutox_guest_elf", "kutox_guest_user_elf"} <= GUEST_SYMBOLS)
+        self.assertTrue({"kutox_guest_user_timeout", "kutox_guest_user_irq_wait", "kutox_guest_user_irq_wait_end"} <= GUEST_SYMBOLS)
         self.assertTrue({"kutox_user_bringup", "kutox_user_load_elf", "kutox_user_enter", "kutox_user_resume", "kutox_user_dispatch"} <= RUNTIME_SYMBOLS)
         self.assertIn("kutox::net_udp::CONTROL", RUNTIME_SYMBOLS)
         validate_symbols(RUNTIME_SYMBOLS | GUEST_SYMBOLS, True)

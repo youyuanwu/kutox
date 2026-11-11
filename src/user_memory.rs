@@ -1,5 +1,6 @@
 use super::*;
 use core::marker::PhantomData;
+use moss_libkernel::CpuOps;
 use moss_libkernel::memory::{
     address_space::{OwnedPage, PageInfo, UserAddressSpace},
     permissions::PtePermissions,
@@ -175,6 +176,13 @@ impl<'a, 'storage> AddressSpace<'a, 'storage> {
     pub fn with_active<R>(&mut self, run: impl FnOnce() -> R) -> Result<R, Failure> {
         self.inactive()?;
         let _lock = PAGE_TABLE_LOCK.lock_save_irq();
+        let restore = self.activate()?;
+        let result = run();
+        drop(restore);
+        Ok(result)
+    }
+
+    fn activate(&mut self) -> Result<RestoreRoot, Failure> {
         self.refresh_kernel()?;
         let restore = RestoreRoot(Cr3::read());
         assert!(
@@ -188,7 +196,23 @@ impl<'a, 'storage> AddressSpace<'a, 'storage> {
                 Cr3Flags::empty(),
             );
         }
+        Ok(restore)
+    }
+
+    /// Pins this space while user traps run off-lock. Return must have IF clear.
+    pub(crate) fn with_user_active<R>(&mut self, run: impl FnOnce() -> R) -> Result<R, Failure> {
+        self.inactive()?;
+        let restore = {
+            let _lock = PAGE_TABLE_LOCK.lock_save_irq();
+            self.activate()?
+        };
         let result = run();
+        assert!(
+            !crate::cpu::interrupts_enabled(),
+            "user return left IF enabled"
+        );
+        assert_eq!(X86Cpu::irq_lock_depth(), 0, "user return left locks held");
+        let _lock = PAGE_TABLE_LOCK.lock_save_irq();
         drop(restore);
         Ok(result)
     }

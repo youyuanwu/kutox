@@ -11,7 +11,7 @@ kutox_user_enter:
     mov [r8], rsp
     push rcx
     push rsi
-    push 2
+    push 0x202
     push rdx
     push rdi
     xor eax, eax
