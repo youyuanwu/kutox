@@ -289,6 +289,11 @@ def validate_http_suite(case, returncode, output):
         if not 8 <= int(match[1]) <= 100000 or not 1 <= int(match[2]) <= int(match[1]):
             raise AssertionError("userspace did not resume or yield to earlier kernel work")
         runtime_evidence.extend([deadlines, users[0]])
+        blocking = [line for line in block if line.startswith("# USER_RUNTIME_BLOCKING ")]
+        pattern = rf"# USER_RUNTIME_BLOCKING epoch={epoch} yield=(\d+) sleep=(\d+) early=0 shutdown=sleeping cancel=sleeping"
+        if len(blocking) != 1 or (counts := re.fullmatch(pattern, blocking[0])) is None or not 3 <= int(counts[1]) <= 14 or counts[1] != counts[2] or not lines.index(users[0]) < lines.index(blocking[0]) < end:
+            raise AssertionError("missing bounded user blocking or sleeping-shutdown proof")
+        runtime_evidence.extend(blocking)
         configs = [line for line in block if line.startswith("# DHCP_CONFIG ")]
         suffix = f"generation=1 cidr=10.0.2.{epoch + 14}/24 router=Some(10.0.2.2) dns=[Some({server}), None]"
         if len(configs) != 1 or re.fullmatch(r"# DHCP_CONFIG identity=[1-9]\d* " + re.escape(suffix), configs[0]) is None:
@@ -325,8 +330,8 @@ def validate_http_suite(case, returncode, output):
             if positions != sorted(positions) or not stage_end < positions[0] or positions[-1] >= end:
                 raise AssertionError("HTTP stages or cleanup are reordered")
             progress = [line for line in block if line.startswith(f"# USER_RUNTIME_NETWORK epoch={epoch} stage={stage} ")]
-            pattern = rf"# USER_RUNTIME_NETWORK epoch={epoch} stage={stage} slices=([1-9]\d*) progress=([1-9]\d*) survivor=running"
-            if len(progress) != 1 or (overlap := re.fullmatch(pattern, progress[0])) is None or not 1 <= int(overlap[2]) <= int(overlap[1]) or not positions[-1] < lines.index(progress[0]) < lines.index(users[0]):
+            pattern = rf"# USER_RUNTIME_NETWORK epoch={epoch} stage={stage} slices=([1-9]\d*) progress=([1-9]\d*) yield=([1-9]\d*) sleep=([1-9]\d*) survivor=running"
+            if len(progress) != 1 or (overlap := re.fullmatch(pattern, progress[0])) is None or any(not 1 <= int(value) <= int(overlap[1]) for value in overlap.groups()[1:]) or not positions[-1] < lines.index(progress[0]) < lines.index(users[0]):
                 raise AssertionError("HTTP traffic did not overlap live user tasks")
             runtime_evidence.extend(progress)
             stage_end = positions[-1]
@@ -471,9 +476,11 @@ def validate_user_runs(lines, names):
         ],
         "user.task_limits": [
             "# USER_TASK_LIMITS capacity=2 stale=rejected retry=preserved cancel=paused irq_context=rejected resume_fault=contained budgets=cumulative gaps_us=10000 timeouts=2 fault=isolated survivor=66 syscall_limit=32 writes=32 bytes=0 frames=balanced",
+            "# USER_BLOCKING source=moss-boundary yield=6 sleep=6 resumes=12 exits=65,66 zero=immediate invalid=-22 context=preserved early=0 idle=hlt peer=preempted budget=active syscall_limit=32 cancel=sleeping stale=rejected drop=sleeping single_run=unsupported frames=balanced",
         ],
         "user.runtime_cleanup": [
             "# USER_RUNTIME_ERRORS_BEGIN",
+            "# USER_SLEEP_IDLE tasks=2 sleep=4 exits=2 wake=timer early=0 idle=hlt callbacks=bounded budget=uncharged shutdown=sleeping frames=balanced",
             "# RUNTIME_ERROR stage=user_task_duration code=-1",
             "# RUNTIME_ERROR stage=user_task_duration code=-1",
             "# RUNTIME_ERROR stage=runtime_startup_injected code=-210",

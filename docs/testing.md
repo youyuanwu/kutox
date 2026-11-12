@@ -144,7 +144,7 @@ remain mandatory. Normal boot still creates no user dispatcher or task.
 extends the existing HTTP case with two isolated ELF tasks, live task progress
 in every HTTP transfer, contained fault/timeout, paused cancellation/stale
 handles, registered-handler delivery, kernel deadlines shorter than the user
-quantum and two parked owners cancelled at shutdown. Strict journals require
+quantum and two sleeping owners cancelled at shutdown. Strict journals require
 these proofs within each runtime epoch, alongside the unchanged independent
 wire/PCAP oracle and exact resource balance. `user.runtime_cleanup` brings the
 kernel suite to seventy-five cases and verifies invalid preflight plus joined
@@ -152,6 +152,21 @@ admission/observer/native-entry/startup failures. The portable FIFO test checks
 that a pending wake remains visible until its thread actually receives it.
 The native runtime entry is required in both profile ELFs; no new selector,
 ISO or test manager is introduced.
+
+[Yield/sleep acceptance](kernel-implementation.md#bounded-user-yield-and-sleep)
+extends these same cases without adding test modes or changing the 75-case
+inventory. Real ELF programs retain syscall results and seeded registers across
+six yields and six sleeps, measure no early wakeups, outlive their active CPU
+budgets while parked, enforce the cumulative syscall cap and exercise zero/
+invalid durations, stale cancellation, sleeping drop and single-run gating.
+An earlier sleeper interrupts a CPU-bound peer before its quantum/total budget
+expires. The runtime case checks actual idle sleep with bounded callbacks and
+an event-blocked kernel client, then cancels two sleeping tasks at shutdown.
+Every HTTP transfer requires live user counter progress plus a yield and sleep;
+no-early-wake and sleeping cancellation/shutdown evidence stay in the owning
+epoch. Portable tests cover deadline arithmetic/bounds and revoking a parked
+queue entry without waking a reused slot. Strict host mutation tests reject
+missing, duplicate, reordered or invalid blocking/idle proofs.
 
 ## Validation tiers
 

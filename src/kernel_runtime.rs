@@ -509,16 +509,16 @@ impl<'a> Resources<'a> {
                     || CONTROL.stopped.load(Ordering::Acquire)
                 {
                     users.cancel_all()?;
-                    return Ok(false);
+                    return Ok(threads::BackgroundWork::default());
                 }
                 if !CONTROL.ready.load(Ordering::Acquire) {
-                    return Ok(false);
+                    return Ok(threads::BackgroundWork::default());
                 }
                 let step =
                     crate::user_tasks::kutox_user_dispatch_next(users, &self.timer, quantum_us)
                         .and_then(|event| {
                             observe(users, event)?;
-                            Ok(event.is_some() || !users.is_empty())
+                            Ok(users.work())
                         });
                 match step {
                     Ok(worked) => Ok(worked),
@@ -527,7 +527,7 @@ impl<'a> Resources<'a> {
                         users.cancel_all()?;
                         CONTROL.request.store(true, Ordering::Release);
                         notify(&CONTROL.event)?;
-                        Ok(false)
+                        Ok(threads::BackgroundWork::default())
                     }
                 }
             };
@@ -555,7 +555,7 @@ impl<'a> Resources<'a> {
         clients: Clients,
         asynchronous: bool,
         network: bool,
-        work: Option<&mut dyn FnMut() -> Result<bool, Failure>>,
+        work: Option<&mut dyn FnMut() -> Result<threads::BackgroundWork, Failure>>,
     ) -> Result<threads::RunStats, Failure> {
         if asynchronous && clients.entries.iter().flatten().count() > 1 {
             return Err(Failure::new("runtime_async_client_capacity", -203));

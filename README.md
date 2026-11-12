@@ -53,8 +53,10 @@ now alternates two owned ELF tasks without restarting them and returns to kernel
 work between quanta. An explicit
 [persistent-runtime integration](docs/kernel-implementation.md#userspace-in-the-persistent-runtime)
 now runs these slices alongside Linux-backed networking, honoring kernel
-deadlines and joined shutdown. Blocking syscalls and a full process runtime
-remain absent.
+deadlines and joined shutdown. Resumable tasks now have bounded native
+[yield/sleep syscalls](docs/kernel-implementation.md#bounded-user-yield-and-sleep),
+including timer-driven idle wakeup and sleeping-task cancellation.
+General blocking I/O and a full process runtime remain absent.
 
 The scoped [kernel runtime](src/kernel_runtime.rs) now retains the dispatcher,
 native manager, APIC/timer/controllers and shared Linux workers through client

@@ -59,11 +59,12 @@ The same case now uses the explicit
 After network readiness, two ELF tasks with isolated data at the same virtual
 address run under a requested 20-ms quantum. One faults after continued
 execution; its replacement exhausts a cumulative 5-ms budget while the other
-task survives and progresses during every HTTP transaction. A further task is
-cancelled while paused, with its stale handle rejected. The surviving original
+task survives, yields and sleeps during every HTTP transaction. A further task is
+cancelled while sleeping, with its stale handle rejected. The surviving original
 task exits 66 only after all HTTP transactions complete.
 Before acknowledging each seven-byte response fragment, the client waits for
-an observed increase in that ELF task's counter. This synchronizes live CPU
+an observed increase in that ELF task's counter and at least one successful
+yield and sleep. This synchronizes live CPU
 and TCP progress while the independent peer holds the remaining response,
 instead of assuming a fast transfer lasts long enough to contain a user slice.
 The wait remains charged to the original absolute transaction deadline.
@@ -71,8 +72,9 @@ The wait remains charged to the original absolute transaction deadline.
 Eight 1-ms kernel sleeps must each finish in 1..20 ms (exclusive upper bound),
 proving kernel wake delivery is not deferred behind a fresh user quantum.
 A separately registered timer handler must run exactly once; early slices
-prove that user quanta yield to earlier kernel work. Finally, two new infinite
-ELF tasks are paused and cancelled by runtime shutdown. Exact frame/heap
+prove that user quanta yield to earlier kernel work. The yielding/sleeping ELF
+also records TSC intervals and checks preserved registers/DF/IF on resumption.
+Finally, two new ELF tasks are sleeping and cancelled by runtime shutdown. Exact frame/heap
 balance includes every user image. The host rejects missing, duplicate,
 unknown, out-of-epoch and malformed user evidence, including absent per-stage
 user progress. The wire peer and PCAP expectations are unchanged.

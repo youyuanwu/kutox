@@ -373,9 +373,11 @@ def user_log(name):
         ],
         "user.task_limits": [
             "# USER_TASK_LIMITS capacity=2 stale=rejected retry=preserved cancel=paused irq_context=rejected resume_fault=contained budgets=cumulative gaps_us=10000 timeouts=2 fault=isolated survivor=66 syscall_limit=32 writes=32 bytes=0 frames=balanced",
+            "# USER_BLOCKING source=moss-boundary yield=6 sleep=6 resumes=12 exits=65,66 zero=immediate invalid=-22 context=preserved early=0 idle=hlt peer=preempted budget=active syscall_limit=32 cancel=sleeping stale=rejected drop=sleeping single_run=unsupported frames=balanced",
         ],
         "user.runtime_cleanup": [
             "# USER_RUNTIME_ERRORS_BEGIN",
+            "# USER_SLEEP_IDLE tasks=2 sleep=4 exits=2 wake=timer early=0 idle=hlt callbacks=bounded budget=uncharged shutdown=sleeping frames=balanced",
             "# RUNTIME_ERROR stage=user_task_duration code=-1",
             "# RUNTIME_ERROR stage=user_task_duration code=-1",
             "# RUNTIME_ERROR stage=runtime_startup_injected code=-210",
@@ -599,6 +601,34 @@ class KernelSuiteTests(unittest.TestCase):
         ):
             with self.subTest(changed=changed), self.assertRaises(AssertionError):
                 validate_result("kernel-tests", 1, changed)
+
+    def test_blocking_proofs_require_resume_deadlines_limits_and_sleeping_cleanup(self):
+        output = suite_log()
+        markers = (user_log("user.task_limits")[-1], user_log("user.runtime_cleanup")[1])
+        for marker in markers:
+            for old, new in (
+                ("yield=6", "yield=0"), ("sleep=6", "sleep=0"), ("resumes=12", "resumes=0"),
+                ("zero=immediate", "zero=parked"), ("invalid=-22", "invalid=0"),
+                ("context=preserved", "context=reset"), ("early=0", "early=1"),
+                ("idle=hlt", "idle=spin"), ("peer=preempted", "peer=starved"),
+                ("budget=active", "budget=wall"), ("syscall_limit=32", "syscall_limit=reset"),
+                ("cancel=sleeping", "cancel=ready"), ("stale=rejected", "stale=accepted"),
+                ("drop=sleeping", "drop=empty"), ("single_run=unsupported", "single_run=parked"),
+                ("tasks=2", "tasks=1"), ("sleep=4", "sleep=0"), ("exits=2", "exits=0"),
+                ("wake=timer", "wake=poll"), ("callbacks=bounded", "callbacks=unbounded"),
+                ("budget=uncharged", "budget=charged"), ("shutdown=sleeping", "shutdown=ready"),
+                ("frames=balanced", "frames=leaked"),
+            ):
+                if old in marker:
+                    with self.subTest(old=old), self.assertRaises(AssertionError):
+                        validate_result("kernel-tests", 1, output.replace(marker, marker.replace(old, new)))
+            for replacement in ("", marker + "\n" + marker):
+                with self.subTest(marker=marker), self.assertRaises(AssertionError):
+                    validate_result("kernel-tests", 1, output.replace(marker, replacement))
+        proof = markers[0]
+        result = f"ok {KERNEL_TEST_NAMES.index('user.task_limits') + 1} user.task_limits"
+        with self.assertRaises(AssertionError):
+            validate_result("kernel-tests", 1, output.replace(proof + "\n" + result, result + "\n" + proof))
 
     def test_pci_hierarchy_rejects_missing_duplicate_and_wrong_identity(self):
         case = "kernel-tests-nested"

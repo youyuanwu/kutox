@@ -496,6 +496,12 @@ pub struct RunStats {
     pub peak_tasks: usize,
 }
 
+#[derive(Clone, Copy, Default)]
+pub(crate) struct BackgroundWork {
+    pub ready: bool,
+    pub deadline: Option<u64>,
+}
+
 pub struct Scheduler<'space, 'a, 'storage> {
     tasks: [Option<Task<'space, 'a, 'storage>>; memory::MAX_STACKS],
     queue: RunQueue<{ memory::MAX_STACKS }>,
@@ -590,7 +596,7 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
         &mut self,
         timer: &irq::Timer<'_, '_>,
         stopped: &AtomicBool,
-        work: &mut dyn FnMut() -> Result<bool, Failure>,
+        work: &mut dyn FnMut() -> Result<BackgroundWork, Failure>,
     ) -> Result<RunStats, Failure> {
         self.run_inner(Some(timer), IdleMode::Persistent, Some(stopped), Some(work))
     }
@@ -634,7 +640,7 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
         timer: Option<&irq::Timer<'_, '_>>,
         mode: IdleMode,
         stopped: Option<&AtomicBool>,
-        mut work: Option<&mut dyn FnMut() -> Result<bool, Failure>>,
+        mut work: Option<&mut dyn FnMut() -> Result<BackgroundWork, Failure>>,
     ) -> Result<RunStats, Failure> {
         switch_allowed().map_err(|error| Failure::new("thread_run_context", error as i32))?;
         if RUNNING
@@ -677,6 +683,7 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
             ..RunStats::default()
         };
         let mut kernel_turns = 0;
+        let mut background = BackgroundWork::default();
         loop {
             {
                 let mut dispatch = DISPATCH.lock_save_irq();
@@ -687,15 +694,13 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
                 !dispatch.queue.has_pending_wake()
                     && (kernel_turns == 0 || dispatch.queue.ready_count() == 0)
             };
-            let worked = match work.as_mut() {
+            match work.as_mut() {
                 Some(work) if user_turn => {
-                    let worked = work()?;
+                    background = work()?;
                     kernel_turns = DISPATCH.lock_save_irq().queue.ready_count();
-                    worked
                 }
-                None => false,
-                Some(_) => false,
-            };
+                _ => (),
+            }
             let (next, empty, deadline) = {
                 let mut dispatch = DISPATCH.lock_save_irq();
                 dispatch.expire(time::now_ticks());
@@ -725,17 +730,21 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
                 )
             };
             let Some((id, reason, handle)) = next else {
-                if worked {
+                if background.ready {
                     continue;
                 }
                 #[cfg(feature = "guest-tests")]
                 if let Some(timer) = timer {
                     crate::guest_tests::async_hardening::before_idle(timer)?;
                 }
-                let deadline = match (deadline, timer.and_then(irq::Timer::handler_deadline)) {
-                    (Some(wait), Some(handler)) => Some(wait.min(handler)),
-                    (wait, handler) => wait.or(handler),
-                };
+                let deadline = [
+                    deadline,
+                    background.deadline,
+                    timer.and_then(irq::Timer::handler_deadline),
+                ]
+                .into_iter()
+                .flatten()
+                .min();
                 match idle_action(
                     mode,
                     empty,

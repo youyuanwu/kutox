@@ -213,10 +213,14 @@ of Linux binary compatibility:
 | RAX | Operation | Arguments | Result |
 |---|---|---|---|
 | 1 | serial write | RDI = fd 1 or 2, RSI = user address, RDX = byte length | RAX = bytes written or negative error |
+| 24 | yield (resumable tasks only) | None | RAX = 0 after FIFO resumption |
+| 35 | sleep (resumable tasks only) | RDI = duration in microseconds, 0..=1,000,000 | RAX = 0 after the deadline, or `-22` for invalid/overflowing duration |
 | 60 | exit | RDI = status | Returns to the kernel caller, not to user code |
 
 Other general registers are preserved on syscall return. Unknown numbers
-return `-38`; unsupported descriptors return `-9`. Writes are all-or-error,
+return `-38`; the single-run bring-up frontend also returns `-38` for yield
+and sleep because it has no retained task owner. Sleep uses a scalar duration,
+not Linux's `timespec`/`nanosleep` ABI. Unsupported descriptors return `-9`. Writes are all-or-error,
 at most 256 bytes each and 1024 bytes total per run. Oversize or over-budget
 requests return `-22`. A zero-length write to a valid descriptor succeeds
 without dereferencing its pointer. Invalid/unmapped/supervisor ranges, including
@@ -271,7 +275,7 @@ CPL3 timer/trap return; it does not requeue a context. The separate resumable
 layer below reuses the same trap engine. This is not kernel preemption. Kernel trap work keeps
 IF clear and must remain bounded; expiry cannot interrupt a stuck kernel handler.
 Ready kernel workers run only after the user call returns. There is no
-asynchronous/blocking user API, VFS, signals, CoW/fork,
+general asynchronous/blocking user I/O API, VFS, signals, CoW/fork,
 demand paging, SMP, Linux userspace ABI, TLS or FPU/SIMD context switching.
 The permanent TSS entry stack, like the existing exception stacks, has no guard
 page. Normal boot runs no userspace demo or fixture.
@@ -292,7 +296,8 @@ budget. Rejection, including capacity and invalid duration, drops that
 unpublished owner. `kutox_user_dispatch_next` runs the next ready task for one
 quantum and returns a handle, cumulative report and measured slice ticks.
 Both budget and quantum requests use 1..=1,000,000 microseconds, converted to
-calibrated ticks. An empty dispatcher returns `None`. After every step the
+calibrated ticks. `None` now means no task is ready, including when all owners
+are sleeping; `is_empty` means no task owner remains. After every step the
 original kernel CR3/CR0/segments and IF-clear state are restored, the timer is
 stopped/drained and all user/mapper locks are released. The caller may then run
 kernel work, including the existing cooperative kernel scheduler, before the
@@ -331,7 +336,7 @@ errors requeue the unchanged task for retry without charging execution time;
 they never replace or drain an already armed caller event. An error after handing control
 to native user entry retires the task rather than replaying a stale frame;
 the error is still propagated to the caller. Cancellation can remove a
-runnable task whether fresh or paused; stale handles are rejected after slot
+runnable task whether fresh or paused, or a sleeping task; stale handles are rejected after slot
 reuse. Dropping the dispatcher releases any remaining parked owners without
 reentering userspace.
 
@@ -347,9 +352,65 @@ zero-length writes across quanta before the cumulative syscall limit. Every
 case checks exact frame reclamation; the host requires ordered in-case proofs.
 The dispatcher frontend exists in both profiles, but fixtures remain ON-only.
 
-This is not full Moss process VM, VFS, signals, fork, blocking syscalls, priority
+This is not full Moss process VM, VFS, signals, fork, general blocking I/O, priority
 scheduling or a Linux process ABI. Kernel trap work remains non-preemptive and
 must be bounded; ready kernel workers run only between explicit steps.
+
+## Bounded user yield and sleep
+
+The native trap/dispatcher boundary follows pinned Moss's
+`src/sched/syscalls/mod.rs::sys_sched_yield`, `src/process/sleep.rs` and
+`src/drivers/timer/mod.rs::SysTimer::sleep`: complete the syscall result before
+switching away, and sleep against one monotonic deadline rather than a fresh
+duration on each wake. This is native integration using the existing ported
+Moss context and task states, not a copy of Moss's process-bound syscall futures,
+unbounded timer heap or signal-interruption ABI.
+
+Yield writes success into the saved RAX, returns `Stop::Yielded` to the kernel
+and requeues the owned context at the FIFO tail. Positive sleep validates its
+scalar microsecond duration, checked tick multiplication and deadline addition,
+then writes success and returns `Stop::Sleeping { deadline }`. The existing
+`RunQueue` parks it in `Sleeping` with no new ready list or lifecycle flags.
+Zero sleep succeeds immediately without parking, matching Moss; oversized or
+overflowing requests return `-22` without parking. Both syscalls count against
+the cumulative 32-call limit, including invalid/zero calls. RIP is already
+after `int 0x80`: neither syscall is replayed on resume.
+
+The trap keeps IF clear and cannot switch a kernel stack or free a user owner.
+Only after root restoration does the dispatcher expire elapsed sleeps, save
+the returning frame and yield/block its queue entry. Due sleepers enter FIFO
+order before the outgoing task requeues. A slice hitting its total CPU budget
+is terminal even if its syscall otherwise requested a yield or sleep; the
+request cannot evade the budget. User RIP/RSP/flags pass the same return gate
+before any retained context is published. Counts and owned pages remain live
+while sleeping; only active slices are charged, not time spent parked.
+
+The persistent scheduler's scoped background callback returns readiness and
+the earliest sleeping-user deadline as values, never borrowed payload pointers.
+All-sleeping users therefore do not prevent `hlt`. Idle arbitration includes
+kernel waits, user sleeps and the registered handler. During another user's
+slice, that same sleeping-user deadline caps the one-shot timer and common
+return gate; it forces a resumable quantum yield even within a final-budget
+slice, rather than starving a sleeper or falsely timing out its peer.
+Callers of the explicit stepping API likewise use the queue's next deadline;
+no-ready is not completion.
+
+Cancellation removes either a runnable or sleeping queue entry and revokes its
+deadline before dropping its owner. Reused slots have new handles; a stale
+cancel or old deadline cannot wake the replacement. Dispatcher drop also frees
+parked images. Runtime stop cancels sleeping tasks before another user step,
+and retains the existing joined worker/service cleanup.
+
+Acceptance extends `user.task_limits` with two real ELF tasks yielding and
+sleeping for three rounds, preserved GPRs/DF/IF and unaligned SP, zero/invalid
+durations, six checked TSC sleep intervals, and CPU budgets shorter than the
+sleeping wall time. It also checks a 10-ms sleeper interrupting a CPU-bound
+peer's requested 50-ms quantum/final 30-ms budget slice, cumulative syscall
+limits, invalid return context, sleeping cancellation/drop, stale handles and
+single-run gating. `user.runtime_cleanup` adds an all-sleeping runtime with a
+kernel client blocked without polling, bounded dispatcher callbacks, actual
+idle sleeps, timer wakes and two sleeping images cancelled at shutdown.
+All cases retain exact frame/heap balance and ordered host evidence.
 
 ## Userspace in the persistent runtime
 
@@ -372,8 +433,8 @@ kernel FIFO order before another slice begins. Runnable users prevent idle
 sleep; an empty user dispatcher preserves the original persistent idle policy.
 Kernel threads still cannot be switched while a user root is active.
 
-The shared one-shot timer targets the earliest of the slice deadline, blocked
-kernel-thread deadline and registered handler, including when rearming an
+The shared one-shot timer targets the earliest of the slice deadline, sleeping
+user deadline, blocked kernel-thread deadline and registered handler, including when rearming an
 early IRQ. Kernel deadlines also represent sleeping executor futures and
 network timeouts. Timer/device IRQs complete their normal notification and
 EOI path first. A valid user return that wakes kernel work saves the context
@@ -394,10 +455,10 @@ runtime ownership and leaves the caller's tasks unchanged.
 The existing guest-only HTTP workload now proves this boundary at 128/32 MiB
 and nested bridges: two isolated ELF contexts progress during real
 DHCP/DNS/TCP/HTTP traffic, one faults, a replacement times out, and its peer
-continues through all three transfers before exiting 66. It checks paused
+continues through all three transfers while yielding and sleeping before exiting 66. It checks sleeping
 cancellation/stale handles, a registered timer handler, eight 1-ms kernel
 sleeps completing below the requested 20-ms user quantum, and cancellation of
-two paused tasks at shutdown. Every epoch balances frames/heap. A separate
+two sleeping tasks at shutdown. Every epoch balances frames/heap. A separate
 `user.runtime_cleanup` kernel case covers invalid preflight, service-admission
 rollback, observer failure, native pre-entry failure and startup failure.
 Normal boot still admits no user program; the native integration remains in

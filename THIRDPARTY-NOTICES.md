@@ -178,7 +178,7 @@ entry/return assembly, cumulative execution accounting and
 [guest acceptance](src/guest_tests/user_tasks.rs) are kutox integration.
 They reuse the existing FIFO and previously adapted Moss `TaskState`; no second
 queue policy, full Moss scheduler or ARM user-context/assembly is imported.
-The complete process VM, signals, VFS, blocking syscall work and FPU/TLS context
+The complete process VM, signals, VFS, general blocking I/O and FPU/TLS context
 switching remain outside this subset.
 
 ### Persistent user dispatch
@@ -193,6 +193,17 @@ pending-wake visibility, shared local-APIC deadline arbitration, scoped
 admission/event callbacks and joined shutdown use the existing kutox services.
 The previously ported Moss contexts and task states remain unchanged. The
 guest HTTP/task fixtures and strict host journals are kutox acceptance code.
+
+The bounded native yield/sleep extension follows the ordering in pinned Moss's
+[yield syscall](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/sched/syscalls/mod.rs),
+[sleep syscalls](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/process/sleep.rs)
+and [timer sleep future](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/timer/mod.rs):
+defer yielding until the syscall result is complete; retain one monotonic sleep
+deadline and resume only when due. It reuses the already ported context/task
+states and native FIFO/timer services rather than copying process futures,
+signal interruption, `timespec` user-copy or the timer heap. The scalar native
+microsecond ABI, bounded arithmetic, scoped ready/deadline values, cancellation
+and ELF/network acceptance are kutox code; no new upstream component is imported.
 
 ### Bootstrap memory allocator
 

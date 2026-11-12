@@ -12,7 +12,23 @@ pub const MAX_OUTPUT: usize = 1024;
 pub const MAX_SYSCALLS: usize = 32;
 pub const MAX_RUN_US: u64 = 1_000_000;
 pub const SYS_WRITE: u64 = 1;
+pub const SYS_YIELD: u64 = 24;
+pub const SYS_SLEEP: u64 = 35;
 pub const SYS_EXIT: u64 = 60;
+pub const MAX_SLEEP_US: u64 = 1_000_000;
+
+pub fn sleep_deadline(usec: u64, now: u64, ticks_per_us: u64) -> Result<Option<u64>, i64> {
+    if usec > MAX_SLEEP_US || ticks_per_us == 0 {
+        return Err(-22);
+    }
+    if usec == 0 {
+        return Ok(None);
+    }
+    usec.checked_mul(ticks_per_us)
+        .and_then(|ticks| now.checked_add(ticks))
+        .map(Some)
+        .ok_or(-22)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(i32)]
@@ -170,6 +186,22 @@ pub fn plan_copy(
 mod tests {
     use super::*;
     use moss_libkernel::memory::permissions::PtePermissions;
+
+    #[test]
+    fn sleep_uses_one_checked_bounded_deadline_and_zero_does_not_park() {
+        assert_eq!(sleep_deadline(0, u64::MAX, 2), Ok(None));
+        assert_eq!(sleep_deadline(1, 10, 2), Ok(Some(12)));
+        assert_eq!(sleep_deadline(MAX_SLEEP_US, 10, 2), Ok(Some(2_000_010)));
+        for (usec, now, ticks) in [
+            (MAX_SLEEP_US + 1, 0, 1),
+            (u64::MAX, 0, 1),
+            (1, 0, 0),
+            (2, 0, u64::MAX),
+            (1, u64::MAX, 1),
+        ] {
+            assert_eq!(sleep_deadline(usec, now, ticks), Err(-22));
+        }
+    }
 
     #[test]
     fn execution_budget_separates_quantum_expiry_from_exact_total_exhaustion() {

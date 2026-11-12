@@ -20,6 +20,17 @@ static PARKED: AtomicBool = AtomicBool::new(false);
 static RUNTIME_HANDLER: AtomicUsize = AtomicUsize::new(0);
 static RUNTIME_SLICES: AtomicUsize = AtomicUsize::new(0);
 static RUNTIME_PROGRESS: AtomicUsize = AtomicUsize::new(0);
+static RUNTIME_YIELDS: AtomicUsize = AtomicUsize::new(0);
+static RUNTIME_SLEEPS: AtomicUsize = AtomicUsize::new(0);
+static IDLE_DONE: AtomicBool = AtomicBool::new(false);
+static IDLE_WAKE: threads::WaitQueue = threads::WaitQueue::new();
+
+pub(crate) fn blocking_counts() -> (usize, usize) {
+    (
+        RUNTIME_YIELDS.load(Ordering::Acquire),
+        RUNTIME_SLEEPS.load(Ordering::Acquire),
+    )
+}
 
 pub(crate) fn runtime_slices() -> usize {
     RUNTIME_SLICES.load(Ordering::Acquire)
@@ -35,6 +46,8 @@ pub(crate) fn reset_runtime() {
     RUNTIME_HANDLER.store(0, Ordering::Release);
     RUNTIME_SLICES.store(0, Ordering::Release);
     RUNTIME_PROGRESS.store(0, Ordering::Release);
+    RUNTIME_YIELDS.store(0, Ordering::Release);
+    RUNTIME_SLEEPS.store(0, Ordering::Release);
 }
 
 pub(crate) fn network_done() {
@@ -77,7 +90,7 @@ impl<'b> RuntimeProof<'b> {
     ) -> Result<Self, Failure> {
         let first = [
             users.admit(load(boot, frames, &["elf", "task", "f"])?, 1_000_000)?,
-            users.admit(load(boot, frames, &["elf", "task", "b"])?, 1_000_000)?,
+            users.admit(load(boot, frames, &["elf", "block", "b"])?, 1_000_000)?,
         ];
         let a = users.tasks[first[0].slot()]
             .as_ref()
@@ -121,6 +134,13 @@ impl<'b> RuntimeProof<'b> {
         assert_eq!(X86Cpu::irq_lock_depth(), 0);
         assert_eq!(event.report.cpl, 3);
         self.slices += 1;
+        if event.task == self.first[1] {
+            if event.report.stop == Stop::Yielded {
+                RUNTIME_YIELDS.fetch_add(1, Ordering::Relaxed);
+            } else if matches!(event.report.stop, Stop::Sleeping { .. }) {
+                RUNTIME_SLEEPS.fetch_add(1, Ordering::Relaxed);
+            }
+        }
         RUNTIME_SLICES.store(self.slices, Ordering::Release);
         if event.report.stop == Stop::QuantumExpired
             && event.elapsed_ticks < time::ticks_for_us(10_000)?
@@ -130,19 +150,29 @@ impl<'b> RuntimeProof<'b> {
         let slot = event.task.slot();
         if let Some(parked) = self.parked {
             assert_eq!(event.task, parked[slot]);
-            assert_eq!(event.report.stop, Stop::QuantumExpired);
-            self.visits[slot] += 1;
+            if matches!(event.report.stop, Stop::Sleeping { .. }) {
+                assert_eq!(self.visits[slot], 0);
+                self.visits[slot] += 1;
+            } else {
+                assert_eq!(event.report.stop, Stop::QuantumExpired);
+            }
             if self.visits.iter().all(|visits| *visits != 0) {
                 PARKED.store(true, Ordering::Release);
             }
         } else if event.task == self.first[slot] {
-            if event.report.stop == Stop::QuantumExpired {
+            if event.report.stop.resumable() {
                 let task = users.tasks[slot].as_mut().unwrap();
                 let (tag, count) = state(task, None)?;
                 if count != 0 {
                     assert_eq!(tag, [70, 66][slot]);
                     assert_eq!(count >= self.counters[slot], true);
                     if count > self.counters[slot] {
+                        if slot == 1 && count > 1 {
+                            let elapsed = task.space.with_active(|| unsafe {
+                                ((STATE + 40) as *const u64).read_volatile()
+                            })?;
+                            assert_eq!(elapsed >= time::ticks_for_us(100_000)?, true);
+                        }
                         self.visits[slot] += 1;
                         if slot == 1 {
                             RUNTIME_PROGRESS.fetch_add(1, Ordering::Relaxed);
@@ -180,8 +210,8 @@ impl<'b> RuntimeProof<'b> {
                 assert_eq!(self.visits.iter().all(|visits| *visits >= 2), true);
                 self.exited = true;
                 self.parked = Some([
-                    users.admit(load(self.boot, self.frames, &["elf", "loop"])?, 1_000_000)?,
-                    users.admit(load(self.boot, self.frames, &["elf", "loop"])?, 1_000_000)?,
+                    users.admit(load(self.boot, self.frames, &["elf", "sleep"])?, 1_000_000)?,
+                    users.admit(load(self.boot, self.frames, &["elf", "sleep"])?, 1_000_000)?,
                 ]);
                 self.visits = [0; 2];
             }
@@ -192,14 +222,17 @@ impl<'b> RuntimeProof<'b> {
                 assert_eq!(users.tasks[1].is_some(), true);
                 self.timed_out = true;
                 self.cancel =
-                    Some(users.admit(load(self.boot, self.frames, &["elf", "loop"])?, 1_000_000)?);
+                    Some(users.admit(load(self.boot, self.frames, &["elf", "sleep"])?, 1_000_000)?);
             }
         } else {
             assert_eq!(self.cancel, Some(event.task));
-            assert_eq!(event.report.stop, Stop::QuantumExpired);
-            users.cancel(event.task)?;
-            assert_eq!(users.cancel(event.task).is_err(), true);
-            self.cancelled = true;
+            if matches!(event.report.stop, Stop::Sleeping { .. }) {
+                users.cancel(event.task)?;
+                assert_eq!(users.cancel(event.task).is_err(), true);
+                self.cancelled = true;
+            } else {
+                assert_eq!(event.report.stop, Stop::QuantumExpired);
+            }
         }
         Ok(())
     }
@@ -223,6 +256,11 @@ impl<'b> RuntimeProof<'b> {
         serial::print(format_args!(
             "# USER_RUNTIME epoch={epoch} source=moss-dispatch tasks=2 slices={} early={} memory=isolated progress=2 fault=isolated timeout=isolated survivor=66 cancel=paused stale=rejected shutdown=2 handler=delivered locks=0\n",
             self.slices, self.early,
+        ));
+        let (yields, sleeps) = blocking_counts();
+        assert_eq!(yields >= 3 && sleeps >= 3, true);
+        serial::print(format_args!(
+            "# USER_RUNTIME_BLOCKING epoch={epoch} yield={yields} sleep={sleeps} early=0 shutdown=sleeping cancel=sleeping\n"
         ));
         Ok(())
     }
@@ -582,6 +620,214 @@ pub fn limits(
     serial::print(format_args!(
         "# USER_TASK_LIMITS capacity=2 stale=rejected retry=preserved cancel=paused irq_context=rejected resume_fault=contained budgets=cumulative gaps_us=10000 timeouts=2 fault=isolated survivor=66 syscall_limit=32 writes=32 bytes=0 frames=balanced\n"
     ));
+    blocking(boot, frames, &timer)
+}
+
+fn blocking(
+    boot: &BootInfo,
+    frames: &'static memory::PhysicalFrames<'static>,
+    timer: &Timer<'_, '_>,
+) -> Result<(), Failure> {
+    let before = frames.stats();
+    {
+        let mut users = Dispatcher::new();
+        let handles = [
+            users.admit(load(boot, frames, &["elf", "block", "a"])?, 20_000)?,
+            users.admit(load(boot, frames, &["elf", "block", "b"])?, 20_000)?,
+        ];
+        let durations = [20_000, 30_000];
+        for (slot, &duration) in durations.iter().enumerate() {
+            users.tasks[slot]
+                .as_mut()
+                .unwrap()
+                .space
+                .with_active(|| unsafe {
+                    ((STATE + 24) as *mut u64).write_volatile(duration);
+                })?;
+        }
+        let total = time::ticks_for_us(20_000)?;
+        let mut charged = [0; 2];
+        let mut yields = [0; 2];
+        let mut sleeps = [0; 2];
+        let mut exits = [false; 2];
+        let mut idle = 0;
+        let mut first_yields = 0;
+        for _ in 0..128 {
+            let Some(event) = next(&mut users, timer, 50_000)? else {
+                if users.is_empty() {
+                    break;
+                }
+                let wake = users
+                    .queue
+                    .next_deadline()
+                    .ok_or(Failure::new("user_sleep_deadline", -1))?;
+                let budgets = core::array::from_fn::<_, 2, _>(|slot| {
+                    users.tasks[slot]
+                        .as_ref()
+                        .map(|task| task.budget.remaining())
+                });
+                if timer.arm_until(wake)? {
+                    timer.idle_until_tick()?;
+                    idle += 1;
+                }
+                for (slot, &budget) in budgets.iter().enumerate() {
+                    assert_eq!(
+                        users.tasks[slot]
+                            .as_ref()
+                            .map(|task| task.budget.remaining()),
+                        budget
+                    );
+                }
+                continue;
+            };
+            let slot = event.task.slot();
+            assert_eq!(event.task, handles[slot]);
+            charged[slot] += event.elapsed_ticks;
+            match event.report.stop {
+                Stop::Yielded => {
+                    if yields[slot] == 0 {
+                        assert_eq!(slot, first_yields);
+                        first_yields += 1;
+                    }
+                    yields[slot] += 1;
+                    let task = users.tasks[slot].as_mut().unwrap();
+                    let frame = task.context.user();
+                    assert_eq!(frame.registers[14], 0);
+                    assert_eq!(frame.stack % 16, 8);
+                    assert_eq!(frame.flags & 0x600, 0x600);
+                    assert_eq!(state(task, None)?, (65 + slot as u64, yields[slot]));
+                    if yields[slot] > 1 {
+                        let elapsed = task.space.with_active(|| unsafe {
+                            ((STATE + 40) as *const u64).read_volatile()
+                        })?;
+                        assert_eq!(elapsed >= time::ticks_for_us(durations[slot])?, true);
+                    }
+                }
+                Stop::Sleeping { deadline } => {
+                    sleeps[slot] += 1;
+                    assert_eq!(
+                        users.tasks[slot].as_ref().unwrap().context.user().registers[14],
+                        0
+                    );
+                    assert_eq!(
+                        users
+                            .queue
+                            .next_deadline()
+                            .is_some_and(|wake| wake <= deadline),
+                        true
+                    );
+                    if sleeps[slot] == 3 {
+                        state(users.tasks[slot].as_mut().unwrap(), Some(1))?;
+                    }
+                }
+                Stop::QuantumExpired => (),
+                Stop::Exit(status) => {
+                    assert_eq!(status, 65 + slot as u64);
+                    assert_eq!(event.report.syscalls, 9);
+                    exits[slot] = true;
+                }
+                _ => return Err(Failure::new("user_blocking_stop", -1)),
+            }
+            if let Some(task) = users.tasks[slot].as_ref() {
+                assert_eq!(task.budget.remaining(), total.saturating_sub(charged[slot]));
+            }
+        }
+        assert_eq!((yields, sleeps, exits), ([3, 3], [3, 3], [true; 2]));
+        assert_eq!(idle > 0 && users.is_empty() && first_yields == 2, true);
+        for ticks in charged {
+            assert_eq!(ticks < total, true);
+        }
+    }
+    assert_eq!(frames.stats(), before);
+    {
+        let mut users = Dispatcher::new();
+        let sleeper = users.admit(load(boot, frames, &["elf", "once"])?, 100_000)?;
+        let peer = users.admit(load(boot, frames, &["elf", "loop"])?, 30_000)?;
+        assert_eq!(
+            matches!(
+                next(&mut users, timer, 50_000)?.unwrap().report.stop,
+                Stop::Sleeping { .. }
+            ),
+            true
+        );
+        let event = next(&mut users, timer, 50_000)?.unwrap();
+        assert_eq!(event.task, peer);
+        assert_eq!(event.report.stop, Stop::QuantumExpired);
+        assert_eq!(event.elapsed_ticks < time::ticks_for_us(30_000)?, true);
+        let event = next(&mut users, timer, 50_000)?.unwrap();
+        assert_eq!(event.task, sleeper);
+        assert_eq!(event.report.stop, Stop::Exit(71));
+        users.cancel(peer)?;
+    }
+    assert_eq!(frames.stats(), before);
+    {
+        let mut users = Dispatcher::new();
+        let first = users.admit(load(boot, frames, &["elf", "sleep"])?, 100_000)?;
+        let second = users.admit(load(boot, frames, &["elf", "sleep"])?, 100_000)?;
+        for task in [first, second] {
+            let event =
+                next(&mut users, timer, 50_000)?.ok_or(Failure::new("user_expected_sleep", -1))?;
+            assert_eq!(event.task, task);
+            assert_eq!(matches!(event.report.stop, Stop::Sleeping { .. }), true);
+        }
+        let sleeping = users.work();
+        assert_eq!(sleeping.ready, false);
+        assert_eq!(sleeping.deadline.is_some(), true);
+        assert_eq!(next(&mut users, timer, 50_000)?, None);
+        users.cancel(first)?;
+        assert_eq!(users.cancel(first).is_err(), true);
+        users.cancel(second)?;
+        assert_eq!(users.queue.next_deadline(), None);
+        assert_eq!(users.is_empty(), true);
+        let reused = users.admit(load(boot, frames, &["elf", "yield"])?, 100_000)?;
+        assert_eq!(users.cancel(first).is_err(), true);
+        let mut stopped = false;
+        for _ in 0..40 {
+            let event =
+                next(&mut users, timer, 50_000)?.ok_or(Failure::new("user_yield_quota", -1))?;
+            assert_eq!(event.task, reused);
+            if event.report.stop == Stop::SyscallLimit {
+                assert_eq!(event.report.syscalls, MAX_SYSCALLS);
+                stopped = true;
+                break;
+            }
+            assert_eq!(event.report.stop.resumable(), true);
+        }
+        assert_eq!(stopped && users.is_empty(), true);
+        users.admit(load(boot, frames, &["elf", "sleep"])?, 100_000)?;
+        assert_eq!(
+            matches!(
+                next(&mut users, timer, 50_000)?.unwrap().report.stop,
+                Stop::Sleeping { .. }
+            ),
+            true
+        );
+        drop(users);
+    }
+    assert_eq!(frames.stats(), before);
+    {
+        let mut users = Dispatcher::new();
+        users.admit(load(boot, frames, &["elf", "badblock"])?, 100_000)?;
+        assert_eq!(
+            next(&mut users, timer, 50_000)?.unwrap().report.stop,
+            Stop::InvalidContext
+        );
+        assert_eq!(users.is_empty(), true);
+        let mut loaded = load(boot, frames, &["elf", "gate"])?;
+        let report = user::kutox_user_bringup(
+            &mut loaded.space,
+            loaded.entry,
+            loaded.stack,
+            timer,
+            100_000,
+        )?;
+        assert_eq!(report.stop, Stop::Exit(70));
+        assert_eq!(report.syscalls, 3);
+    }
+    assert_eq!(frames.stats(), before);
+    serial::print(format_args!(
+        "# USER_BLOCKING source=moss-boundary yield=6 sleep=6 resumes=12 exits=65,66 zero=immediate invalid=-22 context=preserved early=0 idle=hlt peer=preempted budget=active syscall_limit=32 cancel=sleeping stale=rejected drop=sleeping single_run=unsupported frames=balanced\n"
+    ));
     Ok(())
 }
 
@@ -592,6 +838,7 @@ pub fn runtime_cleanup(
     use crate::kernel_runtime::{Clients, Resources, Stage, tests};
     serial::print(format_args!("# USER_RUNTIME_ERRORS_BEGIN\n"));
     time::calibrate()?;
+    runtime_sleep_idle(boot, frames)?;
     for mode in 0..4 {
         let before = memory::allocation_snapshot(frames);
         let heap_before = crate::heap::global().stats();
@@ -662,6 +909,110 @@ pub fn runtime_cleanup(
     }
     serial::print(format_args!(
         "# USER_RUNTIME_ERRORS invalid=2 admission=joined observer=joined entry=joined startup=joined callbacks=1 frames=balanced\n"
+    ));
+    Ok(())
+}
+
+fn runtime_sleep_idle(
+    boot: &BootInfo,
+    frames: &'static memory::PhysicalFrames<'static>,
+) -> Result<(), Failure> {
+    use crate::kernel_runtime::{Clients, Resources};
+    let before = memory::allocation_snapshot(frames);
+    let heap_before = crate::heap::global().stats();
+    IDLE_DONE.store(false, Ordering::Release);
+    let resources = Resources::start(boot, frames)?;
+    let mut users = Dispatcher::new();
+    let first = [
+        users.admit(load(boot, frames, &["elf", "once"])?, 100_000)?,
+        users.admit(load(boot, frames, &["elf", "once"])?, 100_000)?,
+    ];
+    let mut clients = Clients::new();
+    clients.add(
+        |_| {
+            while !IDLE_DONE.load(Ordering::Acquire) {
+                let token = IDLE_WAKE.prepare();
+                if !IDLE_DONE.load(Ordering::Acquire) {
+                    token.wait(None).unwrap();
+                }
+            }
+            let runtime = crate::kernel_runtime::current_handle();
+            runtime.request_shutdown().unwrap();
+            runtime.wait_stopped().unwrap();
+        },
+        0,
+    )?;
+    let mut callbacks = 0;
+    let mut sleeps = 0;
+    let mut exits = 0;
+    let mut final_sleepers = None;
+    let mut deadlines = [0; 2];
+    let mut budgets = [None; 2];
+    let stats =
+        resources.run_network_with_users(clients, &mut users, 50_000, &mut |users, event| {
+            callbacks += 1;
+            assert_eq!(callbacks < 128, true);
+            for (slot, &budget) in budgets.iter().enumerate() {
+                if event.is_none() {
+                    assert_eq!(
+                        users.tasks[slot]
+                            .as_ref()
+                            .map(|task| task.budget.remaining()),
+                        budget
+                    );
+                }
+            }
+            if let Some(event) = event {
+                let slot = event.task.slot();
+                if let Stop::Sleeping { deadline } = event.report.stop {
+                    sleeps += 1;
+                    deadlines[slot] = deadline;
+                    budgets[slot] = Some(users.tasks[slot].as_ref().unwrap().budget.remaining());
+                    if final_sleepers.is_some() && sleeps == 4 {
+                        IDLE_DONE.store(true, Ordering::Release);
+                        IDLE_WAKE.notify_without_switch(true).unwrap();
+                    }
+                } else if event.report.stop == Stop::QuantumExpired {
+                    // A kernel wake may interrupt the path to the first syscall.
+                } else {
+                    assert_eq!(event.task, first[slot]);
+                    assert_eq!(time::now_ticks() >= deadlines[slot], true);
+                    assert_eq!(event.report.stop, Stop::Exit(71));
+                    assert_eq!(event.report.syscalls, 2);
+                    budgets[slot] = None;
+                    exits += 1;
+                    if exits == 2 {
+                        let handles = [
+                            users.admit(load(boot, frames, &["elf", "sleep"])?, 100_000)?,
+                            users.admit(load(boot, frames, &["elf", "sleep"])?, 100_000)?,
+                        ];
+                        for (slot, handle) in handles.iter().enumerate() {
+                            budgets[slot] = Some(
+                                users.tasks[handle.slot()]
+                                    .as_ref()
+                                    .unwrap()
+                                    .budget
+                                    .remaining(),
+                            );
+                        }
+                        final_sleepers = Some(handles);
+                    }
+                }
+            }
+            Ok(())
+        })?;
+    assert_eq!((sleeps, exits), (4, 2));
+    assert_eq!(users.is_empty(), true);
+    assert_eq!(stats.idle_sleeps > 0, true);
+    for handle in final_sleepers.unwrap() {
+        assert_eq!(users.cancel(handle).is_err(), true);
+    }
+    drop(users);
+    drop(resources);
+    assert_eq!(memory::allocation_snapshot(frames), before);
+    assert_eq!(crate::heap::global().stats(), heap_before);
+    serial::print(format_args!(
+        "# USER_SLEEP_IDLE tasks=2 sleep=4 exits=2 wake=timer early=0 idle=hlt callbacks=bounded budget=uncharged shutdown=sleeping frames=balanced\n"
     ));
     Ok(())
 }

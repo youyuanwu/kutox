@@ -3,7 +3,7 @@ use crate::{
     irq::Timer,
     memory::user::AddressSpace,
     threads, time,
-    user::{self, Counts, Report, Stop, UserContext},
+    user::{self, Counts, Report, RunOptions, Stop, UserContext},
 };
 use kutox::{
     run_queue::{RunQueue, TaskHandle, TaskId},
@@ -91,7 +91,7 @@ impl<'a, 'storage> Dispatcher<'a, 'storage> {
     pub fn cancel(&mut self, task: TaskHandle) -> Result<(), Failure> {
         context()?;
         self.queue
-            .remove_runnable(task)
+            .remove_suspended(task)
             .map_err(|error| Failure::new("user_task_cancel", error as i32))?;
         drop(self.tasks[task.slot()].take());
         Ok(())
@@ -99,6 +99,14 @@ impl<'a, 'storage> Dispatcher<'a, 'storage> {
 
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
+    }
+
+    pub(crate) fn work(&mut self) -> threads::BackgroundWork {
+        self.queue.expire(time::now_ticks());
+        threads::BackgroundWork {
+            ready: self.queue.ready_count() != 0,
+            deadline: self.queue.next_deadline(),
+        }
     }
 
     pub(crate) fn cancel_all(&mut self) -> Result<(), Failure> {
@@ -135,6 +143,7 @@ pub fn kutox_user_dispatch_next(
 ) -> Result<Option<Event>, Failure> {
     context()?;
     let quantum = duration(quantum_us)?;
+    dispatcher.queue.expire(time::now_ticks());
     let Some(id) = dispatcher
         .queue
         .dispatch()
@@ -142,6 +151,11 @@ pub fn kutox_user_dispatch_next(
     else {
         return Ok(None);
     };
+    dispatcher
+        .queue
+        .take_wake_reason(id)
+        .map_err(|error| Failure::new("user_task_wake", error as i32))?;
+    let wake_deadline = dispatcher.queue.next_deadline();
     let handle = dispatcher.queue.handle(id).expect("dispatched user task");
     let task = dispatcher.tasks[id.0]
         .as_mut()
@@ -155,7 +169,11 @@ pub fn kutox_user_dispatch_next(
         timer,
         plan,
         &mut task.counts,
-        !task.started,
+        RunOptions {
+            initial: !task.started,
+            resumable: true,
+            wake_deadline,
+        },
         &mut entered,
     );
     let (mut report, elapsed) = match result {
@@ -172,17 +190,25 @@ pub fn kutox_user_dispatch_next(
             return Err(error);
         }
     };
+    dispatcher.queue.expire(time::now_ticks());
     task.started = true;
     task.budget.charge(elapsed);
     if task.budget.remaining() == 0 {
         report.stop = Stop::TimedOut;
     }
-    if report.stop == Stop::QuantumExpired {
+    if report.stop.resumable() {
         task.context.save_user_ctx(&frame);
-        dispatcher
-            .queue
-            .yield_running()
-            .map_err(|error| Failure::new("user_task_yield", error as i32))?;
+        if let Stop::Sleeping { deadline } = report.stop {
+            dispatcher
+                .queue
+                .block_running(None, Some(deadline))
+                .map_err(|error| Failure::new("user_task_sleep", error as i32))?;
+        } else {
+            dispatcher
+                .queue
+                .yield_running()
+                .map_err(|error| Failure::new("user_task_yield", error as i32))?;
+        }
     } else {
         dispatcher.finish(id)?;
     }

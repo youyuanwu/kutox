@@ -229,6 +229,7 @@ pub struct Timer<'a, 'storage> {
 pub(crate) struct UserSlice {
     pub(crate) started: u64,
     pub(crate) deadline: u64,
+    pub(crate) wake_deadline: Option<u64>,
     interval_counts: u32,
     interval_ticks: u64,
 }
@@ -266,7 +267,10 @@ impl UserSlice {
         {
             return Err(Failure::new("user_timer_rearm_busy", -1));
         }
-        let deadline = user_deadline(self.deadline);
+        let deadline = user_deadline(
+            self.wake_deadline
+                .map_or(self.deadline, |wake| wake.min(self.deadline)),
+        );
         let remaining = deadline.saturating_sub(time::now_ticks());
         write(address, LVT_TIMER, TIMER_VECTOR as u32);
         write(
@@ -393,6 +397,7 @@ impl<'a, 'storage> Timer<'a, 'storage> {
     pub(crate) fn with_user_slice_ticks<R>(
         &self,
         duration: u64,
+        wake_deadline: Option<u64>,
         run: impl FnOnce(UserSlice) -> R,
     ) -> Result<R, Failure> {
         context()?;
@@ -403,7 +408,7 @@ impl<'a, 'storage> Timer<'a, 'storage> {
         let deadline = started
             .checked_add(duration)
             .ok_or(Failure::new("user_run_deadline", -1))?;
-        let first = user_deadline(deadline);
+        let first = user_deadline(wake_deadline.map_or(deadline, |wake| wake.min(deadline)));
         self.arm_count(deadline_counts(
             first.saturating_sub(time::now_ticks()),
             self.interval_counts,
@@ -412,6 +417,7 @@ impl<'a, 'storage> Timer<'a, 'storage> {
         let result = run(UserSlice {
             started,
             deadline,
+            wake_deadline,
             interval_counts: self.interval_counts,
             interval_ticks: self.interval_ticks,
         });
