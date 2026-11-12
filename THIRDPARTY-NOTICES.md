@@ -467,6 +467,17 @@ net-feature definitions are also used unchanged. Linux source is not relicensed
 by the MIT Moss port; its redistribution obligations remain applicable when
 linked into the kernel.
 
+The [storage compile-only audit](scripts/linux_storage_check.py) also compiles
+unchanged `drivers/block/virtio_blk.c` and the selected VirtIO core, anchor, ring
+and modern PCI units from that same revision. Their original per-file SPDX
+notices remain in the submodule, including GPL-2.0-or-later for the ring/common
+transport and GPL-2.0-only for the core/modern device helpers. Original VirtIO
+headers and UAPI wire definitions are included directly. The GPL-2.0-only
+[storage declarations](compat/storage-check/) adapt the source-facing API and
+reuse existing kutox core/execution declarations; they supply no device,
+block-layer or DMA algorithms. These marked audit objects are rejected by the
+runtime linker and are not linked into the boot image.
+
 The native [C execution adapter](compat/runtime.c),
 [Rust registry/backend](src/linux_runtime.rs), and
 [C acceptance test](compat/guest_tests/execution_test.c) are kutox code. They expose a

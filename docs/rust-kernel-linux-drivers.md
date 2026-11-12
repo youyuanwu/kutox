@@ -528,34 +528,35 @@ ext2 image, with INTx rather than a new MSI-X implementation. There are no
 partitions, writes or general file syscalls in that proposed milestone.
 **Only the dependency audit is implemented; disk-backed boot is not.**
 
-[linux_storage_check.py](../scripts/linux_storage_check.py) creates a dedicated
-detached sparse worktree sharing the pinned submodule's objects. It keeps both
-the normal source checkout and the audit source unchanged. Kconfig/Makefile
-metadata, headers and the required preparation/host-tool sources are present;
-Kbuild outputs go into a separate `objects` directory. No full kernel or
-Linux block-layer implementation is built.
+[linux_storage_check.py](../scripts/linux_storage_check.py) follows the e1000
+compile-only boundary: direct Clang compilation for `x86_64-unknown-none` using
+the shared [freestanding flags](../compat/cflags.txt), unchanged source in the
+normal pinned submodule, and explicit
+[storage declarations](../compat/storage-check/driver.h). No Kbuild, generated
+Linux configuration, second worktree or Linux block-layer implementation is
+used.
 
-The [audit fragment](../compat/storage-check.config) starts from `allnoconfig`,
-requires x86-64, PCI, BLOCK and VirtIO block/PCI, and disables SMP, modules,
-PCI MSI, legacy PCI transport, power management, sysfs, debugfs, block integrity
-and zoned devices. The audit checks that Kconfig actually admitted the requested
-settings before compiling. It uses Linux's own generated headers and layouts,
-not the e1000 compatibility headers or kutox's native service ABI.
+The [source-facing profile](../compat/storage-check/profile.h) enables only
+x86-64, PCI, BLOCK, VirtIO/anchor, modern PCI and VirtIO block. The preprocessor
+gate rejects missing/extra configuration, including SMP, PCI MSI, legacy
+transport/admin, PM, debug and zoned-device configuration. Original Linux
+VirtIO device/config/feature/ring/PCI headers and UAPI wire definitions are
+retained; kutox supplies declaration-only platform and block types. Shared
+core/execution declarations are reused from e1000, not reimplemented.
 
-Eight unchanged translation units are compiled with one job:
+Seven unchanged translation units are compiled serially:
 
 - `drivers/block/virtio_blk.c`
 - `drivers/virtio/virtio.c`, `virtio_anchor.c`, `virtio_ring.c`
 - `drivers/virtio/virtio_pci_common.c`, `virtio_pci_modern.c`,
-  `virtio_pci_modern_dev.c`, `virtio_pci_admin_legacy_io.c`
+  `virtio_pci_modern_dev.c`
 
-The anchor and legacy-admin helpers follow the pinned upstream Makefile/Kconfig
-composition. In particular, x86 Kconfig enables the hidden legacy-admin helper
-even when legacy PCI transport is disabled. The native configuration also
-selects lazy-preemption support. Neither is a promise to expose those facilities
-in kutox. The ring source contains both split/packed algorithms and the block
-source retains more than the proposed read path; this conservative object
-inventory is not a runtime reachability or minimum-footprint result.
+The anchor is original Linux code. Legacy-admin helpers are excluded by the
+explicit profile, rather than implicitly selected by native Kconfig. The ring
+source retains split/packed algorithms and the block source retains more than
+the proposed read path; this is not a runtime reachability or minimum-footprint
+result. Unsupported optional platform calls remain visible declarations,
+not successful stub implementations.
 
 An ordinary relocatable link retains every section and unresolved dependency;
 no provider stubs or garbage collection hide requirements. The audit checks
@@ -564,24 +565,34 @@ verifies that the linked external set equals the input undefined set minus
 actual global/weak providers. Local symbols cannot satisfy another object's
 external reference.
 
-The initial GCC 15.2.0 / GNU ld 2.46 run left **118 unresolved symbols**.
-That is observed evidence, not a hardcoded cross-toolchain count. The generated
-JSON records all per-unit definitions/undefined references, exact linked
-undefined names, source/object/profile/config hashes, enabled settings and
-toolchain identity. A failed rerun removes the previous success report.
+The freestanding closure retains **203 unresolved APIs**. Every API is explicitly
+classified in [apis.json](../compat/storage-check/apis.json), with contexts,
+required/profile-rejected policy, ownership/error obligations and future runtime
+acceptance requirements. An unclassified or unexpectedly provided API fails the
+audit. These replace the old native-Linux 118-symbol inventory, which was not a
+kutox compatibility closure.
+
+The generated JSON records per-unit definitions/undefined references,
+source/included-header/object hashes, exact commands, original module/device
+registration and operation-table relocations, caller references and toolchain
+identity. Wire and shared execution layouts are compiler-checked. Every object
+retains the compile-only marker, and the actual kernel linker must reject it.
+Independent `--verify` rejects native/stale/tampered evidence without compiling.
+A failed build removes the previous success report.
 The principal missing-service families are:
 
 | Family | Representative unresolved symbols | Runtime obligation |
 | --- | --- | --- |
-| Block requests and queues | `__blk_mq_alloc_disk`, `blk_mq_alloc_tag_set`, `blk_mq_start_request`, `blk_mq_complete_request`, `blk_mq_end_request`, `blk_mq_requeue_request` | Real bounded request/tag ownership, queue stop/restart, completion and quiescence. |
-| Disk registration and limits | `__register_blkdev`, `device_add_disk`, `set_capacity_and_notify`, `set_disk_ro`, `queue_limits_commit_update_frozen` | Valid capacity/read-only/limit state and explicit unsupported-operation rejection, not success stubs. |
-| PCI, MMIO and IRQ | `pci_find_capability`, `pci_iomap_range`, `ioread32`, `request_threaded_irq`, `synchronize_irq` | Connect checked BAR/capability access and original transport IRQ handling to owned platform resources; preserve teardown ordering. |
-| DMA and scatter/gather | `dma_alloc_attrs`, `dma_map_page_attrs`, `__dma_sync_single_for_cpu`, `sg_alloc_table_chained`, `sg_init_one` | Queue/data leases, direction/range checks, exact mapping lifetimes and no release while DMA can continue. |
-| Memory and native architecture | `__kmalloc_noprof`, `alloc_pages_exact_noprof`, `page_offset_base`, `vmemmap_base`, `__preempt_count`, `preempt_schedule_thunk` | A kutox-facing type/allocator/scheduling contract; native Linux globals and layouts cannot simply be linked into kutox. |
-| Device model and execution | `bus_register`, `driver_register`, `device_initialize`, `queue_work_on`, `wait_for_completion`, `mutex_lock`, `synchronize_rcu` | Registration/rollback, callback lifetimes, off-lock waits, cancellation and joined removal. |
-| Metadata and diagnostics | `ida_alloc_range`, `param_ops_uint`, `add_uevent_var`, `snprintf`, `panic` | Bounded IDs/parameters and explicit diagnostics/profile policies. |
+| Block requests and queues | `blk_mq_alloc_disk`, `blk_mq_alloc_tag_set`, `blk_mq_start_request`, `blk_mq_complete_request`, `blk_mq_end_request`, `blk_mq_requeue_request` | Real bounded request/tag ownership, queue stop/restart, completion and quiescence. |
+| Disk registration and limits | `register_blkdev`, `device_add_disk`, `set_capacity_and_notify`, `set_disk_ro`, `queue_limits_commit_update_frozen` | Valid capacity/read-only/limit state and explicit unsupported-operation rejection, not success stubs. |
+| PCI, MMIO and IRQ | `pci_find_capability`, `pci_iomap_range`, `ioread32`, `request_irq`, `synchronize_irq` | Connect checked BAR/capability access and original transport IRQ handling to owned platform resources; preserve teardown ordering. |
+| DMA and scatter/gather | `dma_alloc_coherent`, `dma_map_page_attrs`, `dma_sync_single_range_for_cpu`, `sg_alloc_table_chained`, `sg_init_one` | Queue/data leases, direction/range checks, exact mapping lifetimes and no release while DMA can continue. |
+| Memory and containers | `kmalloc`, `alloc_pages_exact`, `virt_to_page`, `list_add`, `ida_alloc_range` | Checked allocation, address ownership, bounded IDs and stable intrusive-list objects. |
+| Device model and execution | `bus_register`, `driver_register`, `device_initialize`, `queue_work`, `wait_for_completion`, `mutex_lock`, `synchronize_rcu` | Registration/rollback, callback lifetimes, off-lock waits, cancellation and joined removal. |
+| Optional platform paths | `pci_alloc_irq_vectors_affinity`, `pci_enable_sriov`, `dev_of_node`, `xen_domain` | Explicit unsupported errors/feature boundaries; original MSI-X failure must select INTx, not fabricate vector allocation. |
+| Metadata and diagnostics | `add_uevent_var`, `sysfs_emit`, `snprintf`, `panic` | Bounded metadata and explicit diagnostics/profile policies. |
 
-These are external names in the Linux-header audit, not a count of wholly new
+These are source-facing names in the kutox-header audit, not a count of wholly new
 kutox services. Existing e1000 services cover parts of PCI/DMA/IRQ/allocation
 and execution, but matching names do not prove compatible types or semantics.
 Conversely, optional-path references must not automatically become first-boot
@@ -590,9 +601,9 @@ an enforced feature/configuration boundary and observable rejection.
 
 The runtime implementation should proceed in separately validated stages:
 
-1. Define the storage source-facing ABI and bounded `blk-mq` request/completion
-   contract; repeat compilation with kutox headers and classify each remaining
-   required or explicitly rejected API. Do not link the native audit objects.
+1. Implement and verify the declared storage ABI and bounded `blk-mq`
+   request/completion contracts. Do not link declaration-only audit objects or
+   reinterpret storage-private layouts as the e1000 runtime's device structs.
 2. Reuse original Linux VirtIO core/ring/modern PCI and block callbacks. Adapt
    PCI resources, coherent DMA and INTx; prove negotiation, an actual disk read,
    error/timeout handling and reset/IRQ/DMA teardown before recycling memory.

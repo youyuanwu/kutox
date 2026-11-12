@@ -307,14 +307,15 @@ def check_bridge_guard(args, output):
     return "boot helper present normally; omitted with KUTOX_E1000_FULL_SOURCE; runtime bridge uses source-facing structs"
 
 
-def check_runtime_exclusion(args, flags, output):
+def check_runtime_exclusion(args, flags, output, *, objects=()):
     source = output / "runtime-exclusion.c"
     obj = output / "runtime-exclusion.o"
     elf = output / "runtime-exclusion.elf"
     source.write_text('#include "driver.h"\nvoid kmain(void) {}\n')
     run([args.clang, *flags, "-c", str(source), "-o", str(obj)], output / "runtime-exclusion-compile.log")
     elf.unlink(missing_ok=True)
-    result = subprocess.run([args.ld, "-T", str(ROOT / "linker.ld"), "-o", str(elf), str(obj)],
+    result = subprocess.run([args.ld, "-T", str(ROOT / "linker.ld"), "-o", str(elf),
+                             str(obj), *map(str, objects)],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
     (output / "runtime-exclusion-link.log").write_text(result.stdout)
     elf.unlink(missing_ok=True)

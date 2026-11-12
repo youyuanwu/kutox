@@ -43,8 +43,11 @@ HOST_CHECKS = (
          "--features", "fs", "--all-targets", "--target", "x86_64-unknown-linux-gnu", "--jobs", "1", "--", "-D", "warnings")),
     host("harness-unit", ("{python}", "-m", "unittest", "discover", "-s", "tests", "-q")),
     Check("linux-storage-dependency-audit", (
-        ("{python}", "{root}/scripts/linux_storage_check.py", "--build-dir", "{build}", "--ld", "{ld}"),
-    ), ("full",), timeout=600),
+        ("{python}", "{root}/scripts/linux_storage_check.py", "--build-dir", "{build}",
+         "--clang", "{clang}", "--ld", "{ld}"),
+        ("{python}", "{root}/scripts/linux_storage_check.py", "--build-dir", "{build}",
+         "--clang", "{clang}", "--ld", "{ld}", "--verify"),
+    ), ("full",), timeout=65),
 )
 
 IMAGE_CHECK = Check("kernel-build-profile", (

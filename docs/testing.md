@@ -25,28 +25,32 @@ python3 scripts/check.py full --scope host --select linux-storage-dependency-aud
 
 This is original-source compile/partial-link evidence, not a disk-driver guest
 test. [The findings](rust-kernel-linux-drivers.md#linux-storage-dependency-audit)
-explain the eight translation units, native Kbuild configuration and missing
-services. GCC, GNU make/binutils, Flex, Bison, bc, pkg-config and libelf development
-headers are additional host prerequisites. Builds are single-job; source blobs
-are shared with the pinned submodule and only the sparse audit checkout is
-materialized. The normal source checkout, kernel and shared ISO are unchanged.
+explain the seven unchanged translation units, explicit source-facing profile
+and missing services. Like e1000, this uses Clang, GNU binutils, the shared
+freestanding flags and compatibility headers, not Kbuild or a native Linux
+configuration. Compilation is serial. Storage source lives in the same pinned
+sparse submodule; the kernel and shared ISO are unchanged.
 
-Evidence lives under `build/linux-storage-check`: `report.json`, `config.log`,
-`compile.log`, `link.log` and the partially linked `linux-storage.o`. The report
-is written only after profile, symbol-closure, original-entry-point and source
-identity checks pass. No unresolved services are supplied by fake providers.
-Failed reruns invalidate an earlier success report. Native Linux-header objects
-are never runtime inputs.
+Evidence lives under `build/linux-storage-check`: `report.json`, per-unit
+compile/dependency logs, `undefined.txt`, `macros.log`, `layout.log`, `link.log`,
+`runtime-exclusion-link.log` and the partially linked `linux-storage.o`.
+Each unresolved API has an explicit required or profile-rejected contract and
+object caller evidence. The report is written only after source/header/object
+provenance, exact flags/profile, original registration/callbacks, wire/shared
+layouts and actual runtime-link rejection pass. No fake service providers or
+garbage collection hide dependencies. Failed builds invalidate an earlier
+success report.
 
-Before removing that build area, remove its registered scratch source worktree:
+The catalog independently verifies the existing report without recompiling.
+This can also be requested directly:
 
 ```sh
-git -C linux worktree remove "$(pwd)/build/linux-storage-check/source"
+python3 scripts/linux_storage_check.py --verify
 ```
 
-Do not delete or prune unrelated Linux worktrees. A subsequent audit recreates
-its own source checkout; it does not require changing the normal sparse-source
-setup script.
+Native Kbuild reports, stale/tampered evidence, unsupported profile definitions,
+omitted dependencies and unexpectedly supplied providers are rejected.
+Declaration-only compatibility layouts are not an implemented runtime ABI.
 
 ## Guest acceptance
 

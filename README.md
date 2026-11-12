@@ -210,8 +210,8 @@ production HTTP client or userspace.
 - Network access on initial setup for Cargo dependencies and the
   SHA256-verified Limine `v12.0.2` binary release.
 
-Normal kutox builds need no Linux kernel configuration or build. No sibling
-repository is needed at build or run time.
+No Linux kernel configuration or Kbuild is needed, including for the driver
+audits. No sibling repository is needed at build or run time.
 
 ### Linux storage dependency audit
 
@@ -223,17 +223,18 @@ provider stubs. It does **not** add disk support to kutox.
 python3 scripts/check.py full --scope host --select linux-storage-dependency-audit
 ```
 
-This optional check additionally needs GCC, GNU make/binutils, Flex, Bison, bc,
-pkg-config and libelf development headers (`gcc make binutils flex bison bc
-pkg-config libelf-dev` on Debian/Ubuntu). It uses one build job and an isolated
-sparse Linux worktree under `build/linux-storage-check/source`, sharing the
-existing submodule's object store. The first run downloads additional pinned
-source; the normal Linux checkout and kernel/ISO are not changed.
+This follows the e1000 audit: direct serial Clang compilation for
+`x86_64-unknown-none`, the shared freestanding flags, explicit kutox
+compatibility declarations and unchanged Linux VirtIO headers. It uses the
+ordinary pinned sparse submodule; there is no second source checkout, generated
+Linux kernel configuration or additional toolchain. Rerun
+`bash scripts/linux_source.sh` to expose storage sources in an older checkout.
 
 The generated `build/linux-storage-check/report.json` records the profile,
-source/object hashes, toolchain and exact unresolved symbols. These objects use
-Linux's own Kbuild headers, **not kutox's service ABI**, and must not be linked
-into the kernel. See the [audit findings and runtime plan](docs/rust-kernel-linux-drivers.md#linux-storage-dependency-audit).
+source/header/object hashes, original callbacks and classified unresolved APIs.
+Compilation and independent `--verify` run through the coordinator; the existing
+kernel linker rejects these declaration-only objects. No storage service
+providers or disk boot are added. See the [audit findings and runtime plan](docs/rust-kernel-linux-drivers.md#linux-storage-dependency-audit).
 
 ### Test code and build profiles
 
