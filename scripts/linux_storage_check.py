@@ -55,9 +55,86 @@ def build_inputs():
         ROOT / "linker.ld",
         ROOT / "compat/block_services.c", ROOT / "compat/block_services.h",
         ROOT / "src/block_services.rs", ROOT / "build.rs",
+        ROOT / "compat/storage_runtime.c", ROOT / "compat/storage_runtime.h",
+        ROOT / "src/storage.rs",
     ]
     files.extend(path for path in DECLARATIONS.rglob("*") if path.is_file())
     return {str(path.relative_to(ROOT)): digest(path) for path in sorted(files)}
+
+
+RUNTIME_SOURCES = tuple("linux/" + source for source in SOURCES) + (
+    "compat/storage_runtime.c", "compat/block_services.c",
+)
+
+
+def runtime_flags(output):
+    flags = compiler_flags(output)
+    index = flags.index("-DKUTOX_DRIVER_COMPILE_ONLY=1")
+    flags[index:index + 3] = ["-include", str(ROOT / "compat/storage_runtime.h")]
+    return [*flags, "-I" + str(ROOT / "compat"),
+            "-I" + str(ROOT / "linux/drivers/virtio")]
+
+
+def runtime_inventory(paths, linked, expected):
+    defined, undefined, functions = set(), set(), set()
+    for path in paths:
+        obj = Elf(path)
+        if ".kutox.compile_only" in obj.by_name:
+            raise ValueError("compile-only storage object in runtime closure")
+        for symbol in obj.symbols():
+            if symbol["owner"]:
+                if symbol["binding"] in (1, 2):
+                    defined.add(symbol["name"])
+                if symbol["type"] == 2:
+                    functions.add(symbol["name"])
+            elif symbol["name"]:
+                undefined.add(symbol["name"])
+    obj = Elf(linked)
+    external = {s["name"] for s in obj.symbols() if not s["owner"] and s["name"]}
+    if (".kutox.compile_only" in obj.by_name or external != undefined - defined
+            or external != expected or not ENTRY_POINTS <= functions):
+        raise ValueError("storage runtime closure lost callbacks, hid dependencies or changed FFI")
+    return sorted(external)
+
+
+def runtime_evidence(output, compiler):
+    proofs, paths = [], []
+    for name in RUNTIME_SOURCES:
+        source = ROOT / name
+        obj = output / (source.stem + ".o")
+        command = [compiler, *runtime_flags(output), "-MD", "-MF", str(obj.with_suffix(".d")),
+                   "-c", str(source), "-o", str(obj)]
+        proofs.append({
+            "source": name, "source_sha256": digest(source),
+            "object_sha256": digest(obj), "command": command,
+            "headers": [{"path": header, "sha256": digest(Path(header))}
+                        for header in dependency_paths(obj.with_suffix(".d").read_text())],
+        })
+        paths.append(obj)
+    linked = output / "runtime.o"
+    return {
+        "units": proofs, "linked_sha256": digest(linked),
+        "undefined": runtime_inventory(paths, linked, set(lines(DECLARATIONS / "runtime-ffi.txt"))),
+        "compile_only_marker": False,
+    }
+
+
+def audit_runtime(args, output):
+    output.mkdir(parents=True, exist_ok=True)
+    include = make_headers(output, wrapper="storage_runtime.h")
+    for name in lines(DECLARATIONS / "headers.txt"):
+        path = include / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('#include "storage_runtime.h"\n')
+    paths = []
+    for name in RUNTIME_SOURCES:
+        source = ROOT / name
+        obj = output / (source.stem + ".o")
+        run([args.clang, *runtime_flags(output), "-MD", "-MF", str(obj.with_suffix(".d")),
+             "-c", str(source), "-o", str(obj)], obj.with_suffix(".log"))
+        paths.append(str(obj))
+    run([args.ld, "-r", "-o", str(output / "runtime.o"), *paths], output / "link.log")
+    return runtime_evidence(output, args.clang)
 
 
 def contracts():
@@ -268,6 +345,7 @@ def audit(args):
                  output / "macros.log")
     profile = parse_macros(macros)
     excluded = check_runtime_exclusion(args, flags, output, objects=[services])
+    runtime = audit_runtime(args, output / "runtime")
     source_identity()
     report = {
         "schema": 2, "status": "compile-only", "runtime": False,
@@ -279,6 +357,7 @@ def audit(args):
         "runtime_link_rejected": excluded,
         "runtime_exclusion_sha256": digest(output / "runtime-exclusion-link.log"),
         "service_closure": service_report,
+        "runtime_closure": runtime,
         "compiler": run([args.clang, "--version"]).splitlines()[0],
         "linker": run([args.ld, "--version"]).splitlines()[0],
         "units": [{**unit, **proof, "source_sha256": digest(ROOT / "linux" / unit["source"])}
@@ -376,6 +455,8 @@ def verify(args, report=None):
     if (report.get("runtime_link_rejected") is not True
             or report.get("runtime_exclusion_sha256") != digest(output / "runtime-exclusion-link.log")):
         raise ValueError("storage runtime exclusion was not verified")
+    if report.get("runtime_closure") != runtime_evidence(output / "runtime", args.clang):
+        raise ValueError("storage runtime provider provenance or closure changed")
     print(f"LINUX_STORAGE_COMPILE_ONLY_VERIFIED units={len(units)} unresolved={len(undefined)} "
           f"providers={len(actual['provided_apis'])} remaining={len(actual['remaining_apis'])} runtime=false")
     return report

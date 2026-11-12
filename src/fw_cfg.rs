@@ -13,6 +13,8 @@ pub enum BootMode {
     DriverRun,
     NetworkRun,
     UserRun,
+    StorageRun,
+    StorageTests,
     Probe,
     EepromTimeout,
     PageFault,
@@ -68,6 +70,8 @@ impl BootMode {
             Self::DriverRun => "driver-run",
             Self::NetworkRun => "network-run",
             Self::UserRun => "user-run",
+            Self::StorageRun => "storage-run",
+            Self::StorageTests => "storage-tests",
             Self::Probe => "probe",
             Self::EepromTimeout => "eeprom-timeout",
             Self::PageFault => "page-fault",
@@ -132,6 +136,7 @@ impl BootMode {
                 | Self::TcpTests
                 | Self::HttpTests
                 | Self::AsyncHardeningTests
+                | Self::StorageTests
                 | Self::HeapOom
                 | Self::ThreadStackGuard
         )
@@ -184,6 +189,8 @@ pub fn read_mode(
         b"driver-run" => Ok(Some(BootMode::DriverRun)),
         b"network-run" => Ok(Some(BootMode::NetworkRun)),
         b"user-run" => Ok(Some(BootMode::UserRun)),
+        b"storage-run" => Ok(Some(BootMode::StorageRun)),
+        b"storage-tests" => Ok(Some(BootMode::StorageTests)),
         b"probe" => Ok(Some(BootMode::Probe)),
         b"eeprom-timeout" => Ok(Some(BootMode::EepromTimeout)),
         b"page-fault" => Ok(Some(BootMode::PageFault)),

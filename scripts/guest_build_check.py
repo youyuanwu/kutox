@@ -62,6 +62,9 @@ RUNTIME_SYMBOLS = {
     "kutox_user_load_elf",
     "kutox_boot_filesystem",
     "kutox_block_quiescent",
+    "kutox_storage_start", "kutox_storage_stop", "virtblk_probe",
+    "virtio_queue_rq", "virtblk_request_done", "vp_interrupt",
+    "virtblk_done", "virtqueue_add_sgs", "virtqueue_get_buf", "vp_modern_probe",
     "kutox_user_dispatch_next",
     "kutox_runtime_users",
 }

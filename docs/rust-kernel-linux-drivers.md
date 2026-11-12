@@ -521,13 +521,12 @@ a general module loader are outside this direction's initial scope.
 
 ### Linux storage dependency audit
 
-The next selected storage driver is Linux `virtio-blk` at the same pinned
-`v7.3` revision as e1000. The proposed first runtime profile is one modern PCI
+The selected storage driver is Linux `virtio-blk` at the same pinned
+`v7.3` revision as e1000. The first implemented runtime profile is one modern PCI
 device, one split virtqueue and one outstanding read against a read-only raw
-ext2 image, with INTx rather than a new MSI-X implementation. There are no
-partitions, writes or general file syscalls in that proposed milestone.
-**The dependency audit and bounded native block services are implemented;
-hardware-driver integration and disk-backed boot are not.**
+disk, with INTx rather than a new MSI-X implementation. There are no partitions,
+writes or general file syscalls. **The dependency audit, bounded block services
+and real Linux storage-driver reads are implemented; disk-backed boot is not.**
 
 [linux_storage_check.py](../scripts/linux_storage_check.py) follows the e1000
 compile-only boundary: direct Clang compilation for `x86_64-unknown-none` using
@@ -542,7 +541,7 @@ x86-64, PCI, BLOCK, VirtIO/anchor, modern PCI and VirtIO block. The preprocessor
 gate rejects missing/extra configuration, including SMP, PCI MSI, legacy
 transport/admin, PM, debug and zoned-device configuration. Original Linux
 VirtIO device/config/feature/ring/PCI headers and UAPI wire definitions are
-retained; kutox supplies declaration-only platform and block types. Shared
+retained; kutox supplies explicit platform and block types. Shared
 core/execution declarations are reused from e1000, not reimplemented.
 
 Seven unchanged translation units are compiled serially:
@@ -594,7 +593,7 @@ these providers with a synthetic transport and a real timer IRQ, not original
 Linux storage callbacks or hardware. Production provider objects omit the
 compile-only marker; the combined audit object still must be rejected by the
 kernel linker.
-The principal missing-service families are:
+The baseline source-facing service families are:
 
 | Family | Representative unresolved symbols | Runtime obligation |
 | --- | --- | --- |
@@ -613,6 +612,32 @@ and execution, but matching names do not prove compatible types or semantics.
 Conversely, optional-path references must not automatically become first-boot
 requirements. Every admitted path needs implementation; unsupported paths need
 an enforced feature/configuration boundary and observable rejection.
+
+### Executable storage provider closure
+
+The audit additionally compiles the original units with
+[the runtime ABI header](../compat/storage_runtime.h), the real
+[storage adapter](../compat/storage_runtime.c) and block providers. This second
+relocatable closure has no compile-only marker, no garbage collection and no
+missing source-facing APIs. Its exact **38 shared/platform entry points** are
+listed in [runtime-ffi.txt](../compat/storage-check/runtime-ffi.txt).
+They include five existing block allocation/context/diagnostic calls, eight
+new storage platform calls, and established shared execution/IRQ/libc services.
+Rejected optional paths have explicit failure providers, not fake successful
+hardware services. The original 203/57/146 baseline counts are preserved as
+dependency evidence rather than misrepresented as the executable closure.
+
+`runtime_closure` records each of the nine original/provider objects, exact
+commands, source/header/object hashes and the full linked external set.
+Independent verification checks that set against the complete inputs minus
+actual global/weak definitions, so section loss or same-named local symbols
+cannot hide a dependency. Production objects are separately built and linked
+into both kernel profiles; ELF gates and real guest callbacks establish runtime
+execution, not merely matching symbol names.
+
+See [the runtime contract](kernel-implementation.md#linux-virtio-blk-runtime)
+for the depth-one module-parameter profile, checked PCI/DMA/INTx boundary,
+100-ms read/reset deadlines, lost-IRQ recovery and remaining limitations.
 
 The runtime implementation should proceed in separately validated stages:
 

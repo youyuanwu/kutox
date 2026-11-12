@@ -68,6 +68,13 @@ PROFILE_CHECKS = (
 
 
 GUEST_CHECKS = (
+    guest('storage-run', 'storage-run', 30, 35, ('ON', 'OFF')),
+    guest('storage-run-low-memory', 'storage-run-low-memory', 30, 35, ('ON', 'OFF')),
+    guest('storage-tests', 'storage-tests', 30, 35, ('ON',)),
+    guest('storage-tests-low-memory', 'storage-tests-low-memory', 30, 35, ('ON',)),
+    guest('storage-tests-disabled', 'storage-tests-disabled', 20, 25, ('OFF',)),
+    guest('storage-missing', 'storage-missing', 30, 35, ('ON', 'OFF')),
+    guest('storage-unsupported', 'storage-unsupported', 30, 35, ('ON', 'OFF')),
     guest('user-boot', 'user-boot', 30, 35, ('ON', 'OFF')),
     guest('user-boot-low-memory', 'user-boot-low-memory', 30, 35, ('ON', 'OFF'), ('full', 'smoke')),
     guest('network-dhcp', 'network-dhcp', 30, 35, ('ON', 'OFF')),

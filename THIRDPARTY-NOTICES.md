@@ -484,8 +484,18 @@ The [bounded block provider](compat/block_services.c), its
 of a restricted source-facing service API. They implement request ownership,
 metadata and completion lifecycle, not VirtIO ring/PCI/DMA or storage hardware
 algorithms. The provider reuses the already attributed Moss-backed kernel heap
-and existing execution types. The original Linux storage sources remain
-unchanged and compile-only; the guest transport fixture is not a storage driver.
+and existing execution types. The guest transport fixture is not a storage driver.
+
+The same seven unchanged Linux storage units are now also linked into both
+runtime profiles through [the namespaced C adapter](compat/storage_runtime.c)
+and [Rust PCI/DMA ownership services](src/storage.rs). All original notices and
+GPL obligations remain applicable. The original VirtIO core, split ring,
+modern PCI and block implementation performs hardware I/O; no native Rust
+descriptor or storage-driver algorithm replaces it. The bounded device model,
+frame-backed coherent/bounce DMA leases, deadline/reset/reprobe integration,
+QEMU fixture and native APIs are kutox integration code. They reuse the
+previously attributed Moss allocators and shared kernel execution/IRQ services;
+no Ginux or additional Moss driver source is imported.
 
 The native [C execution adapter](compat/runtime.c),
 [Rust registry/backend](src/linux_runtime.rs), and

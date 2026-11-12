@@ -570,3 +570,37 @@ void rq_list_add_tail(struct rq_list *list, struct request *req)
     list->head = req;
 }
 bool kutox_block_quiescent(void) { return !live && !major_live; }
+
+struct gendisk *kutox_block_registered_disk(void)
+{
+    context(0);
+    require(live && live->published && live->disk, "block_registered_disk");
+    return live->disk;
+}
+
+/* Internal transport boundary: reset acknowledged, IRQ joined and original
+ * virtqueue_detach_unused_buf has returned this request's PDU after DMA unmap. */
+void kutox_block_reset_complete(struct request *req, blk_status_t status)
+{
+    context(0);
+    request(req);
+    require(live->state == ACTIVE && !live->dispatching && status == BLK_STS_TIMEOUT,
+            "block_reset_completion");
+    live->quiesced = true;
+    live->status = status;
+    live->state = DONE;
+}
+
+const struct blk_mq_ops *kutox_block_operations(void)
+{
+    context(0);
+    require(live && live->tags, "block_operations_owner");
+    return live->set->ops;
+}
+
+int kutox_block_ready(u64 value)
+{
+    context(0);
+    int result = ticket(value);
+    return result ? result : live->state == DONE;
+}

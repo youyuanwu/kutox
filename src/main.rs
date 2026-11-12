@@ -167,6 +167,7 @@ mod pci;
 )]
 mod platform;
 mod serial;
+mod storage;
 #[cfg_attr(
     not(feature = "guest-tests"),
     allow(
@@ -254,6 +255,7 @@ pub extern "C" fn kmain() -> ! {
             println!("KERNEL_RUNTIME_STOPPED");
             io::finish(true);
         }
+        Ok(BootOutcome::StorageRead) => io::finish(true),
         Ok(BootOutcome::UserExited(status)) => {
             if status == 0 {
                 println!("USER_BOOT_OK exit=0");
@@ -276,11 +278,12 @@ enum BootOutcome {
     Mac([u8; 6]),
     RuntimeStopped,
     UserExited(u64),
+    StorageRead,
 }
 
 fn probe() -> Result<BootOutcome, Failure> {
     exceptions::initialize()?;
-    if !block_services::quiescent() {
+    if !block_services::quiescent() || !storage::quiescent() {
         return Err(Failure::new("block_services_initial", -1));
     }
     let boot = boot::collect()?;
@@ -311,6 +314,7 @@ fn probe() -> Result<BootOutcome, Failure> {
             | BootMode::TcpTests
             | BootMode::HttpTests
             | BootMode::AsyncHardeningTests
+            | BootMode::StorageTests
     ) {
         guest_tests::run(&boot);
     }
@@ -360,6 +364,10 @@ fn probe() -> Result<BootOutcome, Failure> {
     println!("TSC ticks_per_us={ticks}");
     if boot.mode == BootMode::UserRun {
         return boot_fs::kutox_boot_filesystem(&boot, allocator).map(BootOutcome::UserExited);
+    }
+    if boot.mode == BootMode::StorageRun {
+        storage::run(&boot, allocator)?;
+        return Ok(BootOutcome::StorageRead);
     }
     if matches!(
         boot.mode,

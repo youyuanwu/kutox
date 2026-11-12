@@ -282,8 +282,9 @@ optimization rather than manufacturing completion.
 Cancellation before publication completes locally. After publication it records
 cancellation and returns `-EBUSY`, retaining all backing until actual completion
 and off-IRQ callback acknowledgment. There is no force-free/reset shortcut.
-No block I/O deadline/reset recovery is implemented yet: without completion the
-request remains owned and busy, rather than being reclaimed unsafely.
+The standalone block service does not implement a deadline or hardware reset:
+without a transport completion/reset proof the request stays owned and busy.
+The Linux storage adapter below adds that protocol-specific boundary.
 Deleting a disk closes admission while an outstanding completion can still
 drain; tag/disk destruction requires the request released. Quiesce is nonblocking;
 freeze/limit changes are admitted only when idle, with an exact unfreeze cookie.
@@ -291,8 +292,7 @@ There is no general blocking Linux freeze or synchronous I/O executor yet.
 `blk_execute_rq` and borrowed `blk_rq_map_kern` return explicit unsupported errors.
 
 The runtime provider archive builds in both profiles; normal boot merely checks
-its cold quiescent state and starts no storage queue. The original Linux
-`virtio-blk`/VirtIO units remain compile-only. The source-plus-provider audit
+its cold quiescent state and starts no storage queue. The source-plus-provider audit
 resolves 57 original API names, keeps 146 remaining APIs visible, and records
 five implemented Rust allocation/context/diagnostic entry points. Its combined
 audit object retains runtime exclusion.
@@ -304,8 +304,74 @@ limit rejection, retained backpressure, stale tickets, successful/error result
 bytes and cancellation before/after publication. A real timer IRQ then marks a
 request pending after disk admission closes; only the off-IRQ pump completes
 it. Existing fixture guards require exact heap/frame balance and block allocator
-quiescence. This is service acceptance, not original Linux driver, VirtIO queue
-or disk-read acceptance; those are the next milestone.
+quiescence. This remains service acceptance, separate from the real driver
+acceptance below.
+
+## Linux virtio-blk runtime
+
+[The C adapter](../compat/storage_runtime.c) now connects all seven unchanged
+Linux storage units to the bounded block provider. [Rust](../src/storage.rs)
+supplies owned PCI/BAR/MMIO, allocation and DMA services. Compilation follows
+e1000's direct freestanding Clang approach; no Kbuild or native Rust VirtIO ring
+implementation is introduced. Storage-private APIs are namespaced so e1000's
+incompatible device/PCI/DMA/allocation layouts cannot accidentally satisfy them.
+Stable shared spinlock, completion, scalar/barrier and INTx services are reused.
+
+The admitted profile is one modern PCI block function (`1af4:1042`), a single
+split queue, depth one, 512-byte sectors and at most one 4096-byte read.
+The original `queue_depth`, `num_request_queues` and `poll_queues` module
+parameters select 1/1/0; upstream request, descriptor and callback algorithms
+are unchanged. Read-only and ACCESS_PLATFORM features are required. Packed
+and indirect rings, admin queues, zoned/discard/write-zeroes/secure-erase and
+writable cache configuration are rejected before the block probe. General
+sysfs/uevent, synchronous Get-ID/borrowed-payload execution, MSI-X, SR-IOV and
+device-tree paths are not admitted. Real MSI-X allocation failures drive
+upstream's INTx fallback rather than pretending vectors exist.
+
+PCI takeover validates the complete bounded capability chain, a 64-bit MMIO
+BAR below 4 GiB, its size/alignment and any parent memory forwarding windows
+(including prefetchable windows). Firmware may leave mastering enabled:
+takeover gates it before sizing the BAR and acknowledges a status-zero reset
+before allocating storage DMA. Firmware mastering is never restored on drop.
+Every mapped capability span and width/alignment of MMIO access is checked.
+The existing ACPI/PIIX/I/O-APIC route delivers the original `vp_interrupt`,
+which calls the original ring and block callbacks. This scope uses the single
+existing IRQ/MMIO owner and cannot coexist with an active NIC service scope.
+Normal networking remains unchanged and does not start storage.
+
+Coherent queue memory owns contiguous Moss frame allocations. Three permanent
+4096-byte frame guards back streaming DMA bounce leases for the outgoing
+header, incoming payload and incoming status. Mapping and IRQ-side unmapping
+allocate nothing, enforce exact direction/length/lifetime, and copy incoming
+bytes back only when upstream consumes or detaches the descriptor.
+All read results remain in the owned block payload until successful native
+result copying; errors never expose a prefix. Identity-DMA, indirect and
+premapped DMA paths fail explicitly rather than bypassing ownership.
+
+Native reads have a 100-ms TSC deadline and use returning timer/INTx interrupts
+with off-IRQ completion pumping. On deadline, the adapter invokes upstream's
+`virtio_reset_device`, requires acknowledged status zero and joined IRQs, then
+uses upstream `virtqueue_detach_unused_buf` to unmap the retained request.
+Only after that proof may the internal block reset-completion boundary mark
+the request failed/cancelled and release its PDU/payload. Recovery removes and
+reprobes the original driver with a fresh queue before the next read.
+All removals reset before freeing tags, join the original IRQ handler, clear
+mastering, and release mappings and frame guards. A reset that never
+acknowledges fails closed with a diagnostic after its own 100-ms budget;
+it never reports recovery or frees potentially live DMA backing.
+
+Explicit `storage-run` in both profiles reads sector zero and reports its
+FNV-1a checksum, then verifies complete frame/heap reclamation. Guest-only
+`storage-tests` checks exact first/interior/final-sector data, 4096-byte reads,
+range rejection, all three streaming-map rollback points, real IRQ delivery,
+lost-IRQ deadline/reset/reprobe, and actual device EIO from a host-owned
+`blkdebug` backend followed by a good read. Per-case fixture guards check
+heap/frame balance and all storage/IRQ/MMIO owners. The host checks original
+callback addresses, exact proof placement, the complete rejection ledger,
+read-only backing and production/fixture separation at 128/32 MiB.
+
+This is native kernel disk I/O, not disk-backed boot. The existing filesystem
+and `/bin/init` loader continue to use the immutable Limine RAM module.
 
 ## Timer-bounded ring-3 runs
 

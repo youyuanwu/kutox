@@ -213,11 +213,13 @@ production HTTP client or userspace.
 No Linux kernel configuration or Kbuild is needed, including for the driver
 audits. No sibling repository is needed at build or run time.
 
-### Linux storage dependency audit
+### Linux storage
 
-The first storage milestone compiles unchanged Linux `virtio-blk`, VirtIO
-core/ring and modern PCI transport sources, then partially links them without
-provider stubs. It does **not** add disk support to kutox.
+Unchanged Linux `virtio-blk`, VirtIO core/ring and modern PCI transport sources
+now execute real read-only QEMU disk reads. The bounded profile admits one
+modern device, one split queue, one outstanding read (up to 4096 bytes), and
+INTx. Rust supplies PCI/MMIO, frame-backed DMA and lifetime services, not a
+replacement device queue or descriptor algorithm.
 
 ```sh
 python3 scripts/check.py full --scope host --select linux-storage-dependency-audit
@@ -233,16 +235,27 @@ Linux kernel configuration or additional toolchain. Rerun
 The generated `build/linux-storage-check/report.json` records the profile,
 source/header/object hashes, original callbacks and classified unresolved APIs.
 Compilation and independent `--verify` run through the coordinator; the existing
-kernel linker rejects these declaration-only objects.
+kernel linker rejects declaration-only objects. A separate complete runtime
+provider closure retains all sections and checks its exact shared/platform FFI.
 
 The [bounded block services](docs/kernel-implementation.md#bounded-block-services)
 now provide one owned read request, tag/PDU/payload storage, read-only limits,
 backpressure, deferred completion and joined cancellation. The audit separately
 links these real providers and records the remaining APIs and Rust platform
-boundary. Guest acceptance uses a synthetic transport plus a real timer IRQ;
-it does not execute a storage driver or access a disk. Normal boot starts no
-storage queue, and hardware integration/disk boot remain deferred. See the
-[audit findings and runtime plan](docs/rust-kernel-linux-drivers.md#linux-storage-dependency-audit).
+boundary. Its synthetic transport tests remain separate from the new
+[real disk acceptance](docs/kernel-implementation.md#linux-virtio-blk-runtime):
+
+```sh
+python3 scripts/check.py full --profiles both --scope guest \
+  --select 'storage-*'
+```
+
+The host creates temporary project-owned read-only disks; no host disk device
+is used. `storage-run` works in both profiles; `storage-tests` adds exact bytes,
+real device EIO, DMA-map rollback, lost-IRQ timeout/reset/reprobe and balanced
+teardown. Both run at 128/32 MiB. Default network boot remains unchanged.
+Filesystem/program loading still uses the Limine RAM module: disk-backed
+`/bin/init` boot is the next, separate milestone.
 
 ### Test code and build profiles
 

@@ -1203,7 +1203,7 @@ def validate_result(case, returncode, output):
         if any(line.startswith(("BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "# DRIVER_", "# KERNEL_SERVICES", "# NETWORK_STACK")) for line in lines):
             raise AssertionError("invalid CIDR reached allocation or source admission")
         return
-    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled", "async-network-tests-disabled", "network-tests-disabled", "udp-tests-disabled", "dhcp-tests-disabled", "dns-tests-disabled", "tcp-tests-disabled", "http-tests-disabled", "async-hardening-tests-disabled"):
+    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled", "async-network-tests-disabled", "network-tests-disabled", "udp-tests-disabled", "dhcp-tests-disabled", "dns-tests-disabled", "tcp-tests-disabled", "http-tests-disabled", "async-hardening-tests-disabled", "storage-tests-disabled"):
         lines = output.splitlines()
         expected = "E1000_MAC_FAIL stage=boot_mode code=-25"
         if returncode != 3 or not lines or lines[-1] != expected:

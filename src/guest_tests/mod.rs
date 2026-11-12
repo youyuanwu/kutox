@@ -469,6 +469,8 @@ pub fn run(boot: &BootInfo) -> ! {
         tcp::TESTS
     } else if boot.mode == BootMode::HttpTests {
         http::TESTS
+    } else if boot.mode == BootMode::StorageTests {
+        crate::storage::tests::TESTS
     } else if boot.mode == BootMode::AsyncHardeningTests {
         async_hardening::TESTS
     } else {

@@ -61,6 +61,10 @@ fn main() {
         "linker.ld",
         "build.rs",
         "linux/drivers/net/ethernet/intel/e1000",
+        "linux/drivers/virtio",
+        "linux/drivers/block",
+        "linux/include",
+        "linux/arch/x86/include",
     ] {
         println!("cargo:rerun-if-changed={path}");
     }
@@ -192,6 +196,57 @@ fn main() {
         storage.flag(flag);
     }
     storage.compile("kutox_block_services");
+    let runtime_include =
+        PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("storage-runtime-include");
+    for header in headers
+        .lines()
+        .chain(extra.lines())
+        .chain(storage_headers.lines())
+    {
+        let path = runtime_include.join(header);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "#include <storage_runtime.h>\n").unwrap();
+    }
+    for (header, target) in uapi_forwarders {
+        fs::write(
+            runtime_include.join(header),
+            format!("#include <uapi/{target}>\n"),
+        )
+        .unwrap();
+    }
+    let mut storage_runtime = cc::Build::new();
+    storage_runtime
+        .compiler("clang")
+        .include(&runtime_include)
+        .include("compat")
+        .include("linux/include")
+        .include("linux/include/uapi")
+        .include("linux/arch/x86/include/uapi")
+        .include("linux/drivers/virtio")
+        .flag("-include")
+        .flag("compat/storage_runtime.h")
+        .file("compat/storage_runtime.c")
+        .warnings_into_errors(true);
+    for unit in [
+        "drivers/block/virtio_blk.c",
+        "drivers/virtio/virtio.c",
+        "drivers/virtio/virtio_anchor.c",
+        "drivers/virtio/virtio_ring.c",
+        "drivers/virtio/virtio_pci_common.c",
+        "drivers/virtio/virtio_pci_modern.c",
+        "drivers/virtio/virtio_pci_modern_dev.c",
+    ] {
+        storage_runtime.file(format!("linux/{unit}"));
+        println!("cargo:rerun-if-changed=linux/{unit}");
+    }
+    for flag in flags.lines() {
+        storage_runtime.flag(flag);
+    }
+    storage_runtime
+        .flag("-Wno-pointer-sign")
+        .flag("-Wno-sign-compare")
+        .flag("-Wno-missing-field-initializers");
+    storage_runtime.compile("linux_storage");
     if guest_tests {
         let mut tests = cc::Build::new();
         tests

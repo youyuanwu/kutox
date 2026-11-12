@@ -29,7 +29,7 @@ explain the seven unchanged translation units, explicit source-facing profile
 and missing services. Like e1000, this uses Clang, GNU binutils, the shared
 freestanding flags and compatibility headers, not Kbuild or a native Linux
 configuration. Compilation is serial. Storage source lives in the same pinned
-sparse submodule; the kernel and shared ISO are unchanged.
+sparse submodule; every guest mode still shares one ISO.
 
 Evidence lives under `build/linux-storage-check`: `report.json`, per-unit
 compile/dependency logs, `undefined.txt`, `macros.log`, `layout.log`, `link.log`,
@@ -39,7 +39,10 @@ object caller evidence. The report is written only after source/header/object
 provenance, exact flags/profile, original registration/callbacks, wire/shared
 layouts and actual runtime-link rejection pass. No fake service providers or
 garbage collection hide dependencies. Failed builds invalidate an earlier
-success report.
+success report. The separate `runtime/` subdirectory now contains the complete
+unmarked source-plus-provider closure, with all sections retained and exactly
+38 explicitly allowed shared/platform entry points. Both closure inventories
+and their source/header/command/object provenance are independently verified.
 
 The catalog independently verifies the existing report without recompiling.
 This can also be requested directly:
@@ -70,8 +73,36 @@ rollback. The host checks exact bounded/IRQ evidence and the expected rejection
 ledger inside that case, and rejects missing/duplicate/moved/changed proofs.
 Fixture guards require exact frame/heap balance and no retained block objects.
 The C/Rust fixture and fault injection are absent from OFF; default network boot
-rejects block acceptance/error evidence. No hardware disk or new boot mode is
-introduced.
+rejects block acceptance/error evidence. This fixture is not the hardware driver.
+
+### Real storage acceptance
+
+```sh
+python3 scripts/check.py full --profiles both --scope guest --select 'storage-*'
+```
+
+`storage-run` and `storage-run-low-memory` exercise the production native read
+API in ON/OFF. `storage-tests` and `storage-tests-low-memory` run two guest-only
+cases independently of the 76-case kernel registry:
+
+- `storage.linux_disk`: exact sector/4096-byte reads, capacity/range rejection,
+  three real-driver DMA-map rollback points, original INTx completion, a masked
+  completion IRQ, measured 100-ms deadline, acknowledged reset/detach/reprobe,
+  then a successful read.
+- `storage.io_error`: actual QEMU `blkdebug` EIO on sector 64, unchanged caller
+  output and a subsequent exact successful read of sector 65.
+
+The Python runner creates a temporary 64-KiB patterned image and opens it
+read-only; it never opens a host disk device and verifies backing bytes after
+QEMU exits. An owned error configuration applies only to the fixture disk.
+The host checks original probe/request/completion/ring/IRQ callback addresses
+against the linked ELF, exact in-case proofs, rejection counts and final KTAP.
+Every case must reclaim all heap/frame/IRQ/MMIO/storage resources. Production
+mode requires the independent exact checksum and balanced shutdown markers,
+and rejects guest proofs. `storage-missing` and `storage-unsupported` require
+observable missing-device/feature rejection and balanced rollback.
+`storage-tests-disabled` requires rejection before initialization in OFF.
+No storage fixture or fault injection is linked in OFF.
 
 ## Guest acceptance
 
