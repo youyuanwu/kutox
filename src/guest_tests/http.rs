@@ -138,6 +138,7 @@ async fn fetch(
         }
         transfer.received += length;
         if transfer.received == 7 {
+            user_tasks::http_input_ready();
             if stage == 2 {
                 async_sync::sleep_us(150_000).unwrap().await.unwrap();
                 serial::print(format_args!(
@@ -319,6 +320,9 @@ fn exchange(
                         .as_mut()
                         .expect("admitted runtime user tasks")
                         .observe(users, event)?;
+                }
+                if let Some(proof) = proof.as_mut() {
+                    proof.deliver_input(users)?;
                 }
                 if event.is_some() && !handler {
                     resources.async_test_irq(time::now_ticks(), user_tasks::runtime_handler)?;

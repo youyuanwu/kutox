@@ -168,6 +168,19 @@ epoch. Portable tests cover deadline arithmetic/bounds and revoking a parked
 queue entry without waking a reused slot. Strict host mutation tests reject
 missing, duplicate, reordered or invalid blocking/idle proofs.
 
+[Input acceptance](kernel-implementation.md#bounded-user-input) extends the same
+75 cases. Two ELF readers verify buffered and blocked delivery, wrapped
+256-byte cross-page copying, short reads, drain-before-EOF, full/closed producer
+errors, bad destinations without partial copies, revalidation after RO/unmap
+changes, retained registers and cumulative syscall counts. Cancellation,
+stale producers, replacement isolation and pending-reader drop reclaim all
+frames. A real kernel producer wakes an all-reading runtime with bounded
+callbacks and uncharged parked budgets; shutdown joins with two reads pending.
+Every HTTP epoch also requires a blocked ELF read completed only after response
+bytes arrive. Portable tests cover ring wrap/backpressure/close and writable
+copy plans. Strict host mutations reject missing, duplicate, malformed and
+out-of-case/epoch proofs; OFF and production boot still reject guest evidence.
+
 ## Validation tiers
 
 ```sh

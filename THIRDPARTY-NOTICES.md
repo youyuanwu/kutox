@@ -205,6 +205,19 @@ signal interruption, `timespec` user-copy or the timer heap. The scalar native
 microsecond ABI, bounded arithmetic, scoped ready/deadline values, cancellation
 and ELF/network acceptance are kutox code; no new upstream component is imported.
 
+The [bounded input channel](docs/kernel-implementation.md#bounded-user-input)
+follows pinned Moss's
+[read syscall dispatch](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/fs/syscalls/rw.rs),
+[pipe reader and close ordering](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/fs/pipe.rs),
+[bounded user-copy chunks](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/kernel/kpipe.rs)
+and [buffer readiness/short reads](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/kbuf.rs).
+It retains predicate-driven waiting and drains buffered bytes before EOF,
+using the existing ported task/context state and native FIFO. The inline
+256-byte per-task buffer, deferred metadata-only read, revalidated writable
+copy plan, generation-checked producer, cancellation and acceptance are kutox
+implementations. No additional Moss source, VFS/descriptor layer, signals,
+page-backed ring dependency or async syscall future is copied.
+
 ### Bootstrap memory allocator
 
 This is a fixed-capacity adaptation, not an unchanged copy of libkernel.

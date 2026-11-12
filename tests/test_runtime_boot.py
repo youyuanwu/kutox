@@ -158,6 +158,9 @@ class RuntimeBootTests(unittest.TestCase):
             "# USER_BLOCKING source=moss-boundary yield=6 sleep=6 resumes=12 exits=65,66 zero=immediate invalid=-22 context=preserved early=0 idle=hlt peer=preempted budget=active syscall_limit=32 cancel=sleeping stale=rejected drop=sleeping single_run=unsupported frames=balanced",
             "# USER_SLEEP_IDLE tasks=2 sleep=4 exits=2 wake=timer early=0 idle=hlt callbacks=bounded budget=uncharged shutdown=sleeping frames=balanced",
             "# USER_RUNTIME_BLOCKING epoch=1 yield=3 sleep=3 early=0 shutdown=sleeping cancel=sleeping",
+            "# USER_INPUT source=moss-pipe fd=0 capacity=256 bytes=261 calls=10,9 short=2,3 cross_page=checked eof=drained errors=-9,-14,-22 backpressure=-11 closed=-32 context=preserved wait=event budget=active cancel=reading stale=rejected drop=reading revalidate=checked single_run=unsupported frames=balanced",
+            "# USER_INPUT_IDLE tasks=2 bytes=6 wake=kernel idle=hlt callbacks=bounded budget=uncharged shutdown=reading frames=balanced",
+            "# USER_RUNTIME_INPUT epoch=1 source=moss-pipe fd=0 wait=event bytes=3 producer=http context=continued",
         ]:
             with self.subTest(extra=extra), self.assertRaises(AssertionError):
                 runner.validate_live_boot("driver-runtime-default", live_log() + extra + "\n", SYMBOLS)

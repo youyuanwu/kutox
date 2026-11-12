@@ -12,6 +12,8 @@ _start:
     cmp dword ptr [rax], 0x666c65
     jne .Lbad
     mov rax, [rsp + 16]
+    cmp dword ptr [rax], 0x75706e69
+    je .Linput
     cmp dword ptr [rax], 0x65636e6f
     je .Lsleep_once
     cmp dword ptr [rax], 0x65656c73
@@ -211,6 +213,21 @@ _start:
     int 0x80
     cmp rax, -22
     jne .Lbad
+    cmp qword ptr [rbx + 48], 0
+    je .Lblocking_setup
+    xor eax, eax
+    xor edi, edi
+    lea rsi, [rbx + 64]
+    mov edx, 3
+    int 0x80
+    cmp rax, 3
+    jne .Lbad
+    cmp word ptr [rbx + 64], 0x100
+    jne .Lbad
+    cmp byte ptr [rbx + 66], 2
+    jne .Lbad
+    mov qword ptr [rbx + 48], 2
+.Lblocking_setup:
     mov ebp, 0x33
     mov ecx, 0x44
     mov esi, 0x66
@@ -318,6 +335,10 @@ _start:
     int 0x80
     ud2
 .Lblocking_gate:
+    xor eax, eax
+    int 0x80
+    cmp rax, -38
+    jne .Lbad
     mov eax, 24
     int 0x80
     cmp rax, -38
@@ -328,6 +349,116 @@ _start:
     cmp rax, -38
     jne .Lbad
     mov edi, 70
+    jmp .Lexit
+.Linput:
+    xor eax, eax
+    mov edi, 1
+    xor edx, edx
+    int 0x80
+    cmp rax, -9
+    jne .Lbad
+    xor eax, eax
+    xor edi, edi
+    mov rsi, 0x100000004ffe
+    mov edx, 257
+    int 0x80
+    cmp rax, -22
+    jne .Lbad
+    xor eax, eax
+    xor esi, esi
+    mov edx, 1
+    int 0x80
+    cmp rax, -14
+    jne .Lbad
+    xor eax, eax
+    lea rsi, [rip + _start]
+    int 0x80
+    cmp rax, -14
+    jne .Lbad
+    xor eax, eax
+    mov rsi, 0x100000006fff
+    mov byte ptr [rsi], 0x5a
+    mov edx, 2
+    int 0x80
+    cmp rax, -14
+    jne .Lbad
+    cmp byte ptr [rsi], 0x5a
+    jne .Lbad
+    xor eax, eax
+    mov rsi, -1
+    xor edx, edx
+    int 0x80
+    test rax, rax
+    jne .Lbad
+    lea rbx, [rip + zeroed]
+    xor r12d, r12d
+    xor r13d, r13d
+    mov ebp, 0x33
+    mov ecx, 0x44
+    mov r8d, 0x88
+    mov r9d, 0x99
+    mov r10d, 0xaa
+    mov r11d, 0xbb
+    mov r15d, 0xee
+    sub rsp, 8
+    mov qword ptr [rsp], 0x12345678
+    std
+.Linput_read:
+    xor eax, eax
+    xor edi, edi
+    mov rsi, 0x100000004ffe
+    mov edx, 256
+    mov r14d, 0xdd
+    int 0x80
+    cmp rax, 256
+    ja .Lbad
+    cmp rbp, 0x33
+    jne .Lbad
+    cmp rcx, 0x44
+    jne .Lbad
+    test rdi, rdi
+    jne .Lbad
+    cmp r14, 0xdd
+    jne .Lbad
+    mov r14, rax
+    mov rax, 0x100000004ffe
+    cmp rsi, rax
+    jne .Lbad
+    cmp rdx, 256
+    jne .Lbad
+    cmp r8, 0x88
+    jne .Lbad
+    cmp r9, 0x99
+    jne .Lbad
+    cmp r10, 0xaa
+    jne .Lbad
+    cmp r11, 0xbb
+    jne .Lbad
+    cmp r15, 0xee
+    jne .Lbad
+    cmp qword ptr [rsp], 0x12345678
+    jne .Lbad
+    pushfq
+    pop rax
+    and eax, 0x600
+    cmp eax, 0x600
+    jne .Lbad
+    test r14, r14
+    je .Linput_eof
+    xor eax, eax
+.Linput_bytes:
+    cmp [rsi + rax], r13b
+    jne .Lbad
+    inc r13b
+    inc rax
+    cmp rax, r14
+    jne .Linput_bytes
+    add r12, r14
+    mov [rbx + 8], r12
+    inc qword ptr [rbx + 24]
+    jmp .Linput_read
+.Linput_eof:
+    mov edi, 72
     jmp .Lexit
 .Lquota:
     lea r13, [rip + zeroed]

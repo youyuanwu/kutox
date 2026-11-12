@@ -50,6 +50,7 @@ def transcript():
         lines += [
             f"# USER_RUNTIME epoch={epoch} source=moss-dispatch tasks=2 slices=32 early=8 memory=isolated progress=2 fault=isolated timeout=isolated survivor=66 cancel=paused stale=rejected shutdown=2 handler=delivered locks=0",
             f"# USER_RUNTIME_BLOCKING epoch={epoch} yield=3 sleep=3 early=0 shutdown=sleeping cancel=sleeping",
+            f"# USER_RUNTIME_INPUT epoch={epoch} source=moss-pipe fd=0 wait=event bytes=3 producer=http context=continued",
             f"# HTTP_TEST_JOIN epoch={epoch} success=2 timeout=1 connections=0 queries=0 frame=balanced heap=balanced",
         ]
     return "\n".join([*lines, "ok 1 http.exchange", "# Totals: pass:1 fail:0 skip:0 total:1", ""])
@@ -197,7 +198,8 @@ class HttpTests(unittest.TestCase):
                        "# TCP_STORAGE", "# HTTP_TEST_DNS", "# HTTP_TEST_DELAY", "# HTTP_TEST_FRAGMENT",
                        "# HTTP_TEST_RESPONSE", "# HTTP_TEST_TIMEOUT", "# HTTP_TEST_CLOSED",
                        "# HTTP_TEST_JOIN", "# TCP_ERROR", "# USER_RUNTIME_DEADLINES",
-                       "# USER_RUNTIME_NETWORK", "# USER_RUNTIME ", "# USER_RUNTIME_BLOCKING"):
+                       "# USER_RUNTIME_NETWORK", "# USER_RUNTIME ", "# USER_RUNTIME_BLOCKING",
+                       "# USER_RUNTIME_INPUT"):
             line = next(line for line in text.splitlines() if line.startswith(prefix))
             for replacement in ("", line + "\n" + line):
                 with self.subTest(prefix=prefix, duplicate=bool(replacement)), self.assertRaises(AssertionError):
@@ -220,6 +222,11 @@ class HttpTests(unittest.TestCase):
             ("yield=3 sleep=3", "yield=0 sleep=3"),
             ("yield=3 sleep=3", "yield=3 sleep=2"),
             ("yield=3 sleep=3", "yield=15 sleep=15"),
+            ("fd=0 wait=event", "fd=1 wait=event"),
+            ("wait=event bytes=3", "wait=poll bytes=3"),
+            ("bytes=3 producer=http", "bytes=0 producer=http"),
+            ("producer=http context=continued", "producer=fixture context=continued"),
+            ("context=continued", "context=restarted"),
             ("fault=isolated", "fault=global"), ("timeout=isolated", "timeout=reset"),
             ("shutdown=2", "shutdown=0"), ("cancel=paused", "cancel=fresh"),
             ("handler=delivered", "handler=lost"), ("locks=0", "locks=1"),

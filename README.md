@@ -56,7 +56,9 @@ now runs these slices alongside Linux-backed networking, honoring kernel
 deadlines and joined shutdown. Resumable tasks now have bounded native
 [yield/sleep syscalls](docs/kernel-implementation.md#bounded-user-yield-and-sleep),
 including timer-driven idle wakeup and sleeping-task cancellation.
-General blocking I/O and a full process runtime remain absent.
+A bounded [input channel](docs/kernel-implementation.md#bounded-user-input)
+adds blocking native reads, kernel delivery and drain-before-EOF close.
+General file/socket I/O and a full process runtime remain absent.
 
 The scoped [kernel runtime](src/kernel_runtime.rs) now retains the dispatcher,
 native manager, APIC/timer/controllers and shared Linux workers through client

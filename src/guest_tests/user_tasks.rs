@@ -24,6 +24,13 @@ static RUNTIME_YIELDS: AtomicUsize = AtomicUsize::new(0);
 static RUNTIME_SLEEPS: AtomicUsize = AtomicUsize::new(0);
 static IDLE_DONE: AtomicBool = AtomicBool::new(false);
 static IDLE_WAKE: threads::WaitQueue = threads::WaitQueue::new();
+static INPUT_PARKED: AtomicBool = AtomicBool::new(false);
+static INPUT_READY: AtomicBool = AtomicBool::new(false);
+static HTTP_INPUT_READY: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn http_input_ready() {
+    HTTP_INPUT_READY.store(true, Ordering::Release);
+}
 
 pub(crate) fn blocking_counts() -> (usize, usize) {
     (
@@ -48,6 +55,7 @@ pub(crate) fn reset_runtime() {
     RUNTIME_PROGRESS.store(0, Ordering::Release);
     RUNTIME_YIELDS.store(0, Ordering::Release);
     RUNTIME_SLEEPS.store(0, Ordering::Release);
+    HTTP_INPUT_READY.store(false, Ordering::Release);
 }
 
 pub(crate) fn network_done() {
@@ -80,6 +88,8 @@ pub(crate) struct RuntimeProof<'b> {
     timed_out: bool,
     cancelled: bool,
     exited: bool,
+    input_waiting: bool,
+    input_delivered: bool,
 }
 
 impl<'b> RuntimeProof<'b> {
@@ -105,6 +115,13 @@ impl<'b> RuntimeProof<'b> {
             .translate(STATE)?
             .unwrap();
         assert_eq!(a.physical_address != b.physical_address, true);
+        users.tasks[first[1].slot()]
+            .as_mut()
+            .unwrap()
+            .space
+            .with_active(|| unsafe {
+                ((STATE + 48) as *mut u64).write_volatile(1);
+            })?;
         Ok(Self {
             boot,
             frames,
@@ -120,7 +137,21 @@ impl<'b> RuntimeProof<'b> {
             timed_out: false,
             cancelled: false,
             exited: false,
+            input_waiting: false,
+            input_delivered: false,
         })
+    }
+
+    pub(crate) fn deliver_input(
+        &mut self,
+        users: &mut Dispatcher<'static, 'static>,
+    ) -> Result<(), Failure> {
+        if self.input_waiting && !self.input_delivered && HTTP_INPUT_READY.load(Ordering::Acquire) {
+            assert_eq!(users.send_input(self.first[1], &[0, 1, 2])?, 3);
+            users.close_input(self.first[1])?;
+            self.input_delivered = true;
+        }
+        Ok(())
     }
 
     pub(crate) fn observe(
@@ -135,7 +166,10 @@ impl<'b> RuntimeProof<'b> {
         assert_eq!(event.report.cpl, 3);
         self.slices += 1;
         if event.task == self.first[1] {
-            if event.report.stop == Stop::Yielded {
+            if matches!(event.report.stop, Stop::Reading(_)) {
+                assert_eq!(self.input_waiting, false);
+                self.input_waiting = true;
+            } else if event.report.stop == Stop::Yielded {
                 RUNTIME_YIELDS.fetch_add(1, Ordering::Relaxed);
             } else if matches!(event.report.stop, Stop::Sleeping { .. }) {
                 RUNTIME_SLEEPS.fetch_add(1, Ordering::Relaxed);
@@ -250,6 +284,7 @@ impl<'b> RuntimeProof<'b> {
         assert_eq!(RUNTIME_HANDLER.load(Ordering::Acquire), 1);
         assert_eq!(runtime_parked(), true);
         assert_eq!(users.is_empty(), true);
+        assert_eq!(self.input_waiting && self.input_delivered, true);
         for task in self.parked.unwrap() {
             assert_eq!(users.cancel(task).is_err(), true);
         }
@@ -261,6 +296,9 @@ impl<'b> RuntimeProof<'b> {
         assert_eq!(yields >= 3 && sleeps >= 3, true);
         serial::print(format_args!(
             "# USER_RUNTIME_BLOCKING epoch={epoch} yield={yields} sleep={sleeps} early=0 shutdown=sleeping cancel=sleeping\n"
+        ));
+        serial::print(format_args!(
+            "# USER_RUNTIME_INPUT epoch={epoch} source=moss-pipe fd=0 wait=event bytes=3 producer=http context=continued\n"
         ));
         Ok(())
     }
@@ -620,7 +658,8 @@ pub fn limits(
     serial::print(format_args!(
         "# USER_TASK_LIMITS capacity=2 stale=rejected retry=preserved cancel=paused irq_context=rejected resume_fault=contained budgets=cumulative gaps_us=10000 timeouts=2 fault=isolated survivor=66 syscall_limit=32 writes=32 bytes=0 frames=balanced\n"
     ));
-    blocking(boot, frames, &timer)
+    blocking(boot, frames, &timer)?;
+    input(boot, frames, &timer)
 }
 
 fn blocking(
@@ -822,11 +861,207 @@ fn blocking(
             100_000,
         )?;
         assert_eq!(report.stop, Stop::Exit(70));
-        assert_eq!(report.syscalls, 3);
+        assert_eq!(report.syscalls, 4);
     }
     assert_eq!(frames.stats(), before);
     serial::print(format_args!(
         "# USER_BLOCKING source=moss-boundary yield=6 sleep=6 resumes=12 exits=65,66 zero=immediate invalid=-22 context=preserved early=0 idle=hlt peer=preempted budget=active syscall_limit=32 cancel=sleeping stale=rejected drop=sleeping single_run=unsupported frames=balanced\n"
+    ));
+    Ok(())
+}
+
+fn input(
+    boot: &BootInfo,
+    frames: &'static memory::PhysicalFrames<'static>,
+    timer: &Timer<'_, '_>,
+) -> Result<(), Failure> {
+    use moss_libkernel::memory::permissions::PtePermissions;
+    let before = frames.stats();
+    {
+        let mut users = Dispatcher::new();
+        let handles = [
+            users.admit(load(boot, frames, &["elf", "input"])?, 20_000)?,
+            users.admit(load(boot, frames, &["elf", "input"])?, 20_000)?,
+        ];
+        assert_eq!(users.send_input(handles[0], &[0, 1])?, 2);
+        let mut requests = [0; 2];
+        let mut exited = [false; 2];
+        let mut delivered = false;
+        let mut second_closed = false;
+        for _ in 0..64 {
+            let Some(event) = next(&mut users, timer, 50_000)? else {
+                if users.is_empty() {
+                    break;
+                }
+                assert_eq!(delivered, false);
+                assert_eq!(requests, [2, 1]);
+                assert_eq!(users.work().ready, false);
+                assert_eq!(users.work().deadline, None);
+                let budgets = core::array::from_fn::<_, 2, _>(|slot| {
+                    users.tasks[slot].as_ref().unwrap().budget.remaining()
+                });
+                let wake = time::deadline_after_us(30_000)?;
+                while timer.arm_until(wake)? {
+                    timer.idle_until_tick()?;
+                }
+                assert_eq!(time::now_ticks() >= wake, true);
+                for (slot, &budget) in budgets.iter().enumerate() {
+                    assert_eq!(
+                        users.tasks[slot].as_ref().unwrap().budget.remaining(),
+                        budget
+                    );
+                }
+                let bytes = core::array::from_fn::<_, 256, _>(|index| (index + 2) as u8);
+                assert_eq!(users.send_input(handles[0], &bytes)?, 256);
+                assert_eq!(users.send_input(handles[0], &[0]).unwrap_err().code, -11);
+                users.close_input(handles[0])?;
+                users.close_input(handles[0])?;
+                assert_eq!(users.send_input(handles[0], &[0]).unwrap_err().code, -32);
+                assert_eq!(users.send_input(handles[1], &[0, 1, 2])?, 3);
+                delivered = true;
+                continue;
+            };
+            let slot = event.task.slot();
+            assert_eq!(event.task, handles[slot]);
+            match event.report.stop {
+                Stop::Reading(request) => {
+                    requests[slot] += 1;
+                    assert_eq!(
+                        request,
+                        ReadRequest {
+                            address: USER_BASE + 0x4ffe,
+                            length: 256
+                        }
+                    );
+                    let task = users.tasks[slot].as_mut().unwrap();
+                    assert_eq!(task.context.user().flags & 0x600, 0x600);
+                    assert_eq!(task.context.user().stack % 16, 8);
+                    let count = state(task, None)?.1;
+                    assert_eq!(
+                        count,
+                        match (slot, requests[slot]) {
+                            (0, 1) | (1, 1) => 0,
+                            (0, 2) => 2,
+                            (0, 3) => 258,
+                            (1, 2) => 3,
+                            _ => return Err(Failure::new("user_input_requests", -1)),
+                        }
+                    );
+                    if slot == 1 && requests[slot] == 2 {
+                        users.close_input(handles[1])?;
+                        second_closed = true;
+                    }
+                }
+                Stop::QuantumExpired => (),
+                Stop::Exit(status) => {
+                    assert_eq!(status, 72);
+                    assert_eq!(event.report.syscalls, [10, 9][slot]);
+                    assert_eq!((event.report.writes, event.report.bytes), (0, 0));
+                    exited[slot] = true;
+                }
+                _ => return Err(Failure::new("user_input_stop", -1)),
+            }
+        }
+        assert_eq!(
+            (requests, exited, delivered, second_closed),
+            ([3, 2], [true; 2], true, true)
+        );
+        assert_eq!(users.is_empty(), true);
+    }
+    assert_eq!(frames.stats(), before);
+    {
+        let mut users = Dispatcher::new();
+        let handle = users.admit(load(boot, frames, &["elf", "input"])?, 100_000)?;
+        let request = loop {
+            let event = next(&mut users, timer, 50_000)?.unwrap();
+            if let Stop::Reading(request) = event.report.stop {
+                break request;
+            }
+            assert_eq!(event.report.stop, Stop::QuantumExpired);
+        };
+        assert_eq!(users.send_input(handle, &[0, 1, 2, 3])?, 4);
+        let task = users.tasks[handle.slot()].as_mut().unwrap();
+        let page = USER_BASE + 0x5000;
+        task.space.protect(page, PtePermissions::ro(true))?;
+        assert_eq!(
+            user::complete_read(&task.space, &mut task.input, request)?,
+            -14
+        );
+        let prefix = task
+            .space
+            .with_active(|| unsafe { ((USER_BASE + 0x4ffe) as *const u16).read_unaligned() })?;
+        assert_eq!(prefix, 0);
+        let owner = task.space.unmap(page)?;
+        assert_eq!(
+            user::complete_read(&task.space, &mut task.input, request)?,
+            -14
+        );
+        task.space.map_page(owner, page, PtePermissions::rw(true))?;
+        let budget = task.budget.remaining();
+        timer.arm_until(time::deadline_after_us(100_000)?)?;
+        assert_eq!(
+            next(&mut users, timer, 50_000)
+                .err()
+                .map(|error| error.stage),
+            Some("timer_already_armed")
+        );
+        let task = users.tasks[handle.slot()].as_ref().unwrap();
+        assert_eq!(task.read, None);
+        assert_eq!(task.context.user().registers[14], 4);
+        assert_eq!(task.budget.remaining(), budget);
+        timer.stop()?;
+        let event = next(&mut users, timer, 50_000)?.unwrap();
+        assert_eq!(matches!(event.report.stop, Stop::Reading(_)), true);
+        assert_eq!(
+            state(users.tasks[handle.slot()].as_mut().unwrap(), None)?.1,
+            4
+        );
+        users.cancel(handle)?;
+        for result in [
+            users.send_input(handle, &[1]).map(|_| ()),
+            users.close_input(handle),
+        ] {
+            assert_eq!(result.unwrap_err().stage, "user_input_stale");
+        }
+        let reused = users.admit(load(boot, frames, &["elf", "input"])?, 100_000)?;
+        assert_eq!(reused != handle, true);
+        assert_eq!(
+            users.send_input(handle, &[1]).unwrap_err().stage,
+            "user_input_stale"
+        );
+        let event = next(&mut users, timer, 50_000)?.unwrap();
+        assert_eq!(matches!(event.report.stop, Stop::Reading(_)), true);
+        assert_eq!(users.work().ready, false);
+        users.close_input(reused)?;
+        let event = next(&mut users, timer, 50_000)?.unwrap();
+        assert_eq!(event.report.stop, Stop::Exit(72));
+        assert_eq!(event.report.syscalls, 8);
+        let waiting = users.admit(load(boot, frames, &["elf", "input"])?, 100_000)?;
+        let event = next(&mut users, timer, 50_000)?.unwrap();
+        assert_eq!(event.task, waiting);
+        assert_eq!(matches!(event.report.stop, Stop::Reading(_)), true);
+        assert_eq!(users.send_input(waiting, &[0])?, 1);
+        users.cancel(waiting)?;
+        let invalid = users.admit(load(boot, frames, &["elf", "input"])?, 100_000)?;
+        let event = next(&mut users, timer, 50_000)?.unwrap();
+        assert_eq!(matches!(event.report.stop, Stop::Reading(_)), true);
+        users.send_input(invalid, &[0, 1])?;
+        users.tasks[invalid.slot()]
+            .as_mut()
+            .unwrap()
+            .space
+            .protect(page, PtePermissions::ro(true))?;
+        let event = next(&mut users, timer, 50_000)?.unwrap();
+        assert_eq!(event.report.stop, Stop::Exit(99));
+        assert_eq!(event.report.syscalls, 8);
+        users.admit(load(boot, frames, &["elf", "input"])?, 100_000)?;
+        let event = next(&mut users, timer, 50_000)?.unwrap();
+        assert_eq!(matches!(event.report.stop, Stop::Reading(_)), true);
+        drop(users);
+    }
+    assert_eq!(frames.stats(), before);
+    serial::print(format_args!(
+        "# USER_INPUT source=moss-pipe fd=0 capacity=256 bytes=261 calls=10,9 short=2,3 cross_page=checked eof=drained errors=-9,-14,-22 backpressure=-11 closed=-32 context=preserved wait=event budget=active cancel=reading stale=rejected drop=reading revalidate=checked single_run=unsupported frames=balanced\n"
     ));
     Ok(())
 }
@@ -839,6 +1074,7 @@ pub fn runtime_cleanup(
     serial::print(format_args!("# USER_RUNTIME_ERRORS_BEGIN\n"));
     time::calibrate()?;
     runtime_sleep_idle(boot, frames)?;
+    runtime_input_idle(boot, frames)?;
     for mode in 0..4 {
         let before = memory::allocation_snapshot(frames);
         let heap_before = crate::heap::global().stats();
@@ -1013,6 +1249,130 @@ fn runtime_sleep_idle(
     assert_eq!(crate::heap::global().stats(), heap_before);
     serial::print(format_args!(
         "# USER_SLEEP_IDLE tasks=2 sleep=4 exits=2 wake=timer early=0 idle=hlt callbacks=bounded budget=uncharged shutdown=sleeping frames=balanced\n"
+    ));
+    Ok(())
+}
+
+fn runtime_input_idle(
+    boot: &BootInfo,
+    frames: &'static memory::PhysicalFrames<'static>,
+) -> Result<(), Failure> {
+    use crate::kernel_runtime::{Clients, Resources};
+    let before = memory::allocation_snapshot(frames);
+    let heap_before = crate::heap::global().stats();
+    IDLE_DONE.store(false, Ordering::Release);
+    INPUT_PARKED.store(false, Ordering::Release);
+    INPUT_READY.store(false, Ordering::Release);
+    let resources = Resources::start(boot, frames)?;
+    let mut users = Dispatcher::new();
+    let first = [
+        users.admit(load(boot, frames, &["elf", "input"])?, 100_000)?,
+        users.admit(load(boot, frames, &["elf", "input"])?, 100_000)?,
+    ];
+    let mut clients = Clients::new();
+    clients.add(
+        |_| {
+            let runtime = crate::kernel_runtime::current_handle();
+            runtime.wait_ready().unwrap();
+            while !INPUT_PARKED.load(Ordering::Acquire) {
+                let token = IDLE_WAKE.prepare();
+                if !INPUT_PARKED.load(Ordering::Acquire) {
+                    token.wait(None).unwrap();
+                }
+            }
+            threads::sleep_us(30_000).unwrap();
+            INPUT_READY.store(true, Ordering::Release);
+            while !IDLE_DONE.load(Ordering::Acquire) {
+                let token = IDLE_WAKE.prepare();
+                if !IDLE_DONE.load(Ordering::Acquire) {
+                    token.wait(None).unwrap();
+                }
+            }
+            runtime.request_shutdown().unwrap();
+            runtime.wait_stopped().unwrap();
+        },
+        0,
+    )?;
+    let mut callbacks = 0;
+    let mut waiting = [false; 2];
+    let mut final_readers: Option<[TaskHandle; 2]> = None;
+    let mut budgets = [0; 2];
+    let mut delivered = false;
+    let mut exits = 0;
+    let stats =
+        resources.run_network_with_users(clients, &mut users, 50_000, &mut |users, event| {
+            callbacks += 1;
+            assert_eq!(callbacks < 128, true);
+            if INPUT_READY.load(Ordering::Acquire) && !delivered {
+                for (slot, handle) in first.iter().enumerate() {
+                    assert_eq!(
+                        users.tasks[slot].as_ref().unwrap().budget.remaining(),
+                        budgets[slot]
+                    );
+                    assert_eq!(users.send_input(*handle, &[0, 1, 2])?, 3);
+                    users.close_input(*handle)?;
+                }
+                delivered = true;
+            }
+            if let Some(event) = event {
+                let slot = event.task.slot();
+                match event.report.stop {
+                    Stop::Reading(_) => {
+                        if let Some(handles) = final_readers {
+                            assert_eq!(event.task, handles[slot]);
+                        } else {
+                            assert_eq!(event.task, first[slot]);
+                        }
+                        if !delivered || final_readers.is_some() {
+                            waiting[slot] = true;
+                            budgets[slot] = users.tasks[slot].as_ref().unwrap().budget.remaining();
+                            if waiting == [true; 2] {
+                                assert_eq!(users.work().ready, false);
+                                assert_eq!(users.work().deadline, None);
+                                if final_readers.is_some() {
+                                    IDLE_DONE.store(true, Ordering::Release);
+                                } else {
+                                    INPUT_PARKED.store(true, Ordering::Release);
+                                }
+                                IDLE_WAKE.notify_without_switch(true).unwrap();
+                            }
+                        } else {
+                            assert_eq!(state(users.tasks[slot].as_mut().unwrap(), None)?.1, 3);
+                        }
+                    }
+                    Stop::QuantumExpired => (),
+                    Stop::Exit(status) => {
+                        assert_eq!(event.task, first[slot]);
+                        assert_eq!(status, 72);
+                        assert_eq!(event.report.syscalls, 9);
+                        exits += 1;
+                        if exits == 2 {
+                            final_readers = Some([
+                                users.admit(load(boot, frames, &["elf", "input"])?, 100_000)?,
+                                users.admit(load(boot, frames, &["elf", "input"])?, 100_000)?,
+                            ]);
+                            waiting = [false; 2];
+                        }
+                    }
+                    _ => return Err(Failure::new("user_input_runtime_stop", -1)),
+                }
+            }
+            Ok(())
+        })?;
+    assert_eq!((delivered, exits, waiting), (true, 2, [true; 2]));
+    assert_eq!(stats.idle_sleeps > 0 && users.is_empty(), true);
+    for handle in final_readers.unwrap() {
+        assert_eq!(
+            users.send_input(handle, &[0]).unwrap_err().stage,
+            "user_input_stale"
+        );
+    }
+    drop(users);
+    drop(resources);
+    assert_eq!(memory::allocation_snapshot(frames), before);
+    assert_eq!(crate::heap::global().stats(), heap_before);
+    serial::print(format_args!(
+        "# USER_INPUT_IDLE tasks=2 bytes=6 wake=kernel idle=hlt callbacks=bounded budget=uncharged shutdown=reading frames=balanced\n"
     ));
     Ok(())
 }

@@ -11,9 +11,10 @@ use core::{
     ptr::{addr_of, addr_of_mut},
 };
 use kutox::user_state::{
-    MAX_OUTPUT, MAX_PAGES, MAX_RUN_US, MAX_SYSCALLS, MAX_WRITE, PAGE_SIZE, ReturnAction, SYS_EXIT,
-    SYS_SLEEP, SYS_WRITE, SYS_YIELD, SlicePlan, USER_BASE, USER_END, plan_copy, return_action,
-    sleep_deadline, user_flags, valid_user_return,
+    Input, MAX_OUTPUT, MAX_PAGES, MAX_READ, MAX_RUN_US, MAX_SYSCALLS, MAX_WRITE, PAGE_SIZE,
+    ReadRequest, ReturnAction, SYS_EXIT, SYS_READ, SYS_SLEEP, SYS_WRITE, SYS_YIELD, SlicePlan,
+    USER_BASE, USER_END, plan_copy, plan_copy_to_user, return_action, sleep_deadline, user_flags,
+    valid_user_return,
 };
 use moss_libkernel::memory::address_space::{PageInfo, UserAddressSpace};
 use moss_libkernel::task::elf;
@@ -43,13 +44,14 @@ pub enum Stop {
     Sleeping {
         deadline: u64,
     },
+    Reading(ReadRequest),
 }
 
 impl Stop {
     pub(crate) fn resumable(self) -> bool {
         matches!(
             self,
-            Self::QuantumExpired | Self::Yielded | Self::Sleeping { .. }
+            Self::QuantumExpired | Self::Yielded | Self::Sleeping { .. } | Self::Reading(_)
         )
     }
 }
@@ -200,6 +202,50 @@ pub fn kutox_user_bringup(
     .map(|(report, _)| report)
 }
 
+fn page_snapshot(space: &AddressSpace<'_, '_>) -> Result<[Option<PageInfo>; MAX_PAGES], Failure> {
+    let mut pages = [None; MAX_PAGES];
+    for (index, page) in pages.iter_mut().enumerate() {
+        *page = space.translate(USER_BASE + (index * PAGE_SIZE) as u64)?;
+    }
+    Ok(pages)
+}
+
+pub(crate) fn complete_read(
+    space: &AddressSpace<'_, '_>,
+    input: &mut Input,
+    request: ReadRequest,
+) -> Result<i64, Failure> {
+    let pages = page_snapshot(space)?;
+    let plan = match plan_copy_to_user(request.address, request.length, |page| {
+        pages[((page - USER_BASE) / PAGE_SIZE as u64) as usize]
+    }) {
+        Ok(plan) => plan,
+        Err(error) => return Ok(error as i64),
+    };
+    let mut bytes = [0; MAX_READ];
+    let length = match input.read(&mut bytes[..request.length as usize]) {
+        Ok(length) => length,
+        Err(error) => return Err(Failure::new("user_read_not_ready", error as i32)),
+    };
+    let mut offset = 0;
+    for segment in plan.segments() {
+        let count = segment.length.min(length - offset);
+        // The task owns these frames; validation precedes consuming any input.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                bytes[offset..].as_ptr(),
+                (segment.physical_address + space.hhdm_offset()) as *mut u8,
+                count,
+            );
+        }
+        offset += count;
+        if offset == length {
+            break;
+        }
+    }
+    Ok(length as i64)
+}
+
 pub(crate) fn run_context(
     space: &mut AddressSpace<'_, '_>,
     context: &mut UserContext,
@@ -219,10 +265,7 @@ pub(crate) fn run_context(
     {
         return Err(Failure::new("user_run_cpu_state", -1));
     }
-    let mut pages = [None; MAX_PAGES];
-    for (index, page) in pages.iter_mut().enumerate() {
-        *page = space.translate(USER_BASE + (index * PAGE_SIZE) as u64)?;
-    }
+    let pages = page_snapshot(space)?;
     let mapped = |address: u64| {
         if !(USER_BASE..USER_END).contains(&address) {
             return None;
@@ -450,6 +493,23 @@ pub(crate) fn kutox_user_dispatch(frame: &mut ExceptionFrame) -> Result<bool, Fa
             SYS_WRITE => {
                 frame.registers[14] =
                     state.write(frame.registers[8], frame.registers[9], frame.registers[12]) as u64;
+            }
+            SYS_READ if state.resumable => {
+                let request = ReadRequest {
+                    address: frame.registers[9],
+                    length: frame.registers[12],
+                };
+                if frame.registers[8] != 0 {
+                    frame.registers[14] = (-9i64) as u64;
+                } else {
+                    match plan_copy_to_user(request.address, request.length, |page| {
+                        state.pages[((page - USER_BASE) / PAGE_SIZE as u64) as usize]
+                    }) {
+                        Err(error) => frame.registers[14] = error as i64 as u64,
+                        Ok(_) if request.length == 0 => frame.registers[14] = 0,
+                        Ok(_) => state.finish(frame, Stop::Reading(request)),
+                    }
+                }
             }
             SYS_YIELD if state.resumable => {
                 frame.registers[14] = 0;

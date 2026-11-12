@@ -62,6 +62,12 @@ execution; its replacement exhausts a cumulative 5-ms budget while the other
 task survives, yields and sleeps during every HTTP transaction. A further task is
 cancelled while sleeping, with its stale handle rejected. The surviving original
 task exits 66 only after all HTTP transactions complete.
+Before starting its yield/sleep loop, that original survivor blocks on a native
+fd-0 input read. Once the HTTP client receives its first seven response bytes,
+it publishes readiness to the scoped dispatcher callback, which delivers the
+three checked bytes and closes the channel. The saved ELF context resumes
+after the read, without replay or polling. Each epoch requires its own ordered
+`USER_RUNTIME_INPUT` proof alongside the existing progress/cleanup evidence.
 Before acknowledging each seven-byte response fragment, the client waits for
 an observed increase in that ELF task's counter and at least one successful
 yield and sleep. This synchronizes live CPU
@@ -80,7 +86,7 @@ unknown, out-of-epoch and malformed user evidence, including absent per-stage
 user progress. The wire peer and PCAP expectations are unchanged.
 
 No TLS, redirects, chunked encoding, caching, header negotiation, arbitrary
-response parsing, filesystem or userspace interface is introduced.
+response parsing, filesystem or userspace networking interface is introduced.
 
 ## Independent host oracle
 

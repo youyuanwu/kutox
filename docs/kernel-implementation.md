@@ -212,13 +212,14 @@ of Linux binary compatibility:
 
 | RAX | Operation | Arguments | Result |
 |---|---|---|---|
+| 0 | input read (resumable tasks only) | RDI = fd 0, RSI = writable user address, RDX = byte length, 0..=256 | RAX = bytes read, 0 for EOF/zero length, or negative error |
 | 1 | serial write | RDI = fd 1 or 2, RSI = user address, RDX = byte length | RAX = bytes written or negative error |
 | 24 | yield (resumable tasks only) | None | RAX = 0 after FIFO resumption |
 | 35 | sleep (resumable tasks only) | RDI = duration in microseconds, 0..=1,000,000 | RAX = 0 after the deadline, or `-22` for invalid/overflowing duration |
 | 60 | exit | RDI = status | Returns to the kernel caller, not to user code |
 
 Other general registers are preserved on syscall return. Unknown numbers
-return `-38`; the single-run bring-up frontend also returns `-38` for yield
+return `-38`; the single-run bring-up frontend also returns `-38` for read, yield
 and sleep because it has no retained task owner. Sleep uses a scalar duration,
 not Linux's `timespec`/`nanosleep` ABI. Unsupported descriptors return `-9`. Writes are all-or-error,
 at most 256 bytes each and 1024 bytes total per run. Oversize or over-budget
@@ -240,6 +241,8 @@ against a snapshot of owned, effectively readable user mappings before copying
 at most two physical segments through the kernel direct map. The exclusive
 address-space borrow pins these frames throughout the run; no raw user pointer
 is dereferenced in the kernel and no page-fault recovery is required for copy.
+Input copies reuse this planner and also require effective write permission on
+every destination page.
 
 The dispatcher accepts user traps only from CPL3 on the TSS entry stack with
 the expected user selectors and a live native run. Ordinary user exceptions
@@ -411,6 +414,75 @@ single-run gating. `user.runtime_cleanup` adds an all-sleeping runtime with a
 kernel client blocked without polling, bounded dispatcher callbacks, actual
 idle sleeps, timer wakes and two sleeping images cancelled at shutdown.
 All cases retain exact frame/heap balance and ordered host evidence.
+
+## Bounded user input
+
+Each admitted task owns one inline 256-byte FIFO input channel, initially open
+and empty. Native `read` uses fd 0, a user destination and a length of at most
+256 bytes. It returns a short count when fewer bytes are available, blocks
+when empty/open, and returns zero only for zero length or drained/closed EOF.
+Zero length needs no pointer. Bad descriptors return `-9`, oversized lengths
+`-22`, and invalid, RO, supervisor, overflowing or partly unmapped destinations
+`-14` before any input is consumed or destination prefix is changed. The whole
+requested range is checked even when fewer bytes are available or at EOF.
+
+This follows pinned Moss's `src/fs/syscalls/rw.rs::sys_read`,
+`src/fs/pipe.rs::PipeReader::do_read`,
+`src/kernel/kpipe.rs::KPipe::copy_to_user` and
+`libkernel/src/memory/kbuf.rs::KBufCore::pop_slice`: bounded copying, predicate
+waiting, short reads and draining before EOF. It does not import the VFS,
+page-backed ring dependency, async syscall futures, signals or descriptor table.
+The native buffer and dispatcher integration are kutox code, not an unchanged
+Moss pipe port or a Linux read ABI guarantee.
+
+For a nonzero valid request, the trap saves the post-int80 context and returns
+`Stop::Reading(ReadRequest)` without retaining a user pointer or consuming
+input. Under the restored kernel root the dispatcher retains only address/
+length metadata, registers its existing FIFO wait key, then checks readiness.
+Buffered input or an already closed channel wakes that same entry immediately;
+otherwise it has no deadline and contributes no runnable work. Producers and
+wait registration exclusively borrow the same dispatcher with IF clear, so
+delivery cannot race between predicate testing and wait registration. No IRQ
+handler mutates the channel, queue or user owner.
+
+Before native resumption the dispatcher revalidates the full destination
+against the task's current owned mappings, consumes at most the available
+bytes, copies only that count through the direct map and writes saved RAX.
+Mapping/permission changes during suspension return `-14` without draining
+input. Kernel translation errors are propagated and retire the task.
+The saved RIP is already past int80; neither syscall counting nor copying is
+replayed if later native setup fails. Even buffered nonzero reads cross this
+dispatcher boundary. Invalid and zero reads complete in the trap.
+
+`Dispatcher::send_input(handle, bytes)` is a bounded nonblocking producer:
+it returns the accepted count, possibly short, `-11` when full, or `-32` after
+close. An empty send to an open channel returns zero without waking a reader.
+`close_input(handle)` is idempotent and wakes a pending reader; already buffered
+bytes remain readable before EOF. Both APIs require dispatcher/boot context
+and a current generation-bearing task handle. A stale producer cannot feed or
+close a replacement slot. Kernel clients deliver through the existing scoped
+runtime callback, bridging their own completion/readiness state rather than
+retaining references into task storage.
+
+Reads retain the cumulative 32-call and active CPU limits. Parked time and
+bounded dispatcher-side completion work are not active CPL3 slices. An
+all-reading runtime can `hlt` without a user polling timer. There is deliberately
+no read timeout or nonblocking user mode: an open empty channel waits until
+delivery, close, cancellation or shutdown. Task cancellation/drop revokes its
+queue entry and releases the pending request, buffer and image together;
+runtime shutdown joins the existing services after cancelling readers.
+
+Acceptance extends `user.task_limits` with buffered-before-wait and blocked
+delivery, two isolated readers, 2/3-byte short reads, a wrapped full 256-byte
+transfer across pages, drain-before-EOF, exact cumulative counts, error returns,
+GPR/DF/IF/SP preservation, mapping revalidation, blocked cancellation, stale
+producers and blocked drop. `user.runtime_cleanup` checks an all-reading
+runtime, a sleeping kernel producer, bounded callback counts, uncharged parked
+budgets and two pending readers cancelled at joined shutdown. The HTTP fixture
+also delivers three bytes to a blocked ELF reader only after receiving real
+response data. All proofs require exact frame/heap balance and ordered journals.
+No new boot mode, dependency, VFS, user writer, general pipe/socket API or
+production demo is added.
 
 ## Userspace in the persistent runtime
 

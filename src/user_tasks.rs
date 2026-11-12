@@ -6,8 +6,8 @@ use crate::{
     user::{self, Counts, Report, RunOptions, Stop, UserContext},
 };
 use kutox::{
-    run_queue::{RunQueue, TaskHandle, TaskId},
-    user_state::{ExecutionBudget, MAX_RUN_US},
+    run_queue::{RunQueue, TaskHandle, TaskId, WaitKey},
+    user_state::{ExecutionBudget, Input, MAX_RUN_US, ReadRequest},
 };
 use moss_libkernel::task::{context::Context, elf::Loaded};
 
@@ -19,6 +19,8 @@ struct Task<'a, 'storage> {
     budget: ExecutionBudget,
     counts: Counts,
     started: bool,
+    input: Input,
+    read: Option<ReadRequest>,
 }
 
 pub struct Dispatcher<'a, 'storage> {
@@ -84,6 +86,8 @@ impl<'a, 'storage> Dispatcher<'a, 'storage> {
             budget,
             counts: Counts::default(),
             started: false,
+            input: Input::new(),
+            read: None,
         });
         Ok(handle)
     }
@@ -94,6 +98,34 @@ impl<'a, 'storage> Dispatcher<'a, 'storage> {
             .remove_suspended(task)
             .map_err(|error| Failure::new("user_task_cancel", error as i32))?;
         drop(self.tasks[task.slot()].take());
+        Ok(())
+    }
+
+    fn input_task(&mut self, handle: TaskHandle) -> Result<&mut Task<'a, 'storage>, Failure> {
+        context()?;
+        if self.queue.handle(TaskId(handle.slot())).ok() != Some(handle) {
+            return Err(Failure::new("user_input_stale", -9));
+        }
+        Ok(self.tasks[handle.slot()]
+            .as_mut()
+            .expect("live user input owner"))
+    }
+
+    pub fn send_input(&mut self, handle: TaskHandle, bytes: &[u8]) -> Result<usize, Failure> {
+        let count = self
+            .input_task(handle)?
+            .input
+            .push(bytes)
+            .map_err(|error| Failure::new("user_input_write", error as i32))?;
+        if count != 0 {
+            self.queue.wake_one(WaitKey(handle.slot()));
+        }
+        Ok(count)
+    }
+
+    pub fn close_input(&mut self, handle: TaskHandle) -> Result<(), Failure> {
+        self.input_task(handle)?.input.close();
+        self.queue.wake_one(WaitKey(handle.slot()));
         Ok(())
     }
 
@@ -160,6 +192,20 @@ pub fn kutox_user_dispatch_next(
     let task = dispatcher.tasks[id.0]
         .as_mut()
         .expect("queued user task owner");
+    if let Some(request) = task.read {
+        match user::complete_read(&task.space, &mut task.input, request) {
+            Ok(result) => {
+                let mut frame = task.context.restore_user_ctx();
+                frame.registers[14] = result as u64;
+                task.context.save_user_ctx(&frame);
+                task.read = None;
+            }
+            Err(error) => {
+                dispatcher.finish(id)?;
+                return Err(error);
+            }
+        }
+    }
     let plan = task.budget.plan(quantum).expect("runnable user budget");
     let mut frame = task.context.restore_user_ctx();
     let mut entered = false;
@@ -198,16 +244,31 @@ pub fn kutox_user_dispatch_next(
     }
     if report.stop.resumable() {
         task.context.save_user_ctx(&frame);
-        if let Stop::Sleeping { deadline } = report.stop {
-            dispatcher
-                .queue
-                .block_running(None, Some(deadline))
-                .map_err(|error| Failure::new("user_task_sleep", error as i32))?;
-        } else {
-            dispatcher
-                .queue
-                .yield_running()
-                .map_err(|error| Failure::new("user_task_yield", error as i32))?;
+        match report.stop {
+            Stop::Reading(request) => {
+                task.read = Some(request);
+                let key = WaitKey(id.0);
+                dispatcher
+                    .queue
+                    .block_running(Some(key), None)
+                    .map_err(|error| Failure::new("user_task_read", error as i32))?;
+                // Register before checking readiness; producers share this exclusive dispatcher.
+                if task.input.ready() {
+                    dispatcher.queue.wake_one(key);
+                }
+            }
+            Stop::Sleeping { deadline } => {
+                dispatcher
+                    .queue
+                    .block_running(None, Some(deadline))
+                    .map_err(|error| Failure::new("user_task_sleep", error as i32))?;
+            }
+            _ => {
+                dispatcher
+                    .queue
+                    .yield_running()
+                    .map_err(|error| Failure::new("user_task_yield", error as i32))?;
+            }
         }
     } else {
         dispatcher.finish(id)?;
