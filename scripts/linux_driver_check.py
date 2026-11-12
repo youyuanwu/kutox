@@ -110,7 +110,7 @@ class Elf:
         result = []
         for offset in range(0, len(section["data"]), 24):
             name, info, _, owner, value, size = struct.unpack_from("<IBBHQQ", section["data"], offset)
-            result.append({"name": self.string(strings, name), "type": info & 15,
+            result.append({"name": self.string(strings, name), "type": info & 15, "binding": info >> 4,
                            "owner": owner, "value": value, "size": size})
         return result
 

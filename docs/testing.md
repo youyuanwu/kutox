@@ -13,6 +13,43 @@ build the ELF and package Limine/ISO. Python owns QEMU lifecycle, independent
 acceptance and reports. CTest registrations and recursive CMake check targets
 have been removed; no additional test-management framework is required.
 
+### Storage dependency audit
+
+The full-tier host check `linux-storage-dependency-audit` runs once, independently
+of guest profiles. It is intentionally absent from `fast` and guest-only runs.
+Portable CI runs it explicitly after fast checks and uploads its JSON and logs.
+
+```sh
+python3 scripts/check.py full --scope host --select linux-storage-dependency-audit
+```
+
+This is original-source compile/partial-link evidence, not a disk-driver guest
+test. [The findings](rust-kernel-linux-drivers.md#linux-storage-dependency-audit)
+explain the eight translation units, native Kbuild configuration and missing
+services. GCC, GNU make/binutils, Flex, Bison, bc, pkg-config and libelf development
+headers are additional host prerequisites. Builds are single-job; source blobs
+are shared with the pinned submodule and only the sparse audit checkout is
+materialized. The normal source checkout, kernel and shared ISO are unchanged.
+
+Evidence lives under `build/linux-storage-check`: `report.json`, `config.log`,
+`compile.log`, `link.log` and the partially linked `linux-storage.o`. The report
+is written only after profile, symbol-closure, original-entry-point and source
+identity checks pass. No unresolved services are supplied by fake providers.
+Failed reruns invalidate an earlier success report. Native Linux-header objects
+are never runtime inputs.
+
+Before removing that build area, remove its registered scratch source worktree:
+
+```sh
+git -C linux worktree remove "$(pwd)/build/linux-storage-check/source"
+```
+
+Do not delete or prune unrelated Linux worktrees. A subsequent audit recreates
+its own source checkout; it does not require changing the normal sparse-source
+setup script.
+
+## Guest acceptance
+
 The [UDP guest acceptance](udp-kernel-sockets.md) extends this same catalog.
 `udp-tests*` runs a guest-only kernel client at 128/32 MiB in the ON profile,
 including nested bridges; `udp-tests-low-memory` also runs in smoke CI. Its

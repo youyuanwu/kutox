@@ -519,6 +519,92 @@ Initially, statically link selected upstream C translation units. Loading
 prebuilt Linux `.ko` files, reproducing Linux's module ABI, and implementing
 a general module loader are outside this direction's initial scope.
 
+### Linux storage dependency audit
+
+The next selected storage driver is Linux `virtio-blk` at the same pinned
+`v7.3` revision as e1000. The proposed first runtime profile is one modern PCI
+device, one split virtqueue and one outstanding read against a read-only raw
+ext2 image, with INTx rather than a new MSI-X implementation. There are no
+partitions, writes or general file syscalls in that proposed milestone.
+**Only the dependency audit is implemented; disk-backed boot is not.**
+
+[linux_storage_check.py](../scripts/linux_storage_check.py) creates a dedicated
+detached sparse worktree sharing the pinned submodule's objects. It keeps both
+the normal source checkout and the audit source unchanged. Kconfig/Makefile
+metadata, headers and the required preparation/host-tool sources are present;
+Kbuild outputs go into a separate `objects` directory. No full kernel or
+Linux block-layer implementation is built.
+
+The [audit fragment](../compat/storage-check.config) starts from `allnoconfig`,
+requires x86-64, PCI, BLOCK and VirtIO block/PCI, and disables SMP, modules,
+PCI MSI, legacy PCI transport, power management, sysfs, debugfs, block integrity
+and zoned devices. The audit checks that Kconfig actually admitted the requested
+settings before compiling. It uses Linux's own generated headers and layouts,
+not the e1000 compatibility headers or kutox's native service ABI.
+
+Eight unchanged translation units are compiled with one job:
+
+- `drivers/block/virtio_blk.c`
+- `drivers/virtio/virtio.c`, `virtio_anchor.c`, `virtio_ring.c`
+- `drivers/virtio/virtio_pci_common.c`, `virtio_pci_modern.c`,
+  `virtio_pci_modern_dev.c`, `virtio_pci_admin_legacy_io.c`
+
+The anchor and legacy-admin helpers follow the pinned upstream Makefile/Kconfig
+composition. In particular, x86 Kconfig enables the hidden legacy-admin helper
+even when legacy PCI transport is disabled. The native configuration also
+selects lazy-preemption support. Neither is a promise to expose those facilities
+in kutox. The ring source contains both split/packed algorithms and the block
+source retains more than the proposed read path; this conservative object
+inventory is not a runtime reachability or minimum-footprint result.
+
+An ordinary relocatable link retains every section and unresolved dependency;
+no provider stubs or garbage collection hide requirements. The audit checks
+the original probe/request/completion/ring/transport functions survived and
+verifies that the linked external set equals the input undefined set minus
+actual global/weak providers. Local symbols cannot satisfy another object's
+external reference.
+
+The initial GCC 15.2.0 / GNU ld 2.46 run left **118 unresolved symbols**.
+That is observed evidence, not a hardcoded cross-toolchain count. The generated
+JSON records all per-unit definitions/undefined references, exact linked
+undefined names, source/object/profile/config hashes, enabled settings and
+toolchain identity. A failed rerun removes the previous success report.
+The principal missing-service families are:
+
+| Family | Representative unresolved symbols | Runtime obligation |
+| --- | --- | --- |
+| Block requests and queues | `__blk_mq_alloc_disk`, `blk_mq_alloc_tag_set`, `blk_mq_start_request`, `blk_mq_complete_request`, `blk_mq_end_request`, `blk_mq_requeue_request` | Real bounded request/tag ownership, queue stop/restart, completion and quiescence. |
+| Disk registration and limits | `__register_blkdev`, `device_add_disk`, `set_capacity_and_notify`, `set_disk_ro`, `queue_limits_commit_update_frozen` | Valid capacity/read-only/limit state and explicit unsupported-operation rejection, not success stubs. |
+| PCI, MMIO and IRQ | `pci_find_capability`, `pci_iomap_range`, `ioread32`, `request_threaded_irq`, `synchronize_irq` | Connect checked BAR/capability access and original transport IRQ handling to owned platform resources; preserve teardown ordering. |
+| DMA and scatter/gather | `dma_alloc_attrs`, `dma_map_page_attrs`, `__dma_sync_single_for_cpu`, `sg_alloc_table_chained`, `sg_init_one` | Queue/data leases, direction/range checks, exact mapping lifetimes and no release while DMA can continue. |
+| Memory and native architecture | `__kmalloc_noprof`, `alloc_pages_exact_noprof`, `page_offset_base`, `vmemmap_base`, `__preempt_count`, `preempt_schedule_thunk` | A kutox-facing type/allocator/scheduling contract; native Linux globals and layouts cannot simply be linked into kutox. |
+| Device model and execution | `bus_register`, `driver_register`, `device_initialize`, `queue_work_on`, `wait_for_completion`, `mutex_lock`, `synchronize_rcu` | Registration/rollback, callback lifetimes, off-lock waits, cancellation and joined removal. |
+| Metadata and diagnostics | `ida_alloc_range`, `param_ops_uint`, `add_uevent_var`, `snprintf`, `panic` | Bounded IDs/parameters and explicit diagnostics/profile policies. |
+
+These are external names in the Linux-header audit, not a count of wholly new
+kutox services. Existing e1000 services cover parts of PCI/DMA/IRQ/allocation
+and execution, but matching names do not prove compatible types or semantics.
+Conversely, optional-path references must not automatically become first-boot
+requirements. Every admitted path needs implementation; unsupported paths need
+an enforced feature/configuration boundary and observable rejection.
+
+The runtime implementation should proceed in separately validated stages:
+
+1. Define the storage source-facing ABI and bounded `blk-mq` request/completion
+   contract; repeat compilation with kutox headers and classify each remaining
+   required or explicitly rejected API. Do not link the native audit objects.
+2. Reuse original Linux VirtIO core/ring/modern PCI and block callbacks. Adapt
+   PCI resources, coherent DMA and INTx; prove negotiation, an actual disk read,
+   error/timeout handling and reset/IRQ/DMA teardown before recycling memory.
+3. Expose a narrow owned block-read interface to the existing filesystem
+   adaptation, retaining RAM-backed boot and its current bounds.
+4. Prove `/bin/init` execution with no rootfs Limine module, using only a
+   project-owned read-only QEMU disk. Cover absent/unsupported devices, invalid
+   ranges/media, I/O failure and low-memory cleanup in both image profiles.
+
+Ginux remains a design/test reference, not copied driver implementation.
+No new native Rust descriptor loop substitutes for the Linux storage driver.
+
 ### Selected e1000 source and configuration
 
 The first packet-driver target is the mainline `v7.3` source baseline,

@@ -210,8 +210,30 @@ production HTTP client or userspace.
 - Network access on initial setup for Cargo dependencies and the
   SHA256-verified Limine `v12.0.2` binary release.
 
-No full Linux kernel configuration or build is needed. No sibling repository
-is needed at build or run time.
+Normal kutox builds need no Linux kernel configuration or build. No sibling
+repository is needed at build or run time.
+
+### Linux storage dependency audit
+
+The first storage milestone compiles unchanged Linux `virtio-blk`, VirtIO
+core/ring and modern PCI transport sources, then partially links them without
+provider stubs. It does **not** add disk support to kutox.
+
+```sh
+python3 scripts/check.py full --scope host --select linux-storage-dependency-audit
+```
+
+This optional check additionally needs GCC, GNU make/binutils, Flex, Bison, bc,
+pkg-config and libelf development headers (`gcc make binutils flex bison bc
+pkg-config libelf-dev` on Debian/Ubuntu). It uses one build job and an isolated
+sparse Linux worktree under `build/linux-storage-check/source`, sharing the
+existing submodule's object store. The first run downloads additional pinned
+source; the normal Linux checkout and kernel/ISO are not changed.
+
+The generated `build/linux-storage-check/report.json` records the profile,
+source/object hashes, toolchain and exact unresolved symbols. These objects use
+Linux's own Kbuild headers, **not kutox's service ABI**, and must not be linked
+into the kernel. See the [audit findings and runtime plan](docs/rust-kernel-linux-drivers.md#linux-storage-dependency-audit).
 
 ### Test code and build profiles
 

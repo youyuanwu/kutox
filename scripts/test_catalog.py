@@ -42,6 +42,9 @@ HOST_CHECKS = (
     host("moss-clippy", ("cargo", "clippy", "--locked", "-p", "moss-libkernel",
          "--features", "fs", "--all-targets", "--target", "x86_64-unknown-linux-gnu", "--jobs", "1", "--", "-D", "warnings")),
     host("harness-unit", ("{python}", "-m", "unittest", "discover", "-s", "tests", "-q")),
+    Check("linux-storage-dependency-audit", (
+        ("{python}", "{root}/scripts/linux_storage_check.py", "--build-dir", "{build}", "--ld", "{ld}"),
+    ), ("full",), timeout=600),
 )
 
 IMAGE_CHECK = Check("kernel-build-profile", (
