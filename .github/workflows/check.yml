@@ -30,9 +30,7 @@ jobs:
         name: Initialize pinned driver source
         run: |
           for attempt in 1 2 3; do
-            if timeout 180 git \
-              -c submodule.linux.url=https://github.com/gregkh/linux.git \
-              submodule update --init --depth 1 linux; then
+            if timeout 180 bash scripts/linux_source.sh; then
               exit 0
             fi
             if [ "$attempt" -eq 3 ]; then

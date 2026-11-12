@@ -11,7 +11,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-REVISION = "79a907609d53d5cd645b42c11550d295d43abf99"
+REVISION = "c03c1a14507dfaf8b856c2608f9ac216021fc222"
 SOURCES = ("e1000_main.c", "e1000_hw.c", "e1000_ethtool.c", "e1000_param.c")
 DRIVER = ROOT / "linux/drivers/net/ethernet/intel/e1000"
 DECLARATIONS = ROOT / "compat/driver-check"

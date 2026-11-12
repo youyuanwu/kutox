@@ -240,9 +240,17 @@ This is one image per selected build profile, not separate images per test mode.
 ## Build and test
 
 ```sh
-git submodule update --init --depth 1 linux
+bash scripts/linux_source.sh
 python3 scripts/check.py full
 ```
+
+The [source script](scripts/linux_source.sh) uses Git 2.36+ to fetch the staged submodule pin
+with shallow, blob-filtered history and sparse checkout of e1000, `include`,
+and `arch/x86/include`. Run it on a clean Linux checkout. Setup
+needs only Bash and Git, with no kernel tools or Limine download. It uses
+Torvalds's GitHub repository,
+which supports blob filtering, matching the URL in `.gitmodules`.
+Existing Git objects are retained when converting a full checkout.
 
 The build produces:
 

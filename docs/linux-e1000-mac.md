@@ -44,8 +44,9 @@ persistent diagnostics, not MAC-proof terminal results.
 
 Use the existing shallow [Linux submodule](../linux), pinned to:
 
-- Release: `v7.3.1`
-- Commit: `79a907609d53d5cd645b42c11550d295d43abf99`
+- Repository: <https://github.com/torvalds/linux>
+- Release: `v7.3`
+- Commit: `c03c1a14507dfaf8b856c2608f9ac216021fc222`
 - Device: QEMU `e1000`, Intel 82540EM, PCI ID `8086:100e`
 
 Relevant upstream files:

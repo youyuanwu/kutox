@@ -22,7 +22,7 @@ class CatalogTests(unittest.TestCase):
     def test_portable_ci_initializes_source_inputs_before_fast_checks(self):
         workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/check.yml").read_text()
         portable = workflow.split("  portable:", 1)[1].split("\n  guest:", 1)[0]
-        self.assertLess(portable.index("submodule update --init --depth 1 linux"),
+        self.assertLess(portable.index("bash scripts/linux_source.sh"),
                         portable.index("python3 scripts/check.py fast"))
         self.assertIn("name: results-portable", portable)
         self.assertIn("if: always()", portable)
@@ -33,8 +33,9 @@ class CatalogTests(unittest.TestCase):
         self.assertIn("- &driver-source\n", portable)
         self.assertIn("- *driver-source\n", guest)
         self.assertRegex(guest, r"apt-get install[^\n]*\blld\b")
-        self.assertEqual(workflow.count("submodule update --init --depth 1 linux"), 1)
-        self.assertIn("submodule.linux.url=https://github.com/gregkh/linux.git", portable)
+        self.assertEqual(workflow.count("bash scripts/linux_source.sh"), 1)
+        source = (Path(__file__).resolve().parents[1] / "scripts/linux_source.sh").read_text()
+        self.assertIn("https://github.com/torvalds/linux", source)
 
     def test_ci_source_fetch_retries_are_bounded_and_propagate_exhaustion(self):
         workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/check.yml").read_text()
@@ -48,18 +49,20 @@ class CatalogTests(unittest.TestCase):
         ):
             with self.subTest(failures=failures, timeouts=timeouts), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
-                git = root / "git"
-                git.write_text(f"""#!{sys.executable}
+                prepare = root / "prepare"
+                prepare.write_text(f"""#!{sys.executable}
 import json
 import os
 from pathlib import Path
 import sys
-log = Path(os.environ["GIT_CALLS"])
+log = Path(os.environ["PREPARE_CALLS"])
 with log.open("a") as stream:
     stream.write(json.dumps(sys.argv[1:]) + "\\n")
 print("mock source fetch", file=sys.stderr)
 sys.exit(int(len(log.read_text().splitlines()) <= int(os.environ["FETCH_FAILURES"])))
 """)
+                (root / "scripts").mkdir()
+                (root / "scripts/linux_source.sh").write_text('exec "$MOCK_PREPARE"\n')
                 sleep = root / "sleep"
                 sleep.write_text(f"""#!{sys.executable}
 import os
@@ -82,26 +85,27 @@ if len(log.read_text().splitlines()) <= int(os.environ["FETCH_TIMEOUTS"]):
     sys.exit(124)
 sys.exit(subprocess.call(sys.argv[2:]))
 """)
-                git.chmod(0o755)
+                prepare.chmod(0o755)
                 sleep.chmod(0o755)
                 timeout.chmod(0o755)
-                git_calls, sleep_calls = root / "git-calls", root / "sleep-calls"
+                prepare_calls, sleep_calls = root / "prepare-calls", root / "sleep-calls"
                 timeout_calls = root / "timeout-calls"
                 result = subprocess.run(
                     ["bash", "-e", "-o", "pipefail", "-c", script],
+                    cwd=root,
                     env={**os.environ, "PATH": f"{root}{os.pathsep}{os.environ['PATH']}",
-                         "GIT_CALLS": str(git_calls), "SLEEP_CALLS": str(sleep_calls),
+                         "PREPARE_CALLS": str(prepare_calls), "MOCK_PREPARE": str(prepare),
+                         "SLEEP_CALLS": str(sleep_calls),
                          "FETCH_FAILURES": str(failures), "FETCH_TIMEOUTS": str(timeouts),
                          "TIMEOUT_CALLS": str(timeout_calls)},
                     capture_output=True, text=True, timeout=5,
                 )
                 self.assertEqual(result.returncode, returncode, result.stdout + result.stderr)
-                command = ["-c", "submodule.linux.url=https://github.com/gregkh/linux.git",
-                           "submodule", "update", "--init", "--depth", "1", "linux"]
-                self.assertEqual([json.loads(line) for line in git_calls.read_text().splitlines()]
-                                 if git_calls.exists() else [], [command] * calls)
+                command = ["bash", "scripts/linux_source.sh"]
+                self.assertEqual([json.loads(line) for line in prepare_calls.read_text().splitlines()]
+                                 if prepare_calls.exists() else [], [[]] * calls)
                 self.assertEqual([json.loads(line) for line in timeout_calls.read_text().splitlines()],
-                                 [["180", "git", *command]] * (calls + timeouts))
+                                 [["180", *command]] * (calls + timeouts))
                 self.assertEqual(sleep_calls.read_text().splitlines() if sleep_calls.exists() else [],
                                  ["10"] * sleeps)
                 self.assertEqual(result.stdout.count("::warning::"), sleeps)

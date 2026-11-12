@@ -1,6 +1,6 @@
 use std::{env, fs, path::PathBuf, process::Command};
 
-const LINUX_REVISION: &str = "79a907609d53d5cd645b42c11550d295d43abf99";
+const LINUX_REVISION: &str = "c03c1a14507dfaf8b856c2608f9ac216021fc222";
 
 fn main() {
     let target = env::var("TARGET").unwrap();

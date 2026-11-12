@@ -905,7 +905,8 @@ allocation/map errors fail even in intentional-failure mode. The selected
 QEMU disabled-RX/callback-drain contract remains required; physical hardware,
 IOMMU, offloads and a complete network stack remain outside this acceptance.
 
-The build and provenance test require Linux `v7.3.1`, commit
-`79a907609d53d5cd645b42c11550d295d43abf99`, with no submodule modifications.
+The build and provenance test require Linux `v7.3`, commit
+`c03c1a14507dfaf8b856c2608f9ac216021fc222`, from Torvalds's repository with no
+submodule modifications.
 The whole selected Linux e1000 source closure is linked. Embclox's native NIC
 implementation is not linked, and kutox's former native TX scaffold is removed.

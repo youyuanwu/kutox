@@ -194,11 +194,14 @@ checkout, and uploads reports, guest journals, PCAPs and image manifests even
 after failures. It does not build Linux or require a sibling repository.
 Portable CI calls `fast` once; profile jobs use `--scope guest` and never repeat
 the portable checks. `--scope host` selects shared checks only.
-Both job types initialize the pinned, shallow Linux submodule before validation.
-They share a three-attempt fetch step with a 180-second limit per attempt and
-10-second retry delays. CI uses the `gregkh/linux` GitHub stable-tree mirror
-for the identical gitlink commit; the canonical kernel.org URL in `.gitmodules`
-and source pin remain unchanged. Failed or hung fetches cannot retry forever;
+Both job types invoke `bash scripts/linux_source.sh` before validation.
+The script uses Git commands to set sparse paths before a shallow,
+blob-filtered fetch and checkout
+of the staged gitlink. No CMake configuration or kernel tooling is needed.
+CI shares a three-attempt preparation step with a 180-second limit per attempt
+and 10-second retry delays, using Torvalds's GitHub repository and the same
+mainline `v7.3` gitlink recorded by the submodule. Failed or hung fetches cannot
+retry forever;
 exhausted retries still fail the job. Guest jobs
 explicitly install LLD as well as Clang because the ON build links a standalone
 ELF fixture using `ld.lld`; installing Clang alone does not supply that linker.

@@ -521,8 +521,8 @@ a general module loader are outside this direction's initial scope.
 
 ### Selected e1000 source and configuration
 
-The first packet-driver target is the existing `v7.3.1` source baseline,
-`79a907609d53d5cd645b42c11550d295d43abf99`, with QEMU 82540EM `8086:100e`.
+The first packet-driver target is the mainline `v7.3` source baseline,
+`c03c1a14507dfaf8b856c2608f9ac216021fc222`, with QEMU 82540EM `8086:100e`.
 The upstream [Makefile](../linux/drivers/net/ethernet/intel/e1000/Makefile)
 includes four units: `e1000_main.c`, `e1000_hw.c`, `e1000_ethtool.c`, and
 `e1000_param.c`. Compile those unchanged with their original driver headers;
@@ -956,7 +956,7 @@ one pinned configuration, not support for every retained optional callback.
 
 | Boundary | Supported / excluded |
 | --- | --- |
-| Source | Four unchanged e1000 units from Linux `v7.3.1`, commit `79a907609d53d5cd645b42c11550d295d43abf99`; original UAPI/GFP/net-feature definitions, separate audited runtime objects. |
+| Source | Four unchanged e1000 units from Linux `v7.3`, commit `c03c1a14507dfaf8b856c2608f9ac216021fc222`; original UAPI/GFP/net-feature definitions, separate audited runtime objects. |
 | Platform | QEMU 82540EM `8086:100e`, BIOS `pc`/i440FX/PIIX, one BSP, owned INTx route, validated RAM/identity DMA and BARs; tested with 128/32 MiB, root slots 3/5 and one/two firmware-configured conventional PCI bridges. |
 | Driver | Original module/probe/open/close/remove, reset/PHY/options, xmit, IRQ, watchdog and NAPI TX/RX cleanup; 256-entry rings, one queue each, MTU 1500, zero offloads. |
 | Native boundary | Owned linear TX packets and eight-packet full-L2 ingress FIFO; Linux owns descriptors and packet algorithms. No native Rust e1000 driver remains. |

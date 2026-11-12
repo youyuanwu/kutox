@@ -400,9 +400,9 @@ bounded sleeping-mutex API; the adapted file itself is not Linux C code.
 ## Linux
 
 The [Linux submodule](linux/) retains its upstream copyright notices,
-per-file SPDX identifiers, and [license rules](linux/Documentation/process/license-rules.rst).
-The source baseline is release `v7.3.1`, commit
-`79a907609d53d5cd645b42c11550d295d43abf99`. All four selected e1000 units
+per-file SPDX identifiers, and [license rules](https://github.com/torvalds/linux/blob/v7.3/Documentation/process/license-rules.rst).
+The source baseline is Torvalds's mainline release `v7.3`, commit
+`c03c1a14507dfaf8b856c2608f9ac216021fc222`. All four selected e1000 units
 ([main](linux/drivers/net/ethernet/intel/e1000/e1000_main.c),
 [hardware](linux/drivers/net/ethernet/intel/e1000/e1000_hw.c),
 [parameters](linux/drivers/net/ethernet/intel/e1000/e1000_param.c) and
