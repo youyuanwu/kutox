@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef KUTOX_STORAGE_RUNTIME_H
 #define KUTOX_STORAGE_RUNTIME_H
-/* These APIs have storage-private layouts or ownership, unlike e1000's ABI. */
+/* Unkeyed allocations retain their per-owner policy; keyed APIs share one ABI. */
 #define kmalloc storage_kmalloc
 #define kzalloc storage_kzalloc
 #define kcalloc storage_kcalloc
@@ -11,36 +11,10 @@
 #define dev_printk storage_dev_printk
 #define snprintf storage_snprintf
 #define msleep storage_msleep
-#define mutex_init storage_mutex_init
-#define mutex_lock storage_mutex_lock
-#define mutex_unlock storage_mutex_unlock
-#define mutex_destroy storage_mutex_destroy
-#define init_work storage_init_work
-#define request_irq storage_request_irq
 #define kutox_module kutox_storage_module
-#define pci_register_driver storage_pci_register_driver
-#define pci_unregister_driver storage_pci_unregister_driver
-#define pci_enable_device storage_pci_enable_device
-#define pci_disable_device storage_pci_disable_device
-#define pci_set_master storage_pci_set_master
-#define pci_set_drvdata storage_pci_set_drvdata
-#define pci_get_drvdata storage_pci_get_drvdata
-#define pci_name storage_pci_name
-#define pci_resource_len storage_pci_resource_len
-#define pci_resource_flags storage_pci_resource_flags
-#define pci_resource_start storage_pci_resource_start
-#define pci_request_selected_regions storage_pci_request_selected_regions
-#define pci_release_selected_regions storage_pci_release_selected_regions
-#define pci_read_config_word storage_pci_read_config_word
-#define pci_write_config_word storage_pci_write_config_word
-#define dma_set_mask_and_coherent storage_dma_set_mask_and_coherent
-#define dma_alloc_coherent storage_dma_alloc_coherent
-#define dma_free_coherent storage_dma_free_coherent
-#define dma_mapping_error storage_dma_mapping_error
-#define dma_sync_single_for_cpu storage_dma_sync_single_for_cpu
-#define dma_sync_single_for_device storage_dma_sync_single_for_device
 #define KUTOX_STORAGE_SERVICE_RUNTIME 1
 #include "storage-check/driver.h"
+extern void kutox_platform_fail(const char *) __attribute__((noreturn));
 #undef module_init
 #undef module_exit
 #define module_init(f) int (*const kutox_storage_init_##f)(void) = f

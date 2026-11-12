@@ -1,9 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #include "kutox_compat.h"
 extern void kutox_platform_fail(const char *) __attribute__((noreturn));
-extern int kutox_linux_bh(unsigned int);
-extern int64_t kutox_linux_work_init(uintptr_t, void (*)(struct work_struct *));
-extern int kutox_linux_work(uintptr_t, u64, unsigned int, u64);
 extern int64_t kutox_linux_napi_init(uintptr_t, int (*)(struct napi_struct *, int));
 extern int kutox_linux_napi(uintptr_t, u64, unsigned int, int);
 static struct napi_struct *napi_bindings[4];
@@ -15,44 +12,6 @@ static int checked(int value, const char *operation)
     if (value < 0) kutox_platform_fail(operation);
     return value;
 }
-
-void local_bh_disable(void) { checked(kutox_linux_bh(0), "bh_disable"); }
-void local_bh_enable(void) { checked(kutox_linux_bh(1), "bh_enable"); }
-
-void init_work(struct work_struct *work, void (*callback)(struct work_struct *))
-{
-    int64_t generation = kutox_linux_work_init((uintptr_t)work, callback);
-    if (generation <= 0) kutox_platform_fail("work_init");
-    work->function = callback;
-    work->generation = (u64)generation;
-    kutox_driver_trace(10,(uintptr_t)callback,(uintptr_t)work,0);
-}
-
-void init_delayed_work(struct delayed_work *work, void (*callback)(struct work_struct *))
-{
-    if (!work) kutox_platform_fail("delayed_work_null");
-    init_work(&work->work, callback);
-}
-
-static int work_call(struct work_struct *work, unsigned int operation, u64 delay)
-{
-    if (!work) kutox_platform_fail("work_null");
-    return checked(kutox_linux_work((uintptr_t)work, work->generation, operation, delay), "work_operation");
-}
-
-bool schedule_work(struct work_struct *work) { return work_call(work, 0, 0); }
-bool schedule_delayed_work(struct delayed_work *work, unsigned long delay)
-{
-    if (!work) kutox_platform_fail("delayed_work_null");
-    return work_call(&work->work, 0, delay);
-}
-bool cancel_work_sync(struct work_struct *work) { return work_call(work, 1, 0); }
-bool cancel_delayed_work_sync(struct delayed_work *work)
-{
-    if (!work) kutox_platform_fail("delayed_work_null");
-    return cancel_work_sync(&work->work);
-}
-void kutox_destroy_work(struct work_struct *work) { work_call(work, 2, 0); }
 
 static int napi_call(struct napi_struct *napi, unsigned int operation, int done)
 {

@@ -487,7 +487,8 @@ algorithms. The provider reuses the already attributed Moss-backed kernel heap
 and existing execution types. The guest transport fixture is not a storage driver.
 
 The same seven unchanged Linux storage units are now also linked into both
-runtime profiles through [the namespaced C adapter](compat/storage_runtime.c)
+runtime profiles through [the small C header bridge](compat/storage_runtime.c),
+[shared Rust compatibility services](src/linux_compat/)
 and [Rust PCI/DMA ownership services](src/storage.rs). All original notices and
 GPL obligations remain applicable. The original VirtIO core, split ring,
 modern PCI and block implementation performs hardware I/O; no native Rust
@@ -497,7 +498,7 @@ QEMU fixture and native APIs are kutox integration code. They reuse the
 previously attributed Moss allocators and shared kernel execution/IRQ services;
 no Ginux or additional Moss driver source is imported.
 
-The native [C execution adapter](compat/runtime.c),
+The native [Rust C-ABI execution adapter](src/linux_compat/execution.rs),
 [Rust registry/backend](src/linux_runtime.rs), and
 [C acceptance test](compat/guest_tests/execution_test.c) are kutox code. They expose a
 tested static-object subset of Linux-facing mutex, spinlock, sleep, and completion
@@ -505,6 +506,14 @@ APIs without copying a Linux synchronization implementation. The Linux submodule
 and all four selected upstream units remain unchanged. These services now back
 original driver execution for the selected profile, not general Linux
 synchronization or binary ABI compatibility.
+
+The shared compatibility modules and [C/Rust ABI contracts](src/linux_abi.rs)
+are kutox implementations of selected Linux-facing services. They replace the
+former C allocation/PCI/execution adapters and storage device/work/lifecycle
+policy; they do not replace original Linux device algorithms. Their native
+backends reuse the previously attributed Moss allocators, synchronization and
+task services. The remaining C network/block class adapters, original-header
+accessors and common variadic formatter retain their existing attribution.
 
 ## Native driver infrastructure and persistent integration
 

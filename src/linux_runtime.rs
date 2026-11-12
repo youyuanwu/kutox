@@ -492,6 +492,13 @@ pub fn can_retire_range(base: usize, size: usize) -> Result<(), i32> {
         if key < base || key >= end {
             continue;
         }
+        if key
+            .checked_add(core::mem::size_of::<kutox::linux_abi::Mutex>())
+            .is_none_or(|last| last > end)
+            || unsafe { (*(key as *const kutox::linux_abi::Mutex)).boot_held } != 0
+        {
+            return Err(BUSY);
+        }
 
         #[unsafe(no_mangle)]
         extern "C" fn kutox_linux_static_objects_retire() {
@@ -509,7 +516,7 @@ pub fn can_retire_range(base: usize, size: usize) -> Result<(), i32> {
                 let key = slot.key.swap(0, Ordering::AcqRel);
                 if key != 0 {
                     unsafe {
-                        ((key + 8) as *mut u64).write(0);
+                        (*(key as *mut kutox::linux_abi::Mutex)).generation = 0;
                     }
                 }
             }
@@ -517,7 +524,7 @@ pub fn can_retire_range(base: usize, size: usize) -> Result<(), i32> {
                 let key = slot.key.swap(0, Ordering::AcqRel);
                 if key != 0 {
                     unsafe {
-                        ((key + 8) as *mut u64).write(0);
+                        (*(key as *mut kutox::linux_abi::Completion)).generation = 0;
                     }
                 }
             }

@@ -56,6 +56,7 @@ mod irq;
     )
 )]
 mod kernel_runtime;
+mod linux_compat;
 #[cfg_attr(
     not(feature = "guest-tests"),
     allow(
@@ -283,7 +284,7 @@ enum BootOutcome {
 
 fn probe() -> Result<BootOutcome, Failure> {
     exceptions::initialize()?;
-    if !block_services::quiescent() || !storage::quiescent() {
+    if !block_services::quiescent() || !storage::quiescent() || !linux_compat::quiescent() {
         return Err(Failure::new("block_services_initial", -1));
     }
     let boot = boot::collect()?;

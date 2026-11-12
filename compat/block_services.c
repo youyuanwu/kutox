@@ -577,6 +577,10 @@ struct gendisk *kutox_block_registered_disk(void)
     require(live && live->published && live->disk, "block_registered_disk");
     return live->disk;
 }
+struct request_queue *kutox_block_registered_queue(void)
+{
+    return kutox_block_registered_disk()->queue;
+}
 
 /* Internal transport boundary: reset acknowledged, IRQ joined and original
  * virtqueue_detach_unused_buf has returned this request's PDU after DMA unmap. */

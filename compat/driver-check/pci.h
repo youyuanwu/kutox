@@ -1,26 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef KUTOX_DRIVER_CHECK_PCI_H
 #define KUTOX_DRIVER_CHECK_PCI_H
-struct device { unsigned long state; };
-struct pci_dev { struct device dev; u16 vendor, device, subsystem_vendor, subsystem_device; u8 revision; unsigned int irq; };
-struct pci_device_id { u32 vendor, device, subvendor, subdevice, class, class_mask; unsigned long driver_data; };
-typedef enum { pci_channel_io_normal = 1, pci_channel_io_frozen, pci_channel_io_perm_failure } pci_channel_state_t;
-typedef enum { PCI_ERS_RESULT_NONE = 1, PCI_ERS_RESULT_CAN_RECOVER, PCI_ERS_RESULT_NEED_RESET, PCI_ERS_RESULT_DISCONNECT, PCI_ERS_RESULT_RECOVERED } pci_ers_result_t;
-struct pci_error_handlers {
-    pci_ers_result_t (*error_detected)(struct pci_dev *, pci_channel_state_t);
-    pci_ers_result_t (*slot_reset)(struct pci_dev *);
-    void (*resume)(struct pci_dev *);
-};
+#include "../device_types.h"
 struct dev_pm_ops { int (*suspend)(struct device *); int (*resume)(struct device *); };
-struct pci_driver {
-    const char *name;
-    const struct pci_device_id *id_table;
-    int (*probe)(struct pci_dev *, const struct pci_device_id *);
-    void (*remove)(struct pci_dev *);
-    struct { const struct dev_pm_ops *pm; } driver;
-    void (*shutdown)(struct pci_dev *);
-    const struct pci_error_handlers *err_handler;
-};
 #define DEFINE_SIMPLE_DEV_PM_OPS(n,s,r) const struct dev_pm_ops n __attribute__((unused)) = {s,r}
 #define pm_sleep_ptr(p) ((const struct dev_pm_ops *)NULL)
 #define PCI_ANY_ID (~0U)

@@ -2,6 +2,7 @@
 #ifndef KUTOX_EXECUTION_TYPES_H
 #define KUTOX_EXECUTION_TYPES_H
 /* Live objects are address-bound, non-copyable and must outlive joined users. */
+struct list_head { struct list_head *next, *prev; };
 struct mutex { u8 boot_held; u64 generation; };
 struct completion { u8 reserved; u64 generation; };
 typedef struct { u8 held; u64 owner; } spinlock_t;

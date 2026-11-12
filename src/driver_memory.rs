@@ -7,6 +7,7 @@ use crate::{
 use core::cell::UnsafeCell;
 #[cfg(feature = "guest-tests")]
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use kutox::linux_abi::{GFP_ATOMIC, GFP_KERNEL};
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 use moss_libkernel::{CpuOps, memory::allocators::phys::PageAllocation};
 
@@ -189,10 +190,10 @@ fn range_index(state: &State, pointer: usize, size: usize) -> Result<usize, i32>
 extern "C" fn kutox_driver_alloc(size: usize, flags: u32, kind: u32) -> usize {
     let result = state(|state| {
         // Actual selected GFP_KERNEL/GFP_ATOMIC, not the boot fixture's zero tag.
-        if flags != 3264 && flags != 2080 {
+        if flags != GFP_KERNEL && flags != GFP_ATOMIC {
             return Err(-95);
         }
-        if flags == 3264 {
+        if flags == GFP_KERNEL {
             context(false)?;
         }
         if state.hhdm == 0 || size == 0 || size > 4 * 1024 * 1024 || kind > 3 {

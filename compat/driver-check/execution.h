@@ -2,7 +2,6 @@
 #ifndef KUTOX_DRIVER_CHECK_EXECUTION_H
 #define KUTOX_DRIVER_CHECK_EXECUTION_H
 #include "../execution_types.h"
-struct list_head { struct list_head *next, *prev; };
 struct timer_list { unsigned long state; };
 struct module { unsigned long state; };
 extern struct module kutox_module;

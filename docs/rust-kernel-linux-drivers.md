@@ -575,7 +575,7 @@ kutox compatibility closure.
 The generated JSON records per-unit definitions/undefined references,
 source/included-header/object hashes, exact commands, original module/device
 registration and operation-table relocations, caller references and toolchain
-identity. Wire and shared execution layouts are compiler-checked. Every object
+identity. Wire and shared execution layouts are compiler-checked. Every baseline object
 retains the compile-only marker, and the actual kernel linker must reject it.
 Independent `--verify` rejects native/stale/tampered evidence without compiling.
 A failed build removes the previous success report.
@@ -615,20 +615,23 @@ an enforced feature/configuration boundary and observable rejection.
 
 ### Executable storage provider closure
 
-The audit additionally compiles the original units with
-[the runtime ABI header](../compat/storage_runtime.h), the real
-[storage adapter](../compat/storage_runtime.c) and block providers. This second
+The audit additionally compiles all eleven original e1000/VirtIO units with
+their runtime headers, seven C adapter units and
+[the real Rust providers](../src/linux_compat/). This second
 relocatable closure has no compile-only marker, no garbage collection and no
-missing source-facing APIs. Its exact **38 shared/platform entry points** are
-listed in [runtime-ffi.txt](../compat/storage-check/runtime-ffi.txt).
-They include five existing block allocation/context/diagnostic calls, eight
-new storage platform calls, and established shared execution/IRQ/libc services.
+missing source-facing APIs. Its exact **67 backend/libc entry points** are
+listed in [service-ffi.txt](../compat/service-ffi.txt).
+This boundary includes the existing device-specific Rust allocation/DMA/PCI
+backends and shared native execution/IRQ services. Both source audits use the
+same provider/compiler proof implementation and allowlist.
 Rejected optional paths have explicit failure providers, not fake successful
 hardware services. The original 203/57/146 baseline counts are preserved as
 dependency evidence rather than misrepresented as the executable closure.
 
-`runtime_closure` records each of the nine original/provider objects, exact
-commands, source/header/object hashes and the full linked external set.
+`runtime_closure` records all eighteen C objects and the actual Rust provider
+object, exact commands, source/header/object hashes and the full external set.
+It also compares real Rust and boot/e1000/storage C layout probes, including
+shared device/PCI fields and actual Linux GFP values.
 Independent verification checks that set against the complete inputs minus
 actual global/weak definitions, so section loss or same-named local symbols
 cannot hide a dependency. Production objects are separately built and linked
@@ -816,11 +819,11 @@ Freed driver containers automatically retire idle embedded work/mutex/
 completion registrations. Pending/running callbacks, waits or pins prevent
 free; unchanged source need not call kutox destruction extensions.
 
-The independent source-plus-services closure resolves driver APIs to actual C
-providers, optional-profile errors or three existing Rust primitives
-(`memcpy`, `memset`, elapsed jiffies). Its 52 remaining platform symbols have an
-explicit exact allowlist; missing, stale or changed providers fail evidence
-verification. The compile-only barrier remains present. All four unchanged
+The independent source-plus-services proof now links both original drivers,
+the C class/header/varargs adapters and actual common Rust providers without
+garbage collection. Its 67 remaining backend/libc symbols have one exact
+allowlist; missing, stale or changed providers fail verification. Baseline
+source-only objects retain their separate compile-only barrier. All four unchanged
 source units, callbacks and default 256-ring layouts remain audited; resolving
 providers alone is not execution of original lifecycle or packets.
 

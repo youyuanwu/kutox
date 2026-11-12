@@ -1,5 +1,4 @@
 linux/const.h
-linux/bits.h
 linux/compiler.h
 linux/compiler_types.h
 linux/io.h

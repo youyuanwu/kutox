@@ -276,6 +276,54 @@ extern "C" fn kutox_linux_napi_init(address: usize, callback: Option<PollFn>) ->
 }
 
 #[unsafe(no_mangle)]
+extern "C" fn kutox_linux_local_work(address: usize, raw: u64, operation: u32) -> i32 {
+    let result = (|| {
+        if ACTIVE.load(Ordering::Acquire) || WORKERS.load(Ordering::Acquire) != 0 {
+            return Err(Error::Context);
+        }
+        let key = Key::from_raw(raw);
+        if operation == 0 {
+            enqueue_context()?;
+            return SERVICES.lock_save_irq().state.enqueue(key, address, 0);
+        }
+        if operation != 1 {
+            return Err(Error::Invalid);
+        }
+        let thread = threads::check_boot_or_thread_context().map_err(|_| Error::Context)?;
+        let owner = if thread {
+            threads::current_task_handle()
+                .map_err(|_| Error::Context)?
+                .ticket()
+        } else {
+            0
+        };
+        let Some((invocation, callback)) = ({
+            let mut services = SERVICES.lock_save_irq();
+            services
+                .state
+                .take_work(key, address)?
+                .map(|invocation| (invocation, services.callback(invocation)))
+        }) else {
+            return Ok(false);
+        };
+        let Callback::Work(callback) = callback else {
+            return Err(Error::Invalid);
+        };
+        let old_owner = WORK_OWNER.swap(owner, Ordering::AcqRel);
+        CURRENT_WORK.store(raw, Ordering::Release);
+        unsafe { callback(address as *mut c_void) };
+        CURRENT_WORK.store(0, Ordering::Release);
+        WORK_OWNER.store(old_owner, Ordering::Release);
+        SERVICES
+            .lock_save_irq()
+            .state
+            .finish(invocation, 0, BUDGET)?;
+        Ok(true)
+    })();
+    result.map_or_else(|error| error as i32, i32::from)
+}
+
+#[unsafe(no_mangle)]
 extern "C" fn kutox_linux_napi(address: usize, raw: u64, operation: u32, done: i32) -> i32 {
     napi(address, Key::from_raw(raw), operation, done).map_or_else(|error| error as i32, i32::from)
 }

@@ -79,9 +79,8 @@ fn main() {
         .compiler("clang")
         .include(&include)
         .include("compat")
+        .include("linux/include")
         .include(&driver)
-        .file("compat/runtime.c")
-        .file("compat/execution_ops.c")
         .file("compat/deferred.c")
         .file("compat/diagnostics.c")
         .define("KUTOX_GUEST_TESTS", guest_define)
@@ -145,8 +144,6 @@ fn main() {
         .include("linux/include")
         .include("linux/include/uapi")
         .include("linux/arch/x86/include/uapi")
-        .file("compat/driver_memory.c")
-        .file("compat/driver_pci.c")
         .file("compat/driver_packet.c")
         .file("compat/driver_optional.c")
         .file("compat/bridge.c")
@@ -253,6 +250,7 @@ fn main() {
             .compiler("clang")
             .include(&include)
             .include("compat")
+            .include("linux/include")
             .include(&driver)
             .define("KUTOX_GUEST_TESTS", "1")
             .file("compat/guest_tests/driver_execution_test.c")
@@ -297,5 +295,22 @@ fn main() {
             storage_tests.flag(flag);
         }
         storage_tests.compile("kutox_block_guest_tests");
+        let mut config_test = cc::Build::new();
+        config_test
+            .compiler("clang")
+            .include(&runtime_include)
+            .include("compat")
+            .include("linux/include")
+            .include("linux/include/uapi")
+            .include("linux/arch/x86/include/uapi")
+            .define("KUTOX_GUEST_TESTS", "1")
+            .file("compat/guest_tests/storage_runtime_test.c")
+            .flag("-Wno-missing-field-initializers")
+            .flag("-Wno-sign-compare")
+            .warnings_into_errors(true);
+        for flag in flags.lines() {
+            config_test.flag(flag);
+        }
+        config_test.compile("kutox_storage_config_guest");
     }
 }

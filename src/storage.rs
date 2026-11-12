@@ -416,7 +416,7 @@ unsafe extern "C" fn kutox_storage_fail(operation: *const c_char) -> ! {
 #[unsafe(no_mangle)]
 extern "C" fn kutox_storage_alloc(size: usize, alignment: usize, gfp: u32) -> usize {
     if driver_memory::context(false).is_err()
-        || gfp & !0x100 != 3264
+        || gfp & !kutox::linux_abi::GFP_ZERO != kutox::linux_abi::GFP_KERNEL
         || size == 0
         || size > 65536
         || !matches!(alignment, 16 | 4096)
@@ -468,6 +468,13 @@ extern "C" fn kutox_storage_free(pointer: usize) {
         .iter()
         .position(|a| a.as_ref().is_some_and(|a| a.pointer == pointer))
         .expect("unknown storage allocation");
+    let size = s.allocations[slot]
+        .as_ref()
+        .expect("storage allocation")
+        .size;
+    crate::linux_runtime::can_retire_range(pointer, size).expect("live storage synchronization");
+    crate::linux_deferred::retire_range(pointer, size).expect("live storage work");
+    crate::linux_runtime::retire_range(pointer, size).expect("storage synchronization retirement");
     let a = s.allocations[slot].take().expect("storage allocation");
     match a.backing {
         Backing::Heap(layout) => unsafe {
@@ -711,17 +718,20 @@ pub(crate) mod tests {
                 assert_eq!(output, [0xa5; 512]);
             }
             let before = time::now_ticks();
+            let work_before = crate::linux_compat::storage_work_flushes();
+            crate::linux_compat::storage_config_change();
             assert_eq!(
                 disk.read_inner(0, &mut output, true).unwrap_err().code,
                 -110
             );
             assert!(time::now_ticks() - before >= time::ticks_for_us(100_000)?);
+            assert_eq!(crate::linux_compat::storage_work_flushes(), work_before + 1);
             assert_eq!(output, [0xa5; 512]);
             disk.read(1, &mut output)?;
             verify(1, &output);
             assert!(linux_irq::counts().0 >= irq_before + 4);
             serial::print(format_args!(
-                "# STORAGE_PROOF reads=4 exact=1 range=1 dma_rollback=3 deadline=1 reset=1 recovery=1\n"
+                "# STORAGE_PROOF reads=4 exact=1 range=1 dma_rollback=3 work_flush=1 deadline=1 reset=1 recovery=1\n"
             ));
             Ok(())
         })?;

@@ -1,3 +1,8 @@
+kutox_block_allocate
+kutox_block_context
+kutox_block_deallocate
+kutox_block_diag
+kutox_block_fail
 kutox_check_boot_context
 kutox_delay_us
 kutox_driver_alloc
@@ -33,6 +38,7 @@ kutox_linux_irq
 kutox_linux_irq_acquired
 kutox_linux_irq_released
 kutox_linux_irq_save
+kutox_linux_local_work
 kutox_linux_msleep
 kutox_linux_mutex
 kutox_linux_napi
@@ -48,5 +54,14 @@ kutox_linux_work_init
 kutox_net_wake
 kutox_platform_fail
 kutox_serial_byte
+kutox_storage_alloc
+kutox_storage_begin_reset
+kutox_storage_clock
+kutox_storage_dma
+kutox_storage_free
+kutox_storage_mmio
+kutox_storage_pci
 memcpy
+memmove
 memset
+strlen

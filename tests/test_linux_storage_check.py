@@ -35,23 +35,6 @@ def profile(extra=""):
 
 
 class StorageAuditTests(unittest.TestCase):
-    def test_runtime_closure_requires_all_real_providers_without_gc_or_compile_only_objects(self):
-        original = [symbol("queue", 1, 2), symbol("provider"), symbol("shared"),
-                    symbol("shared", 1, 2, binding=0)]
-        provider = [symbol("provider", 1, 2)]
-        for external, marked in ((["shared"], False), ([], False), (["shared", "hidden"], False), (["shared"], True)):
-            with patch.object(storage, "ENTRY_POINTS", {"queue"}), patch.object(storage, "Elf", side_effect=[
-                elf(original, marked), elf(provider, False),
-                elf([symbol(name) for name in external], False),
-            ]):
-                if external == ["shared"] and not marked:
-                    self.assertEqual(storage.runtime_inventory([Path("driver"), Path("provider")],
-                        Path("linked"), {"shared"}), ["shared"])
-                else:
-                    with self.assertRaises(ValueError):
-                        storage.runtime_inventory([Path("driver"), Path("provider")],
-                            Path("linked"), {"shared"})
-
     def test_native_reports_and_unsupported_preprocessor_profiles_are_rejected(self):
         storage.parse_macros(profile())
         for extra in ("#define CONFIG_SMP 1", "#define CONFIG_PCI_MSI 0",

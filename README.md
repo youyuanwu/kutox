@@ -121,11 +121,25 @@ An isolated compile-only target now compiles unchanged `e1000_main.c` with its
 hardware, parameter and ethtool units. It records original registration/callbacks,
 parameter arrays, layouts, headers and **209 unresolved runtime dependencies**.
 These objects are explicitly rejected by the runtime linker. A second
-source-plus-services relocatable closure now checks every driver API has a
-C provider or an explicitly listed Rust primitive; its remaining 52 platform
-symbols are recorded, not hidden by success stubs.
+combined relocatable closure now checks both drivers against actual Rust and
+C providers; its remaining 67 kernel/backend symbols are recorded, not hidden
+by success stubs.
 The marked check objects remain excluded from the runtime image. Runtime
 objects are compiled separately against the same selected source profile.
+
+The [shared compatibility implementation](src/linux_compat/) exports Linux-facing
+C ABI functions from Rust. Both drivers share checked
+[device/PCI/execution contracts](src/linux_abi.rs), synchronization, allocation
+adapters, PCI registration/access and DMA dispatch. Storage device references,
+work tracking and lifecycle/recovery orchestration also live in Rust.
+C remains for original Linux implementations, header-dependent accessors,
+variadic formatting, and the separate network/sk_buff/NAPI and block-class
+adapters. The storage C bridge is now 124 lines rather than 644; it contains no
+registration, reference-count, queue-work or request-lifecycle state machine.
+Both audit tools compile the real Rust providers and compare all three C
+profiles with Rust layouts and GFP flags. See the
+[shared boundary](docs/kernel-implementation.md#shared-linux-compatibility-boundary)
+for the remaining per-device policies and resource limits.
 
 The [driver-reuse roadmap](docs/rust-kernel-linux-drivers.md#linux-e1000-driver-reuse-roadmap)
 now has tested execution/object, workqueue, NAPI/IRQ and PCI/skb/streaming-DMA

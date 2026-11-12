@@ -5,16 +5,22 @@ extern void kutox_serial_byte(u8);
 extern void kutox_platform_fail(const char *) __attribute__((noreturn));
 extern bool kutox_driver_tracing(void);
 static bool beginning = true;
+struct output { char *buffer; size_t capacity; unsigned int count; bool serial; };
 
-static void emit(char value, unsigned int *count)
+static void emit(char value, struct output *out)
 {
-    if (*count == 4096) kutox_platform_fail("diagnostic_length");
+    if (out->count == 4096) kutox_platform_fail("diagnostic_length");
+    if (!out->serial) {
+        if (out->capacity && out->count < out->capacity - 1) out->buffer[out->count] = value;
+        out->count++;
+        return;
+    }
     if (beginning && kutox_driver_tracing()) {
         kutox_serial_byte('#'); kutox_serial_byte(' ');
     }
     kutox_serial_byte((u8)value);
     beginning = value == '\n';
-    (*count)++;
+    out->count++;
 }
 static size_t length(const char *text)
 {
@@ -26,20 +32,22 @@ static size_t length(const char *text)
     }
     return size;
 }
-static void text(const char *string, unsigned int *count)
+static void text(const char *string, struct output *count)
 {
     size_t size = length(string);
     for (size_t i = 0; i < size; i++) emit(string[i], count);
 }
 
-int kutox_vprint(const char *format, va_list arguments)
+static int format_message(const char *format, va_list arguments, struct output *out)
 {
     if (!format) kutox_platform_fail("diagnostic_null_format");
     (void)length(format);
-    unsigned int count = 0;
+    struct output count = *out;
     while (*format) {
         if (*format != '%') { emit(*format++, &count); continue; }
         format++;
+        bool alternate = *format == '#';
+        if (alternate) format++;
         bool left = false, zero = false;
         if (*format == '-') { left = true; format++; }
         if (*format == '0') { zero = true; format++; }
@@ -49,6 +57,7 @@ int kutox_vprint(const char *format, va_list arguments)
             if (width > 64) kutox_platform_fail("diagnostic_width");
         }
         unsigned int longs = 0;
+        if (*format == 'z') { longs = 1; format++; }
         while (*format == 'l') { format++; if (++longs > 2) kutox_platform_fail("diagnostic_length_modifier"); }
         char kind = *format++;
         if (longs && (kind == 's' || kind == 'c' || kind == 'p' || kind == '%'))
@@ -94,13 +103,29 @@ int kutox_vprint(const char *format, va_list arguments)
         const char *alphabet = kind == 'X' ? "0123456789ABCDEF" : "0123456789abcdef";
         do { digits[used++] = alphabet[value % base]; value /= base; } while (value);
         unsigned int size = used + negative;
+        if (alternate && base == 16) { emit('0', &count); emit('x', &count); size += 2; }
         if (negative && zero) emit('-', &count);
         if (!left) for (unsigned int i = size; i < width; i++) emit(zero ? '0' : ' ', &count);
         if (negative && !zero) emit('-', &count);
         while (used) emit(digits[--used], &count);
         if (left) for (unsigned int i = size; i < width; i++) emit(' ', &count);
     }
-    return (int)count;
+    *out = count;
+    return (int)count.count;
+}
+
+int kutox_vprint(const char *format, va_list arguments)
+{
+    struct output out = {.serial=true};
+    return format_message(format, arguments, &out);
+}
+int kutox_vformat(char *buffer, size_t capacity, const char *format, va_list arguments)
+{
+    if (!buffer && capacity) kutox_platform_fail("diagnostic_null_buffer");
+    struct output out = {.buffer=buffer, .capacity=capacity};
+    int count = format_message(format, arguments, &out);
+    if (capacity) buffer[min((size_t)count, capacity - 1)] = 0;
+    return count;
 }
 
 int printk(const char *format, ...)

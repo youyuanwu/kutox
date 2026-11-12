@@ -9,7 +9,7 @@ import tempfile
 from qemu_scenarios import qemu_command
 
 
-PROOF = "# STORAGE_PROOF reads=4 exact=1 range=1 dma_rollback=3 deadline=1 reset=1 recovery=1"
+PROOF = "# STORAGE_PROOF reads=4 exact=1 range=1 dma_rollback=3 work_flush=1 deadline=1 reset=1 recovery=1"
 CALLBACKS = {
     "irq": "vp_interrupt", "probe": "virtblk_probe",
     "queue": "virtio_queue_rq", "complete": "virtblk_request_done",

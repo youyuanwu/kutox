@@ -10,7 +10,7 @@ from test_runner import FOUNDATION
 
 SYMBOLS = dict(zip(("vp_interrupt", "virtblk_probe", "virtio_queue_rq",
                    "virtblk_request_done", "virtblk_done"), range(256, 261)))
-PROOF = "# STORAGE_PROOF reads=4 exact=1 range=1 dma_rollback=3 deadline=1 reset=1 recovery=1"
+PROOF = "# STORAGE_PROOF reads=4 exact=1 range=1 dma_rollback=3 work_flush=1 deadline=1 reset=1 recovery=1"
 IO = "# STORAGE_IO_ERROR device=EIO unchanged=1 recovery=1"
 
 

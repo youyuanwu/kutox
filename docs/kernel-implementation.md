@@ -309,13 +309,15 @@ acceptance below.
 
 ## Linux virtio-blk runtime
 
-[The C adapter](../compat/storage_runtime.c) now connects all seven unchanged
-Linux storage units to the bounded block provider. [Rust](../src/storage.rs)
+[The Rust compatibility adapter](../src/linux_compat/storage.rs) connects all
+seven unchanged Linux storage units to the bounded block provider.
+[The platform backend](../src/storage.rs)
 supplies owned PCI/BAR/MMIO, allocation and DMA services. Compilation follows
 e1000's direct freestanding Clang approach; no Kbuild or native Rust VirtIO ring
-implementation is introduced. Storage-private APIs are namespaced so e1000's
-incompatible device/PCI/DMA/allocation layouts cannot accidentally satisfy them.
-Stable shared spinlock, completion, scalar/barrier and INTx services are reused.
+implementation is introduced. Both drivers now use the same checked
+device/PCI/execution ABI and common Rust exports. Unkeyed allocation and
+boot-only reset-delay policy remain explicitly namespaced; a storage bounce
+lease is never reinterpreted as an e1000 streaming mapping.
 
 The admitted profile is one modern PCI block function (`1af4:1042`), a single
 split queue, depth one, 512-byte sectors and at most one 4096-byte read.
@@ -372,6 +374,52 @@ read-only backing and production/fixture separation at 128/32 MiB.
 
 This is native kernel disk I/O, not disk-backed boot. The existing filesystem
 and `/bin/init` loader continue to use the immutable Limine RAM module.
+
+## Shared Linux compatibility boundary
+
+[The common Rust modules](../src/linux_compat/) implement the selected
+Linux-facing C ABI using `#[unsafe(no_mangle)] extern "C"` exports:
+
+- `execution.rs`: scalar atomics/barriers, mutex/spinlock/completion wrappers,
+  sleep/IRQ/work entry points, reusing existing native registries and waiters.
+- `pci.rs`: stable owned endpoint objects, matching/probe/remove, driver data,
+  resource/config access and MMIO dispatch for both original drivers.
+- `memory.rs`: checked allocation/array helpers and device-keyed coherent and
+  streaming DMA adapters. Backing allocators, masks, pins and reset proofs stay
+  with each device's existing Rust owner.
+- `storage.rs`: bus/driver/device references, local config-work queue, native
+  read tickets, admission checks and reset/remove/reprobe sequencing.
+
+[Shared base/device headers](../compat/device_types.h) and
+[Rust `repr(C)` contracts](../src/linux_abi.rs) replace the former incompatible
+minimal/e1000/storage device and PCI declarations. A freestanding Rust probe
+and actual C probes in all three profiles compare 37 layout/offset/GFP values.
+The early synthetic `GFP_KERNEL=0` declaration is gone: boot fixtures and both
+driver paths now use the pinned Linux header's actual GFP values.
+
+Storage configuration work uses the same generation-checked native work
+registry as e1000. Its bounded off-worker queue marks an invocation running
+before calling the original callback off-lock, then acknowledges completion.
+Pending/running work and held boot/thread mutexes forbid owner reclamation.
+Storage frees now retire idle embedded work and synchronization registrations,
+just as e1000 frees do. The threaded scheduler and BSP inline-flush policies
+remain distinct; this is not a general Linux workqueue implementation.
+
+The small [storage C bridge](../compat/storage_runtime.c) handles original
+header-only accessors/module parameters and C varargs. It shares one bounded
+formatter with e1000 in [diagnostics.c](../compat/diagnostics.c). The old C
+allocation, PCI and execution service files have been removed rather than kept
+as parallel implementations. Original Linux hardware/packet/ring algorithms
+remain unchanged C. The network/sk_buff/NAPI and block-class C adapters remain
+separate, header-coupled boundaries, not one monolithic common C implementation.
+
+Shared declarations do not merge allocation/DMA domains or add simultaneous
+NIC/storage ownership: the existing single IRQ/MMIO owner limits still apply.
+Independent source-only audits retain their compile-only linker barrier; an
+additional whole-object link includes all eleven original driver units, seven
+C adapter units and the actual Rust provider object without garbage collection.
+It checks an exact 67-entry backend/libc FFI boundary and both drivers' callbacks,
+with source/header/object/command and C/Rust layout provenance.
 
 ## Timer-bounded ring-3 runs
 
@@ -959,8 +1007,8 @@ both builds, with all images and acceptance code ON-only.
   cooperatively yield. Woken tasks recheck availability: there is no reserved
   ownership handoff, strict fairness, priority inheritance, poisoning,
   abandoned-owner recovery, or SMP support. These are native Rust mutexes;
-  the C execution adapter below supplies a deliberately smaller Linux-facing API.
-- [C execution services](../compat/runtime.c) call the
+  the shared Rust compatibility adapter supplies a smaller Linux-facing API.
+- [Rust C-ABI execution services](../src/linux_compat/execution.rs) call the
   [native adapter](../src/linux_runtime.rs) for `msleep`, `cond_resched`, mutexes,
   and selected completion APIs. In thread context `msleep` genuinely suspends
   the C stack and `cond_resched` yields, returning 1. In the interrupt-disabled

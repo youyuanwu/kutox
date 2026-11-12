@@ -40,9 +40,17 @@ provenance, exact flags/profile, original registration/callbacks, wire/shared
 layouts and actual runtime-link rejection pass. No fake service providers or
 garbage collection hide dependencies. Failed builds invalidate an earlier
 success report. The separate `runtime/` subdirectory now contains the complete
-unmarked source-plus-provider closure, with all sections retained and exactly
-38 explicitly allowed shared/platform entry points. Both closure inventories
+unmarked combined e1000/VirtIO/Rust-provider closure, with all sections retained
+and exactly 67 backend/libc entry points in one shared allowlist. Both inventories
 and their source/header/command/object provenance are independently verified.
+
+Both driver audits use [linux_compat_check.py](../scripts/linux_compat_check.py)
+for the same executable provider proof: eighteen C objects plus the real
+freestanding Rust provider object, not declaration-only Rust symbols or mocks.
+Real Rust and boot/e1000/storage C probes must agree on all 37 shared
+device/PCI/execution-layout and GFP values. Independent `--verify` checks
+stored objects and provenance without compiling. Source-only dependency
+inventories remain 209/203 and retain actual kernel-link exclusion.
 
 The catalog independently verifies the existing report without recompiling.
 This can also be requested directly:
@@ -88,7 +96,9 @@ cases independently of the 76-case kernel registry:
 - `storage.linux_disk`: exact sector/4096-byte reads, capacity/range rejection,
   three real-driver DMA-map rollback points, original INTx completion, a masked
   completion IRQ, measured 100-ms deadline, acknowledged reset/detach/reprobe,
-  then a successful read.
+  then a successful read. It also queues the original VirtIO configuration
+  callback, requires one real shared-registry inline work flush during removal,
+  and proves its work/mutex registrations retire before the owner is freed.
 - `storage.io_error`: actual QEMU `blkdebug` EIO on sector 64, unchanged caller
   output and a subsequent exact successful read of sector 65.
 

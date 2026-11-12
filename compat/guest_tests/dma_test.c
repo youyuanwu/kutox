@@ -26,11 +26,11 @@ void kutox_c_dma_worker(void)
           kutox_linux_dma_mask(0, DMA_BIT_MASK(32)) == -128, "c_dma_invalid_device_mask");
     uintptr_t cpu = 0x5eed;
     u64 address = 0x5eed;
-    check(kutox_linux_dma_alloc(kutox_c_dma_key(), 0, 0, &cpu, &address) == -120 &&
+    check(kutox_linux_dma_alloc(kutox_c_dma_key(), 0, GFP_KERNEL, &cpu, &address) == -120 &&
           cpu == 0x5eed && address == 0x5eed, "c_dma_invalid_output_unchanged");
     check(kutox_linux_dma_alloc(kutox_c_dma_key(), 16, 1, &cpu, &address) == -120 &&
           cpu == 0x5eed && address == 0x5eed, "c_dma_flags_rejected");
-    check(kutox_linux_dma_alloc(kutox_c_dma_key(), 16, 0, NULL, &address) == -120 &&
+    check(kutox_linux_dma_alloc(kutox_c_dma_key(), 16, GFP_KERNEL, NULL, &address) == -120 &&
           address == 0x5eed, "c_dma_null_output_rejected");
     void *buffers[8];
     dma_addr_t handles[8];
@@ -45,9 +45,9 @@ void kutox_c_dma_worker(void)
             check(buffers[old] != buffers[i] && handles[old] != handles[i], "c_dma_disjoint");
     }
     address = 0x5eed;
-    check(kutox_linux_dma_alloc(0, 16, 0, &cpu, &address) == -128 &&
+    check(kutox_linux_dma_alloc(0, 16, GFP_KERNEL, &cpu, &address) == -128 &&
           cpu == 0x5eed && address == 0x5eed, "c_dma_full_registry_invalid_key");
-    check(kutox_linux_dma_alloc(kutox_c_dma_key(), 0, 0, &cpu, &address) == -120 &&
+    check(kutox_linux_dma_alloc(kutox_c_dma_key(), 0, GFP_KERNEL, &cpu, &address) == -120 &&
           cpu == 0x5eed && address == 0x5eed, "c_dma_full_registry_invalid_size");
     check(!dma_alloc_coherent(&test_device, 16, &address, GFP_KERNEL) && address == 0x5eed,
           "c_dma_capacity_output_unchanged");

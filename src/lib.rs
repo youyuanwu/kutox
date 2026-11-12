@@ -11,6 +11,7 @@ pub mod driver_registry;
 pub mod drivers;
 pub mod fw_cfg;
 pub mod irq_platform;
+pub mod linux_abi;
 pub mod mutex_state;
 pub mod net_async_state;
 pub mod net_stack_state;

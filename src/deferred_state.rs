@@ -305,6 +305,25 @@ impl<const N: usize> Registry<N> {
         })
     }
 
+    pub fn take_work(&mut self, key: Key, address: usize) -> Result<Option<Invocation>, Error> {
+        self.check(key, address, Kind::Work)?;
+        let slot = self.slot_mut(key, address)?;
+        if slot.running || slot.cancelling {
+            return Err(Error::Busy);
+        }
+        if slot.pending.is_none() {
+            return Ok(None);
+        }
+        slot.pending = None;
+        slot.running = true;
+        slot.completed = false;
+        Ok(Some(Invocation {
+            key,
+            address,
+            kind: Kind::Work,
+        }))
+    }
+
     pub fn finish(&mut self, invocation: Invocation, done: i32, budget: i32) -> Result<(), Error> {
         self.check(invocation.key, invocation.address, invocation.kind)?;
         let slot = self.slot(invocation.key, invocation.address)?;
@@ -376,6 +395,25 @@ pub fn time_after(a: u64, b: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_flush_targets_one_work_item_and_keeps_its_running_owner_pinned() {
+        let mut registry = Registry::<2>::new();
+        let first = registry.register(10, Kind::Work).unwrap();
+        let second = registry.register(20, Kind::Work).unwrap();
+        registry.enqueue(first, 10, 0).unwrap();
+        registry.enqueue(second, 20, 0).unwrap();
+        let invocation = registry.take_work(second, 20).unwrap().unwrap();
+        assert_eq!(registry.can_unregister(second, 20), Err(Error::Busy));
+        assert_eq!(registry.take_work(second, 20), Err(Error::Busy));
+        assert_eq!(registry.take(Kind::Work, 0).unwrap().key, first);
+        registry.finish(invocation, 0, 64).unwrap();
+        registry.unregister(second, 20).unwrap();
+        let replacement = registry.register(20, Kind::Work).unwrap();
+        assert_ne!(replacement, second);
+        assert_eq!(registry.take_work(second, 20), Err(Error::Stale));
+        assert_eq!(registry.take_work(replacement, 20), Ok(None));
+    }
 
     #[test]
     fn enabled_idle_napi_is_distinct_from_scheduled_running_and_drained_callbacks() {

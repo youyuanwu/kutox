@@ -3,6 +3,7 @@ asm/io.h
 asm/irq.h
 linux/bitfield.h
 linux/bitops.h
+linux/bits.h
 linux/capability.h
 linux/completion.h
 linux/delay.h
