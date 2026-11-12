@@ -7,17 +7,25 @@
       "contract": "Bounded tags and request-private storage, validated payload/operation/limits, exact completion, real queue backpressure and joined quiescence. Reject unsupported operations before publication.",
       "test": "Runtime acceptance must cover actual reads, invalid requests, exhausted tags, completion/requeue and cancellation before request release.",
       "symbols": [
-        "blk_execute_rq", "blk_mq_add_to_batch", "blk_mq_alloc_disk", "blk_mq_alloc_request",
+        "blk_mq_add_to_batch", "blk_mq_alloc_disk", "blk_mq_alloc_request",
         "blk_mq_alloc_tag_set", "blk_mq_complete_request", "blk_mq_complete_request_remote",
         "blk_mq_end_request", "blk_mq_end_request_batch", "blk_mq_free_request", "blk_mq_free_tag_set",
         "blk_mq_freeze_queue", "blk_mq_map_hw_queues", "blk_mq_map_queues", "blk_mq_num_possible_queues",
         "blk_mq_quiesce_queue_nowait", "blk_mq_requeue_request", "blk_mq_rq_from_pdu", "blk_mq_rq_to_pdu",
         "blk_mq_start_request", "blk_mq_start_stopped_hw_queues", "blk_mq_stop_hw_queue",
-        "blk_mq_unfreeze_queue", "blk_mq_unquiesce_queue", "blk_rq_map_kern", "blk_rq_map_sg",
+        "blk_mq_unfreeze_queue", "blk_mq_unquiesce_queue", "blk_rq_map_sg",
         "blk_rq_nr_discard_segments", "blk_rq_nr_phys_segments", "blk_rq_pos", "blk_rq_sectors",
         "blk_should_fake_timeout", "blk_status_to_errno", "bvec_set_virt", "bvec_virt",
         "op_is_zone_mgmt", "req_get_ioprio", "req_op", "rq_list_add_tail", "rq_list_pop"
       ]
+    },
+    {
+      "name": "unsupported-synchronous-block-api",
+      "policy": "profile-rejected",
+      "contexts": ["thread"],
+      "contract": "The first native client uses owned asynchronous reads. Reject synchronous Linux execution/Get-ID and borrowed kernel payload mapping before request publication; leave the allocated request releasable.",
+      "test": "Guest acceptance must verify explicit EOPNOTSUPP, no submission, unchanged destination bytes and successful request release.",
+      "symbols": ["blk_execute_rq", "blk_rq_map_kern"]
     },
     {
       "name": "disk-registration",

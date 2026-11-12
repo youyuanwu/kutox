@@ -76,6 +76,7 @@ KERNEL_TEST_NAMES = (
     "native.initializers",
     "native.probes",
     "native.dependencies",
+    "storage.block_services",
     "memory.user_switching",
     "memory.user_permissions",
     "memory.user_rollback",

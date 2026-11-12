@@ -3,6 +3,7 @@
 pub(crate) mod async_hardening;
 pub(crate) mod async_network;
 mod async_runtime;
+mod block_services;
 mod device_irq;
 mod dhcp;
 mod dns;
@@ -294,6 +295,10 @@ static TESTS: &[TestCase] = &[
     TestCase {
         name: "native.dependencies",
         run: native_drivers::dependencies,
+    },
+    TestCase {
+        name: "storage.block_services",
+        run: block_services::ownership,
     },
     TestCase {
         name: "memory.user_switching",

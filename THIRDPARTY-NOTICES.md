@@ -478,6 +478,15 @@ reuse existing kutox core/execution declarations; they supply no device,
 block-layer or DMA algorithms. These marked audit objects are rejected by the
 runtime linker and are not linked into the boot image.
 
+The [bounded block provider](compat/block_services.c), its
+[Rust allocation/context adapter](src/block_services.rs) and
+[guest fixture](compat/guest_tests/block_services_test.c) are kutox implementations
+of a restricted source-facing service API. They implement request ownership,
+metadata and completion lifecycle, not VirtIO ring/PCI/DMA or storage hardware
+algorithms. The provider reuses the already attributed Moss-backed kernel heap
+and existing execution types. The original Linux storage sources remain
+unchanged and compile-only; the guest transport fixture is not a storage driver.
+
 The native [C execution adapter](compat/runtime.c),
 [Rust registry/backend](src/linux_runtime.rs), and
 [C acceptance test](compat/guest_tests/execution_test.c) are kutox code. They expose a

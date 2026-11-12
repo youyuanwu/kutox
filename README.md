@@ -233,8 +233,16 @@ Linux kernel configuration or additional toolchain. Rerun
 The generated `build/linux-storage-check/report.json` records the profile,
 source/header/object hashes, original callbacks and classified unresolved APIs.
 Compilation and independent `--verify` run through the coordinator; the existing
-kernel linker rejects these declaration-only objects. No storage service
-providers or disk boot are added. See the [audit findings and runtime plan](docs/rust-kernel-linux-drivers.md#linux-storage-dependency-audit).
+kernel linker rejects these declaration-only objects.
+
+The [bounded block services](docs/kernel-implementation.md#bounded-block-services)
+now provide one owned read request, tag/PDU/payload storage, read-only limits,
+backpressure, deferred completion and joined cancellation. The audit separately
+links these real providers and records the remaining APIs and Rust platform
+boundary. Guest acceptance uses a synthetic transport plus a real timer IRQ;
+it does not execute a storage driver or access a disk. Normal boot starts no
+storage queue, and hardware integration/disk boot remain deferred. See the
+[audit findings and runtime plan](docs/rust-kernel-linux-drivers.md#linux-storage-dependency-audit).
 
 ### Test code and build profiles
 

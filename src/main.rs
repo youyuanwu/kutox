@@ -5,6 +5,7 @@ extern crate alloc;
 
 mod async_runtime;
 mod async_sync;
+mod block_services;
 mod boot;
 mod boot_fs;
 mod completion;
@@ -279,6 +280,9 @@ enum BootOutcome {
 
 fn probe() -> Result<BootOutcome, Failure> {
     exceptions::initialize()?;
+    if !block_services::quiescent() {
+        return Err(Failure::new("block_services_initial", -1));
+    }
     let boot = boot::collect()?;
     driver_init::validate_boot_metadata()?;
     println!(

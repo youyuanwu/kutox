@@ -42,6 +42,7 @@ GUEST_SYMBOLS = {
     "kutox_guest_user_timeout",
     "kutox_guest_user_tasks",
     "kutox_guest_async_hardening",
+    "kutox_c_block_services",
 } | NATIVE_INIT_SYMBOLS | USER_PROGRAM_SYMBOLS
 RUNTIME_SYMBOLS = {
     "e1000_probe", "e1000_open", "e1000_close", "e1000_xmit_frame",
@@ -60,13 +61,15 @@ RUNTIME_SYMBOLS = {
     "kutox_user_bringup", "kutox_user_enter", "kutox_user_resume", "kutox_user_dispatch",
     "kutox_user_load_elf",
     "kutox_boot_filesystem",
+    "kutox_block_quiescent",
     "kutox_user_dispatch_next",
     "kutox_runtime_users",
 }
 GUEST_ONLY_PATTERN = re.compile(
     r"::(?:guest_tests|tests|wait_tests|irq_tests|test_cleanup)::|"
     r"::(?:FAIL_AFTER|FAIL_KIND|MAP_FAIL_AFTER|MAP_FAIL_DIRECTION|FAIL_OPERATION|FAIL_REQUEST)$|"
-    r"^(?:kutox_c_execution_|kutox_c_irq_|kutox_c_services_|kutox_c_dma_)|"
+    r"^(?:kutox_c_execution_|kutox_c_irq_|kutox_c_services_|kutox_c_dma_|kutox_c_block_)|"
+    r"^kutox_block_fail_after$|"
     r"^(?:kutox_driver_fail_after|kutox_linux_test_now_us|deny_eeprom_grant|denied_grants)$|"
     r"^kutox_c_linux_(?:counts|indices|kick|queue|live_ring_free|rx_state|rx_failures)$"
 )

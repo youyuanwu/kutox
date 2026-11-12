@@ -53,6 +53,8 @@ def build_inputs():
         ROOT / "compat/cflags.txt", ROOT / "compat/headers.txt",
         ROOT / "compat/driver-check/headers.txt", ROOT / "compat/driver-check/uapi-forwarders.json",
         ROOT / "linker.ld",
+        ROOT / "compat/block_services.c", ROOT / "compat/block_services.h",
+        ROOT / "src/block_services.rs", ROOT / "build.rs",
     ]
     files.extend(path for path in DECLARATIONS.rglob("*") if path.is_file())
     return {str(path.relative_to(ROOT)): digest(path) for path in sorted(files)}
@@ -169,6 +171,39 @@ def symbol_inventory(paths, linked):
     return units, sorted(undefined), sorted(functions)
 
 
+def service_evidence(output, baseline):
+    source = ROOT / "compat/block_services.c"
+    obj = output / "block-services.o"
+    combined = output / "block-services-closure.o"
+    service = Elf(obj)
+    if ".kutox.compile_only" not in service.by_name:
+        raise ValueError("storage provider audit lost runtime exclusion")
+    symbols = service.symbols()
+    defined = {s["name"] for s in symbols if s["owner"] and s["binding"] in (1, 2)}
+    provided = defined & set(baseline)
+    required = {
+        "blk_mq_alloc_tag_set", "blk_mq_alloc_request", "blk_mq_start_request",
+        "blk_mq_complete_request", "blk_mq_end_request", "blk_rq_map_sg",
+        "device_add_disk", "set_disk_ro", "del_gendisk", "put_disk",
+    }
+    if not required <= provided:
+        raise ValueError("missing bounded block providers")
+    ffi = set(lines(DECLARATIONS / "service-ffi.txt"))
+    external = {s["name"] for s in symbols if not s["owner"] and s["name"]}
+    if external - set(baseline) != ffi:
+        raise ValueError("unexpected storage platform FFI")
+    linked = Elf(combined)
+    undefined = {s["name"] for s in linked.symbols() if not s["owner"] and s["name"]}
+    if ".kutox.compile_only" not in linked.by_name or undefined != (set(baseline) - provided) | ffi:
+        raise ValueError("storage service closure hid dependencies or supplied unexpected providers")
+    return {
+        "source": str(source.relative_to(ROOT)), "source_sha256": digest(source),
+        "object_sha256": digest(obj), "linked_sha256": digest(combined),
+        "provided_apis": sorted(provided), "remaining_apis": sorted(set(baseline) - provided),
+        "platform_ffi": sorted(ffi), "undefined": sorted(undefined),
+    }
+
+
 def audit(args):
     output = args.build_dir.resolve() / "linux-storage-check"
     linux = ROOT / "linux"
@@ -206,6 +241,18 @@ def audit(args):
     if set(undefined) != inventory.keys():
         raise ValueError("unclassified or unexpectedly provided storage APIs: "
                          + ", ".join(sorted(set(undefined) ^ inventory.keys())))
+    service = output / "block-services.o"
+    command = [args.clang, *flags, "-MD", "-MF", str(service.with_suffix(".d")),
+               "-c", str(ROOT / "compat/block_services.c"), "-o", str(service)]
+    run(command, output / "block-services.log")
+    services = output / "block-services-closure.o"
+    run([args.ld, "-r", "-o", str(services), str(linked), str(service)],
+        output / "block-services-link.log")
+    service_report = {
+        **service_evidence(output, undefined), "command": command,
+        "headers": [{"path": header, "sha256": digest(Path(header))}
+                    for header in dependency_paths(service.with_suffix(".d").read_text())],
+    }
     references = Elf(linked).references()
     apis = []
     for name in undefined:
@@ -220,7 +267,7 @@ def audit(args):
     macros = run([args.clang, *flags, "-dM", "-E", str(DECLARATIONS / "layout.c")],
                  output / "macros.log")
     profile = parse_macros(macros)
-    excluded = check_runtime_exclusion(args, flags, output, objects=[linked])
+    excluded = check_runtime_exclusion(args, flags, output, objects=[services])
     source_identity()
     report = {
         "schema": 2, "status": "compile-only", "runtime": False,
@@ -231,6 +278,7 @@ def audit(args):
         "macros": profile, "macros_sha256": digest(output / "macros.log"),
         "runtime_link_rejected": excluded,
         "runtime_exclusion_sha256": digest(output / "runtime-exclusion-link.log"),
+        "service_closure": service_report,
         "compiler": run([args.clang, "--version"]).splitlines()[0],
         "linker": run([args.ld, "--version"]).splitlines()[0],
         "units": [{**unit, **proof, "source_sha256": digest(ROOT / "linux" / unit["source"])}
@@ -303,6 +351,22 @@ def verify(args, report=None):
         callers = [reference for reference in references if reference["target"] == api["symbol"]]
         if not callers or api.get("object_references") != callers:
             raise ValueError("storage caller evidence changed")
+    services = report.get("service_closure")
+    if not isinstance(services, dict):
+        raise ValueError("missing storage provider closure")
+    actual = service_evidence(output, undefined)
+    if any(services.get(key) != value for key, value in actual.items()):
+        raise ValueError("storage provider evidence changed")
+    obj = output / "block-services.o"
+    expected = [*compiler_flags(output), "-MD", "-MF", str(obj.with_suffix(".d")),
+                "-c", str(ROOT / "compat/block_services.c"), "-o", str(obj)]
+    if services.get("command", [])[1:] != expected:
+        raise ValueError("storage provider compiler arguments changed")
+    headers = services.get("headers")
+    if (not isinstance(headers, list)
+            or [header.get("path") for header in headers] != dependency_paths(obj.with_suffix(".d").read_text())
+            or any(header.get("sha256") != digest(Path(header["path"])) for header in headers)):
+        raise ValueError("storage provider header provenance changed")
     if (report.get("layout_sha256") != digest(output / "layout.o")
             or report.get("layouts") != read_layout(output / "layout.o")):
         raise ValueError("storage compiler layouts changed")
@@ -312,7 +376,8 @@ def verify(args, report=None):
     if (report.get("runtime_link_rejected") is not True
             or report.get("runtime_exclusion_sha256") != digest(output / "runtime-exclusion-link.log")):
         raise ValueError("storage runtime exclusion was not verified")
-    print(f"LINUX_STORAGE_COMPILE_ONLY_VERIFIED units={len(units)} unresolved={len(undefined)} runtime=false")
+    print(f"LINUX_STORAGE_COMPILE_ONLY_VERIFIED units={len(units)} unresolved={len(undefined)} "
+          f"providers={len(actual['provided_apis'])} remaining={len(actual['remaining_apis'])} runtime=false")
     return report
 
 

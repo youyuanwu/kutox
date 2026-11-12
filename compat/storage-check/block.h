@@ -5,7 +5,7 @@ typedef u64 sector_t;
 typedef u8 blk_status_t;
 typedef unsigned int blk_opf_t;
 typedef unsigned int fmode_t;
-enum { BLK_STS_OK = 0, BLK_STS_NOTSUPP = 1, BLK_STS_IOERR = 10, BLK_STS_RESOURCE = 9,
+enum { BLK_STS_OK = 0, BLK_STS_NOTSUPP = 1, BLK_STS_TIMEOUT = 2, BLK_STS_IOERR = 10, BLK_STS_RESOURCE = 9,
        BLK_STS_DEV_RESOURCE = 13, BLK_STS_ZONE_OPEN_RESOURCE = 14, BLK_STS_ZONE_ACTIVE_RESOURCE = 15 };
 enum req_op { REQ_OP_READ = 0, REQ_OP_WRITE = 1, REQ_OP_FLUSH = 2, REQ_OP_DISCARD = 3,
               REQ_OP_SECURE_ERASE = 5, REQ_OP_WRITE_ZEROES = 9, REQ_OP_ZONE_APPEND = 7,
@@ -35,7 +35,8 @@ enum req_op { REQ_OP_READ = 0, REQ_OP_WRITE = 1, REQ_OP_FLUSH = 2, REQ_OP_DISCAR
 #define HCTX_TYPE_POLL 2
 #define HCTX_MAX_TYPES 3
 #define NUMA_NO_NODE (-1)
-struct request_queue { void *queuedata; };
+struct kutox_block_core;
+struct request_queue { void *queuedata; struct kutox_block_core *kutox_core; };
 struct bio_vec { struct page *bv_page; unsigned int bv_len, bv_offset; };
 struct bio { struct { sector_t bi_sector; unsigned int bi_size; } bi_iter; struct bio *bi_next; };
 struct request {
@@ -59,6 +60,7 @@ struct blk_mq_tag_set {
     unsigned int reserved_tags;
     void *driver_data;
     struct blk_mq_queue_map map[HCTX_MAX_TYPES];
+    struct kutox_block_core *kutox_core;
 };
 struct rq_list { struct request *head; };
 struct io_comp_batch { unsigned int nr; struct rq_list req_list; };

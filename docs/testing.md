@@ -52,6 +52,27 @@ Native Kbuild reports, stale/tampered evidence, unsupported profile definitions,
 omitted dependencies and unexpectedly supplied providers are rejected.
 Declaration-only compatibility layouts are not an implemented runtime ABI.
 
+The audit also compiles the real [block provider](../compat/block_services.c)
+against those same layouts and partially links it with the original units.
+The report separately records 57 supplied API names, 146 remaining APIs, five
+Rust platform entry points, provider/header/object hashes and exact commands.
+Unexpected external functions or hidden dependencies fail verification. The
+combined audit object remains compile-only; the production provider is compiled
+separately without that marker in both profiles.
+
+[Bounded block acceptance](kernel-implementation.md#bounded-block-services)
+adds `storage.block_services` to the existing kernel suites, bringing their
+registry to 76 cases. It uses real kernel allocation and a synthetic transport,
+with a real timer IRQ for deferred completion after admission closes. Sixteen
+epochs cover tags, ranges/metadata, limits, backpressure, cancellation, stale
+tickets, copy/error results and joined teardown; four failures cover allocation
+rollback. The host checks exact bounded/IRQ evidence and the expected rejection
+ledger inside that case, and rejects missing/duplicate/moved/changed proofs.
+Fixture guards require exact frame/heap balance and no retained block objects.
+The C/Rust fixture and fault injection are absent from OFF; default network boot
+rejects block acceptance/error evidence. No hardware disk or new boot mode is
+introduced.
+
 ## Guest acceptance
 
 The [UDP guest acceptance](udp-kernel-sockets.md) extends this same catalog.
@@ -187,16 +208,15 @@ in every HTTP transfer, contained fault/timeout, paused cancellation/stale
 handles, registered-handler delivery, kernel deadlines shorter than the user
 quantum and two sleeping owners cancelled at shutdown. Strict journals require
 these proofs within each runtime epoch, alongside the unchanged independent
-wire/PCAP oracle and exact resource balance. `user.runtime_cleanup` brings the
-kernel suite to seventy-five cases and verifies invalid preflight plus joined
+wire/PCAP oracle and exact resource balance. `user.runtime_cleanup` verifies invalid preflight plus joined
 admission/observer/native-entry/startup failures. The portable FIFO test checks
 that a pending wake remains visible until its thread actually receives it.
 The native runtime entry is required in both profile ELFs; no new selector,
 ISO or test manager is introduced.
 
 [Yield/sleep acceptance](kernel-implementation.md#bounded-user-yield-and-sleep)
-extends these same cases without adding test modes or changing the 75-case
-inventory. Real ELF programs retain syscall results and seeded registers across
+extends these same cases without adding test modes or cases of its own.
+Real ELF programs retain syscall results and seeded registers across
 six yields and six sleeps, measure no early wakeups, outlive their active CPU
 budgets while parked, enforce the cumulative syscall cap and exercise zero/
 invalid durations, stale cancellation, sleeping drop and single-run gating.
@@ -210,7 +230,7 @@ queue entry without waking a reused slot. Strict host mutation tests reject
 missing, duplicate, reordered or invalid blocking/idle proofs.
 
 [Input acceptance](kernel-implementation.md#bounded-user-input) extends the same
-75 cases. Two ELF readers verify buffered and blocked delivery, wrapped
+user cases. Two ELF readers verify buffered and blocked delivery, wrapped
 256-byte cross-page copying, short reads, drain-before-EOF, full/closed producer
 errors, bad destinations without partial copies, revalidation after RO/unmap
 changes, retained registers and cumulative syscall counts. Cancellation,
@@ -224,7 +244,7 @@ out-of-case/epoch proofs; OFF and production boot still reject guest evidence.
 
 [Filesystem boot acceptance](kernel-implementation.md#read-only-boot-filesystem)
 adds `user-boot` and `user-boot-low-memory` in both profiles, without changing
-the 75-case kernel registry or creating per-mode ISOs. These ordinary boot modes
+the kernel registry or creating per-mode ISOs. These ordinary boot modes
 read `/bin/init` from the actual Limine ext2 module, execute it in CPL3 and require
 its write/exit plus exact frame/heap balance. They need no NIC or disk device.
 Default network boot must reject any filesystem/program-execution proof.

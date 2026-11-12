@@ -231,8 +231,81 @@ file using `debugfs`, and reject malformed/duplicate/reordered execution
 proofs. Portable tests mount a real generated ext2 image, verify cross-block
 file bytes, reject missing/directories/symlinks/empty/oversized files and bad paths,
 and exercise truncated/unsupported geometry and out-of-range RAM reads.
-Existing guest case inventory remains 75. Disk hardware, partitions, writes,
+The filesystem modes add no kernel cases. Disk hardware, partitions, writes,
 general VFS/file syscalls, dynamic ELF loading and init supervision are deferred.
+
+## Bounded block services
+
+The [C block provider](../compat/block_services.c) implements the first storage
+source-facing service boundary, not a Linux block layer or a hardware driver.
+Its [runtime header](../compat/block_services.h) shares the storage audit's types
+without its compile-only marker. The [Rust platform adapter](../src/block_services.rs)
+uses the existing Moss-backed kernel heap and the existing boot/thread context
+check; it does not reuse e1000's NIC-bound allocation/DMA registry or reinterpret
+its device structs.
+
+The admitted profile has one global queue, one tag, one native read, 512-byte
+sectors and at most 4096 bytes per request. A tag set owns its stable request,
+one page-aligned PDU page and a separate page-aligned payload page. Disk metadata
+is a fourth fallible allocation. Every partial allocation rolls back; exact
+pointer/layout tracking rejects wrong/double frees. Driver-private PDU size is
+bounded by one page, and advertised queue limits are reduced to the admitted
+segment/sector ceilings. Native capacity, registration and read-only state are
+real bounded registry state, not a VFS or general Linux device model.
+
+Request allocation reserves the only tag. Preparation validates operation,
+length and the whole sector range without changing the caller's ticket on
+failure. Submission revalidates the visible request metadata against owned
+sector/length state before calling the registered queue callback. Unsupported
+operations are rejected before publication. Resource backpressure retains the
+same request/PDU/payload and generation; stop/restart controls retry admission.
+Requeue is permitted only during the dispatch callback, before it returns an
+accepted publication. Released requests zero private/payload bytes before reuse.
+
+Native clients use generation-bearing tickets for prepare/submit/result/cancel/
+release. Old tickets cannot affect a replacement request or a recreated queue.
+The C/Linux raw pointer APIs remain internal lifetime-bound interfaces; stale
+raw pointers are not a supported native handle. Result copying occurs only
+after completion, validates destination capacity before copying and never copies
+cancelled or failed I/O. Destinations are trusted kernel buffers, not user
+pointers.
+
+On the single BSP, lifecycle/admission/pump calls require IF clear in an
+off-lock boot/thread context. Completion signaling may run in IRQ/locked
+context but only marks the existing request pending: it neither allocates,
+invokes the completion callback nor releases memory. The native owner calls
+`kutox_block_pump` off IRQ, which invokes the registered completion callback.
+Only that callback may end the request. Batched/polling completion and remote
+CPU completion are not admitted; the batch helper declines the optional
+optimization rather than manufacturing completion.
+
+Cancellation before publication completes locally. After publication it records
+cancellation and returns `-EBUSY`, retaining all backing until actual completion
+and off-IRQ callback acknowledgment. There is no force-free/reset shortcut.
+No block I/O deadline/reset recovery is implemented yet: without completion the
+request remains owned and busy, rather than being reclaimed unsafely.
+Deleting a disk closes admission while an outstanding completion can still
+drain; tag/disk destruction requires the request released. Quiesce is nonblocking;
+freeze/limit changes are admitted only when idle, with an exact unfreeze cookie.
+There is no general blocking Linux freeze or synchronous I/O executor yet.
+`blk_execute_rq` and borrowed `blk_rq_map_kern` return explicit unsupported errors.
+
+The runtime provider archive builds in both profiles; normal boot merely checks
+its cold quiescent state and starts no storage queue. The original Linux
+`virtio-blk`/VirtIO units remain compile-only. The source-plus-provider audit
+resolves 57 original API names, keeps 146 remaining APIs visible, and records
+five implemented Rust allocation/context/diagnostic entry points. Its combined
+audit object retains runtime exclusion.
+
+The new `storage.block_services` case makes the kernel registry 76 cases. A
+guest-only C transport fixture exercises four allocation rollback points,
+sixteen request/teardown epochs, invalid ranges/metadata, tags, read-only and
+limit rejection, retained backpressure, stale tickets, successful/error result
+bytes and cancellation before/after publication. A real timer IRQ then marks a
+request pending after disk admission closes; only the off-IRQ pump completes
+it. Existing fixture guards require exact heap/frame balance and block allocator
+quiescence. This is service acceptance, not original Linux driver, VirtIO queue
+or disk-read acceptance; those are the next milestone.
 
 ## Timer-bounded ring-3 runs
 

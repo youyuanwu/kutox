@@ -67,6 +67,7 @@ pub(crate) fn quiescent(boot: &BootInfo) -> bool {
         && linux_deferred::quiescent()
         && linux_irq::quiescent()
         && driver_memory::quiescent()
+        && crate::block_services::quiescent()
         && driver_platform::quiescent()
         && device_irq::quiescent()
         && linux_dma::quiescent()

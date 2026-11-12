@@ -103,7 +103,7 @@ void *krealloc(const void *, size_t, gfp_t);
 void *alloc_pages_exact(size_t, gfp_t);
 void free_pages_exact(void *, size_t);
 bool is_vmalloc_addr(const void *);
-struct page;
+struct page { uintptr_t address; size_t length; };
 unsigned long virt_to_phys(const void *);
 void *page_address(const struct page *);
 struct page *virt_to_page(const void *);

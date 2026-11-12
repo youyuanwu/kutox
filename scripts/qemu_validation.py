@@ -431,6 +431,7 @@ def validate_kernel_suite(case, returncode, output):
     failures = validate_ktap(normalized, returncode, expected_names)
     validate_linux_callbacks(output)
     validate_native_drivers(lines, case)
+    validate_block_services(lines, expected_names)
     validate_user_runs(lines, expected_names)
     if case == "kernel-tests-fail" and failures != {"harness.intentional_failure"}:
         raise AssertionError("intentional failure did not fire or another test failed")
@@ -445,6 +446,42 @@ def validate_kernel_suite(case, returncode, output):
             raise AssertionError("intentional assertion or cleaned-error failure proof is missing")
     if failures:
         raise KernelSuiteFailure(f"kernel suite failed: {', '.join(sorted(failures))}")
+
+def validate_block_services(lines, names):
+    marker = (
+        "# BLOCK_SERVICES epochs=16 queues=1 tags=1 read_max=4096 rollback=4 "
+        "ranges=checked pressure=retained cancel=joined stale=isolated irq=deferred"
+    )
+    number = names.index("storage.block_services") + 1
+    end = next(index for index, line in enumerate(lines) if line in (
+        f"ok {number} storage.block_services", f"not ok {number} storage.block_services",
+    ))
+    start = max(index for index, line in enumerate(lines[:end]) if line.startswith(("ok ", "not ok ")))
+    evidence = [(index, line) for index, line in enumerate(lines) if line.startswith("# BLOCK_")]
+    if (not evidence or evidence[-1][1] != marker or lines.count(marker) != 1
+            or any(not start < index < end for index, _ in evidence)):
+        raise AssertionError("missing, duplicate or misplaced bounded block-service proof")
+    expected = Counter({
+        ("allocate_injected", -12): 4, ("tag_profile", -95): 1,
+        ("read_only_operation", -95): 32, ("request_capacity", -11): 16,
+        ("read_range", -22): 96, ("synchronous_execute_not_admitted", -95): 16,
+        ("submit_metadata", -22): 16,
+        ("borrowed_payload_not_admitted", -95): 16, ("result_cancelled", -125): 32,
+        ("stale_ticket", -116): 16, ("transport_backpressure", -11): 16,
+        ("submit_backpressure", -11): 16, ("result_pending", -11): 16,
+        ("release_inflight", -16): 32, ("cancel_inflight", -16): 16,
+        ("queue_quiesced", -16): 32, ("result_capacity", -105): 16,
+        ("result_io", -5): 16, ("queue_limits", -95): 16,
+        ("queue_closed", -19): 1,
+    })
+    errors = Counter()
+    for _, line in evidence[:-1]:
+        match = re.fullmatch(r"# BLOCK_ERROR operation=([a-z_]+) code=(-?\d+)", line)
+        if match is None:
+            raise AssertionError("malformed block-service evidence")
+        errors[match[1], int(match[2])] += 1
+    if errors != expected:
+        raise AssertionError("block-service rejection/rollback evidence is incomplete")
 
 
 def validate_user_runs(lines, names):
@@ -1865,7 +1902,7 @@ def validate_live_boot(case, output, symbols):
     validate_boot_preamble(lines, mode or "run", "fw_cfg" if mode else "default")
     validate_allocator(lines, 32 if case.endswith("low-memory") else 128)
     if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "KERNEL_RUNTIME_", "THREAD_", "KTAP", "ok ", "not ok ",
-                            "Bail out!", "KERNEL_PANIC", "BOOT_FS_", "BOOT_USER_", "USER_BOOT_", "INIT:", "# LINUX_CALLBACK", "# LINUX_FAULT", "# LINUX_RX_", "# LINUX_HARD_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR", "# NET_IP_", "# ASYNC_NET_", "# ASYNC_ERROR", "# NETWORK_STACK_ERROR", "# NETWORK_STACK_STOP", "# HOST_", "# DHCP_ERROR", "# DHCP_REJECT", "# DHCP_TEST_", "# DNS_", "# TCP_", "# HTTP_", "# USER_")) for line in lines):
+                            "Bail out!", "KERNEL_PANIC", "BOOT_FS_", "BOOT_USER_", "USER_BOOT_", "INIT:", "# BLOCK_", "# LINUX_CALLBACK", "# LINUX_FAULT", "# LINUX_RX_", "# LINUX_HARD_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR", "# NET_IP_", "# ASYNC_NET_", "# ASYNC_ERROR", "# NETWORK_STACK_ERROR", "# NETWORK_STACK_STOP", "# HOST_", "# DHCP_ERROR", "# DHCP_REJECT", "# DHCP_TEST_", "# DNS_", "# TCP_", "# HTTP_", "# USER_")) for line in lines):
         raise AssertionError("default runtime exited, failed, or entered a probe/fixture path")
     bound = int(LIVE_CASES[case][1])
     normalized = [line.removeprefix("# ") for line in lines]

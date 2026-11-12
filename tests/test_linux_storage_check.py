@@ -132,6 +132,31 @@ class StorageAuditTests(unittest.TestCase):
                     self.assertRaises(ValueError):
                 storage.contracts()
 
+    def test_provider_closure_cannot_hide_remaining_apis_or_add_unknown_platform_calls(self):
+        provided = {
+            "blk_mq_alloc_tag_set", "blk_mq_alloc_request", "blk_mq_start_request",
+            "blk_mq_complete_request", "blk_mq_end_request", "blk_rq_map_sg",
+            "device_add_disk", "set_disk_ro", "del_gendisk", "put_disk",
+        }
+        source = [symbol(name, 1, 2) for name in provided] + [symbol("platform")]
+        for remaining, external in (
+            (["missing", "platform"], source),
+            (["platform"], source),
+            (["missing", "platform", "hidden"], source),
+            (["missing", "platform"], source + [symbol("unknown_platform")]),
+        ):
+            with patch.object(storage, "Elf", side_effect=[
+                elf(external), elf([symbol(name) for name in remaining]),
+            ]), patch.object(storage, "lines", return_value=["platform"]), \
+                    patch.object(storage, "digest", return_value="hash"):
+                if remaining == ["missing", "platform"] and external == source:
+                    evidence = storage.service_evidence(Path("unused"), provided | {"missing"})
+                    self.assertEqual(evidence["remaining_apis"], ["missing"])
+                    self.assertEqual(evidence["platform_ffi"], ["platform"])
+                else:
+                    with self.assertRaises(ValueError):
+                        storage.service_evidence(Path("unused"), provided | {"missing"})
+
     def test_failed_identity_invalidates_previous_success_without_building(self):
         with tempfile.TemporaryDirectory() as directory:
             report = Path(directory) / "linux-storage-check/report.json"

@@ -121,12 +121,13 @@ fn main() {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, "#include <driver_services.h>\n").unwrap();
     }
-    for (header, target) in [
+    let uapi_forwarders = [
         ("asm/sockios.h", "asm-generic/sockios.h"),
         ("asm/types.h", "asm-generic/types.h"),
         ("linux/in6.h", "linux/in6.h"),
         ("linux/if_ether.h", "linux/if_ether.h"),
-    ] {
+    ];
+    for (header, target) in uapi_forwarders {
         let path = source_include.join(header);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, format!("#include <uapi/{target}>\n")).unwrap();
@@ -158,6 +159,39 @@ fn main() {
     }
     source.flag("-Wno-pointer-sign").flag("-Wno-sign-compare");
     source.compile("linux_e1000");
+    let storage_include = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("storage-include");
+    let storage_headers =
+        fs::read_to_string("compat/storage-check/headers.txt").expect("storage headers");
+    for header in headers
+        .lines()
+        .chain(extra.lines())
+        .chain(storage_headers.lines())
+    {
+        let path = storage_include.join(header);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "#include <block_services.h>\n").unwrap();
+    }
+    for (header, target) in uapi_forwarders {
+        fs::write(
+            storage_include.join(header),
+            format!("#include <uapi/{target}>\n"),
+        )
+        .unwrap();
+    }
+    let mut storage = cc::Build::new();
+    storage
+        .compiler("clang")
+        .include(&storage_include)
+        .include("compat")
+        .include("linux/include")
+        .include("linux/include/uapi")
+        .file("compat/block_services.c")
+        .include("linux/arch/x86/include/uapi")
+        .warnings_into_errors(true);
+    for flag in flags.lines() {
+        storage.flag(flag);
+    }
+    storage.compile("kutox_block_services");
     if guest_tests {
         let mut tests = cc::Build::new();
         tests
@@ -193,5 +227,20 @@ fn main() {
             .flag("-Wno-pointer-sign")
             .flag("-Wno-sign-compare");
         source_tests.compile("kutox_source_guest_tests");
+        let mut storage_tests = cc::Build::new();
+        storage_tests
+            .compiler("clang")
+            .include(&storage_include)
+            .include("compat")
+            .include("linux/include")
+            .include("linux/include/uapi")
+            .define("KUTOX_GUEST_TESTS", "1")
+            .file("compat/guest_tests/block_services_test.c")
+            .include("linux/arch/x86/include/uapi")
+            .warnings_into_errors(true);
+        for flag in flags.lines() {
+            storage_tests.flag(flag);
+        }
+        storage_tests.compile("kutox_block_guest_tests");
     }
 }

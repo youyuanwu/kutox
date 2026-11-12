@@ -526,7 +526,8 @@ The next selected storage driver is Linux `virtio-blk` at the same pinned
 device, one split virtqueue and one outstanding read against a read-only raw
 ext2 image, with INTx rather than a new MSI-X implementation. There are no
 partitions, writes or general file syscalls in that proposed milestone.
-**Only the dependency audit is implemented; disk-backed boot is not.**
+**The dependency audit and bounded native block services are implemented;
+hardware-driver integration and disk-backed boot are not.**
 
 [linux_storage_check.py](../scripts/linux_storage_check.py) follows the e1000
 compile-only boundary: direct Clang compilation for `x86_64-unknown-none` using
@@ -579,6 +580,20 @@ identity. Wire and shared execution layouts are compiler-checked. Every object
 retains the compile-only marker, and the actual kernel linker must reject it.
 Independent `--verify` rejects native/stale/tampered evidence without compiling.
 A failed build removes the previous success report.
+
+The audit now also compiles [block_services.c](../compat/block_services.c) and
+links it with the unchanged source objects. This resolves 57 API names and
+leaves exactly 146 source-facing APIs plus the five Rust functions listed in
+[service-ffi.txt](../compat/storage-check/service-ffi.txt). The report records
+provider/remaining sets and provenance independently; no unknown external or
+fake provider may hide a dependency. The two synchronous/borrowed-payload APIs
+are supplied as explicit unsupported rejections, not implemented I/O executors.
+The [native block contract](kernel-implementation.md#bounded-block-services)
+describes the real one-request lifecycle and its limits. Guest acceptance runs
+these providers with a synthetic transport and a real timer IRQ, not original
+Linux storage callbacks or hardware. Production provider objects omit the
+compile-only marker; the combined audit object still must be rejected by the
+kernel linker.
 The principal missing-service families are:
 
 | Family | Representative unresolved symbols | Runtime obligation |
@@ -601,9 +616,10 @@ an enforced feature/configuration boundary and observable rejection.
 
 The runtime implementation should proceed in separately validated stages:
 
-1. Implement and verify the declared storage ABI and bounded `blk-mq`
-   request/completion contracts. Do not link declaration-only audit objects or
-   reinterpret storage-private layouts as the e1000 runtime's device structs.
+1. The first bounded `blk-mq` request/completion and native read contracts are
+   implemented and guest-tested. Keep the remaining API/ABI work explicit;
+   never link declaration-only audit objects or reinterpret storage-private
+   layouts as e1000 runtime device structs.
 2. Reuse original Linux VirtIO core/ring/modern PCI and block callbacks. Adapt
    PCI resources, coherent DMA and INTx; prove negotiation, an actual disk read,
    error/timeout handling and reset/IRQ/DMA teardown before recycling memory.

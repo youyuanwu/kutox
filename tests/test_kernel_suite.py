@@ -392,6 +392,28 @@ def user_log(name):
     }[name]
 
 
+def block_log():
+    errors = {
+        ("allocate_injected", -12): 4, ("tag_profile", -95): 1,
+        ("read_only_operation", -95): 32, ("request_capacity", -11): 16,
+        ("read_range", -22): 96, ("synchronous_execute_not_admitted", -95): 16,
+        ("submit_metadata", -22): 16,
+        ("borrowed_payload_not_admitted", -95): 16, ("result_cancelled", -125): 32,
+        ("stale_ticket", -116): 16, ("transport_backpressure", -11): 16,
+        ("submit_backpressure", -11): 16, ("result_pending", -11): 16,
+        ("release_inflight", -16): 32, ("cancel_inflight", -16): 16,
+        ("queue_quiesced", -16): 32, ("result_capacity", -105): 16,
+        ("result_io", -5): 16, ("queue_limits", -95): 16,
+        ("queue_closed", -19): 1,
+    }
+    return [
+        *(f"# BLOCK_ERROR operation={operation} code={code}"
+          for (operation, code), count in errors.items() for _ in range(count)),
+        "# BLOCK_SERVICES epochs=16 queues=1 tags=1 read_max=4096 rollback=4 "
+        "ranges=checked pressure=retained cancel=joined stale=isolated irq=deferred",
+    ]
+
+
 def suite_log(case="kernel-tests"):
     names = KERNEL_TEST_NAMES
     if case == "kernel-tests-fail":
@@ -411,6 +433,8 @@ def suite_log(case="kernel-tests"):
             lines.extend(pci_log(case))
         if name.startswith("native."):
             lines.extend(native_log(name, case))
+        if name == "storage.block_services":
+            lines.extend(block_log())
         if name.startswith("linux.e1000_"):
             if name.endswith(("_wrap","_backpressure","_teardown")):
                 lines.extend(hard_log(name.rsplit("_",1)[1]))
@@ -432,6 +456,22 @@ def suite_log(case="kernel-tests"):
 
 
 class KernelSuiteTests(unittest.TestCase):
+    def test_block_service_proof_requires_bounds_rollback_irq_deferral_and_own_case(self):
+        output = suite_log()
+        marker = block_log()[-1]
+        for replacement in ("", marker + "\n" + marker, marker.replace("irq=deferred", "irq=inline"),
+                            marker.replace("read_max=4096", "read_max=8192"),
+                            marker.replace("cancel=joined", "cancel=freed")):
+            with self.subTest(replacement=replacement), self.assertRaises(AssertionError):
+                validate_result("kernel-tests", 1, output.replace(marker, replacement, 1))
+        for changed in (
+            output.replace(block_log()[0] + "\n", "", 1),
+            output.replace(marker, marker + "\n# BLOCK_UNKNOWN", 1),
+            marker + "\n" + output.replace(marker, "", 1),
+        ):
+            with self.assertRaises(AssertionError):
+                validate_result("kernel-tests", 1, changed)
+
     def test_user_run_proofs_require_cpl3_exact_bounds_faults_recovery_and_order(self):
         names = ("user.entry_exit", "user.syscalls", "user.faults", "user.reclamation")
         self.assertEqual(KERNEL_TEST_NAMES[-12:-8], names)
