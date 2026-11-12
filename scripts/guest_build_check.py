@@ -59,6 +59,7 @@ RUNTIME_SYMBOLS = {
     "kutox::net_tcp::CONTROL",
     "kutox_user_bringup", "kutox_user_enter", "kutox_user_resume", "kutox_user_dispatch",
     "kutox_user_load_elf",
+    "kutox_boot_filesystem",
     "kutox_user_dispatch_next",
     "kutox_runtime_users",
 }

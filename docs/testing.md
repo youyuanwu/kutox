@@ -181,6 +181,16 @@ bytes arrive. Portable tests cover ring wrap/backpressure/close and writable
 copy plans. Strict host mutations reject missing, duplicate, malformed and
 out-of-case/epoch proofs; OFF and production boot still reject guest evidence.
 
+[Filesystem boot acceptance](kernel-implementation.md#read-only-boot-filesystem)
+adds `user-boot` and `user-boot-low-memory` in both profiles, without changing
+the 75-case kernel registry or creating per-mode ISOs. These ordinary boot modes
+read `/bin/init` from the actual Limine ext2 module, execute it in CPL3 and require
+its write/exit plus exact frame/heap balance. They need no NIC or disk device.
+Default network boot must reject any filesystem/program-execution proof.
+The OFF build retains the real filesystem/ELF boot service, while guest payloads
+remain absent. `mke2fs`/`debugfs` from e2fsprogs are required for filesystem fast
+tests; no privileged filesystem mounts are performed.
+
 ## Validation tiers
 
 ```sh
@@ -192,7 +202,7 @@ python3 scripts/check.py soak
 
 - `fast`: formatting, portable kutox tests/Clippy with guest fixtures both enabled
   and disabled, adapted Moss host tests/Clippy, and Python harness tests.
-  It requires the initialized Linux submodule for source-audit input tests, but
+  It requires e2fsprogs and the initialized Linux submodule for source-audit input tests, but
   does not configure, build or boot a freestanding kernel.
 - `smoke`: build and kernel Clippy for each profile, actual ELF checks, normal
   networking at 128/32 MiB, no/unsupported NIC, driver-only operation, early

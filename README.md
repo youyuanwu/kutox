@@ -21,7 +21,7 @@ port of its IRQ-safe spinlock. Kernel-owned x86_64 exception tables and test
 modes verify interrupt-state restoration and fault diagnostics.
 
 The portable ports live in one adapted [Moss libkernel crate](third_party/moss-libkernel/),
-with `CpuOps` at the root and separate `memory`, `sync`, and `task` modules. They share
+with `CpuOps` at the root and separate `memory`, `sync`, `task`, and optional `fs` modules. They share
 one upstream revision and MIT license. The task-bound sleeping-mutex adaptation
 lives beside the kernel runtime in [src/mutex.rs](src/mutex.rs), retaining the
 same pinned source attribution and MIT notice.
@@ -58,6 +58,11 @@ deadlines and joined shutdown. Resumable tasks now have bounded native
 including timer-driven idle wakeup and sleeping-task cancellation.
 A bounded [input channel](docs/kernel-implementation.md#bounded-user-input)
 adds blocking native reads, kernel delivery and drain-before-EOF close.
+An opt-in [filesystem boot](docs/kernel-implementation.md#read-only-boot-filesystem)
+now reads `/bin/init` from a 2-MiB ext2 Limine module using Moss's `ext4plus`
+baseline, then executes it with the existing ELF loader. The separately linked
+[init program](userspace/init.S) is packaged as a file, not embedded in the
+kernel. Normal boot still starts networking without running userspace.
 General file/socket I/O and a full process runtime remain absent.
 
 The scoped [kernel runtime](src/kernel_runtime.rs) now retains the dispatcher,
@@ -196,8 +201,10 @@ production HTTP client or userspace.
 - Linux host with rustup; the repository pins Rust `1.99.1` and the
   `x86_64-unknown-none` target.
 - Clang, an archiver, and GNU binutils (`nm`, `ld`).
-- LLD (`ld.lld`) to link the embedded ELF fixture in guest-enabled builds
-  (the default); on Debian/Ubuntu install the `lld` package separately from Clang.
+- LLD (`ld.lld`) to link the packaged init program in both image profiles and
+  the embedded ELF fixture in guest-enabled builds; on Debian/Ubuntu install
+  the `lld` package separately from Clang.
+- e2fsprogs (`mke2fs`, `debugfs`) for the root image and filesystem tests.
 - CMake 3.24+, Ninja, Python 3, and xorriso.
 - `qemu-system-x86_64` with user-mode networking.
 - Network access on initial setup for Cargo dependencies and the
@@ -247,6 +254,27 @@ This is one image per selected build profile, not separate images per test mode.
 bash scripts/linux_source.sh
 python3 scripts/check.py full
 ```
+
+To test the file-backed program in both build profiles:
+
+```sh
+CARGO_BUILD_JOBS=1 python3 scripts/check.py full --profiles both --scope guest \
+  --select 'user-boot*'
+```
+
+For a manual boot after building the image:
+
+```sh
+qemu-system-x86_64 -machine pc -accel tcg -cpu qemu64 -m 32M -smp 1 \
+  -cdrom build/kutox.iso -boot d -nic none -display none -serial stdio \
+  -no-reboot -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+  -fw_cfg name=opt/kutox/test-mode,string=user-run
+```
+
+The sample prints `INIT: hello from /bin/init`, exits zero, and checks reclamation.
+QEMU's debug-exit success status is 1. This mode needs neither a NIC nor disk
+hardware. The image is RAM-backed, not persistent storage; normal boot remains
+the default when the explicit selector is absent.
 
 The [source script](scripts/linux_source.sh) uses Git 2.36+ to fetch the staged submodule pin
 with shallow, blob-filtered history and sparse checkout of e1000, `include`,

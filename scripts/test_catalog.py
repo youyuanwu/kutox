@@ -38,9 +38,9 @@ HOST_CHECKS = (
     host("kutox-clippy-off", ("cargo", "clippy", "--locked", "-p", "kutox", "--lib",
          "--target", "x86_64-unknown-linux-gnu", "--jobs", "1", "--no-default-features", "--", "-D", "warnings")),
     host("moss-libkernel-unit", ("cargo", "test", "--locked", "-p", "moss-libkernel",
-         "--target", "x86_64-unknown-linux-gnu", "--jobs", "1", "--quiet")),
+         "--features", "fs", "--target", "x86_64-unknown-linux-gnu", "--jobs", "1", "--quiet")),
     host("moss-clippy", ("cargo", "clippy", "--locked", "-p", "moss-libkernel",
-         "--all-targets", "--target", "x86_64-unknown-linux-gnu", "--jobs", "1", "--", "-D", "warnings")),
+         "--features", "fs", "--all-targets", "--target", "x86_64-unknown-linux-gnu", "--jobs", "1", "--", "-D", "warnings")),
     host("harness-unit", ("{python}", "-m", "unittest", "discover", "-s", "tests", "-q")),
 )
 
@@ -62,6 +62,8 @@ PROFILE_CHECKS = (
 
 
 GUEST_CHECKS = (
+    guest('user-boot', 'user-boot', 30, 35, ('ON', 'OFF')),
+    guest('user-boot-low-memory', 'user-boot-low-memory', 30, 35, ('ON', 'OFF'), ('full', 'smoke')),
     guest('network-dhcp', 'network-dhcp', 30, 35, ('ON', 'OFF')),
     guest('network-dhcp-low-memory', 'network-dhcp-low-memory', 30, 35, ('ON', 'OFF'), ('full', 'smoke')),
     guest('dhcp-tests', 'dhcp-tests', 100, 105, ('ON',)),

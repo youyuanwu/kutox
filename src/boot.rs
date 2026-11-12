@@ -4,7 +4,8 @@ use limine::{
     BaseRevision,
     request::{
         ExecutableAddressRequest, ExecutableCmdlineRequest, HhdmRequest, MemoryMapRequest,
-        MpRequest, RequestsEndMarker, RequestsStartMarker, RsdpRequest, StackSizeRequest,
+        ModuleRequest, MpRequest, RequestsEndMarker, RequestsStartMarker, RsdpRequest,
+        StackSizeRequest,
     },
 };
 
@@ -36,6 +37,9 @@ static CMDLINE: ExecutableCmdlineRequest = ExecutableCmdlineRequest::new();
 #[unsafe(link_section = ".requests")]
 static STACK: StackSizeRequest = StackSizeRequest::new().with_size(64 * 1024);
 #[used]
+#[unsafe(link_section = ".requests")]
+static MODULES: ModuleRequest = ModuleRequest::new();
+#[used]
 #[unsafe(link_section = ".requests_end_marker")]
 static END: RequestsEndMarker = RequestsEndMarker::new();
 
@@ -49,6 +53,7 @@ pub struct BootInfo {
     pub mode_configured: bool,
     pub ipv4: kutox::network_config::Mode,
     pub rsdp_physical: Option<u64>,
+    pub rootfs: Option<&'static [u8]>,
     #[cfg(feature = "guest-tests")]
     pub test_selection: kutox::test_selection::Selection,
 }
@@ -103,16 +108,51 @@ pub fn collect() -> Result<BootInfo, Failure> {
         .virtual_base()
         .checked_sub(address.physical_base())
         .expect("invalid kernel address offset");
+    let hhdm = HHDM.get_response().expect("missing HHDM").offset();
+    let memory_map = MEMORY_MAP
+        .get_response()
+        .expect("missing memory map")
+        .entries();
+    let mut rootfs = None;
+    if let Some(response) = MODULES.get_response() {
+        if response.modules().len() > 16 {
+            return Err(Failure::new("boot_modules", -1));
+        }
+        for module in response.modules() {
+            if module.string().to_bytes() != b"kutox-rootfs" {
+                continue;
+            }
+            if rootfs.is_some() || module.size() != moss_libkernel::fs::IMAGE_BYTES as u64 {
+                return Err(Failure::new("boot_rootfs", -1));
+            }
+            let physical = (module.addr() as u64)
+                .checked_sub(hhdm)
+                .ok_or(Failure::new("boot_rootfs_address", -1))?;
+            let end = physical
+                .checked_add(module.size())
+                .ok_or(Failure::new("boot_rootfs_address", -1))?;
+            if !memory_map.iter().any(|entry| {
+                entry.entry_type == limine::memory_map::EntryType::EXECUTABLE_AND_MODULES
+                    && entry.base <= physical
+                    && entry
+                        .base
+                        .checked_add(entry.length)
+                        .is_some_and(|limit| end <= limit)
+            }) {
+                return Err(Failure::new("boot_rootfs_memory", -1));
+            }
+            // Limine owns this mapped module; its non-USABLE frames are never reclaimed.
+            rootfs =
+                Some(unsafe { core::slice::from_raw_parts(module.addr(), module.size() as usize) });
+        }
+    }
     Ok(BootInfo {
-        hhdm_offset: HHDM.get_response().expect("missing HHDM").offset(),
+        hhdm_offset: hhdm,
         kernel_physical_start: start
             .checked_sub(kernel_offset)
             .expect("invalid kernel start"),
         kernel_size: end.checked_sub(start).expect("invalid kernel bounds"),
-        memory_map: MEMORY_MAP
-            .get_response()
-            .expect("missing memory map")
-            .entries(),
+        memory_map,
         mode,
         mode_configured: configured.is_some(),
         #[cfg(feature = "guest-tests")]
@@ -121,5 +161,6 @@ pub fn collect() -> Result<BootInfo, Failure> {
         rsdp_physical: RSDP
             .get_response()
             .map(|response| response.address() as u64),
+        rootfs,
     })
 }

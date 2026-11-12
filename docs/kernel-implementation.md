@@ -155,9 +155,84 @@ boundary through stack creation, with exact reclamation and a live old space
 remaining intact. Portable tests cover malformed images and injected map errors.
 
 The native loader is retained in both profiles; the linked ELF and acceptance
-entry exist only in ON. Normal boot loads no program. This is not general
-`execve`, a dynamic linker, filesystem loading, ASLR, Linux binary compatibility
+entry exist only in ON. Normal boot loads no program; the separate opt-in
+filesystem boot below loads a packaged file in both profiles. This is not general
+`execve`, a dynamic linker, ASLR, Linux binary compatibility
 or a process scheduler. Execution uses the bounded runner below.
+
+## Read-only boot filesystem
+
+The explicit `user-run` mode follows pinned Moss's
+`src/main.rs::launch_init`: bootloader-supplied filesystem image, RAM-backed
+reader, filesystem lookup, then ELF loading and user entry. Its read-only
+[filesystem adaptation](../third_party/moss-libkernel/src/fs.rs) follows Moss's
+`libkernel/src/fs/blk/ramdisk.rs`, byte-read boundary in `blk/buffer.rs`, and
+`filesystems/ext4/mod.rs`. It uses the same exact `ext4plus = 0.1.0-rc.2`
+dependency rather than implementing an ext-family parser.
+
+The user selected a small ext-family image instead of FAT32, whose standard
+minimum volume would exceed the 32-MiB guest's memory. The initial admitted
+profile is deliberately narrow: one clean 2-MiB ext2 volume, 1-KiB blocks,
+one group, at most 128 inodes, 256-byte inodes, FILETYPE incompatibility only,
+no compatible/read-only-compatible feature bits and no journal. Geometry,
+feature and size checks precede upstream mount/descriptor allocations.
+This is not general ext4 image compatibility or writable disk support.
+
+[CMake](../CMakeLists.txt) separately assembles/links
+[userspace/init.S](../userspace/init.S) with its
+[linker](../userspace/linker.ld), then [make_rootfs.py](../scripts/make_rootfs.py)
+uses unprivileged `mke2fs -d` to put it at `/bin/init`. No host mount or block
+device is used. Formatting uses a temporary output followed by atomic
+replacement, so a failed formatter preserves the previous image.
+[ISO packaging](../scripts/make_iso.py) includes that file-backed root image
+and a named Limine module. Both ON and OFF package the same ordinary program;
+it is not a guest fixture or an `include_bytes!` payload in the kernel.
+The existing whole-ISO/kernel/profile identity manifest still protects packaging.
+
+[Boot collection](../src/boot.rs) accepts at most one `kutox-rootfs` module,
+checks its exact size and its whole physical span against Limine
+EXECUTABLE_AND_MODULES memory, then borrows the mapped bytes immutably. Those
+frames are not USABLE and are never handed to the physical allocator. The
+module is permanent boot storage: every image boot reserves these 2 MiB,
+but default networking and other modes do not mount it or start a user program.
+There is no full-image allocation/copy or bootloader-memory reclamation.
+
+The adapter exposes only immutable byte reads with checked conversion/addition
+and whole-range validation before copying. It supplies no `Ext4Write` backend.
+Unlike Moss's async filesystem adapter, this RAM-only boot path enables
+ext4plus's `sync` feature, disables its default multithreaded feature, and runs
+before kernel workers/CPL3. It needs no new executor, waker or scheduler.
+The primitive Moss crate remains dependency-free without its optional `fs`
+feature; the kernel and filesystem host checks enable that feature explicitly.
+
+File lookup accepts bounded absolute ASCII paths without empty/dot components
+or symlink traversal. It follows Moss's directory-entry/inode lookup ordering;
+directory sizes are bounded before iteration and regular-file size before open.
+Only nonempty regular files up to 64 KiB are loaded; fallible allocation and
+chunked reads retain short-I/O handling. Lookup, format, range, size and upstream
+filesystem errors are explicit, with upstream diagnostic detail logged.
+The [native boot service](../src/boot_fs.rs) reads the fixed `/bin/init` path,
+passes those bytes to the existing checked x86_64 static ELF loader, then drops
+the temporary file/filesystem before entry. All existing ELF/window/W^X/stack
+restrictions remain; this does not add Linux binary compatibility.
+
+The owned dispatcher gets a 100-ms cumulative active CPU budget and 5-ms
+quanta, with at most 128 dispatch steps. Input starts closed, so reads see EOF;
+sleeping tasks use the existing timer/HLT deadline path. Faults, budget limits
+and missing wake sources fail explicitly. The sample writes its message and
+exits zero; the mode requires exact frame/heap reclamation before reporting
+success. The permanently borrowed module is excluded from that temporary-work
+balance. Nonzero program exits fail the boot command. The finite mode does not
+start network services or require a NIC; normal boot remains network-enabled.
+
+`user-boot` and `user-boot-low-memory` exercise the actual shared ISO at
+128/32 MiB in both profiles. Host tests independently read the generated
+file using `debugfs`, and reject malformed/duplicate/reordered execution
+proofs. Portable tests mount a real generated ext2 image, verify cross-block
+file bytes, reject missing/directories/symlinks/empty/oversized files and bad paths,
+and exercise truncated/unsupported geometry and out-of-range RAM reads.
+Existing guest case inventory remains 75. Disk hardware, partitions, writes,
+general VFS/file syscalls, dynamic ELF loading and init supervision are deferred.
 
 ## Timer-bounded ring-3 runs
 

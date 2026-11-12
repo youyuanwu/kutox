@@ -6,6 +6,8 @@
 
 #![no_std]
 
+#[cfg(feature = "fs")]
+pub mod fs;
 pub mod memory;
 pub mod sync;
 pub mod task;

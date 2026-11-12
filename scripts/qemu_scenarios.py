@@ -227,6 +227,8 @@ FAULT_RESULTS = {
 
 
 CASES = {
+    "user-boot": (None, None),
+    "user-boot-low-memory": (None, None),
     "known": ("52:54:00:12:34:56", None),
     "alternate": ("52:54:00:ab:cd:ef", None),
     "missing": (None, "missing_device"),
@@ -415,6 +417,7 @@ class Scenario:
 
 def _scenario(case):
     mode = {
+        "user-boot": "user-run", "user-boot-low-memory": "user-run",
         **KERNEL_SUITE_CASES, **RUNTIME_SUITE_CASES, **NETWORK_SUITE_CASES,
         **RUNTIME_NETWORK_CASES, **HARDENING_CASES, **ASYNC_CORE_CASES,
         **ASYNC_NETWORK_CASES, **IP_SUITE_CASES, **ASYNC_HARD_CASES,
@@ -440,7 +443,7 @@ def _scenario(case):
     ) if case in cases), None)
     transport = "socket" if protocol or case in LIVE_CASES and not case.endswith("no-nic") else None
     if transport is None and case not in TEST_OPTIONS_FAILURES and case not in (
-        "missing", "smp-unsupported", "heap-oom", "thread-stack-guard",
+        "missing", "smp-unsupported", "heap-oom", "thread-stack-guard", "user-boot", "user-boot-low-memory",
     ) and not case.endswith("-disabled") and case not in (
         CONFIG_FAILURES | FAULT_RESULTS | RUNTIME_SUITE_CASES | ASYNC_CORE_CASES
     ) and case not in LIVE_CASES:

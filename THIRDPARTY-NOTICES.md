@@ -78,10 +78,12 @@ Moss component or vendor-driver source is imported.
   [third_party/moss-libkernel](third_party/moss-libkernel/); the task-bound
   mutex adaptation in [src/mutex.rs](src/mutex.rs).
 
-This single, dependency-free `no_std` crate groups the selected ports under
-`memory`, `sync`, and `task` modules, with `CpuOps` at the crate root as in upstream
+This single `no_std` crate groups the selected ports under
+`memory`, `sync`, `task`, and optional `fs` modules, with `CpuOps` at the crate root as in upstream
 libkernel. It is not the complete upstream library. One license and one pinned
 provenance record cover these components; host tests exercise them together.
+Core primitives remain dependency-free; the optional filesystem feature adds
+the exact ext4plus dependency described below.
 The mutex's kernel-specific ownership/wait integration is described separately
 below; it does not add a task-runtime dependency to the portable crate.
 
@@ -217,6 +219,35 @@ using the existing ported task/context state and native FIFO. The inline
 copy plan, generation-checked producer, cancellation and acceptance are kutox
 implementations. No additional Moss source, VFS/descriptor layer, signals,
 page-backed ring dependency or async syscall future is copied.
+
+### Read-only boot filesystem
+
+The optional [filesystem adapter](third_party/moss-libkernel/src/fs.rs) follows
+pinned Moss's [RAM block device](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/fs/blk/ramdisk.rs),
+[byte-level block buffer](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/fs/blk/buffer.rs)
+and [ext-family adapter](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/fs/filesystems/ext4/mod.rs).
+It retains read-exact semantics, filesystem-backed file lookup and the upstream
+ext4plus parser, but uses checked borrowed/owned byte slices instead of ARM
+mapping, a small validated ext2 profile, bounded file allocation and synchronous
+read-only boot access. No VFS/process layer, inode cache, write adapter,
+hand-coded ext4 metadata edits, disk driver or architecture code is imported.
+The Moss MIT notice is retained in the adaptation and shared license.
+
+- Parser: [ext4plus](https://github.com/arihant2math/ext4plus), exact
+  `0.1.0-rc.2`, matching pinned Moss's declared version, with checksum and
+  transitive dependencies pinned in [Cargo.lock](Cargo.lock).
+- License: MIT OR Apache-2.0; use under its MIT option. The registry source
+  retains `LICENSE-MIT` (Copyright 2023 Google LLC) and `LICENSE-APACHE`.
+- Default features are disabled; only `sync` is enabled. No `std` feature or
+  multithreaded filesystem runtime is enabled.
+
+The Limine module admission, [native boot service](src/boot_fs.rs),
+[image builder](scripts/make_rootfs.py), separate [init program](userspace/init.S)
+and acceptance are kutox integration code. Their boot-image -> filesystem ->
+ELF ordering follows Moss's
+[launch_init](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/main.rs#L79).
+The image is RAM-backed ext2, not FAT32 or persistent disk storage; see the
+[scope and bounds](docs/kernel-implementation.md#read-only-boot-filesystem).
 
 ### Bootstrap memory allocator
 

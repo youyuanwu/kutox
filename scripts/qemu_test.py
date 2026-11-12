@@ -16,7 +16,7 @@ from qemu_scenarios import SCENARIOS
 from qemu_scenarios import UDP_CASES, DHCP_CASES, DHCP_LIVE_CASES, DNS_CASES, TCP_CASES, HTTP_CASES
 from qemu_protocols import *
 from qemu_validation import *
-from qemu_validation import validate_udp_suite, validate_dhcp_suite, validate_dns_suite, validate_tcp_suite, validate_http_suite
+from qemu_validation import validate_udp_suite, validate_dhcp_suite, validate_dns_suite, validate_tcp_suite, validate_http_suite, strip_limine_preamble
 from qemu_process import *
 from test_reports import Result, accepted_results, write_reports
 
@@ -140,9 +140,7 @@ def run_case(args, case, index=0):
 
 
 def validate_test_listing(returncode, output):
-    lines = output.splitlines()
-    if lines and lines[0] == "limine: Loading executable `boot():/boot/kernel`...":
-        lines = lines[1:]
+    lines = strip_limine_preamble(output.splitlines())
     validate_boot_preamble(lines, "kernel-tests")
     listed = [line for line in lines if line.startswith("# TEST_CASE ")]
     names = []

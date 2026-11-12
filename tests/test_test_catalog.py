@@ -114,7 +114,7 @@ sys.exit(subprocess.call(sys.argv[2:]))
 
     def test_guest_inventory_preserves_both_profiles_and_names_are_unique(self):
         self.assertEqual(len({item.name for item in CHECKS}), len(CHECKS))
-        for profile, count in (("ON", 92), ("OFF", 44)):
+        for profile, count in (("ON", 94), ("OFF", 46)):
             cases = [item for item in GUEST_CHECKS if profile in item.profiles and "full" in item.tiers]
             self.assertEqual(len(cases), count)
         names = {item.name for item in GUEST_CHECKS}

@@ -5,6 +5,12 @@ edition = "2024"
 license = "MIT"
 publish = false
 
+[features]
+fs = ["dep:ext4plus"]
+
+[dependencies]
+ext4plus = { version = "=0.1.0-rc.2", default-features = false, features = ["sync"], optional = true }
+
 [package.metadata.upstream]
 repository = "https://github.com/hexagonal-sun/moss-kernel"
 revision = "1358b5d78b9151e382dc60ccda7fe0de191e56af"
@@ -21,4 +27,7 @@ sources = [
     "src/process/exec.rs",
     "src/process/ctx.rs",
     "libkernel/src/memory/proc_vm/vmarea.rs",
+    "libkernel/src/fs/blk/ramdisk.rs",
+    "libkernel/src/fs/blk/buffer.rs",
+    "libkernel/src/fs/filesystems/ext4/mod.rs",
 ]

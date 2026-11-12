@@ -6,6 +6,7 @@ extern crate alloc;
 mod async_runtime;
 mod async_sync;
 mod boot;
+mod boot_fs;
 mod completion;
 mod cpu;
 #[cfg_attr(
@@ -252,6 +253,14 @@ pub extern "C" fn kmain() -> ! {
             println!("KERNEL_RUNTIME_STOPPED");
             io::finish(true);
         }
+        Ok(BootOutcome::UserExited(status)) => {
+            if status == 0 {
+                println!("USER_BOOT_OK exit=0");
+            } else {
+                println!("USER_BOOT_FAIL exit={status}");
+            }
+            io::finish(status == 0);
+        }
         Err(failure) => {
             println!(
                 "E1000_MAC_FAIL stage={} code={}",
@@ -265,6 +274,7 @@ pub extern "C" fn kmain() -> ! {
 enum BootOutcome {
     Mac([u8; 6]),
     RuntimeStopped,
+    UserExited(u64),
 }
 
 fn probe() -> Result<BootOutcome, Failure> {
@@ -344,6 +354,9 @@ fn probe() -> Result<BootOutcome, Failure> {
     );
     let ticks = time::calibrate()?;
     println!("TSC ticks_per_us={ticks}");
+    if boot.mode == BootMode::UserRun {
+        return boot_fs::kutox_boot_filesystem(&boot, allocator).map(BootOutcome::UserExited);
+    }
     if matches!(
         boot.mode,
         BootMode::Run | BootMode::DriverRun | BootMode::NetworkRun

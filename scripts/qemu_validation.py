@@ -389,6 +389,14 @@ def validate_pci_hierarchy(lines, case):
         raise AssertionError("PCI hierarchy evidence is missing or follows acceptance")
 
 
+def strip_limine_preamble(lines):
+    if lines and lines[0] == "limine: Loading executable `boot():/boot/kernel`...":
+        lines = lines[1:]
+        if lines and lines[0] == "limine: Loading module `boot():/boot/rootfs.img`...":
+            lines = lines[1:]
+    return lines
+
+
 def validate_boot_preamble(lines, mode, source="fw_cfg"):
     if [line for line in lines if line.startswith("KUTOX_BOOT")] != [
         f"KUTOX_BOOT linux={REVISION}"
@@ -1087,6 +1095,28 @@ def validate_thread_guard(returncode, output):
 
 
 def validate_result(case, returncode, output):
+    if case in ("user-boot", "user-boot-low-memory"):
+        lines = strip_limine_preamble(output.splitlines())
+        validate_boot_preamble(lines, "user-run")
+        validate_allocator(lines, 32 if case.endswith("low-memory") else 128)
+        proofs = [line for line in lines if line.startswith(("BOOT_FS_", "INIT:", "BOOT_USER_", "USER_BOOT_"))]
+        if (returncode != 1 or len(proofs) != 4
+                or re.fullmatch(r"BOOT_FS_OK source=moss-ext4plus format=ext2 image_bytes=2097152 path=/bin/init file_bytes=([1-9]\d*)", proofs[0]) is None
+                or not 1 <= int(proofs[0].split("file_bytes=")[1]) <= 65536
+                or proofs[1:] != [
+                    "INIT: hello from /bin/init",
+                    "BOOT_USER_EXIT status=0 calls=2 writes=1 bytes=27 frames=balanced heap=balanced",
+                    "USER_BOOT_OK exit=0",
+                ] or lines[-1] != proofs[-1]):
+            raise AssertionError("missing or malformed file-backed ELF execution/reclamation")
+        if (len([line for line in lines if re.fullmatch(r"TSC ticks_per_us=[1-9]\d*", line)]) != 1
+                or any(not line.startswith((
+                    "KUTOX_BOOT ", "CPU_FOUNDATION_OK ", "BOOT_MODE ", "BOOT_MEMORY_OK ",
+                    "FRAME_ALLOCATOR_OK ", "HEAP_OK ", "TSC ", "BOOT_FS_OK ", "INIT:",
+                    "BOOT_USER_EXIT ", "USER_BOOT_OK ",
+                )) for line in lines)):
+            raise AssertionError("filesystem boot reached a failure, fixture or network runtime")
+        return
     if case in HTTP_CASES:
         validate_http_suite(case, returncode, output)
         return
@@ -1835,7 +1865,7 @@ def validate_live_boot(case, output, symbols):
     validate_boot_preamble(lines, mode or "run", "fw_cfg" if mode else "default")
     validate_allocator(lines, 32 if case.endswith("low-memory") else 128)
     if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "KERNEL_RUNTIME_", "THREAD_", "KTAP", "ok ", "not ok ",
-                            "Bail out!", "KERNEL_PANIC", "# LINUX_CALLBACK", "# LINUX_FAULT", "# LINUX_RX_", "# LINUX_HARD_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR", "# NET_IP_", "# ASYNC_NET_", "# ASYNC_ERROR", "# NETWORK_STACK_ERROR", "# NETWORK_STACK_STOP", "# HOST_", "# DHCP_ERROR", "# DHCP_REJECT", "# DHCP_TEST_", "# DNS_", "# TCP_", "# HTTP_", "# USER_")) for line in lines):
+                            "Bail out!", "KERNEL_PANIC", "BOOT_FS_", "BOOT_USER_", "USER_BOOT_", "INIT:", "# LINUX_CALLBACK", "# LINUX_FAULT", "# LINUX_RX_", "# LINUX_HARD_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR", "# NET_IP_", "# ASYNC_NET_", "# ASYNC_ERROR", "# NETWORK_STACK_ERROR", "# NETWORK_STACK_STOP", "# HOST_", "# DHCP_ERROR", "# DHCP_REJECT", "# DHCP_TEST_", "# DNS_", "# TCP_", "# HTTP_", "# USER_")) for line in lines):
         raise AssertionError("default runtime exited, failed, or entered a probe/fixture path")
     bound = int(LIVE_CASES[case][1])
     normalized = [line.removeprefix("# ") for line in lines]
