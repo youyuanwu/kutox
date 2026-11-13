@@ -380,7 +380,7 @@ and `/bin/init` loader continue to use the immutable Limine RAM module.
 ## Shared Linux compatibility boundary
 
 The [native ABI cleanup](linux-compat-abi-cleanup.md) documents which
-internal C-ABI round trips can become ordinary Rust calls while preserving
+internal C-ABI round trips became ordinary Rust calls while preserving
 real Linux, fixture, callback and audit contracts. All audited compatibility-to-
 native calls now use Rust APIs, retaining C jiffies and guest C failure reporting.
 Internal lifecycle, storage, packet/NAPI/PCI and boot control also use Rust APIs;
@@ -389,6 +389,9 @@ Guest scenarios also use Rust for native controls, fault injection and
 ownership assertions. The small C fixtures call Linux-facing APIs and required
 C macro/formatting bridges only; their former native and packet/PCI/block
 control shims are removed.
+The final accounting distinguishes all 77 baseline native C-ABI definitions
+from the executable audit's 62 dependencies and six separately recorded private
+Rust roles; these are different inventories, not interchangeable export counts.
 
 [The common Rust modules](../src/linux_compat/) implement the selected
 Linux-facing C ABI using `#[unsafe(no_mangle)] extern "C"` exports:

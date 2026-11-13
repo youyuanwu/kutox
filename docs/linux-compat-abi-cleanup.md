@@ -1,10 +1,12 @@
 # Native Rust / Linux compatibility ABI cleanup
 
-Status: phases 1-4 and the Rust guest-fixture follow-up implemented;
-final documentation/accounting remains.
+Status: implemented, including the Rust guest-fixture migration and final
+documentation/accounting. Final implementation checkpoint: `62f4a1e`.
 
 Audit baseline: `829ec3217f9cccf6415737a27bc995b86ae4146e`.
-The counts below describe that revision, not permanent acceptance thresholds.
+Baseline inventory counts below describe that revision. Final dispositions
+and executable dependency counts describe the implemented result; neither is
+a permanent numeric target for future driver work.
 
 ## Goal
 
@@ -57,7 +59,8 @@ Native receive, worker-stop and IRQ pending/depth no longer have C facades;
 the assembly thread probe retains its guest-only C ABI. Boot/assembly entries
 and stable Rust metadata labels are unchanged.
 
-The retained failure shim forwards to the same Rust implementation. Both the shared and
+The retained failure shim forwards to the same Rust implementation. Both the
+shared and
 [isolated block audit root](../compat/audit/storage/block_services.rs) use the
 common audit bindings and record their actual source dependencies and native
 API mappings, including the retained C provider. The shared executable closure
@@ -66,8 +69,10 @@ roles remain accounted for in the report but no longer enter that C-provider
 object: boot-context checking, lifecycle static retirement and storage reset
 deadline setup, plus coherent DMA publication, reclaim and device teardown.
 The latter three stopped entering this object when their fixture-only C
-extensions were removed. Each exclusion has a reviewed reason; the isolated block
-dependency allowlist is unchanged.
+extensions were removed. Each exclusion has a reviewed reason; the isolated
+block dependency allowlist is unchanged. The live ledger comprises 57 native
+Rust backend labels, C jiffies and four compiler/libc dependencies. Together
+with the six private roles, this accounts for all 64 baseline backend roles.
 
 The guest-fixture follow-up removes 48 Rust C-ABI definitions, not the underlying
 service behavior. Linux-facing exports and actual callback conventions remain;
@@ -103,8 +108,9 @@ C archives and the independently verified standalone driver-audit objects.
 These are source-definition counts, not counts of functions retained in every
 optimized kernel.
 
-Of the 64 native backend functions in the
-[backend dependency ledger](../compat/audit/common/service-ffi.txt):
+The 64 baseline native backend roles are accounted for by the
+[explicit API mappings](../scripts/linux_compat_check.py) and the
+[live dependency ledger](../compat/audit/common/service-ffi.txt):
 
 | Consumers at the baseline | Count | Current disposition |
 | --- | ---: | --- |
@@ -112,8 +118,9 @@ Of the 64 native backend functions in the
 | Guest-only or guest-conditional C | 20 | 19 Rust-only APIs; one guest C failure-reporting shim over its Rust core |
 | Feature-OFF production C | 1 | Retain C ABI: `kutox_jiffies` |
 
-The ledger also includes four libc/compiler-support dependencies. Those are not
-part of the 64-function native backend count.
+The live ledger contains 58 native/C dependencies plus `memcpy`, `memmove`,
+`memset` and `strlen`. The six private Rust roles are recorded separately, not
+silently dropped from baseline accounting.
 
 Production classification uses the selected C objects built with
 `KUTOX_GUEST_TESTS=0`, not all objects found in a build directory. Cargo archive
@@ -124,9 +131,9 @@ in [e1000_accessors.c](../compat/e1000_accessors.c) belongs to its guest fixture
 
 ### Backend families
 
-R means no named C consumer, G means guest-only C, and P means production C.
-The inventory is a starting point; each conversion must still check callback
-types, raw-pointer contracts and the current source.
+In this historical inventory, R means no named C consumer, G means guest-only
+C, and P means production C. The final dispositions above supersede these
+baseline consumer categories; callback and raw-pointer contracts remain.
 
 | Native owner | R | G | P | Examples / responsibilities |
 | --- | ---: | ---: | ---: | --- |
@@ -172,6 +179,28 @@ also removed:
 `kutox_driver_retire` in [net/services.h](../compat/include/net/services.h)
 and `kutox_storage_check` in
 [block/runtime.h](../compat/include/block/runtime.h).
+
+### Complete native-definition accounting
+
+The 64 backend roles and 13 other native definitions are disjoint:
+
+| Baseline group | Count | Final disposition |
+| --- | ---: | --- |
+| Backends without named C users | 43 | Ordinary Rust APIs; no runtime C facade |
+| Backends formerly used by C service fixtures | 19 | Ordinary Rust APIs; scenarios now call Rust directly |
+| `kutox_platform_fail` | 1 | Rust core plus guest-only C failure-reporting shim |
+| `kutox_jiffies` | 1 | Production C provider over Rust timekeeping |
+| Dead native exports | 2 | Removed, not replaced |
+| Extra receive/worker/IRQ observer facades | 4 | C facades removed; native Rust operations retained |
+| Fault-injection/time C helpers | 3 | C exports removed; Rust fixtures use Rust helpers |
+| Assembly thread-yield probe | 1 | Guest-only C calling convention retained |
+| Boot/exception/thread entry points | 3 | Production linker/assembly calling conventions retained |
+| Total | 77 | 71 no longer have C ABI; six required boundaries remain |
+
+This is accounting for the baseline native definitions, not an inventory of
+all final compatibility exports or newly added callback functions.
+The separate 48-definition removal count describes only the guest-fixture
+follow-up relative to the preceding implementation commit.
 
 ### Compatibility-side Rust-to-Rust round trips
 
@@ -243,41 +272,39 @@ exports are forbidden in both profiles. All Rust/C fixtures remain absent in OFF
 ### Standalone audit path
 
 The standalone [Rust provider root](../compat/audit/common/rust_services.rs)
-currently includes compatibility code without the native kernel modules.
+includes the actual compatibility code without the native kernel modules.
 That separation is useful; it does not require the runtime to call itself
 through C ABI.
 
-The allocation pilot adds one audit-only binding adapter under
-`compat/audit/common/`; later phases extend its namespaces. The audit root
-provides native-module namespaces from this adapter, while the real kernel root
-provides its actual native modules. The same compatibility source then uses
-ordinary Rust paths in both compilations. Any shared signature types must use
-the actual shared types rather than duplicate layouts or unchecked casts.
+One [audit-only binding adapter](../compat/audit/common/native_backend.rs)
+provides the native-module namespaces consumed by both audit roots; the real
+kernel root provides its actual native modules. The same compatibility source
+uses ordinary Rust paths in both compilations. Shared signatures use the actual
+ABI types, including NAPI callback types, rather than duplicate layouts or
+unchecked casts.
 
 The adapter:
 
 - Matches the Rust interfaces consumed by compatibility services.
 - Only translates calls to explicitly declared, unresolved audit dependencies.
-- Initially can retain the legacy backend symbol names as audit-only dependency
-  labels, with a recorded mapping to their real Rust API paths.
+- Retains legacy backend symbol names as audit-only dependency labels, with a
+  recorded mapping to their real Rust API paths.
 - Contains no allocator, scheduler, DMA or device policy.
 - Defines no success stubs and does not satisfy its own dependency ledger.
 - Is selected only by the standalone audit root: no runtime feature, runtime
   switch, new kernel crate, or custom shipping configuration is required.
 
-Use the allocation backend as a complete pilot: remove its runtime C-ABI
-round trip, wire the audit binding and update the symbol gate together.
-
 The [isolated block-provider root](../compat/audit/storage/block_services.rs)
-also compiles the actual block implementation and must receive the corresponding
-audit bindings when its backend calls are converted.
+also compiles the actual block implementation against the same adapter. It
+intentionally carries the compile-only marker; the shared executable provider
+root and production kernel do not.
 
-### Alternatives
+### Alternatives considered
 
 | Approach | Assessment |
 | --- | --- |
 | Keep native C exports for all Rust callers | Smallest edit, but preserves the issue |
-| Direct runtime Rust calls plus audit-root bindings | Recommended; keeps runtime simple and preserves standalone evidence |
+| Direct runtime Rust calls plus audit-root bindings | Implemented; keeps runtime simple and preserves standalone evidence |
 | New backend trait/crate or selectable runtime backend | Unnecessary abstraction/configuration for this bounded cleanup |
 
 ## Proof obligations
@@ -289,18 +316,21 @@ variadic services. Keep independent C fixtures for those real boundaries and
 their output/failure contracts.
 
 Keep C-typed callback slots even without a named C relocation. For example,
-[kutox_guest_runtime_work](../src/guest_tests/kernel_runtime.rs#L262) is passed
+[kutox_guest_runtime_work](../src/guest_tests/kernel_runtime.rs) is passed
 by address into a C-compatible work callback slot.
 
 Keep the boot entry in [linker.ld](../linker.ld), exception and thread assembly
 calls, and the guest thread-probe calling convention. Stable Rust-only labels
-such as the [packet broker](../src/net_async.rs#L687),
-[async executor](../src/async_runtime.rs#L638), native initializer and user-runtime
+such as the [packet broker](../src/net_async.rs),
+[async executor](../src/async_runtime.rs), native initializer and user-runtime
 entry are already Rust ABI. Their `no_mangle`/`export_name` attributes serve
 metadata or ELF proof and must not be confused with unnecessary C ABI.
 
 No named C relocation is not sufficient evidence to delete optional/debug APIs
-or explicit unsupported-profile rejection functions.
+or explicit unsupported-profile rejection functions. In particular,
+`kutox_debug` remains the provider selected by the `netdev_dbg` header macro
+even without a current named relocation; C variadic/`VaList` contracts also
+retain their real ABI coverage.
 
 ### Ownership, context and observable behavior
 
@@ -344,20 +374,22 @@ Keep existing compile-only object exclusion, and prove that runtime Rust
 dependencies and linked objects do not include the audit-only binding adapter.
 The adapter's source and commands must participate in independent audit hashes.
 
-## Delivery sequence
+## Implementation sequence
 
-1. Establish audit-root bindings and complete the native allocation pilot.
-2. Convert allocation, coherent/streaming DMA, block backing and native storage
-   backends; retain only necessary guest C shims.
-3. Convert the remaining execution, IRQ, platform, tracing and wake backends;
-   remove dead exports/declarations and finish fixture gating.
-4. Remove redundant compatibility facades and Rust-to-Rust declarations;
-   reconcile real C-provider and dependency evidence.
-5. Write the as-built reference and update this design, implementation and
-   testing documentation to match the verified result.
+1. Established audit-root bindings and completed the native allocation pilot.
+2. Converted allocation, coherent/streaming DMA, block backing and native
+   storage backends, initially retaining real C fixture adapters.
+3. Converted the remaining execution, IRQ, platform, tracing and wake backends;
+   removed dead exports/declarations and gated remaining fixtures.
+4. Removed redundant compatibility facades and Rust-to-Rust declarations;
+   reconciled actual C-provider and dependency evidence.
+5. Migrated service scenarios into Rust, removed their C control adapters and
+   retained C interoperability fixtures.
+6. Completed as-built documentation, final role accounting and contributor
+   verification guidance.
 
-Each phase is a separate local implementation commit with focused validation.
-No push, PR or merge is implied by this proposal.
+The implementation was validated in focused increments. This document does not
+imply publication, a completed final review, or a full-catalog test run.
 
 ## Verification and completion
 
@@ -376,5 +408,21 @@ Completion means no unnecessary production C-ABI backend round trips remain
 for the audited roles, no stale facade is retained merely for a name check, and
 all genuine C, callback, assembly and diagnostic contracts still work.
 
+At the final implementation checkpoint, 284 Python harness tests, formatting,
+ON/OFF builds/profile gates and kernel Clippy passed. Both actual source/provider
+audits and independent verification passed. The 76-case kernel suite passed on
+root and nested low-memory topologies; selected low-memory driver, nested
+hardening/network, storage read/error/reset/reprobe and production network/
+storage checks also passed. OFF fixture rejection was checked. These are
+targeted results, not full-catalog coverage; coordinator rows include build and
+lint results and are not counts of unique guest cases.
+
+Contributor commands and the distinction between compile-only, executable
+provider and guest evidence are documented in [testing.md](testing.md).
+Documentation-only finalization reuses that implementation evidence rather
+than rebuilding the kernel solely to change prose.
+
 This work does not add drivers, disk-backed program boot, general Linux ABI,
 SMP, new DMA capabilities, concurrent NIC/storage scopes or a new test manager.
+Removing redundant C ABI does not make all remaining raw compatibility code
+safe; further typed block/packet service work is separate from this cleanup.

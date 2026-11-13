@@ -86,6 +86,23 @@ archives selected by the current kernel's Cargo dependencies/build output,
 rejecting native backend/control calls and unreviewed project C bridges.
 Host regressions cover forbidden calls and stale/missing archive evidence.
 
+For changes to these boundaries, use the existing coordinator and both
+independently verified provider audits:
+
+```sh
+python3 scripts/check.py fast --scope host --select rustfmt --select harness-unit
+python3 scripts/linux_driver_check.py --build-dir build
+python3 scripts/linux_driver_check.py --build-dir build --verify
+python3 scripts/linux_storage_check.py --build-dir build
+python3 scripts/linux_storage_check.py --build-dir build --verify
+```
+
+Select affected kernel/driver/storage guests from the catalog in both profiles,
+including `kernel-clippy` and a low-memory kernel suite for service changes.
+Run builds and QEMU serially with one build job. After documentation-only
+changes, check links and whitespace; do not rebuild guests merely to update
+prose or mistake historical baseline counts for current acceptance limits.
+
 Runtime declarations and header-forwarding manifests live under
 [compat/include/](../compat/include/), not audit directories. Audit-only
 inventories, wrappers, probes and FFI allowlists live under
