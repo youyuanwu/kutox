@@ -533,6 +533,7 @@ pub(super) mod tests {
         context();
         let device = unsafe { (*state()).device };
         require(!device.is_null(), c"storage_config_fixture_device");
+        super::super::memory_raw::tests::storage();
         unsafe { kutox_guest_storage_config(device) };
     }
 }

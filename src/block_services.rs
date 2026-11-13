@@ -103,23 +103,7 @@ pub(crate) unsafe fn deallocate(pointer: usize, size: usize, alignment: usize) {
 }
 
 #[cfg(feature = "guest-tests")]
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_block_fail_after(remaining: usize) {
+pub(crate) fn fail_after(remaining: usize) {
     assert_eq!(context(0), 0, "block fault injection context");
     FAIL_AFTER.store(remaining, Ordering::Relaxed);
-}
-
-#[cfg(feature = "guest-tests")]
-mod guest_ffi {
-    use super::*;
-
-    #[unsafe(no_mangle)]
-    extern "C" fn kutox_block_context(completion: u32) -> i32 {
-        context(completion)
-    }
-
-    #[unsafe(no_mangle)]
-    unsafe extern "C" fn kutox_block_fail(operation: *const core::ffi::c_char) -> ! {
-        fail(unsafe { CStr::from_ptr(operation) })
-    }
 }

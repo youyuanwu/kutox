@@ -428,12 +428,6 @@ pub(crate) fn irq_acquired() {
     X86Cpu::irq_lock_acquired();
 }
 
-#[cfg(feature = "guest-tests")]
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_irq_depth() -> usize {
-    X86Cpu::irq_lock_depth()
-}
-
 pub(crate) fn irq_released(flags: u64) {
     if flags & !IF != 0 || cpu::interrupts_enabled() || X86Cpu::irq_lock_depth() == 0 {
         fatal("spin_restore_state", INVALID);
@@ -445,13 +439,6 @@ pub(crate) fn irq_released(flags: u64) {
         }
         X86Cpu::enable_interrupts();
     }
-}
-
-#[cfg(feature = "guest-tests")]
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_test_now_us() -> u64 {
-    let ticks = time::ticks_for_us(1).unwrap_or_else(|error| fatal(error.stage, error.code));
-    time::now_ticks() / ticks
 }
 
 #[unsafe(no_mangle)]
@@ -558,31 +545,6 @@ pub(crate) fn retire_static_objects() {
                 (*(key as *mut kutox::linux_abi::Completion)).generation = 0;
             }
         }
-    }
-}
-
-#[cfg(feature = "guest-tests")]
-mod guest_ffi {
-    use super::*;
-
-    #[unsafe(no_mangle)]
-    extern "C" fn kutox_linux_context() -> i32 {
-        context_code()
-    }
-
-    #[unsafe(no_mangle)]
-    extern "C" fn kutox_linux_object_generation(key: usize, kind: u32) -> u64 {
-        object_generation(key, kind)
-    }
-
-    #[unsafe(no_mangle)]
-    unsafe extern "C" fn kutox_linux_mutex(key: usize, operation: u32) -> i32 {
-        unsafe { mutex(key, operation) }
-    }
-
-    #[unsafe(no_mangle)]
-    unsafe extern "C" fn kutox_linux_completion(key: usize, operation: u32) -> i32 {
-        unsafe { completion(key, operation) }
     }
 }
 

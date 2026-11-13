@@ -188,37 +188,6 @@ pub(crate) unsafe fn reclaim(key: usize, cpu: usize) -> i32 {
     .unwrap_or_else(|err| error("reclaim", err))
 }
 
-#[cfg(feature = "guest-tests")]
-mod guest_ffi {
-    use super::*;
-
-    #[unsafe(no_mangle)]
-    extern "C" fn kutox_linux_dma_mask(key: usize, mask: u64) -> i32 {
-        set_mask(key, mask)
-    }
-
-    #[unsafe(no_mangle)]
-    unsafe extern "C" fn kutox_linux_dma_alloc(
-        key: usize,
-        size: usize,
-        flags: u32,
-        cpu: *mut usize,
-        address: *mut u64,
-    ) -> i32 {
-        unsafe { allocate(key, size, flags, cpu, address) }
-    }
-
-    #[unsafe(no_mangle)]
-    unsafe extern "C" fn kutox_linux_dma_free(
-        key: usize,
-        size: usize,
-        cpu: usize,
-        address: u64,
-    ) -> i32 {
-        unsafe { free(key, size, cpu, address) }
-    }
-}
-
 pub fn quiescent() -> bool {
     let state = unsafe { &*REGISTRY.0.get() };
     state.device.is_none() && state.buffers.iter().all(Option::is_none)

@@ -489,8 +489,7 @@ pub unsafe extern "C" fn wait_for_completion_timeout(p: *mut Completion, timeout
     (unsafe { crate::linux_runtime::wait_completion(completion_key(p), timeout as u64, 1) })
         as usize
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kutox_destroy_completion(p: *mut Completion) {
+pub(super) unsafe fn destroy_completion(p: *mut Completion) {
     unsafe {
         completion(p, 4);
         (*p).generation = 0;
@@ -584,8 +583,7 @@ pub unsafe extern "C" fn cancel_work_sync(p: *mut Work) -> bool {
 pub unsafe extern "C" fn cancel_delayed_work_sync(p: *mut Work) -> bool {
     unsafe { work(p, 1, 0) }
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kutox_destroy_work(p: *mut Work) {
+pub(super) unsafe fn destroy_work(p: *mut Work) {
     unsafe {
         work(p, 2, 0);
     }
@@ -606,8 +604,7 @@ pub extern "C" fn rtnl_unlock() {
 pub extern "C" fn rtnl_is_locked() -> bool {
     (unsafe { mutex_is_locked(RTNL.0.get()) }) != 0
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_destroy_rtnl() {
+pub(super) fn destroy_rtnl() {
     if unsafe { (*RTNL.0.get()).generation } != 0 {
         unsafe { mutex_destroy(RTNL.0.get()) }
     }

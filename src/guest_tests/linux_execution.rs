@@ -1,5 +1,6 @@
 //! Guest-only acceptance fixtures; not production driver code.
 
+use crate::linux_compat::tests::execution_tests as fixture;
 use crate::{
     Failure,
     boot::BootInfo,
@@ -12,11 +13,6 @@ use crate::{
 
 unsafe extern "C" {
     fn kutox_c_driver_atomics();
-    fn kutox_c_driver_work();
-    fn kutox_c_driver_napi();
-    fn kutox_c_driver_irq_config(base: usize, irq: u32);
-    fn kutox_c_driver_irq();
-    fn kutox_c_driver_lifecycle(role: usize);
 }
 
 pub fn atomics(_: &BootInfo, _: &memory::PhysicalFrames<'static>) -> Result<(), Failure> {
@@ -48,17 +44,17 @@ fn run(
 }
 
 pub fn work(boot: &BootInfo, frames: &memory::PhysicalFrames<'static>) -> Result<(), Failure> {
-    run(boot, frames, |_| unsafe { kutox_c_driver_work() })
+    run(boot, frames, |_| fixture::work())
 }
 pub fn napi(boot: &BootInfo, frames: &memory::PhysicalFrames<'static>) -> Result<(), Failure> {
-    run(boot, frames, |_| unsafe { kutox_c_driver_napi() })
+    run(boot, frames, |_| fixture::napi())
 }
 pub fn lifecycle(boot: &BootInfo, frames: &memory::PhysicalFrames<'static>) -> Result<(), Failure> {
     let timer = irq::Timer::start(boot, frames)?;
     let space = memory::StackSpace::new(boot, frames)?;
     let mut scheduler = threads::Scheduler::new(&space);
     for role in 0..2 {
-        scheduler.spawn(|role| unsafe { kutox_c_driver_lifecycle(role) }, role)?;
+        scheduler.spawn(fixture::lifecycle, role)?;
     }
 
     let stats = scheduler.run_with_timer(&timer)?;
@@ -96,13 +92,13 @@ pub fn irq(boot: &BootInfo, frames: &memory::PhysicalFrames<'static>) -> Result<
     let nic = e1000_irq::E1000IrqFixture::start(boot, frames, &topology)?;
     let gsi = nic.gsi();
     let binding = BoundIrq::bind(&controller, gsi)?;
-    unsafe { kutox_c_driver_irq_config(nic.address(), gsi) };
+    fixture::irq_config(nic.address(), gsi);
     let timer = irq::Timer::attach(&apic)?;
     let space = memory::StackSpace::new(boot, frames)?;
     let mut scheduler = threads::Scheduler::new(&space);
     let before = linux_irq::counts();
     linux_deferred::start(&mut scheduler)?;
-    scheduler.spawn(|_| unsafe { kutox_c_driver_irq() }, 0)?;
+    scheduler.spawn(|_| fixture::irq(), 0)?;
     let stats = scheduler.run_with_timer(&timer)?;
     let after = linux_irq::counts();
     if stats.finished != 3

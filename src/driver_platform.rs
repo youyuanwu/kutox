@@ -339,11 +339,6 @@ pub fn gate() {
     time::delay_us(10_000);
     GATED.store(true, Ordering::Release);
 }
-#[cfg(feature = "guest-tests")]
-#[unsafe(no_mangle)]
-extern "C" fn kutox_driver_gate() {
-    gate();
-}
 pub fn ring_release(_dma: u64) -> Result<(), i32> {
     let base = MMIO.load(Ordering::Acquire);
     if base == 0

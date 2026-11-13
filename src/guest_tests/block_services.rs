@@ -1,17 +1,11 @@
+use crate::linux_compat::tests::block_tests as fixture;
 use crate::{Failure, boot::BootInfo, irq, memory, serial, time};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 static FIRED: AtomicBool = AtomicBool::new(false);
 
-unsafe extern "C" {
-    fn kutox_c_block_services();
-    fn kutox_c_block_irq_begin();
-    fn kutox_c_block_irq_deliver();
-    fn kutox_c_block_irq_finish();
-}
-
 fn completed() -> Result<(), Failure> {
-    unsafe { kutox_c_block_irq_deliver() };
+    fixture::irq_deliver();
     FIRED.store(true, Ordering::Release);
     Ok(())
 }
@@ -20,10 +14,8 @@ pub fn ownership(
     boot: &BootInfo,
     frames: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
-    unsafe {
-        kutox_c_block_services();
-        kutox_c_block_irq_begin();
-    }
+    fixture::ownership();
+    fixture::irq_begin();
     FIRED.store(false, Ordering::Release);
     let timer = irq::Timer::start(boot, frames)?;
     timer.schedule_handler(time::deadline_after_us(1000)?, completed)?;
@@ -32,7 +24,7 @@ pub fn ownership(
     if !FIRED.load(Ordering::Acquire) || timer.cancel_handler()? {
         return Err(Failure::new("block_completion_irq", -1));
     }
-    unsafe { kutox_c_block_irq_finish() };
+    fixture::irq_finish();
     drop(timer);
     if !crate::block_services::quiescent() {
         return Err(Failure::new("block_services_live", -1));

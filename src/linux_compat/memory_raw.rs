@@ -347,8 +347,7 @@ pub(super) mod tests {
         failure.retained.release().unwrap();
     }
 
-    #[unsafe(no_mangle)]
-    pub extern "C" fn kutox_guest_memory_storage() {
+    pub(crate) fn storage() {
         let device = unsafe { device(pci::storage_pointer().cast()) };
         assert!(device.storage);
         owned_mapping(device, Allocator::Storage);

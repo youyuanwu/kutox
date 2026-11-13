@@ -4,8 +4,79 @@ use super::*;
 use crate::{Failure, boot::BootInfo, memory, threads};
 
 unsafe extern "C" {
-    fn kutox_c_dma_key() -> usize;
-    fn kutox_c_dma_worker();
+    fn kutox_c_dma_boundary(device: *mut crate::linux_compat::abi::Device, exhausted: bool)
+    -> bool;
+}
+
+fn worker(key: usize) {
+    use crate::linux_compat::abi::GFP_KERNEL;
+    unsafe {
+        assert!(kutox_c_dma_boundary(key as *mut _, false));
+        assert_eq!(set_mask(key, u64::MAX), 0);
+        assert_eq!(set_mask(key, u32::MAX as u64), 0);
+        assert_eq!(set_mask(key, 0xffff), -121);
+        assert_eq!(set_mask(0, u32::MAX as u64), -128);
+        let mut cpu = 0x5eed;
+        let mut address = 0x5eed;
+        for (size, flags) in [(0, GFP_KERNEL), (16, 1)] {
+            assert_eq!(allocate(key, size, flags, &mut cpu, &mut address), -120);
+            assert_eq!((cpu, address), (0x5eed, 0x5eed));
+        }
+        assert_eq!(
+            allocate(key, 16, GFP_KERNEL, core::ptr::null_mut(), &mut address),
+            -120
+        );
+        assert_eq!(address, 0x5eed);
+        let mut buffers = [(0usize, 0u64); 8];
+        for i in 0..buffers.len() {
+            let (pointer, dma) = &mut buffers[i];
+            assert_eq!(allocate(key, 16 + i, GFP_KERNEL, pointer, dma), 0);
+            assert_ne!(*pointer as u64, *dma);
+            assert_eq!((*pointer & 4095, *dma & 4095), (0, 0));
+            assert!(*dma + 4095 <= u32::MAX as u64);
+            assert!(
+                core::slice::from_raw_parts(*pointer as *const u8, 16 + i)
+                    .iter()
+                    .all(|&b| b == 0)
+            );
+            let (pointer, dma) = buffers[i];
+            assert!(
+                buffers[..i]
+                    .iter()
+                    .all(|&(old, old_dma)| old != pointer && old_dma != dma)
+            );
+        }
+        cpu = 0x5eed;
+        address = 0x5eed;
+        assert_eq!(allocate(0, 16, GFP_KERNEL, &mut cpu, &mut address), -128);
+        assert_eq!((cpu, address), (0x5eed, 0x5eed));
+        assert_eq!(allocate(key, 0, GFP_KERNEL, &mut cpu, &mut address), -120);
+        assert_eq!((cpu, address), (0x5eed, 0x5eed));
+        assert!(kutox_c_dma_boundary(key as *mut _, true));
+        assert_eq!(set_mask(key, u64::MAX), -123);
+        assert_eq!(unregister(key), -123);
+        let (pointer, dma) = buffers[0];
+        assert_eq!(free(key, 17, pointer, dma), -122);
+        assert_eq!(free(key, 16, pointer, dma + 1), -122);
+        (pointer as *mut u8).write(0x5a);
+        crate::dma::write_barrier();
+        assert_eq!(publish(key, pointer), 0);
+        assert_eq!(free(key, 16, pointer, dma), -123);
+        assert_eq!(publish(key, pointer), -123);
+        assert_eq!(crate::linux_runtime::cond_resched(), 1);
+        // This fixture never enables bus mastering or starts a DMA engine.
+        assert_eq!(reclaim(key, pointer), 0);
+        assert_eq!(reclaim(key, pointer), -125);
+        crate::dma::read_barrier();
+        assert_eq!((pointer as *const u8).read(), 0x5a);
+        for (i, &(pointer, dma)) in buffers.iter().enumerate() {
+            assert_eq!(free(key, 16 + i, pointer, dma), 0);
+        }
+        assert_eq!(free(key, 16, pointer, dma), -124);
+        assert_eq!(allocate(key, 16, GFP_KERNEL, &mut cpu, &mut address), 0);
+        assert_eq!((cpu as *const u8).read(), 0);
+        assert_eq!(free(key, 16, cpu, address), 0);
+    }
 }
 
 pub fn test(
@@ -13,7 +84,8 @@ pub fn test(
     frames: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
     let object = Device::new(boot, frames)?;
-    let key = unsafe { kutox_c_dma_key() };
+    let mut device = crate::linux_compat::abi::Device::EMPTY;
+    let key = core::ptr::addr_of_mut!(device) as usize;
     with_registry(|state| {
         if state.device.is_some() || key == 0 {
             return Err(dma_state::Error::Device.into());
@@ -25,9 +97,8 @@ pub fn test(
     let space = memory::StackSpace::new(boot, frames)?;
     let mut scheduler = threads::Scheduler::new(&space);
     scheduler.spawn(
-        |_| {
-            unsafe { kutox_c_dma_worker() };
-            let key = unsafe { kutox_c_dma_key() };
+        |key| {
+            worker(key);
             crate::linux_compat::memory::test_coherent(key);
             {
                 use crate::cpu::X86Cpu;
@@ -47,7 +118,13 @@ pub fn test(
                 assert_eq!(result, threads::SwitchError::InterruptsEnabled as i32);
             }
             crate::exceptions::tests::test_thread_context(|| {
-                let key = unsafe { kutox_c_dma_key() };
+                let key = unsafe {
+                    (&*REGISTRY.0.get())
+                        .device
+                        .as_ref()
+                        .expect("DMA fixture device")
+                        .0
+                };
                 assert_eq!(
                     set_mask(key, u64::MAX),
                     threads::SwitchError::InterruptContext as i32
@@ -55,7 +132,7 @@ pub fn test(
             })
             .unwrap_or_else(|err| panic!("DMA context probe {}", err.stage));
         },
-        0,
+        key,
     )?;
     scheduler.run()?;
     let code = unregister(key);

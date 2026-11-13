@@ -5,10 +5,8 @@
 #include "block/runtime.h"
 #include <linux/virtio.h>
 #include <linux/virtio_config.h>
-extern void kutox_guest_memory_storage(void);
 void kutox_guest_storage_config(struct device *device)
 {
-    kutox_guest_memory_storage();
     char saved[32];
     memcpy(saved, dev_name(device), sizeof(saved));
     if (dev_set_name(device, "%s", "1234567890123456789012345678901") != 0 ||

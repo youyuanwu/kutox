@@ -1,26 +1,16 @@
 //! Guest-only acceptance fixtures; not production driver code.
 
 use super::*;
+use crate::linux_compat::tests::runtime as fixture;
 use crate::{Failure, boot::BootInfo, irq, memory};
 
-unsafe extern "C" {
-    fn kutox_c_execution_init();
-    fn kutox_c_execution_worker(role: usize);
-    fn kutox_c_execution_verify();
-    fn kutox_c_execution_destroy();
-    fn kutox_c_irq_init();
-    fn kutox_c_irq_signal(broadcast: usize);
-    fn kutox_c_irq_worker(role: usize);
-    fn kutox_c_irq_destroy();
-}
-
 fn c_irq_counted() -> Result<(), Failure> {
-    unsafe { kutox_c_irq_signal(0) };
+    fixture::irq_signal(false);
     Ok(())
 }
 
 fn c_irq_broadcast() -> Result<(), Failure> {
-    unsafe { kutox_c_irq_signal(1) };
+    fixture::irq_signal(true);
     Ok(())
 }
 
@@ -35,10 +25,10 @@ pub fn test_irq_completion(
         c_irq_counted as irq::Handler,
         c_irq_broadcast as irq::Handler,
     ] {
-        unsafe { kutox_c_irq_init() };
+        fixture::irq_init();
         timer.schedule_handler(time::now_ticks() + time::ticks_for_us(5_000)?, handler)?;
         for role in 0..2 {
-            scheduler.spawn(|role| unsafe { kutox_c_irq_worker(role) }, role)?;
+            scheduler.spawn(fixture::irq_worker, role)?;
         }
         let stats = scheduler.run_with_timer(&timer)?;
         if stats.finished != 2
@@ -49,7 +39,7 @@ pub fn test_irq_completion(
         {
             return Err(Failure::new("linux_c_irq_completion", -1));
         }
-        unsafe { kutox_c_irq_destroy() };
+        fixture::irq_finish();
     }
     if !quiescent() {
         return Err(Failure::new("linux_c_irq_registry_cleanup", -1));
@@ -62,7 +52,7 @@ pub fn test_execution(
     frames: &memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
     let timer = irq::Timer::start(boot, frames)?;
-    unsafe { kutox_c_execution_init() };
+    fixture::init();
     let space = memory::StackSpace::new(boot, frames)?;
     let mut scheduler = threads::Scheduler::new(&space);
     for role in [0, 1] {
@@ -91,10 +81,7 @@ pub fn test_execution(
     if stats.finished != 2 || stats.timeouts != 1 || stats.wakes != 0 {
         return Err(Failure::new("linux_c_completion_timeout_race", -1));
     }
-    unsafe {
-        kutox_c_execution_verify();
-        kutox_c_execution_destroy();
-    }
+    fixture::finish();
     if !quiescent() {
         return Err(Failure::new("linux_c_registry_cleanup", -1));
     }
@@ -102,7 +89,7 @@ pub fn test_execution(
 }
 
 fn c_worker(role: usize) {
-    unsafe { kutox_c_execution_worker(role) };
+    fixture::worker(role);
     let handle = threads::current_task_handle()
         .unwrap_or_else(|error| fatal("c_worker_exit_context", error as i32));
     if MUTEXES

@@ -1,33 +1,23 @@
 //! Guest-only acceptance fixtures; not production driver code.
 
+use crate::linux_compat::tests::driver as fixture;
 use crate::linux_deferred;
 use crate::{
     Failure, boot::BootInfo, driver_memory, driver_platform, irq, memory, pci, platform, threads,
 };
-unsafe extern "C" {
-    fn kutox_c_services_begin(irq: u32);
-    fn kutox_c_services_end();
-    fn kutox_c_services_allocations();
-    fn kutox_c_services_dma();
-    fn kutox_c_services_packets();
-    fn kutox_c_services_capacity();
-    fn kutox_c_services_failed_open();
-}
 fn worker(which: usize) {
-    unsafe {
-        match which {
-            0 => kutox_c_services_allocations(),
-            1 => {
-                crate::linux_compat::memory::test_network(crate::linux_compat::pci::device_key());
-                kutox_c_services_dma();
-            }
-            2 => kutox_c_services_packets(),
-            3 => kutox_c_services_capacity(),
-            4 => kutox_c_services_failed_open(),
-            _ => panic!("invalid source service case"),
+    match which {
+        0 => fixture::allocations(),
+        1 => {
+            crate::linux_compat::memory::test_network(crate::linux_compat::pci::device_key());
+            fixture::dma();
         }
-        kutox_c_services_end();
+        2 => fixture::packets(),
+        3 => fixture::capacity(),
+        4 => fixture::failed_open(),
+        _ => panic!("invalid source service case"),
     }
+    fixture::end();
 }
 fn test(
     boot: &BootInfo,
@@ -39,7 +29,7 @@ fn test(
     let device = pci::discover()?;
     let gsi = device.interrupt_route(&topology)?;
     let owner = driver_platform::Owner::bind(boot, frames, key, device)?;
-    unsafe { kutox_c_services_begin(gsi) };
+    fixture::begin(gsi);
     let timer = irq::Timer::start(boot, frames)?;
     let space = memory::StackSpace::new(boot, frames)?;
     let mut scheduler = threads::Scheduler::new(&space);

@@ -745,18 +745,3 @@ pub unsafe extern "C" fn iowrite32(v: u32, p: *mut u32) {
         p.write_volatile(v)
     }
 }
-
-#[cfg(feature = "guest-tests")]
-mod guest_ffi {
-    use super::*;
-
-    #[unsafe(no_mangle)]
-    extern "C" fn kutox_c_driver_endpoint(irq: u32) -> *mut PciDevice {
-        driver_endpoint(irq)
-    }
-
-    #[unsafe(no_mangle)]
-    extern "C" fn kutox_c_driver_endpoint_release() {
-        release_driver_endpoint()
-    }
-}

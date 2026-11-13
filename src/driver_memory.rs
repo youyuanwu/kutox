@@ -495,49 +495,6 @@ pub fn quiescent() -> bool {
         && !linux_deferred::atomic_context()
 }
 
-#[cfg(feature = "guest-tests")]
-mod guest_ffi {
-    use super::*;
-
-    #[unsafe(no_mangle)]
-    unsafe extern "C" fn kutox_driver_receive(pointer: *mut u8, capacity: usize) -> usize {
-        unsafe { receive_into(pointer, capacity) }
-    }
-
-    #[unsafe(no_mangle)]
-    extern "C" fn kutox_driver_size(pointer: usize) -> usize {
-        size(pointer)
-    }
-
-    #[unsafe(no_mangle)]
-    extern "C" fn kutox_driver_range(pointer: usize, size: usize, operation: u32) -> i32 {
-        range(pointer, size, operation)
-    }
-
-    #[unsafe(no_mangle)]
-    unsafe extern "C" fn kutox_driver_free(pointer: usize) -> i32 {
-        unsafe { free(pointer) }
-    }
-
-    #[unsafe(no_mangle)]
-    unsafe extern "C" fn kutox_driver_dma_operation(
-        device: usize,
-        dma: u64,
-        size: usize,
-        direction: u32,
-        operation: u32,
-    ) -> i32 {
-        unsafe { dma_operation(device, dma, size, direction, operation) }
-    }
-}
-
-#[cfg(feature = "guest-tests")]
-#[unsafe(no_mangle)]
-extern "C" fn kutox_driver_fail_after(count: usize) {
-    FAIL_KIND.store(u32::MAX, Ordering::Relaxed);
-    FAIL_AFTER.store(count, Ordering::Relaxed);
-}
-
 pub fn snapshot() -> (usize, usize, usize) {
     let state = unsafe { &*STATE.0.get() };
     (

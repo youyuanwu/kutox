@@ -18,6 +18,9 @@ mod optional;
 pub(crate) mod packet;
 pub(crate) mod pci;
 pub(crate) mod storage;
+#[cfg(feature = "guest-tests")]
+#[path = "../guest_tests/compat_services.rs"]
+pub(crate) mod tests;
 use abi::*;
 use core::{
     cell::UnsafeCell,

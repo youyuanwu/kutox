@@ -191,28 +191,6 @@ pub unsafe extern "C" fn dma_free_coherent(
 }
 #[unsafe(no_mangle)]
 /// # Safety
-/// C relinquishes CPU access to this registered coherent buffer.
-pub unsafe extern "C" fn kutox_dma_publish(d: *mut Device, p: *mut c_void) -> i32 {
-    unsafe { raw::device(d) }
-        .publish(p as usize)
-        .map_or_else(|error| error, |()| 0)
-}
-#[unsafe(no_mangle)]
-/// # Safety
-/// All device DMA, descriptor and IRQ paths using this buffer must be stopped.
-pub unsafe extern "C" fn kutox_dma_reclaim(d: *mut Device, p: *mut c_void) -> i32 {
-    let device = unsafe { raw::device(d) };
-    let proof = unsafe { raw::quiesced(device, p as usize) };
-    device
-        .reclaim(p as usize, proof)
-        .map_or_else(|error| error, |()| 0)
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_destroy_dma_device(d: *mut Device) -> i32 {
-    raw::unregister(d as usize)
-}
-#[unsafe(no_mangle)]
-/// # Safety
 /// C owns the live range and relinquishes CPU access until completion/unmap.
 pub unsafe extern "C" fn dma_map_single(
     d: *mut Device,

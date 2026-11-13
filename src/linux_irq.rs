@@ -221,12 +221,6 @@ pub fn counts() -> (u64, u64) {
     )
 }
 
-#[cfg(feature = "guest-tests")]
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_irq_pending() -> i32 {
-    i32::from(pending().unwrap_or_else(|error| fail(error.stage, error.code)))
-}
-
 pub fn pending() -> Result<bool, Failure> {
     let registration = (*BINDING.lock_save_irq()).expect("test IRQ binding missing");
     external::pending_bound(registration.token)
@@ -262,12 +256,4 @@ pub fn resume() -> Result<(), Failure> {
         external::set_bound_mask(registration.token, false)?;
     }
     Ok(())
-}
-
-#[cfg(feature = "guest-tests")]
-mod guest_ffi {
-    #[unsafe(no_mangle)]
-    extern "C" fn kutox_linux_irq(number: u32, device: usize, free: u32) -> i32 {
-        super::operation(number, device, free)
-    }
 }

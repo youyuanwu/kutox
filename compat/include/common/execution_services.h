@@ -47,7 +47,6 @@ bool schedule_work(struct work_struct *);
 bool schedule_delayed_work(struct delayed_work *, unsigned long);
 bool cancel_work_sync(struct work_struct *);
 bool cancel_delayed_work_sync(struct delayed_work *);
-void kutox_destroy_work(struct work_struct *);
 void rtnl_lock(void);
 void rtnl_unlock(void);
 bool rtnl_is_locked(void);

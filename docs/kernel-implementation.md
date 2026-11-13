@@ -299,13 +299,14 @@ five implemented Rust allocation/context/diagnostic entry points. Its combined
 audit object retains runtime exclusion.
 
 The new `storage.block_services` case makes the kernel registry 76 cases. A
-guest-only C transport fixture exercises four allocation rollback points,
+guest-only Rust transport fixture exercises four allocation rollback points,
 sixteen request/teardown epochs, invalid ranges/metadata, tags, read-only and
 limit rejection, retained backpressure, stale tickets, successful/error result
 bytes and cancellation before/after publication. A real timer IRQ then marks a
 request pending after disk admission closes; only the off-IRQ pump completes
 it. Existing fixture guards require exact heap/frame balance and block allocator
-quiescence. This remains service acceptance, separate from the real driver
+quiescence. A small C fixture checks the request/PDU/scatterlist interface.
+This remains service acceptance, separate from the real driver
 acceptance below.
 
 ## Linux virtio-blk runtime
@@ -381,9 +382,13 @@ and `/bin/init` loader continue to use the immutable Limine RAM module.
 The [native ABI cleanup](linux-compat-abi-cleanup.md) documents which
 internal C-ABI round trips can become ordinary Rust calls while preserving
 real Linux, fixture, callback and audit contracts. All audited compatibility-to-
-native calls now use Rust APIs, retaining C jiffies and actual guest-only shims.
+native calls now use Rust APIs, retaining C jiffies and guest C failure reporting.
 Internal lifecycle, storage, packet/NAPI/PCI and boot control also use Rust APIs;
 genuine Linux-facing C exports and original callback types remain intact.
+Guest scenarios also use Rust for native controls, fault injection and
+ownership assertions. The small C fixtures call Linux-facing APIs and required
+C macro/formatting bridges only; their former native and packet/PCI/block
+control shims are removed.
 
 [The common Rust modules](../src/linux_compat/) implement the selected
 Linux-facing C ABI using `#[unsafe(no_mangle)] extern "C"` exports:
@@ -992,9 +997,11 @@ both builds, with all images and acceptance code ON-only.
   quiescence obligation, and device destruction rejects live buffers.
   Streaming DMA, bounce buffers and IOMMU mappings are not stubbed.
 - [DMA acceptance tests](../src/guest_tests/dma.rs) and the
-  [C test](../compat/guest_tests/dma_test.c) check exact alignment/mask boundaries, zeroing,
+  [Rust service scenarios](../src/guest_tests/linux_dma.rs) check exact alignment/mask boundaries, zeroing,
   disjoint buffers, exhaustion/reuse, counters, live/stale ownership, output
   preservation, invalid free/lifecycle/context requests and full cleanup.
+  The [C boundary test](../compat/guest_tests/dma_test.c) covers real DMA
+  declarations/macros and unchanged handle outputs on exhaustion.
   They never enable bus mastering or a DMA engine.
 - [The original Linux TX fixture](../src/linux_driver.rs) calls registered source
   callbacks through [the Rust lifecycle adapter](../src/linux_compat/lifecycle.rs).
@@ -1142,11 +1149,11 @@ both builds, with all images and acceptance code ON-only.
   objects without retaining mutable C references across scheduling. Static definitions
   can register lazily; `mutex_init`/`init_completion` explicitly register.
   Initialization cannot reset live native state. `reinit_completion` clears
-  credits/latches only without in-flight waits. `mutex_destroy` and the native
-  extension `kutox_destroy_completion` require cleared idle registered objects
+  credits/latches only without in-flight waits. `mutex_destroy` and the Rust
+  completion-retirement helper require cleared idle registered objects
   before releasing a registry slot. Capacity exhaustion, null objects, invalid
   operations, and invalid lifecycle transitions fail explicitly. Callers must
-  pair every C lock/unlock; the C test entry rejects return with owned mutexes.
+  pair every C lock/unlock; the Rust scenario worker rejects return with owned mutexes.
   Hardware IRQs may signal, inspect, or try-wait on preinitialized completion
   objects, but may not initialize/reset/destroy or lazily register them.
 - The supported completion subset is `complete`, `complete_all`,

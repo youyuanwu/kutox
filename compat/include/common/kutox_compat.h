@@ -40,10 +40,6 @@ void *dma_alloc_coherent(struct device *device, size_t size, dma_addr_t *handle,
 void dma_free_coherent(struct device *device, size_t size, void *cpu, dma_addr_t handle);
 void dma_wmb(void);
 void dma_rmb(void);
-/* Native ownership extensions; reclaim requires all DMA/descriptor/IRQ paths stopped. */
-int kutox_dma_publish(struct device *device, void *cpu);
-int kutox_dma_reclaim(struct device *device, void *cpu);
-int kutox_destroy_dma_device(struct device *device);
 
 /* Static initializers and dynamically initialized objects share the backend. */
 #define DEFINE_MUTEX(name) struct mutex name = { 0 }
@@ -72,8 +68,6 @@ bool completion_done(struct completion *completion);
 bool try_wait_for_completion(struct completion *completion);
 void wait_for_completion(struct completion *completion);
 unsigned long wait_for_completion_timeout(struct completion *completion, unsigned long timeout);
-/* Native lifecycle extension, not a Linux API. Requires a cleared idle object. */
-void kutox_destroy_completion(struct completion *completion);
 
 u32 readl(const volatile void *address);
 void writel(u32 value, volatile void *address);

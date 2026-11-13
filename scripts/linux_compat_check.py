@@ -98,6 +98,9 @@ PRIVATE_CONTROL_BACKENDS = {
     "kutox_check_boot_context": "Only the private Rust boot-MAC path calls this backend.",
     "kutox_linux_static_objects_retire": "Only private Rust lifecycle bind/unbind paths retire static objects.",
     "kutox_storage_begin_reset": "Only private Rust storage start/reset controls establish the reset deadline.",
+    "kutox_linux_dma_publish": "Coherent ownership publication is a Rust service; its fixture-only C extension was removed.",
+    "kutox_linux_dma_reclaim": "Coherent ownership reclaim and its quiescence proof are Rust services, not Linux C APIs.",
+    "kutox_linux_dma_unregister": "Rust fixture/device teardown owns this operation; no production C consumer requires it.",
 }
 
 
@@ -126,7 +129,6 @@ MEMORY_PROVIDERS = {
     "kmalloc", "kzalloc", "kmalloc_array", "kcalloc", "kfree", "vmalloc", "vzalloc", "vfree",
     "storage_kmalloc", "storage_kzalloc", "storage_kmalloc_array", "storage_kcalloc", "storage_kfree",
     "dma_set_mask_and_coherent", "dma_alloc_coherent", "dma_free_coherent",
-    "kutox_dma_publish", "kutox_dma_reclaim", "kutox_destroy_dma_device",
     "dma_map_single", "dma_mapping_error", "dma_unmap_single",
     "dma_sync_single_for_cpu", "dma_sync_single_for_device",
     "dma_map_page_attrs", "dma_unmap_page_attrs", "sg_phys",

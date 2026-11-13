@@ -28,10 +28,7 @@ kutox_linux_context
 kutox_linux_dma_alloc
 kutox_linux_dma_free
 kutox_linux_dma_mask
-kutox_linux_dma_publish
-kutox_linux_dma_reclaim
 kutox_linux_dma_rmb
-kutox_linux_dma_unregister
 kutox_linux_dma_wmb
 kutox_linux_irq
 kutox_linux_irq_acquired

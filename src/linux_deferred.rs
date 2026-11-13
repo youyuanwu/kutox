@@ -560,36 +560,6 @@ fn worker(which: usize) {
     notify(&JOIN);
 }
 
-#[cfg(feature = "guest-tests")]
-mod guest_ffi {
-    use super::*;
-
-    #[unsafe(no_mangle)]
-    extern "C" fn kutox_linux_bh(operation: u32) -> i32 {
-        bh(operation)
-    }
-
-    #[unsafe(no_mangle)]
-    unsafe extern "C" fn kutox_linux_work_init(address: usize, callback: Option<WorkFn>) -> i64 {
-        unsafe { register_work(address, callback) }
-    }
-
-    #[unsafe(no_mangle)]
-    extern "C" fn kutox_linux_work(address: usize, raw: u64, operation: u32, delay: u64) -> i32 {
-        work_operation(address, raw, operation, delay)
-    }
-
-    #[unsafe(no_mangle)]
-    extern "C" fn kutox_linux_napi(address: usize, raw: u64, operation: u32, done: i32) -> i32 {
-        napi_operation(address, raw, operation, done)
-    }
-
-    #[unsafe(no_mangle)]
-    extern "C" fn kutox_linux_workers_stop() {
-        stop_workers()
-    }
-}
-
 pub fn quiescent() -> bool {
     !ACTIVE.load(Ordering::Acquire)
         && WORKERS.load(Ordering::Acquire) == 0

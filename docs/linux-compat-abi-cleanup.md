@@ -1,6 +1,7 @@
 # Native Rust / Linux compatibility ABI cleanup
 
-Status: phases 1-4 implemented; final documentation/accounting remains.
+Status: phases 1-4 and the Rust guest-fixture follow-up implemented;
+final documentation/accounting remains.
 
 Audit baseline: `829ec3217f9cccf6415737a27bc995b86ae4146e`.
 The counts below describe that revision, not permanent acceptance thresholds.
@@ -49,21 +50,28 @@ use the actual [ABI NAPI type](../src/linux_abi.rs), not a cast or trampoline,
 so original callback identities remain unchanged. Static-object retirement is
 now a module-level Rust function with the same live-object and context guards.
 
-All baseline backend roles have explicit dispositions: 43 Rust-only APIs,
-20 Rust APIs with guest-only C shims, and the production C jiffies provider.
-The receive, worker-stop, IRQ pending/depth and thread-probe facades are also
-guest-gated; receive retains its production Rust core. Boot/assembly entries
+All 64 baseline backend roles have explicit dispositions: 63 Rust APIs and
+the production C jiffies provider. Of those Rust roles, only platform failure
+reporting still has a guest-only C shim for C assertions/accessor diagnostics.
+Native receive, worker-stop and IRQ pending/depth no longer have C facades;
+the assembly thread probe retains its guest-only C ABI. Boot/assembly entries
 and stable Rust metadata labels are unchanged.
 
-Each C shim forwards to the same Rust implementation. Both the shared and
+The retained failure shim forwards to the same Rust implementation. Both the shared and
 [isolated block audit root](../compat/audit/storage/block_services.rs) use the
 common audit bindings and record their actual source dependencies and native
 API mappings, including the retained C provider. The shared executable closure
-now has 65 explicit backend/compiler dependencies. Three private Rust control
+now has 62 explicit backend/compiler dependencies. Six private Rust control
 roles remain accounted for in the report but no longer enter that C-provider
 object: boot-context checking, lifecycle static retirement and storage reset
-deadline setup. Each exclusion has a reviewed reason; the isolated block
+deadline setup, plus coherent DMA publication, reclaim and device teardown.
+The latter three stopped entering this object when their fixture-only C
+extensions were removed. Each exclusion has a reviewed reason; the isolated block
 dependency allowlist is unchanged.
+
+The guest-fixture follow-up removes 48 Rust C-ABI definitions, not the underlying
+service behavior. Linux-facing exports and actual callback conventions remain;
+Rust fixtures now call the ordinary Rust implementations directly.
 
 ## Implemented compatibility controls
 
@@ -76,8 +84,10 @@ Native storage control now returns owned tickets and accepts borrowed output
 slices. Its block calls use the actual shared request/queue/disk types rather
 than redeclaring Rust functions with opaque-pointer C signatures. Packet, NAPI,
 PCI, block inspectors and private device-name forwarding use ordinary Rust
-methods. Fifteen actual packet/PCI/block C fixture entry points remain behind
-`guest-tests`, forwarding to the same implementations.
+methods. The fifteen packet/PCI/block C control shims were subsequently removed
+when their callers migrated to Rust guest scenarios. Coherent ownership
+publish/reclaim/device teardown and work/completion/RTNL retirement likewise
+no longer expose non-Linux C extensions just for tests.
 
 Boot MAC probing returns an owned shared ABI result to Rust while retaining the
 original C header-access bridge. Genuine Linux C providers, variadics, callback
@@ -96,10 +106,10 @@ optimized kernel.
 Of the 64 native backend functions in the
 [backend dependency ledger](../compat/audit/common/service-ffi.txt):
 
-| Consumers at the baseline | Count | Intended disposition |
+| Consumers at the baseline | Count | Current disposition |
 | --- | ---: | --- |
 | No named C consumer | 43 | Ordinary Rust backend APIs |
-| Guest-only or guest-conditional C | 20 | Rust core, with feature-gated C fixture shims |
+| Guest-only or guest-conditional C | 20 | 19 Rust-only APIs; one guest C failure-reporting shim over its Rust core |
 | Feature-OFF production C | 1 | Retain C ABI: `kutox_jiffies` |
 
 The ledger also includes four libc/compiler-support dependencies. Those are not
@@ -148,10 +158,11 @@ At the baseline, the other 13 native-side C-ABI definitions comprised:
 - Five unconditionally defined fixture facades: `kutox_driver_receive`,
   `kutox_linux_workers_stop`, `kutox_linux_irq_pending`,
   `kutox_linux_irq_depth` and `kutox_thread_yield_probe`.
-  Their C facades are now guest-gated, with a separate Rust receive core and
-  the probe's C ABI preserved for the enabled assembly fixture.
+  The first four C facades are removed; their native Rust operations remain.
+  The probe's C ABI is preserved for the enabled assembly fixture.
 - Three already-gated test helpers: `kutox_block_fail_after`,
   `kutox_driver_fail_after` and `kutox_linux_test_now_us`.
+  Their C exports are removed; Rust fixtures use ordinary Rust fault/clock APIs.
 - Three production entry points: `kmain`, `kutox_exception_dispatch` and
   `kutox_thread_entry`. Their linker/assembly contracts remain.
 
@@ -187,13 +198,14 @@ Other reviewed round trips, now ordinary Rust paths, included:
 
 Actual Linux-facing APIs and callback ABIs remain intact.
 
-## Proposed architecture
+## Runtime and guest architecture
 
 ```text
 Linux C / retained C accessors -> real C ABI exports -> Rust compatibility services
 Kernel Rust                  -> ordinary Rust APIs -> Rust compatibility services
 Rust compatibility services  -> ordinary Rust APIs -> native kernel services
-Guest C fixtures             -> guest-only C shims -> the same native Rust core
+Guest Rust scenarios         -> Rust services / Linux ABI providers
+Guest C boundary fixtures    -> Linux-facing APIs / required C macro bridges
 ```
 
 ### Runtime path
@@ -207,9 +219,26 @@ quiescence; removing C ABI is not a reason to make them safe. Reuse existing
 typed handles and ownership tokens. Do not expand this work into a general
 opcode, error-type or device-state redesign.
 
-Where C fixtures still need a native helper, put its C adapter behind
-`guest-tests` and have it call the same Rust implementation. Do not put
-allocation, synchronization or DMA policy into the fixture adapter.
+Guest scenarios own native registration, failure injection, timing/context
+checks, DMA proofs, cancellation, stale handles and resource teardown in Rust.
+Do not export a native C helper just to let a C test inspect those services.
+The guest-only [Rust fixtures](../src/guest_tests/compat_services.rs) are nested
+under the compatibility module so they can use its existing private Rust APIs,
+without widening the production interface.
+
+The six [C fixtures](../compat/guest_tests/) retain actual C interoperability:
+mutex/spin/completion declarations and macros, DMA declarations and unchanged
+failure outputs, variadics/`va_list`, packet macros and C netdev callbacks,
+block request/PDU/scatterlist operations, and storage naming/config callbacks.
+Fixture entries cross Rust-to-C because their code is C; registered callback
+slots retain the real C calling convention without artificial exported names.
+Failure reporting and genuine C macro/formatting bridges are intentional
+exceptions to Linux-named APIs, not alternate native service paths.
+
+The profile gate checks undefined references in the exact four active Cargo C
+fixture archives. An unreviewed `kutox_` dependency fails the build/profile
+check; stale sibling archives cannot satisfy it. Removed service and control
+exports are forbidden in both profiles. All Rust/C fixtures remain absent in OFF.
 
 ### Standalone audit path
 
