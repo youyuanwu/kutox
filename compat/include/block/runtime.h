@@ -12,8 +12,7 @@
 #define snprintf storage_snprintf
 #define msleep storage_msleep
 #define kutox_module kutox_storage_module
-#define KUTOX_STORAGE_SERVICE_RUNTIME 1
-#include "storage-check/driver.h"
+#include "block/driver.h"
 extern void kutox_platform_fail(const char *) __attribute__((noreturn));
 #undef module_init
 #undef module_exit

@@ -13,7 +13,7 @@ from linux_driver_check import (
 )
 from linux_compat_check import audit as audit_runtime, inputs as shared_inputs, verify as verify_runtime
 
-DECLARATIONS = ROOT / "compat/storage-check"
+DECLARATIONS = ROOT / "compat/audit/storage"
 SOURCES = (
     "drivers/block/virtio_blk.c",
     "drivers/virtio/virtio.c",
@@ -44,19 +44,20 @@ def compiler_flags(output):
             "-Wno-pointer-sign", "-Wno-sign-compare", "-Wno-missing-field-initializers",
             *lines(ROOT / "compat/cflags.txt"),
             "-DKUTOX_DRIVER_COMPILE_ONLY=1", "-include", str(DECLARATIONS / "driver.h"),
-            "-I" + str(output / "include"), "-I" + str(DECLARATIONS),
+            "-I" + str(output / "headers/include"), "-I" + str(DECLARATIONS),
+            "-I" + str(ROOT / "compat/include"),
             "-I" + str(ROOT / "linux/include"), "-I" + str(ROOT / "linux/include/uapi"),
             "-I" + str(ROOT / "linux/arch/x86/include/uapi")]
 
 def build_inputs():
     files = [
         Path(__file__).resolve(), ROOT / "scripts/linux_driver_check.py",
-        ROOT / "compat/cflags.txt", ROOT / "compat/headers.txt",
-        ROOT / "compat/driver-check/headers.txt", ROOT / "compat/driver-check/uapi-forwarders.json",
+        ROOT / "compat/cflags.txt", ROOT / "compat/include/profiles/common.headers",
+        ROOT / "compat/include/profiles/e1000.headers", ROOT / "compat/include/profiles/uapi-forwarders.json",
         ROOT / "linker.ld",
-        ROOT / "compat/block_services.c", ROOT / "compat/block_services.h",
+        ROOT / "compat/block_services.c", ROOT / "compat/include/block/services.h",
         ROOT / "src/block_services.rs", ROOT / "build.rs",
-        ROOT / "compat/storage_runtime.c", ROOT / "compat/storage_runtime.h",
+        ROOT / "compat/storage_runtime.c", ROOT / "compat/include/block/runtime.h",
         ROOT / "src/storage.rs",
     ]
     files.extend(path for path in DECLARATIONS.rglob("*") if path.is_file())
@@ -216,11 +217,7 @@ def audit(args):
     report_path = output / "report.json"
     report_path.unlink(missing_ok=True)
     source_identity()
-    include = make_headers(output)
-    for header in lines(DECLARATIONS / "headers.txt"):
-        path = include / header
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text('#include "driver.h"\n')
+    make_headers(output, profile="storage")
     flags = compiler_flags(output)
     paths = []
     evidence = []

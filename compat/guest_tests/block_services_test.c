@@ -2,7 +2,7 @@
 #if !KUTOX_GUEST_TESTS
 #error "guest block fixture requires guest-tests"
 #endif
-#include "block_services.h"
+#include "block/services.h"
 extern void kutox_block_fail_after(size_t);
 
 static struct blk_mq_tag_set tags;

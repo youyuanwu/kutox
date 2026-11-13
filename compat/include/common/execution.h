@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#ifndef KUTOX_DRIVER_CHECK_EXECUTION_H
-#define KUTOX_DRIVER_CHECK_EXECUTION_H
-#include "../execution_types.h"
+#ifndef KUTOX_COMMON_EXECUTION_H
+#define KUTOX_COMMON_EXECUTION_H
+#include "execution_types.h"
 struct timer_list { unsigned long state; };
 struct module { unsigned long state; };
 extern struct module kutox_module;
@@ -20,7 +20,7 @@ struct kutox_parameter { const char *name; const char *type; void *value; size_t
 #define MODULE_DEVICE_TABLE(t,n) static const void *const kutox_table_##n __attribute__((used,section(".kutox.device_tables"))) = n
 #define DEFINE_MUTEX(n) struct mutex n = {0}
 #define DEFINE_SPINLOCK(n) spinlock_t n = {0}
-#include "../execution_services.h"
+#include "execution_services.h"
 void mutex_lock(struct mutex *);
 void mutex_unlock(struct mutex *);
 void mutex_init(struct mutex *);

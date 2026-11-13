@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#ifndef KUTOX_STORAGE_CHECK_PLATFORM_H
-#define KUTOX_STORAGE_CHECK_PLATFORM_H
+#ifndef KUTOX_BLOCK_PLATFORM_H
+#define KUTOX_BLOCK_PLATFORM_H
 #include <linux/kconfig.h>
 #define ____cacheline_aligned_in_smp
 #define __rcu
@@ -161,7 +161,7 @@ struct attribute_group {
     struct attribute **attrs;
     umode_t (*is_visible)(struct kobject *, struct attribute *, int);
 };
-#include "../device_types.h"
+#include "common/device_types.h"
 #define DEVICE_ATTR_RO(n) struct device_attribute dev_attr_##n = {{#n,0444}, n##_show, NULL}
 #define DEVICE_ATTR_RW(n) struct device_attribute dev_attr_##n = {{#n,0644}, n##_show, n##_store}
 #define ATTRIBUTE_GROUPS(n) static const struct attribute_group n##_group = {.attrs=n##_attrs}; \

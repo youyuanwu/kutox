@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#include "driver_services.h"
+#include "net/services.h"
 
 static struct net_device *netdev;
 struct netdev_queue { struct net_device *device; };

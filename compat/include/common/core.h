@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#ifndef KUTOX_DRIVER_CHECK_CORE_H
-#define KUTOX_DRIVER_CHECK_CORE_H
-#include "../base_types.h"
+#ifndef KUTOX_COMMON_CORE_H
+#define KUTOX_COMMON_CORE_H
+#include "base_types.h"
 typedef u8 __u8;
 typedef u16 __u16;
 typedef u32 __u32;
@@ -74,22 +74,8 @@ typedef long ssize_t;
 #include <uapi/linux/const.h>
 #include <uapi/linux/typelimits.h>
 #include <uapi/linux/stddef.h>
-#include <uapi/linux/socket.h>
 #include <asm-generic/errno.h>
 #include <uapi/linux/pci_regs.h>
-#include <uapi/linux/if_ether.h>
-#include <uapi/linux/mii.h>
-#include <uapi/linux/sockios.h>
-struct sockaddr { unsigned short sa_family; char sa_data[14]; };
-#include <uapi/linux/if.h>
-#include <uapi/linux/in.h>
-#include <uapi/linux/ip.h>
-#include <uapi/linux/ipv6.h>
-#include <uapi/linux/tcp.h>
-#include <uapi/linux/udp.h>
-#define ETH_FCS_LEN 4
-#define NET_IP_ALIGN 2
-#define CAP_NET_ADMIN 12
 void *memcpy(void *, const void *, size_t);
 void *memset(void *, int, size_t);
 int memcmp(const void *, const void *, size_t);
@@ -102,22 +88,11 @@ int printk(const char *, ...);
 #define pr_info(...) printk(__VA_ARGS__)
 #define pr_err(...) printk(__VA_ARGS__)
 #define pr_warn(...) printk(__VA_ARGS__)
-struct net_device;
 struct device;
-void netdev_printk(const struct net_device *, const char *, ...);
 void dev_printk(const struct device *, const char *, ...);
-void netif_log(u32, const char *, const struct net_device *, const char *, ...);
-#define netif_err(a,l,d,...) netif_log((a)->msg_enable,#l,d,__VA_ARGS__)
-#define netif_info(a,l,d,...) netif_log((a)->msg_enable,#l,d,__VA_ARGS__)
-#define netif_warn(a,l,d,...) netif_log((a)->msg_enable,#l,d,__VA_ARGS__)
-#define netif_dbg(a,l,d,...) netif_log((a)->msg_enable,#l,d,__VA_ARGS__)
 #define KERN_ERR "\0013"
 #define DUMP_PREFIX_OFFSET 1
 void print_hex_dump(const char *, const char *, int,int,int,const void *,size_t,bool);
-#define netdev_dbg(d,...) netdev_printk(d,__VA_ARGS__)
-#define netdev_info(d,...) netdev_printk(d,__VA_ARGS__)
-#define netdev_err(d,...) netdev_printk(d,__VA_ARGS__)
-#define netdev_warn(d,...) netdev_printk(d,__VA_ARGS__)
 #define dev_err(d,...) dev_printk(d,__VA_ARGS__)
 #define dev_info(d,...) dev_printk(d,__VA_ARGS__)
 #define dev_warn(d,...) dev_printk(d,__VA_ARGS__)
@@ -152,11 +127,8 @@ int fls64(u64);
 unsigned long find_first_bit(const unsigned long *, unsigned long);
 unsigned long find_next_bit(const unsigned long *, unsigned long, unsigned long);
 #define for_each_set_bit(b,a,n) for ((b)=find_first_bit(a,n); (b)<(n); (b)=find_next_bit(a,n,(b)+1))
-bool net_ratelimit(void);
 void le16_to_cpus(__le16 *);
 void cpu_to_le16s(u16 *);
-void netdev_warn_once(const struct net_device *, const char *, ...);
-#define netdev_WARN_ONCE(d,...) netdev_warn_once(d,__VA_ARGS__)
 enum system_states { SYSTEM_BOOTING, SYSTEM_SCHEDULING, SYSTEM_FREEING_INITMEM, SYSTEM_RUNNING, SYSTEM_HALT, SYSTEM_POWER_OFF, SYSTEM_RESTART, SYSTEM_SUSPEND };
 extern enum system_states system_state;
 #endif

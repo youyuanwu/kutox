@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#ifndef KUTOX_DRIVER_CHECK_ETHTOOL_H
-#define KUTOX_DRIVER_CHECK_ETHTOOL_H
+#ifndef KUTOX_NET_ETHTOOL_H
+#define KUTOX_NET_ETHTOOL_H
 #include <uapi/linux/ethtool.h>
 struct netlink_ext_ack;
 struct kernel_ethtool_ringparam { u32 rx_buf_len; };

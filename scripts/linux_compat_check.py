@@ -1,5 +1,6 @@
 """Whole-object proof for the shared Rust services and unchanged Linux drivers."""
 import struct
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,11 +28,13 @@ def inputs():
     from linux_driver_check import digest
     files = [
         Path(__file__).resolve(), ROOT / "rust-toolchain.toml",
-        ROOT / "compat/rust_services.rs", ROOT / "compat/abi_probe.rs", ROOT / "compat/common_layout.c",
-        ROOT / "compat/base_types.h", ROOT / "compat/device_types.h",
-        ROOT / "src/linux_abi.rs", ROOT / "compat/service-ffi.txt",
+        ROOT / "compat/audit/common/rust_services.rs", ROOT / "compat/audit/common/abi_probe.rs", ROOT / "compat/audit/common/common_layout.c",
+        ROOT / "compat/include/common/base_types.h", ROOT / "compat/include/common/device_types.h",
+        ROOT / "src/linux_abi.rs", ROOT / "compat/audit/common/service-ffi.txt",
     ]
     files.extend((ROOT / "src/linux_compat").glob("*.rs"))
+    files.extend(path for path in (ROOT / "compat/include").rglob("*") if path.is_file())
+    files.append(ROOT / "compat/audit/common/marker.h")
     return {str(path.relative_to(ROOT)): digest(path) for path in sorted(files)}
 
 
@@ -45,19 +48,19 @@ def c_flags(output, profile):
     from linux_driver_check import lines
     result = ["-O2", "-Wall", "-Wextra", "-Werror", "-Wno-pointer-sign",
               "-Wno-sign-compare", "-Wno-missing-field-initializers", *lines(ROOT / "compat/cflags.txt"),
-              "-I" + str(output / profile / "include"), "-I" + str(ROOT / "compat"),
+              "-I" + str(output / profile / "headers/include"), "-I" + str(ROOT / "compat/include"),
               "-I" + str(ROOT / "linux/include"), "-I" + str(ROOT / "linux/include/uapi"),
               "-I" + str(ROOT / "linux/arch/x86/include/uapi"), "-DKUTOX_GUEST_TESTS=0"]
     if profile == "net":
         result += ["-I" + str(ROOT / NET), "-DKUTOX_E1000_FULL_SOURCE=1",
-                   "-include", str(ROOT / "compat/driver_services.h")]
+                   "-include", str(ROOT / "compat/include/net/services.h")]
     elif profile == "storage":
-        result += ["-I" + str(ROOT / "linux/drivers/virtio"), "-include", str(ROOT / "compat/storage_runtime.h")]
+        result += ["-I" + str(ROOT / "linux/drivers/virtio"), "-include", str(ROOT / "compat/include/block/runtime.h")]
     return result
 
 
 def rust_command(output, probe=False):
-    return ["rustc", *rust_flags(), str(ROOT / ("compat/abi_probe.rs" if probe else "compat/rust_services.rs")),
+    return ["rustc", *rust_flags(), str(ROOT / ("compat/audit/common/abi_probe.rs" if probe else "compat/audit/common/rust_services.rs")),
             "-o", str(output / ("abi-rust.o" if probe else "rust-services.o"))]
 
 
@@ -113,16 +116,18 @@ def evidence(args, output):
     for source, profile in UNITS:
         command = c_command(args, output, source, profile)
         obj = Path(command[-1])
+        headers = dependency_paths(obj.with_suffix(".d").read_text())
+        runtime_headers(headers, profile)
         units.append({
             "source": source, "source_sha256": digest(ROOT / source), "command": command,
             "object_sha256": digest(obj),
             "headers": [{"path": header, "sha256": digest(Path(header))}
-                        for header in dependency_paths(obj.with_suffix(".d").read_text())],
+                        for header in headers],
         })
         paths.append(obj)
     rust = output / "rust-services.o"
     paths.append(rust)
-    shared = inventory(paths, output / "shared-runtime.o", set(lines(ROOT / "compat/service-ffi.txt")))
+    shared = inventory(paths, output / "shared-runtime.o", set(lines(ROOT / "compat/audit/common/service-ffi.txt")))
     rust_defined = sorted(s["name"] for s in Elf(rust).symbols()
                           if s["owner"] and s["binding"] in (1, 2))
     abi_paths = [output / "abi-rust.o", *(output / f"abi-{p}.o" for p in ("boot", "net", "storage"))]
@@ -131,21 +136,43 @@ def evidence(args, output):
         "rust": {"command": rust_command(output), "object_sha256": digest(rust), "defined": rust_defined},
         "linked_sha256": digest(output / "shared-runtime.o"), "compile_only_marker": False,
         "abi": {"values": layout(abi_paths), "objects": {path.name: digest(path) for path in abi_paths},
-                "commands": [rust_command(output, True), *(c_command(args, output, "compat/common_layout.c", p, probe=True)
+                "commands": [rust_command(output, True), *(c_command(args, output, "compat/audit/common/common_layout.c", p, probe=True)
                                                          for p in ("boot", "net", "storage"))]},
+        "profile_isolation": isolation_evidence(args, output),
     }
 
 
+def runtime_headers(headers, profile):
+    audit = ROOT / "compat/audit"
+    other_class = ROOT / "compat/include" / ("net" if profile == "storage" else "block")
+    for header in headers:
+        path = Path(header).resolve()
+        if path.is_relative_to(audit) or path.is_relative_to(other_class):
+            raise ValueError(f"{profile} runtime depends on an audit or foreign-class header: {header}")
+
+
+def isolation_command(args, output, first, second):
+    return [args.clang, *c_flags(output, "boot"), "-x", "c", "-fsyntax-only",
+            "-include", str(ROOT / f"compat/include/profiles/{first}.h"),
+            "-include", str(ROOT / f"compat/include/profiles/{second}.h"), "-"]
+
+
+def isolation_evidence(args, output):
+    from linux_driver_check import digest
+    result = []
+    for first, second in (("e1000", "storage"), ("storage", "e1000")):
+        log = output / f"profiles-{first}-{second}.log"
+        if "Cannot combine e1000 and storage feature profiles" not in log.read_text():
+            raise ValueError("driver feature profiles were not independently isolated")
+        result.append({"command": isolation_command(args, output, first, second), "log_sha256": digest(log)})
+    return result
+
+
 def audit(args, output):
-    from linux_driver_check import lines, make_headers, run
+    from linux_driver_check import make_headers, run
     output.mkdir(parents=True, exist_ok=True)
-    for profile, wrapper in (("boot", "kutox_compat.h"), ("net", "driver_services.h"), ("storage", "storage_runtime.h")):
-        include = make_headers(output / profile, wrapper=wrapper)
-        if profile == "storage":
-            for name in lines(ROOT / "compat/storage-check/headers.txt"):
-                path = include / name
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text('#include "storage_runtime.h"\n')
+    for profile, wrapper in (("boot", "common/kutox_compat.h"), ("net", "net/services.h"), ("storage", "block/runtime.h")):
+        make_headers(output / profile, wrapper=wrapper, profile="storage" if profile == "storage" else "e1000")
     paths = []
     for source, profile in UNITS:
         command = c_command(args, output, source, profile)
@@ -156,7 +183,14 @@ def audit(args, output):
     run([args.ld, "-r", "-o", str(output / "shared-runtime.o"), *paths], output / "shared-link.log")
     run(rust_command(output, True), output / "abi-rust.log")
     for profile in ("boot", "net", "storage"):
-        run(c_command(args, output, "compat/common_layout.c", profile, probe=True), output / f"abi-{profile}.log")
+        run(c_command(args, output, "compat/audit/common/common_layout.c", profile, probe=True), output / f"abi-{profile}.log")
+    for first, second in (("e1000", "storage"), ("storage", "e1000")):
+        command = isolation_command(args, output, first, second)
+        completed = subprocess.run(command, input="", text=True, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, check=False)
+        (output / f"profiles-{first}-{second}.log").write_text(completed.stdout)
+        if completed.returncode == 0:
+            raise ValueError("mixed driver feature profiles were admitted")
     return evidence(args, output)
 
 

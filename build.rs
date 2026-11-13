@@ -49,13 +49,7 @@ fn main() {
         }
     }
     println!("cargo:rustc-env=KUTOX_LINUX_REVISION={LINUX_REVISION}");
-    let include = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("include");
-    let headers = fs::read_to_string("compat/headers.txt").expect("cannot read C header allowlist");
-    for header in headers.lines() {
-        let path = include.join(header);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, "#include <kutox_compat.h>\n").unwrap();
-    }
+    let include = forwarding_headers("boot", "e1000", "common/kutox_compat.h");
     for path in [
         "compat",
         "linker.ld",
@@ -78,7 +72,7 @@ fn main() {
     build
         .compiler("clang")
         .include(&include)
-        .include("compat")
+        .include("compat/include")
         .include("linux/include")
         .include(&driver)
         .file("compat/deferred.c")
@@ -117,29 +111,12 @@ fn main() {
         assert!(status.success(), "guest ELF linking failed");
     }
     build.compile("kutox_runtime");
-    let source_include = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("source-include");
-    let extra = fs::read_to_string("compat/driver-check/headers.txt").expect("source header list");
-    for header in headers.lines().chain(extra.lines()) {
-        let path = source_include.join(header);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, "#include <driver_services.h>\n").unwrap();
-    }
-    let uapi_forwarders = [
-        ("asm/sockios.h", "asm-generic/sockios.h"),
-        ("asm/types.h", "asm-generic/types.h"),
-        ("linux/in6.h", "linux/in6.h"),
-        ("linux/if_ether.h", "linux/if_ether.h"),
-    ];
-    for (header, target) in uapi_forwarders {
-        let path = source_include.join(header);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, format!("#include <uapi/{target}>\n")).unwrap();
-    }
+    let source_include = forwarding_headers("e1000", "e1000", "net/services.h");
     let mut source = cc::Build::new();
     source
         .compiler("clang")
         .include(&source_include)
-        .include("compat")
+        .include("compat/include")
         .include(&driver)
         .include("linux/include")
         .include("linux/include/uapi")
@@ -160,30 +137,12 @@ fn main() {
     }
     source.flag("-Wno-pointer-sign").flag("-Wno-sign-compare");
     source.compile("linux_e1000");
-    let storage_include = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("storage-include");
-    let storage_headers =
-        fs::read_to_string("compat/storage-check/headers.txt").expect("storage headers");
-    for header in headers
-        .lines()
-        .chain(extra.lines())
-        .chain(storage_headers.lines())
-    {
-        let path = storage_include.join(header);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, "#include <block_services.h>\n").unwrap();
-    }
-    for (header, target) in uapi_forwarders {
-        fs::write(
-            storage_include.join(header),
-            format!("#include <uapi/{target}>\n"),
-        )
-        .unwrap();
-    }
+    let storage_include = forwarding_headers("block", "storage", "block/services.h");
     let mut storage = cc::Build::new();
     storage
         .compiler("clang")
         .include(&storage_include)
-        .include("compat")
+        .include("compat/include")
         .include("linux/include")
         .include("linux/include/uapi")
         .file("compat/block_services.c")
@@ -193,35 +152,18 @@ fn main() {
         storage.flag(flag);
     }
     storage.compile("kutox_block_services");
-    let runtime_include =
-        PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("storage-runtime-include");
-    for header in headers
-        .lines()
-        .chain(extra.lines())
-        .chain(storage_headers.lines())
-    {
-        let path = runtime_include.join(header);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, "#include <storage_runtime.h>\n").unwrap();
-    }
-    for (header, target) in uapi_forwarders {
-        fs::write(
-            runtime_include.join(header),
-            format!("#include <uapi/{target}>\n"),
-        )
-        .unwrap();
-    }
+    let runtime_include = forwarding_headers("storage", "storage", "block/runtime.h");
     let mut storage_runtime = cc::Build::new();
     storage_runtime
         .compiler("clang")
         .include(&runtime_include)
-        .include("compat")
+        .include("compat/include")
         .include("linux/include")
         .include("linux/include/uapi")
         .include("linux/arch/x86/include/uapi")
         .include("linux/drivers/virtio")
         .flag("-include")
-        .flag("compat/storage_runtime.h")
+        .flag("compat/include/block/runtime.h")
         .file("compat/storage_runtime.c")
         .warnings_into_errors(true);
     for unit in [
@@ -249,7 +191,7 @@ fn main() {
         tests
             .compiler("clang")
             .include(&include)
-            .include("compat")
+            .include("compat/include")
             .include("linux/include")
             .include(&driver)
             .define("KUTOX_GUEST_TESTS", "1")
@@ -265,7 +207,7 @@ fn main() {
         source_tests
             .compiler("clang")
             .include(&source_include)
-            .include("compat")
+            .include("compat/include")
             .include(&driver)
             .include("linux/include")
             .include("linux/include/uapi")
@@ -284,7 +226,7 @@ fn main() {
         storage_tests
             .compiler("clang")
             .include(&storage_include)
-            .include("compat")
+            .include("compat/include")
             .include("linux/include")
             .include("linux/include/uapi")
             .define("KUTOX_GUEST_TESTS", "1")
@@ -299,7 +241,7 @@ fn main() {
         config_test
             .compiler("clang")
             .include(&runtime_include)
-            .include("compat")
+            .include("compat/include")
             .include("linux/include")
             .include("linux/include/uapi")
             .include("linux/arch/x86/include/uapi")
@@ -311,6 +253,32 @@ fn main() {
         for flag in flags.lines() {
             config_test.flag(flag);
         }
+
         config_test.compile("kutox_storage_config_guest");
     }
+}
+
+fn forwarding_headers(name: &str, profile: &str, wrapper: &str) -> PathBuf {
+    let include =
+        PathBuf::from(env::var_os("OUT_DIR").unwrap()).join(format!("compat-{name}-include"));
+    let common =
+        fs::read_to_string("compat/include/profiles/common.headers").expect("common headers");
+    let selected = fs::read_to_string(format!("compat/include/profiles/{profile}.headers"))
+        .expect("profile headers");
+    for header in common.lines().chain(selected.lines()) {
+        let path = include.join(header);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, format!("#include <{wrapper}>\n")).unwrap();
+    }
+    for (header, target) in [
+        ("asm/sockios.h", "asm-generic/sockios.h"),
+        ("asm/types.h", "asm-generic/types.h"),
+        ("linux/in6.h", "linux/in6.h"),
+        ("linux/if_ether.h", "linux/if_ether.h"),
+    ] {
+        let path = include.join(header);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, format!("#include <uapi/{target}>\n")).unwrap();
+    }
+    include
 }

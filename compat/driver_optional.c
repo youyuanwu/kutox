@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#include "driver_services.h"
+#include "net/services.h"
 static int unsupported(const char *operation)
 {
     kutox_driver_diag(operation,-EOPNOTSUPP); return -EOPNOTSUPP;

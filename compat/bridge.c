@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #include "e1000.h"
-#include "bridge.h"
+#include "net/bridge.h"
 
 extern void kutox_serial_byte(u8 byte);
 extern void kutox_delay_us(u64 usec);

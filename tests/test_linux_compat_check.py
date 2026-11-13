@@ -20,6 +20,18 @@ def elf(symbols, marked=False):
 
 
 class SharedCompatibilityTests(unittest.TestCase):
+    def test_runtime_headers_reject_audit_coupling_and_foreign_driver_classes(self):
+        include = compat.ROOT / "compat/include"
+        for profile in ("net", "storage", "boot"):
+            own = "block" if profile == "storage" else "net"
+            other = "net" if profile == "storage" else "block"
+            compat.runtime_headers([str(include / "common/core.h"), str(include / own / "driver.h")], profile)
+            for path in (compat.ROOT / "compat/audit/e1000/driver.h",
+                         include / other / "driver.h",
+                         include / "common/../../audit/common/marker.h"):
+                with self.subTest(profile=profile, path=path), self.assertRaises(ValueError):
+                    compat.runtime_headers([str(path)], profile)
+
     def test_complete_real_provider_closure_cannot_hide_dependencies_or_use_local_definitions(self):
         source = [symbol("queue", 1, 2), symbol("provider"), symbol("shared"),
                   symbol("shared", 1, 2, binding=0)]

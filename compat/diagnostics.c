@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#include "kutox_compat.h"
-#include "diagnostics_services.h"
+#include "common/kutox_compat.h"
+#include "common/diagnostics_services.h"
 extern void kutox_serial_byte(u8);
 extern void kutox_platform_fail(const char *) __attribute__((noreturn));
 extern bool kutox_driver_tracing(void);

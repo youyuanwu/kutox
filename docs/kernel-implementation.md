@@ -238,8 +238,9 @@ general VFS/file syscalls, dynamic ELF loading and init supervision are deferred
 
 The [C block provider](../compat/block_services.c) implements the first storage
 source-facing service boundary, not a Linux block layer or a hardware driver.
-Its [runtime header](../compat/block_services.h) shares the storage audit's types
-without its compile-only marker. The [Rust platform adapter](../src/block_services.rs)
+Its [runtime header](../compat/include/block/services.h) uses the same block-class
+declarations as the audit, without including audit headers or markers.
+The [Rust platform adapter](../src/block_services.rs)
 uses the existing Moss-backed kernel heap and the existing boot/thread context
 check; it does not reuse e1000's NIC-bound allocation/DMA registry or reinterpret
 its device structs.
@@ -390,12 +391,30 @@ Linux-facing C ABI using `#[unsafe(no_mangle)] extern "C"` exports:
 - `storage.rs`: bus/driver/device references, local config-work queue, native
   read tickets, admission checks and reset/remove/reprobe sequencing.
 
-[Shared base/device headers](../compat/device_types.h) and
+[Shared base/device headers](../compat/include/common/device_types.h) and
 [Rust `repr(C)` contracts](../src/linux_abi.rs) replace the former incompatible
 minimal/e1000/storage device and PCI declarations. A freestanding Rust probe
 and actual C probes in all three profiles compare 37 layout/offset/GFP values.
 The early synthetic `GFP_KERNEL=0` declaration is gone: boot fixtures and both
 driver paths now use the pinned Linux header's actual GFP values.
+
+The runtime declaration hierarchy is [compat/include/](../compat/include/):
+`common/` owns shared core/execution/PCI contracts, `net/` owns socket/packet/
+ethtool declarations, and `block/` owns block/VirtIO platform extensions.
+Common driver headers no longer import network wire definitions or depend on
+an e1000 audit directory. `profiles/e1000.h` and `profiles/storage.h` select
+different admitted feature sets; mixing them in either include order is an
+explicit compile error. Shared and per-profile forwarding manifests live
+beside these profiles, so a storage build does not generate network-only Linux
+header shims or borrow the e1000 forwarding list.
+
+[compat/audit/](../compat/audit/) contains only audit assets: `e1000/` and
+`storage/` hold dependency inventories, original-source layout probes and
+thin wrappers; `common/` holds cross-language probes, the compile-only marker
+and shared backend FFI evidence. Audit wrappers include the runtime declarations
+and add the marker, never the reverse. Runtime compiler dependency manifests
+reject audit headers and foreign-class extensions; no compatibility forwarding
+headers remain in the old `driver-check` or `storage-check` directories.
 
 Storage configuration work uses the same generation-checked native work
 registry as e1000. Its bounded off-worker queue marks an invocation running
@@ -1127,10 +1146,10 @@ both builds, with all images and acceptance code ON-only.
   already-initialized heap.
 - [The C bridge](../compat/bridge.c) owns all Linux-facing structs. Rust passes
   primitive PCI/MMIO parameters and receives a checked, fixed-layout result.
-- [The compatibility header](../compat/kutox_compat.h) supplies the limited types,
+- [The compatibility header](../compat/include/common/kutox_compat.h) supplies the limited types,
   macros, and platform interfaces needed to compile the upstream translation
   unit. Execution types are shared with the source check and synthetic tests;
-  separately compiled [source services](../compat/driver_services.h) implement
+  separately compiled [source services](../compat/include/net/services.h) implement
   the selected PCI/allocation/linear-packet/DMA contracts. This is not a
   compatible Linux binary ABI or proof of original driver execution.
 - [The build script](../build.rs) generates forwarding headers from an explicit

@@ -2,7 +2,7 @@
 #if !KUTOX_GUEST_TESTS
 #error "guest test unit requires guest-tests"
 #endif
-#include "storage_runtime.h"
+#include "block/runtime.h"
 #include <linux/virtio.h>
 #include <linux/virtio_config.h>
 void kutox_guest_storage_config(struct device *device)

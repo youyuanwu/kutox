@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REVISION = "c03c1a14507dfaf8b856c2608f9ac216021fc222"
 SOURCES = ("e1000_main.c", "e1000_hw.c", "e1000_ethtool.c", "e1000_param.c")
 DRIVER = ROOT / "linux/drivers/net/ethernet/intel/e1000"
-DECLARATIONS = ROOT / "compat/driver-check"
+DECLARATIONS = ROOT / "compat/audit/e1000"
 LAYOUT_NAMES = (
     "pointer", "dma_address", "tx_descriptor", "rx_descriptor", "tx_count", "rx_count",
     "adapter", "tx_ring", "rx_ring", "tx_buffer_info", "rx_buffer_info", "net_device",
@@ -190,9 +190,12 @@ def metadata(path):
     return result
 
 
-def make_headers(output, wrapper="driver.h"):
-    include = output / "include"
-    headers = lines(ROOT / "compat/headers.txt") + lines(DECLARATIONS / "headers.txt")
+def make_headers(output, wrapper="driver.h", profile="e1000"):
+    include = output / "headers/include"
+    profiles = ROOT / "compat/include/profiles"
+    if profile not in ("e1000", "storage"):
+        raise ValueError(f"unknown forwarding profile: {profile}")
+    headers = lines(profiles / "common.headers") + lines(profiles / f"{profile}.headers")
     if len(set(headers)) != len(headers):
         raise ValueError("compile-check header allowlists overlap")
     for header in headers:
@@ -201,7 +204,7 @@ def make_headers(output, wrapper="driver.h"):
         path = include / header
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f'#include "{wrapper}"\n')
-    for header, target in json.loads((DECLARATIONS / "uapi-forwarders.json").read_text()).items():
+    for header, target in json.loads((profiles / "uapi-forwarders.json").read_text()).items():
         if not re.fullmatch(r"(?:[a-z0-9_-]+/)+[a-z0-9_-]+\.h", header) or ".." in Path(target).parts:
             raise ValueError(f"invalid original UAPI path: {header}: {target}")
         if header in headers or not (ROOT / "linux/include/uapi" / target).is_file():
@@ -240,21 +243,22 @@ def contracts():
 def compiler_flags(output):
     return ["-O2", "-Wall", "-Wextra", "-Werror", "-ferror-limit=0",
             "-Wno-pointer-sign", "-Wno-sign-compare", *lines(ROOT / "compat/cflags.txt"),
-            "-DKUTOX_DRIVER_COMPILE_ONLY=1", "-I" + str(output / "include"),
+            "-DKUTOX_DRIVER_COMPILE_ONLY=1", "-I" + str(output / "headers/include"),
             "-I" + str(DECLARATIONS), "-I" + str(DRIVER),
+            "-I" + str(ROOT / "compat/include"),
             "-I" + str(ROOT / "linux/include"), "-I" + str(ROOT / "linux/include/uapi"),
             "-I" + str(ROOT / "linux/arch/x86/include/uapi")]
 
 
 def build_inputs():
     files = [ROOT / "scripts/linux_driver_check.py", ROOT / "compat/cflags.txt",
-             ROOT / "compat/headers.txt", ROOT / "compat/bridge.c", ROOT / "compat/kutox_compat.h",
-             ROOT / "compat/execution_types.h", ROOT / "compat/execution_services.h",
-             ROOT / "compat/execution_layout.c", ROOT / "compat/diagnostics_services.h",
+             ROOT / "compat/include/profiles/common.headers", ROOT / "compat/bridge.c", ROOT / "compat/include/common/kutox_compat.h",
+             ROOT / "compat/include/common/execution_types.h", ROOT / "compat/include/common/execution_services.h",
+             ROOT / "compat/audit/common/execution_layout.c", ROOT / "compat/include/common/diagnostics_services.h",
              ROOT / "linker.ld", DRIVER / "Makefile"]
     files += sorted(path for path in DECLARATIONS.rglob("*") if path.is_file())
     files += [ROOT / "compat" / name for name in SERVICE_SOURCES + BOOT_SERVICE_SOURCES]
-    files += [ROOT / "compat/driver_services.h"]
+    files += [ROOT / "compat/include/net/services.h"]
     from linux_compat_check import inputs
     return {**{str(path.relative_to(ROOT)): digest(path) for path in files}, **inputs()}
 
@@ -288,14 +292,10 @@ def read_layout(path):
 
 
 def check_bridge_guard(args, output):
-    include = output / "boot-include"
-    for header in lines(ROOT / "compat/headers.txt"):
-        path = include / header
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("#include <kutox_compat.h>\n")
+    include = make_headers(output / "boot", "common/kutox_compat.h")
     flags = ["-Wall", "-Wextra", "-Werror", *lines(ROOT / "compat/cflags.txt"),
-             "-DKUTOX_DRIVER_COMPILE_ONLY=1", "-include", str(DECLARATIONS / "marker.h"),
-             "-I" + str(include), "-I" + str(ROOT / "compat"), "-I" + str(DRIVER)]
+             "-DKUTOX_DRIVER_COMPILE_ONLY=1", "-include", str(ROOT / "compat/audit/common/marker.h"),
+             "-I" + str(include), "-I" + str(ROOT / "compat/include"), "-I" + str(DRIVER)]
     flags += ["-I" + str(ROOT / "linux/include")]
     for full in (False, True):
         path = output / f"bridge-guard-{int(full)}.o"
@@ -350,14 +350,14 @@ def read_execution_layout(path):
 
 def execution_layouts(args, flags, output):
     boot_flags = ["-Wall", "-Wextra", "-Werror", *lines(ROOT / "compat/cflags.txt"),
-                  "-DKUTOX_DRIVER_COMPILE_ONLY=1", "-include", str(DECLARATIONS / "marker.h"),
-                  "-I" + str(output / "boot-include"), "-I" + str(ROOT / "compat"),
+                  "-DKUTOX_DRIVER_COMPILE_ONLY=1", "-include", str(ROOT / "compat/audit/common/marker.h"),
+                  "-I" + str(output / "boot/headers/include"), "-I" + str(ROOT / "compat/include"),
                   "-I" + str(ROOT / "linux/include")]
     result = {}
-    for name, selected in (("source", [*flags, "-I" + str(ROOT / "compat"), "-DKUTOX_EXECUTION_SOURCE_PROFILE=1"]),
+    for name, selected in (("source", [*flags, "-DKUTOX_EXECUTION_SOURCE_PROFILE=1"]),
                            ("runtime", boot_flags)):
         path = output / f"execution-layout-{name}.o"
-        run([args.clang, *selected, "-c", str(ROOT / "compat/execution_layout.c"), "-o", str(path)],
+        run([args.clang, *selected, "-c", str(ROOT / "compat/audit/common/execution_layout.c"), "-o", str(path)],
             output / f"execution-layout-{name}.log")
         result[name] = {"sha256": digest(path), "layouts": read_execution_layout(path)}
     return result

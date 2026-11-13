@@ -473,10 +473,15 @@ and modern PCI units from that same revision. Their original per-file SPDX
 notices remain in the submodule, including GPL-2.0-or-later for the ring/common
 transport and GPL-2.0-only for the core/modern device helpers. Original VirtIO
 headers and UAPI wire definitions are included directly. The GPL-2.0-only
-[storage declarations](compat/storage-check/) adapt the source-facing API and
+[storage declarations](compat/include/block/) adapt the source-facing API and
 reuse existing kutox core/execution declarations; they supply no device,
 block-layer or DMA algorithms. These marked audit objects are rejected by the
 runtime linker and are not linked into the boot image.
+The declarations are shared with runtime compilation; only the wrappers,
+dependency inventories and layout/provenance probes under
+[compat/audit/](compat/audit/) are audit-only. Shared/runtime declarations live
+under [compat/include/](compat/include/), with network/block extensions and
+independent e1000/storage feature profiles.
 
 The [bounded block provider](compat/block_services.c), its
 [Rust allocation/context adapter](src/block_services.rs) and

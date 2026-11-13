@@ -14,7 +14,7 @@ import linux_driver_check as check
 
 class InputTests(unittest.TestCase):
     def test_service_abi_is_explicit_and_covers_rust_primitives(self):
-        names = check.lines(check.ROOT / "compat/service-ffi.txt")
+        names = check.lines(check.ROOT / "compat/audit/common/service-ffi.txt")
         self.assertEqual(names, sorted(names))
         self.assertTrue({"memcpy", "memset", "kutox_jiffies", "kutox_driver_dma_map",
                          "kutox_driver_gate", "kutox_driver_pci", "kutox_net_wake"} <= set(names))
@@ -91,6 +91,12 @@ class InputTests(unittest.TestCase):
             text = (include / "linux/in6.h").read_text()
             self.assertEqual(text, "#include <uapi/linux/in6.h>\n")
             self.assertIn('driver.h', (include / "linux/netdevice.h").read_text())
+            storage = check.make_headers(Path(directory) / "storage", "block/runtime.h", profile="storage")
+            self.assertEqual((storage / "linux/blk-mq.h").read_text(), '#include "block/runtime.h"\n')
+            self.assertFalse((storage / "linux/netdevice.h").exists())
+            self.assertFalse((include / "linux/blk-mq.h").exists())
+            with self.assertRaisesRegex(ValueError, "unknown forwarding profile"):
+                check.make_headers(Path(directory) / "unknown", profile="all")
 
     def test_truncated_or_executable_elf_is_not_relocatable_evidence(self):
         with tempfile.TemporaryDirectory() as directory:

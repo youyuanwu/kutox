@@ -52,6 +52,15 @@ device/PCI/execution-layout and GFP values. Independent `--verify` checks
 stored objects and provenance without compiling. Source-only dependency
 inventories remain 209/203 and retain actual kernel-link exclusion.
 
+Runtime declarations and header-forwarding manifests live under
+[compat/include/](../compat/include/), not audit directories. Audit-only
+inventories, wrappers, probes and FFI allowlists live under
+[compat/audit/](../compat/audit/). Production compiler dependency evidence must
+contain neither audit headers nor foreign class extensions. Both e1000/storage
+profile include orders must fail explicitly, while every standalone runtime
+profile still compiles and matches the Rust ABI. Host mutation tests cover
+dependency leakage and per-class forwarding isolation.
+
 The catalog independently verifies the existing report without recompiling.
 This can also be requested directly:
 

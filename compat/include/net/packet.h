@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#ifndef KUTOX_DRIVER_CHECK_PACKET_H
-#define KUTOX_DRIVER_CHECK_PACKET_H
+#ifndef KUTOX_NET_PACKET_H
+#define KUTOX_NET_PACKET_H
 typedef u64 netdev_features_t;
 #include <linux/netdev_features.h>
 #define NET_SKB_PAD 64

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#ifndef KUTOX_STORAGE_CHECK_BLOCK_H
-#define KUTOX_STORAGE_CHECK_BLOCK_H
+#ifndef KUTOX_BLOCK_H
+#define KUTOX_BLOCK_H
 typedef u64 sector_t;
 typedef u8 blk_status_t;
 typedef unsigned int blk_opf_t;

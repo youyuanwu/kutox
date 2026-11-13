@@ -141,6 +141,13 @@ profiles with Rust layouts and GFP flags. See the
 [shared boundary](docs/kernel-implementation.md#shared-linux-compatibility-boundary)
 for the remaining per-device policies and resource limits.
 
+Compatibility headers live under [compat/include/](compat/include/): `common/`
+holds shared declarations, `net/` and `block/` hold class-specific extensions,
+and `profiles/` holds separate e1000/storage feature selections and forwarding
+manifests. Runtime builds do not include audit headers. Dependency inventories,
+layout probes, compile-only wrappers and FFI proof lists live separately under
+[compat/audit/](compat/audit/); both driver audits remain enabled.
+
 The [driver-reuse roadmap](docs/rust-kernel-linux-drivers.md#linux-e1000-driver-reuse-roadmap)
 now has tested execution/object, workqueue, NAPI/IRQ and PCI/skb/streaming-DMA
 services. Original module/probe/open/close, PHY/reset/options, IRQ, watchdog

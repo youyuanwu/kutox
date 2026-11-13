@@ -532,11 +532,18 @@ and real Linux storage-driver reads are implemented; disk-backed boot is not.**
 compile-only boundary: direct Clang compilation for `x86_64-unknown-none` using
 the shared [freestanding flags](../compat/cflags.txt), unchanged source in the
 normal pinned submodule, and explicit
-[storage declarations](../compat/storage-check/driver.h). No Kbuild, generated
+[block-class declarations](../compat/include/block/driver.h). No Kbuild, generated
 Linux configuration, second worktree or Linux block-layer implementation is
 used.
 
-The [source-facing profile](../compat/storage-check/profile.h) enables only
+The runtime headers are organized under `compat/include/common`, `net`, `block`
+and `profiles`. Audit-only wrappers and inventories live under `compat/audit`.
+The storage audit wrapper imports the same block declarations as production and
+adds the compile-only marker. It no longer imports common types through an
+e1000-specific directory. The forwarding manifests combine shared headers with
+only the selected class, retaining distinct driver feature gates.
+
+The [source-facing profile](../compat/include/profiles/storage.h) enables only
 x86-64, PCI, BLOCK, VirtIO/anchor, modern PCI and VirtIO block. The preprocessor
 gate rejects missing/extra configuration, including SMP, PCI MSI, legacy
 transport/admin, PM, debug and zoned-device configuration. Original Linux
@@ -566,7 +573,7 @@ actual global/weak providers. Local symbols cannot satisfy another object's
 external reference.
 
 The freestanding closure retains **203 unresolved APIs**. Every API is explicitly
-classified in [apis.json](../compat/storage-check/apis.json), with contexts,
+classified in [apis.json](../compat/audit/storage/apis.json), with contexts,
 required/profile-rejected policy, ownership/error obligations and future runtime
 acceptance requirements. An unclassified or unexpectedly provided API fails the
 audit. These replace the old native-Linux 118-symbol inventory, which was not a
@@ -583,7 +590,7 @@ A failed build removes the previous success report.
 The audit now also compiles [block_services.c](../compat/block_services.c) and
 links it with the unchanged source objects. This resolves 57 API names and
 leaves exactly 146 source-facing APIs plus the five Rust functions listed in
-[service-ffi.txt](../compat/storage-check/service-ffi.txt). The report records
+[service-ffi.txt](../compat/audit/storage/service-ffi.txt). The report records
 provider/remaining sets and provenance independently; no unknown external or
 fake provider may hide a dependency. The two synchronous/borrowed-payload APIs
 are supplied as explicit unsupported rejections, not implemented I/O executors.
@@ -620,7 +627,7 @@ their runtime headers, seven C adapter units and
 [the real Rust providers](../src/linux_compat/). This second
 relocatable closure has no compile-only marker, no garbage collection and no
 missing source-facing APIs. Its exact **67 backend/libc entry points** are
-listed in [service-ffi.txt](../compat/service-ffi.txt).
+listed in [service-ffi.txt](../compat/audit/common/service-ffi.txt).
 This boundary includes the existing device-specific Rust allocation/DMA/PCI
 backends and shared native execution/IRQ services. Both source audits use the
 same provider/compiler proof implementation and allowlist.
@@ -632,6 +639,9 @@ dependency evidence rather than misrepresented as the executable closure.
 object, exact commands, source/header/object hashes and the full external set.
 It also compares real Rust and boot/e1000/storage C layout probes, including
 shared device/PCI fields and actual Linux GFP values.
+Runtime dependency manifests reject audit headers and foreign class headers.
+The audit additionally compiles both feature-profile include orders as negative
+checks; missing profile-isolation failure evidence invalidates verification.
 Independent verification checks that set against the complete inputs minus
 actual global/weak definitions, so section loss or same-named local symbols
 cannot hide a dependency. Production objects are separately built and linked
@@ -700,7 +710,7 @@ synthetic-service cases remain isolated from explicit original module startup.
 
 ### Tested execution-service profile
 
-[Shared C execution types](../compat/execution_types.h) and
+[Shared C execution types](../compat/include/common/execution_types.h) and
 [native deferred services](../src/linux_deferred.rs) now supply Phase 2's
 bounded environment, tested through [synthetic C callbacks](../compat/guest_tests/driver_execution_test.c).
 These are OS services, not replacement implementations of Linux's watchdog,
@@ -751,7 +761,7 @@ or replace Linux cleanup with native descriptor observation.
 
 ### Source-facing PCI, packet and DMA services
 
-Phase 3 supplies [C providers](../compat/driver_services.h) using the same
+Phase 3 supplies [C providers](../compat/include/net/services.h) using the same
 source-facing PCI/netdev/skb types as the compile check. Rust retains physical
 allocation/MMIO/PCI ownership; C owns its structs and original callback tables.
 The normal image now links all four original driver units for lifecycle and

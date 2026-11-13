@@ -2,7 +2,7 @@
 #if !KUTOX_GUEST_TESTS
 #error "guest test unit requires guest-tests"
 #endif
-#include "driver_services.h"
+#include "net/services.h"
 extern struct pci_dev *kutox_c_driver_endpoint(unsigned int);
 extern void kutox_c_driver_endpoint_release(void);
 extern void kutox_driver_fail_after(size_t);

@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#ifndef KUTOX_DRIVER_CHECK_PROFILE_H
-#define KUTOX_DRIVER_CHECK_PROFILE_H
-#ifndef KUTOX_DRIVER_SERVICE_RUNTIME
-#include "marker.h"
+#ifndef KUTOX_E1000_PROFILE_H
+#define KUTOX_E1000_PROFILE_H
+#if defined(KUTOX_STORAGE_PROFILE_H)
+#error "Cannot combine e1000 and storage feature profiles in one translation unit"
 #endif
 #define CONFIG_E1000 1
 #define __KERNEL__ 1

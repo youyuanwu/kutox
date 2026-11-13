@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#ifndef KUTOX_DRIVER_CHECK_PCI_H
-#define KUTOX_DRIVER_CHECK_PCI_H
-#include "../device_types.h"
+#ifndef KUTOX_COMMON_PCI_H
+#define KUTOX_COMMON_PCI_H
+#include "device_types.h"
 struct dev_pm_ops { int (*suspend)(struct device *); int (*resume)(struct device *); };
 #define DEFINE_SIMPLE_DEV_PM_OPS(n,s,r) const struct dev_pm_ops n __attribute__((unused)) = {s,r}
 #define pm_sleep_ptr(p) ((const struct dev_pm_ops *)NULL)

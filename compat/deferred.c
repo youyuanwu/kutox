@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#include "kutox_compat.h"
+#include "common/kutox_compat.h"
 extern void kutox_platform_fail(const char *) __attribute__((noreturn));
 extern int64_t kutox_linux_napi_init(uintptr_t, int (*)(struct napi_struct *, int));
 extern int kutox_linux_napi(uintptr_t, u64, unsigned int, int);

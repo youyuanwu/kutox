@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#include "driver_services.h"
+#include "net/services.h"
 #include "e1000.h"
 extern int (*const kutox_module_init)(void);
 extern void (*const kutox_module_exit)(void);

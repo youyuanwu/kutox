@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#include "storage_runtime.h"
-#include "block_services.h"
+#include "block/runtime.h"
+#include "block/services.h"
 #include <linux/virtio.h>
 #include <linux/virtio_config.h>
 #include <linux/virtio_ring.h>

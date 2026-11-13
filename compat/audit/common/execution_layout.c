@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #ifdef KUTOX_EXECUTION_SOURCE_PROFILE
-#include "driver-check/driver.h"
+#include "net/driver.h"
 #else
-#include "kutox_compat.h"
+#include "common/kutox_compat.h"
 #endif
 const unsigned long kutox_execution_layout[] __attribute__((used, section(".kutox.execution_layouts"))) = {
     sizeof(struct work_struct), _Alignof(struct work_struct),

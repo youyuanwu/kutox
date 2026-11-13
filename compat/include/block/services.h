@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef KUTOX_BLOCK_SERVICES_H
 #define KUTOX_BLOCK_SERVICES_H
-#define KUTOX_STORAGE_SERVICE_RUNTIME 1
-#include "storage-check/driver.h"
+#include "block/driver.h"
 
 #define KUTOX_BLOCK_BYTES 4096
 int kutox_block_prepare(struct request *, sector_t, size_t, u64 *);

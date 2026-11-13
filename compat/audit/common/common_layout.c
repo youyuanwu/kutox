@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #if defined(KUTOX_STORAGE_ABI_PROFILE)
-#include "storage-check/driver.h"
+#include "block/driver.h"
 #elif defined(KUTOX_DRIVER_ABI_PROFILE)
-#include "driver-check/driver.h"
+#include "net/driver.h"
 #else
-#include "kutox_compat.h"
+#include "common/kutox_compat.h"
 #endif
 const unsigned long kutox_common_layout[] __attribute__((used,section(".kutox.common_layouts"))) = {
     sizeof(struct device), _Alignof(struct device), offsetof(struct device,parent),

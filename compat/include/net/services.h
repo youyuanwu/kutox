@@ -1,13 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef KUTOX_DRIVER_SERVICES_H
 #define KUTOX_DRIVER_SERVICES_H
-#define KUTOX_DRIVER_SERVICE_RUNTIME 1
-#include "driver-check/profile.h"
-#include "driver-check/core.h"
-#include "driver-check/execution.h"
-#include "driver-check/pci.h"
-#include "driver-check/packet.h"
-#include "driver-check/ethtool.h"
+#include "net/driver.h"
 extern void kutox_platform_fail(const char *) __attribute__((noreturn));
 uintptr_t kutox_driver_alloc(size_t, unsigned int, unsigned int);
 int kutox_driver_free(uintptr_t);
