@@ -1,34 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //! Audited native calls and ownership adoption. No additional allocator or DMA registry.
 use super::{memory::*, *};
+use crate::{driver_memory, linux_dma, storage as native_storage};
 use core::{marker::PhantomData, ptr};
 
 unsafe extern "C" {
-    fn kutox_driver_free(pointer: usize) -> i32;
-    fn kutox_driver_range(pointer: usize, size: usize, operation: u32) -> i32;
-    fn kutox_storage_alloc(size: usize, alignment: usize, flags: u32) -> usize;
-    fn kutox_storage_free(pointer: usize);
-    fn kutox_storage_dma(operation: u32, pointer: usize, size: usize, direction: u32) -> u64;
-    fn kutox_linux_dma_mask(key: usize, mask: u64) -> i32;
-    fn kutox_linux_dma_alloc(
-        key: usize,
-        size: usize,
-        flags: u32,
-        cpu: *mut usize,
-        dma: *mut u64,
-    ) -> i32;
-    fn kutox_linux_dma_free(key: usize, size: usize, cpu: usize, dma: u64) -> i32;
-    fn kutox_linux_dma_publish(key: usize, cpu: usize) -> i32;
-    fn kutox_linux_dma_reclaim(key: usize, cpu: usize) -> i32;
-    fn kutox_linux_dma_unregister(key: usize) -> i32;
-    fn kutox_driver_dma_map(key: usize, pointer: usize, size: usize, direction: u32) -> u64;
-    fn kutox_driver_dma_operation(
-        key: usize,
-        dma: u64,
-        size: usize,
-        direction: u32,
-        operation: u32,
-    ) -> i32;
     fn kutox_c_tx_mapped(pointer: usize, dma: u64, size: usize, direction: u32);
     fn kutox_c_tx_unmapped(dma: u64, size: usize, direction: u32);
     fn kutox_c_rx_dma(dma: u64, size: usize, event: u32);
@@ -61,11 +37,9 @@ pub(super) unsafe fn adopt(allocator: Allocator, address: usize, length: usize) 
 }
 
 pub(super) fn allocate(allocator: Allocator, size: usize, flags: u32) -> Result<Allocation, i32> {
-    let address = unsafe {
-        match allocator {
-            Allocator::Network => crate::driver_memory::allocate(size, flags, 0),
-            Allocator::Storage => kutox_storage_alloc(size, 16, flags),
-        }
+    let address = match allocator {
+        Allocator::Network => driver_memory::allocate(size, flags, 0),
+        Allocator::Storage => native_storage::allocate(size, 16, flags),
     };
     if address == 0 {
         return Err(-12);
@@ -76,9 +50,9 @@ pub(super) fn allocate(allocator: Allocator, size: usize, flags: u32) -> Result<
 pub(super) fn release(allocation: Allocation) -> Result<(), Failure<Allocation>> {
     let outcome = unsafe {
         match allocation.allocator {
-            Allocator::Network => result(kutox_driver_free(allocation.address)),
+            Allocator::Network => result(driver_memory::free(allocation.address)),
             Allocator::Storage => {
-                kutox_storage_free(allocation.address);
+                native_storage::free(allocation.address);
                 Ok(())
             }
         }
@@ -93,9 +67,7 @@ fn cpu_range(allocation: &Allocation, offset: usize, length: usize) -> Result<us
     allocation.span(offset, length)?;
     let address = allocation.address.checked_add(offset).ok_or(-22)?;
     match allocation.allocator {
-        Allocator::Network if length != 0 => {
-            result(unsafe { kutox_driver_range(address, length, 0) })?
-        }
+        Allocator::Network if length != 0 => result(driver_memory::range(address, length, 0))?,
         Allocator::Storage => context(),
         _ => {}
     }
@@ -121,19 +93,19 @@ pub(super) fn copy_into(
 }
 
 pub(super) fn set_mask(device: DmaDevice, mask: u64) -> Result<(), i32> {
-    result(unsafe { kutox_linux_dma_mask(device.key, mask) })
+    result(linux_dma::set_mask(device.key, mask))
 }
 pub(super) fn unregister(key: usize) -> i32 {
-    unsafe { kutox_linux_dma_unregister(key) }
+    linux_dma::unregister(key)
 }
 pub(super) fn publish(device: DmaDevice, cpu: usize) -> Result<(), i32> {
-    result(unsafe { kutox_linux_dma_publish(device.key, cpu) })
+    result(unsafe { linux_dma::publish(device.key, cpu) })
 }
 pub(super) fn reclaim(device: DmaDevice, cpu: usize, proof: Quiesced) -> Result<(), i32> {
     if device != proof.device || cpu != proof.cpu {
         return Err(diagnostic(c"dma_reclaim_proof", -22));
     }
-    result(unsafe { kutox_linux_dma_reclaim(device.key, cpu) })
+    result(unsafe { linux_dma::reclaim(device.key, cpu) })
 }
 
 /// # Safety
@@ -166,13 +138,13 @@ pub(super) fn allocate_coherent(
 ) -> Result<Coherent, i32> {
     let (mut cpu, mut dma) = (0, 0);
     if device.storage {
-        cpu = unsafe { kutox_storage_alloc(size, 4096, flags) };
+        cpu = native_storage::allocate(size, 4096, flags);
         if cpu == 0 {
             return Err(-12);
         }
-        dma = unsafe { kutox_storage_dma(0, cpu, size, 0) };
+        dma = unsafe { native_storage::dma(0, cpu, size, 0) };
     } else {
-        result(unsafe { kutox_linux_dma_alloc(device.key, size, flags, &mut cpu, &mut dma) })?;
+        result(unsafe { linux_dma::allocate(device.key, size, flags, &mut cpu, &mut dma) })?;
     }
     Ok(unsafe { adopt_coherent(device, cpu, size, dma) })
 }
@@ -181,18 +153,18 @@ pub(super) fn release_coherent(allocation: Coherent) -> Result<(), Failure<Coher
     let outcome = unsafe {
         if allocation.device.storage {
             require(
-                kutox_storage_dma(0, allocation.cpu, allocation.length, 0)
+                native_storage::dma(0, allocation.cpu, allocation.length, 0)
                     == allocation.dma.value(),
                 c"storage_dma_coherent_free",
             );
             require(
-                kutox_storage_dma(4, allocation.cpu, allocation.length, 0) == 0,
+                native_storage::dma(4, allocation.cpu, allocation.length, 0) == 0,
                 c"storage_dma_live_ring",
             );
-            kutox_storage_free(allocation.cpu);
+            native_storage::free(allocation.cpu);
             Ok(())
         } else {
-            result(kutox_linux_dma_free(
+            result(linux_dma::free(
                 allocation.device.key,
                 allocation.length,
                 allocation.cpu,
@@ -230,8 +202,9 @@ pub(super) fn map_network(
     range: Range,
     direction: Direction,
 ) -> Result<DmaAddress, i32> {
-    let address =
-        unsafe { kutox_driver_dma_map(device.key, range.address, range.length, direction as u32) };
+    let address = unsafe {
+        driver_memory::dma_map(device.key, range.address, range.length, direction as u32)
+    };
     unsafe {
         kutox_c_tx_mapped(range.address, address, range.length, direction as u32);
         if direction == Direction::FromDevice && address != u64::MAX {
@@ -241,7 +214,7 @@ pub(super) fn map_network(
     mapped(address)
 }
 pub(super) fn map_storage(range: Range, direction: Direction) -> Result<DmaAddress, i32> {
-    mapped(unsafe { kutox_storage_dma(1, range.address, range.length, direction as u32) })
+    mapped(unsafe { native_storage::dma(1, range.address, range.length, direction as u32) })
 }
 
 /// # Safety
@@ -274,7 +247,7 @@ pub(super) fn unmap(device: DmaDevice, region: &DmaRegion, proof: Completed) -> 
     super::memory::matches(device, region, &proof)?;
     if device.storage {
         let code = unsafe {
-            kutox_storage_dma(
+            native_storage::dma(
                 2,
                 region.address.value() as usize,
                 region.length,
@@ -314,7 +287,7 @@ pub(super) fn sync_device(device: DmaDevice, region: &DmaRegion) -> Result<(), i
 }
 fn network_operation(device: DmaDevice, region: &DmaRegion, operation: u32) -> Result<(), i32> {
     result(unsafe {
-        kutox_driver_dma_operation(
+        driver_memory::dma_operation(
             device.key,
             region.address.value(),
             region.length,
@@ -351,8 +324,8 @@ pub(super) mod tests {
         assert_eq!(failure.code, -22);
         let mapping = failure.retained;
         if allocator == Allocator::Network {
-            assert_eq!(unsafe { kutox_driver_free(pointer) }, -16);
-            assert_eq!(unsafe { kutox_driver_range(pointer + 3, 1, 0) }, -16);
+            assert_eq!(unsafe { driver_memory::free(pointer) }, -16);
+            assert_eq!(driver_memory::range(pointer + 3, 1, 0), -16);
         }
         let exact = DmaRegion::new(mapping.address(), 16, Direction::ToDevice);
         let allocation = mapping.unmap(unsafe { completed(device, &exact) }).unwrap();

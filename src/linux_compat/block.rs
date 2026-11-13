@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 use super::{Bsp, abi::Device, block_abi};
+use crate::block_services;
 use block_abi::*;
 use core::{
     cell::UnsafeCell,
@@ -65,13 +66,6 @@ static REGISTRY: Bsp<Registry> = Bsp(UnsafeCell::new(Registry {
     major_live: false,
     major_name: [0; 32],
 }));
-unsafe extern "C" {
-    fn kutox_block_allocate(size: usize, alignment: usize) -> usize;
-    fn kutox_block_deallocate(pointer: usize, size: usize, alignment: usize);
-    fn kutox_block_context(completion: u32) -> i32;
-    fn kutox_block_fail(operation: *const c_char) -> !;
-    fn kutox_block_diag(operation: *const c_char, code: i32);
-}
 fn registry() -> *mut Registry {
     REGISTRY.0.get()
 }
@@ -80,26 +74,21 @@ fn live() -> *mut Core {
 }
 fn require(valid: bool, operation: &'static core::ffi::CStr) {
     if !valid {
-        unsafe { kutox_block_fail(operation.as_ptr()) }
+        block_services::fail(operation)
     }
 }
 fn callback<T>(function: Option<T>, operation: &'static core::ffi::CStr) -> T {
     match function {
         Some(function) => function,
-        None => unsafe { kutox_block_fail(operation.as_ptr()) },
+        None => block_services::fail(operation),
     }
 }
 fn error(operation: &'static core::ffi::CStr, code: i32) -> i32 {
-    unsafe {
-        kutox_block_diag(operation.as_ptr(), code);
-    }
+    block_services::diag(operation, code);
     code
 }
 fn context(completion: u32) {
-    require(
-        unsafe { kutox_block_context(completion) == 0 },
-        c"block_context",
-    );
+    require(block_services::context(completion) == 0, c"block_context");
 }
 fn err_ptr<T>(error: i32) -> *mut T {
     error as isize as *mut T
@@ -160,9 +149,9 @@ unsafe fn destroy() {
             c"block_destroy_live",
         );
         (*registry()).live = ptr::null_mut();
-        kutox_block_deallocate((*c).payload as usize, BYTES, BYTES);
-        kutox_block_deallocate((*c).pdu as usize, BYTES, BYTES);
-        kutox_block_deallocate(c as usize, size_of::<Core>(), 16);
+        block_services::deallocate((*c).payload as usize, BYTES, BYTES);
+        block_services::deallocate((*c).pdu as usize, BYTES, BYTES);
+        block_services::deallocate(c as usize, size_of::<Core>(), 16);
     }
 }
 unsafe fn limits(input: *const Limits) -> Result<Limits, i32> {
@@ -207,19 +196,19 @@ pub unsafe extern "C" fn blk_mq_alloc_tag_set(set: *mut TagSet) -> i32 {
         if !live().is_null() || !(*set).core.is_null() {
             return error(c"tag_capacity", -16);
         }
-        let c = kutox_block_allocate(size_of::<Core>(), 16) as *mut Core;
+        let c = block_services::allocate(size_of::<Core>(), 16) as *mut Core;
         if c.is_null() {
             return -12;
         }
-        (*c).pdu = kutox_block_allocate(BYTES, BYTES) as *mut c_void;
+        (*c).pdu = block_services::allocate(BYTES, BYTES) as *mut c_void;
         if !(*c).pdu.is_null() {
-            (*c).payload = kutox_block_allocate(BYTES, BYTES) as *mut c_void;
+            (*c).payload = block_services::allocate(BYTES, BYTES) as *mut c_void;
         }
         if (*c).pdu.is_null() || (*c).payload.is_null() {
             if !(*c).pdu.is_null() {
-                kutox_block_deallocate((*c).pdu as usize, BYTES, BYTES);
+                block_services::deallocate((*c).pdu as usize, BYTES, BYTES);
             }
-            kutox_block_deallocate(c as usize, size_of::<Core>(), 16);
+            block_services::deallocate(c as usize, size_of::<Core>(), 16);
             return -12;
         }
         (*c).set = set;
@@ -287,7 +276,7 @@ pub unsafe extern "C" fn blk_mq_alloc_disk(
             Ok(l) => l,
             Err(e) => return err_ptr(e),
         };
-        let d = kutox_block_allocate(size_of::<Disk>(), 16) as *mut Disk;
+        let d = block_services::allocate(size_of::<Disk>(), 16) as *mut Disk;
         if d.is_null() {
             return err_ptr(-12);
         }
@@ -405,7 +394,7 @@ pub unsafe extern "C" fn put_disk(d: *mut Disk) {
             (*c).dispatching = false;
         }
         (*c).disk = ptr::null_mut();
-        kutox_block_deallocate(d as usize, size_of::<Disk>(), 16);
+        block_services::deallocate(d as usize, size_of::<Disk>(), 16);
         if !(*c).tags {
             destroy();
         }
@@ -781,7 +770,7 @@ pub extern "C" fn blk_status_to_errno(status: u8) -> i32 {
         10 => -5,
         9 => -12,
         13 => -11,
-        _ => unsafe { kutox_block_fail(c"block_invalid_status".as_ptr()) },
+        _ => block_services::fail(c"block_invalid_status"),
     }
 }
 #[unsafe(no_mangle)]
@@ -981,7 +970,7 @@ fn page_for(pointer: *const c_void, bytes: usize) -> *mut block_abi::Page {
                 return p;
             }
         }
-        kutox_block_fail(c"block_page_range".as_ptr())
+        block_services::fail(c"block_page_range")
     }
 }
 #[unsafe(no_mangle)]

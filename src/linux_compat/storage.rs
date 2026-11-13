@@ -44,7 +44,6 @@ unsafe extern "C" {
     fn kutox_storage_device_status(device: *mut Device) -> u8;
     fn kutox_storage_detach(device: *mut Device) -> *mut c_void;
     fn kutox_storage_report_callbacks(device: *mut Device);
-    fn kutox_storage_begin_reset();
     fn kutox_block_registered_disk() -> *mut c_void;
     fn kutox_block_registered_queue() -> *mut c_void;
     fn get_capacity(disk: *mut c_void) -> u64;
@@ -399,7 +398,7 @@ fn reset() {
     let device = unsafe { (*state()).device };
     require(!device.is_null(), c"storage_reset_device");
     unsafe {
-        kutox_storage_begin_reset();
+        crate::storage::begin_reset();
         kutox_storage_reset_device(device);
     }
     require(
@@ -432,9 +431,7 @@ pub extern "C" fn kutox_storage_start(irq: u32) -> i32 {
         pci::release_storage();
         return result;
     }
-    unsafe {
-        kutox_storage_begin_reset();
-    }
+    crate::storage::begin_reset();
     let result = unsafe { kutox_storage_init_virtio_pci_driver_init() };
     if result != 0 {
         unsafe {

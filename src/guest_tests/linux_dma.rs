@@ -35,21 +35,21 @@ pub fn test(
                 let lock = SpinLockIrq::<_, X86Cpu>::new(());
                 let _guard = lock.lock_save_irq();
                 assert_eq!(
-                    kutox_linux_dma_mask(key, u64::MAX),
+                    set_mask(key, u64::MAX),
                     threads::SwitchError::LocksHeld as i32
                 );
             }
             {
                 use moss_libkernel::CpuOps;
                 crate::cpu::X86Cpu::enable_interrupts();
-                let result = kutox_linux_dma_mask(key, u64::MAX);
+                let result = set_mask(key, u64::MAX);
                 crate::cpu::X86Cpu::disable_interrupts();
                 assert_eq!(result, threads::SwitchError::InterruptsEnabled as i32);
             }
             crate::exceptions::tests::test_thread_context(|| {
                 let key = unsafe { kutox_c_dma_key() };
                 assert_eq!(
-                    kutox_linux_dma_mask(key, u64::MAX),
+                    set_mask(key, u64::MAX),
                     threads::SwitchError::InterruptContext as i32
                 );
             })
@@ -58,7 +58,7 @@ pub fn test(
         0,
     )?;
     scheduler.run()?;
-    let code = kutox_linux_dma_unregister(key);
+    let code = unregister(key);
     if code != 0 {
         return Err(Failure::new("dma_unregister", code));
     }

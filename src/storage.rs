@@ -413,8 +413,7 @@ unsafe extern "C" fn kutox_storage_fail(operation: *const c_char) -> ! {
         .expect("storage operation encoding");
     panic!("storage invariant: {name}");
 }
-#[unsafe(no_mangle)]
-extern "C" fn kutox_storage_alloc(size: usize, alignment: usize, gfp: u32) -> usize {
+pub(crate) fn allocate(size: usize, alignment: usize, gfp: u32) -> usize {
     if driver_memory::context(false).is_err()
         || gfp & !kutox::linux_abi::GFP_ZERO != kutox::linux_abi::GFP_KERNEL
         || size == 0
@@ -459,8 +458,9 @@ extern "C" fn kutox_storage_alloc(size: usize, alignment: usize, gfp: u32) -> us
     });
     pointer
 }
-#[unsafe(no_mangle)]
-extern "C" fn kutox_storage_free(pointer: usize) {
+/// # Safety
+/// DMA has completed or stopped/drained, and the caller relinquishes all CPU aliases.
+pub(crate) unsafe fn free(pointer: usize) {
     assert_eq!(driver_memory::context(false), Ok(()));
     let s = state();
     let slot = s
@@ -483,8 +483,7 @@ extern "C" fn kutox_storage_free(pointer: usize) {
         Backing::Frame(frame) => drop(frame),
     }
 }
-#[unsafe(no_mangle)]
-extern "C" fn kutox_storage_pci(operation: u32, first: u64, second: u64) -> u64 {
+pub(crate) fn pci(operation: u32, first: u64, second: u64) -> u64 {
     assert_eq!(driver_memory::context(false), Ok(()));
     let s = state();
     match operation {
@@ -577,8 +576,7 @@ extern "C" fn kutox_storage_pci(operation: u32, first: u64, second: u64) -> u64 
         _ => panic!("unknown storage PCI operation {operation}"),
     }
 }
-#[unsafe(no_mangle)]
-extern "C" fn kutox_storage_mmio(address: usize, width: usize) {
+pub(crate) fn mmio(address: usize, width: usize) {
     let s = state();
     assert!(
         matches!(width, 1 | 2 | 4)
@@ -590,13 +588,10 @@ extern "C" fn kutox_storage_mmio(address: usize, width: usize) {
         "storage MMIO span"
     );
 }
-#[unsafe(no_mangle)]
-extern "C" fn kutox_storage_dma(
-    operation: u32,
-    pointer: usize,
-    size: usize,
-    direction: u32,
-) -> u64 {
+/// # Safety
+/// Mapping retains valid backing and relinquishes CPU access. Unmapping requires
+/// completion or an unpublished/stopped-and-drained abort for the exact lease.
+pub(crate) unsafe fn dma(operation: u32, pointer: usize, size: usize, direction: u32) -> u64 {
     let s = state();
     match operation {
         0 => {
@@ -669,12 +664,10 @@ extern "C" fn kutox_storage_dma(
         _ => panic!("unknown storage DMA operation"),
     }
 }
-#[unsafe(no_mangle)]
-extern "C" fn kutox_storage_begin_reset() {
+pub(crate) fn begin_reset() {
     state().reset_deadline = time::deadline_after_us(100_000).expect("storage reset deadline");
 }
-#[unsafe(no_mangle)]
-extern "C" fn kutox_storage_clock(operation: u32) -> u64 {
+pub(crate) fn clock(operation: u32) -> u64 {
     assert_eq!(operation, 1);
     assert!(
         time::now_ticks() < state().reset_deadline,

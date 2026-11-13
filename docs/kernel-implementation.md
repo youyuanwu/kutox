@@ -380,8 +380,9 @@ and `/bin/init` loader continue to use the immutable Limine RAM module.
 
 The [native ABI cleanup](linux-compat-abi-cleanup.md) documents which
 internal C-ABI round trips can become ordinary Rust calls while preserving
-real Linux, fixture, callback and audit contracts. Its allocation pilot now
-calls the native Rust allocator directly; the remaining phases are proposed.
+real Linux, fixture, callback and audit contracts. Allocation, DMA, block backing
+and native storage calls now use Rust APIs; execution/platform and internal
+facade cleanup remain proposed.
 
 [The common Rust modules](../src/linux_compat/) implement the selected
 Linux-facing C ABI using `#[unsafe(no_mangle)] extern "C"` exports:

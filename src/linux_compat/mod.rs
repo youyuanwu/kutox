@@ -32,7 +32,6 @@ unsafe impl<T> Sync for Bsp<T> {}
 unsafe extern "C" {
     fn kutox_platform_fail(operation: *const c_char) -> !;
     fn kutox_driver_diag(operation: *const c_char, code: i32);
-    fn kutox_block_diag(operation: *const c_char, code: i32);
     fn kutox_linux_context() -> i32;
     fn kutox_driver_trace(event: u32, function: usize, object: usize, result: i32);
     fn kutox_driver_device() -> usize;
@@ -61,7 +60,7 @@ fn diagnostic(operation: &'static core::ffi::CStr, code: i32) -> i32 {
     code
 }
 fn rejected(operation: &'static core::ffi::CStr) -> i32 {
-    unsafe { kutox_block_diag(operation.as_ptr(), -95) };
+    crate::block_services::diag(operation, -95);
     -95
 }
 fn validate<T>(p: *mut T) {

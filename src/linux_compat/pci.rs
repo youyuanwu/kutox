@@ -24,7 +24,6 @@ static STORAGE: Bsp<Endpoint> = Bsp(UnsafeCell::new(Endpoint::EMPTY));
 unsafe extern "C" {
     fn kutox_driver_pci(operation: u32, first: u64, second: u64) -> i32;
     fn kutox_driver_pci_value(operation: u32) -> u64;
-    fn kutox_storage_pci(operation: u32, first: u64, second: u64) -> u64;
 }
 fn net() -> *mut Endpoint {
     NET.0.get()
@@ -57,7 +56,7 @@ fn net_operation(op: u32, first: u64, second: u64) -> i32 {
     unsafe { kutox_driver_pci(op, first, second) }
 }
 fn storage_operation(op: u32, first: u64, second: u64) -> u64 {
-    unsafe { kutox_storage_pci(op, first, second) }
+    crate::storage::pci(op, first, second)
 }
 
 #[unsafe(no_mangle)]
@@ -439,7 +438,7 @@ pub extern "C" fn pci_iomap_range(
     require(is_storage(p), c"pci_iomap_range_profile");
     let length = pci_resource_len(p, bar);
     if !(0..6).contains(&bar) || n == 0 || offset >= length || n > length - offset {
-        unsafe { kutox_block_diag(c"storage_bar_span".as_ptr(), -22) };
+        crate::block_services::diag(c"storage_bar_span", -22);
         return ptr::null_mut();
     }
     storage_operation(8, ((bar as u64) << 32) | offset as u64, n as u64) as *mut c_void
@@ -711,48 +710,45 @@ pub extern "C" fn pci_iov_vf_id(p: *mut PciDevice) -> i32 {
 pub extern "C" fn xen_domain() -> bool {
     false
 }
-unsafe extern "C" {
-    fn kutox_storage_mmio(address: usize, width: usize);
-}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ioread8(p: *const u8) -> u8 {
     unsafe {
-        kutox_storage_mmio(p as usize, 1);
+        crate::storage::mmio(p as usize, 1);
         p.read_volatile()
     }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ioread16(p: *const u16) -> u16 {
     unsafe {
-        kutox_storage_mmio(p as usize, 2);
+        crate::storage::mmio(p as usize, 2);
         p.read_volatile()
     }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ioread32(p: *const u32) -> u32 {
     unsafe {
-        kutox_storage_mmio(p as usize, 4);
+        crate::storage::mmio(p as usize, 4);
         p.read_volatile()
     }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn iowrite8(v: u8, p: *mut u8) {
     unsafe {
-        kutox_storage_mmio(p as usize, 1);
+        crate::storage::mmio(p as usize, 1);
         p.write_volatile(v)
     }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn iowrite16(v: u16, p: *mut u16) {
     unsafe {
-        kutox_storage_mmio(p as usize, 2);
+        crate::storage::mmio(p as usize, 2);
         p.write_volatile(v)
     }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn iowrite32(v: u32, p: *mut u32) {
     unsafe {
-        kutox_storage_mmio(p as usize, 4);
+        crate::storage::mmio(p as usize, 4);
         p.write_volatile(v)
     }
 }

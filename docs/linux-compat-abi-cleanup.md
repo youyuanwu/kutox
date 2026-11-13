@@ -1,6 +1,7 @@
 # Native Rust / Linux compatibility ABI cleanup
 
-Status: allocation pilot implemented; remaining cleanup phases are proposed.
+Status: phases 1-2 implemented; execution/platform and facade cleanup remain
+proposed.
 
 Audit baseline: `829ec3217f9cccf6415737a27bc995b86ae4146e`.
 The counts below describe that revision, not permanent acceptance thresholds.
@@ -19,7 +20,7 @@ interrupt owners and failure policies remain authoritative.
 Neither establishes that a function has C callers. Conversely, a callback can
 need C ABI even when no C object references its name.
 
-## Implemented allocation pilot
+## Implemented memory, DMA and storage backends
 
 The owned memory service, packet-fragment provider and native coherent allocator
 now call ordinary Rust [driver_memory::allocate](../src/driver_memory.rs).
@@ -33,7 +34,21 @@ the same Rust module path through an
 `kutox_driver_alloc` label is an audit dependency, not a shipping kernel export.
 Both audit reports record this mapping, compiler dependencies and source hashes.
 Kernel profile checks reject audit-source dependencies, compile-only markers
-and the obsolete allocator export. No runtime backend selector was introduced.
+and obsolete native exports. No runtime backend selector was introduced.
+
+The remaining network allocation/range/ingress and streaming-DMA calls,
+coherent-DMA hooks, barriers, block backing/context/diagnostics and native
+storage allocation/PCI/MMIO/bounce-DMA/reset-clock calls now use Rust APIs too.
+Raw ownership, pointer-validity and completion obligations remain unsafe.
+The existing registries, retained-token behavior and exact diagnostics remain
+authoritative; no allocation or DMA policy was moved into an adapter.
+
+Nine native C shims remain behind `guest-tests`: four network allocation/DMA
+checks, three coherent-DMA probes and two block context/failure helpers.
+Each forwards to the same Rust implementation. Both the shared and
+[isolated block audit root](../compat/audit/storage/block_services.rs) use the
+common audit bindings and record their actual source dependencies and native
+API mappings. Their exact external allowlists are unchanged.
 
 ## Audit findings
 

@@ -19,15 +19,8 @@ extern void kutox_platform_fail(const char *) __attribute__((noreturn));
 #define module_init(f) int (*const kutox_storage_init_##f)(void) = f
 #define module_exit(f) void (*const kutox_storage_exit_##f)(void) = f
 
-uintptr_t kutox_storage_alloc(size_t, size_t, gfp_t);
-void kutox_storage_free(uintptr_t);
-u64 kutox_storage_pci(unsigned int, u64, u64);
-u64 kutox_storage_dma(unsigned int, uintptr_t, size_t, unsigned int);
-void kutox_storage_mmio(uintptr_t, size_t);
-u64 kutox_storage_clock(unsigned int);
 void kutox_storage_fail(const char *) __attribute__((noreturn));
 void kutox_storage_check(bool, const char *);
-void kutox_storage_begin_reset(void);
 
 int kutox_storage_start(unsigned int);
 void kutox_storage_stop(void);

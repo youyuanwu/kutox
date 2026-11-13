@@ -15,8 +15,6 @@ unsafe extern "C" {
     fn kutox_linux_msleep(ms: u32);
     fn kutox_linux_cond_resched() -> i32;
     fn kutox_linux_sleep_range(minimum: u64, maximum: u64);
-    fn kutox_linux_dma_wmb();
-    fn kutox_linux_dma_rmb();
     fn kutox_delay_us(us: u64);
     fn kutox_linux_request_irq(
         irq: u32,
@@ -31,7 +29,6 @@ unsafe extern "C" {
         callback: Option<unsafe extern "C" fn(*mut c_void)>,
     ) -> i64;
     fn kutox_linux_work(address: usize, generation: u64, operation: u32, delay: u64) -> i32;
-    fn kutox_storage_clock(operation: u32) -> u64;
     fn kutox_storage_trace_callback(kind: u32, address: usize);
 }
 fn address(p: *const c_void, width: usize) {
@@ -162,11 +159,11 @@ pub extern "C" fn virt_mb() {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn dma_wmb() {
-    unsafe { kutox_linux_dma_wmb() }
+    crate::dma::write_barrier()
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn dma_rmb() {
-    unsafe { kutox_linux_dma_rmb() }
+    crate::dma::read_barrier()
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn virt_wmb() {
@@ -202,7 +199,7 @@ pub extern "C" fn storage_msleep(ms: u32) {
     require(ms <= 1000, c"storage_sleep_bound");
     unsafe {
         kutox_delay_us(ms as u64 * 1000);
-        kutox_storage_clock(1);
+        crate::storage::clock(1);
     }
 }
 #[unsafe(no_mangle)]

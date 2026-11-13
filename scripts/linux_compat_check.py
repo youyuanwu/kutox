@@ -27,7 +27,33 @@ BLOCK_LAYOUT_VALUES = 135
 ACCESSOR_LAYOUT_VALUES = 41
 NATIVE_BACKEND = "compat/audit/common/native_backend.rs"
 NATIVE_BINDINGS = {
+    "kutox_block_allocate": "crate::block_services::allocate",
+    "kutox_block_context": "crate::block_services::context",
+    "kutox_block_deallocate": "crate::block_services::deallocate",
+    "kutox_block_diag": "crate::block_services::diag",
+    "kutox_block_fail": "crate::block_services::fail",
     "kutox_driver_alloc": "crate::driver_memory::allocate",
+    "kutox_driver_dma_map": "crate::driver_memory::dma_map",
+    "kutox_driver_dma_operation": "crate::driver_memory::dma_operation",
+    "kutox_driver_free": "crate::driver_memory::free",
+    "kutox_driver_ingress": "crate::driver_memory::ingress",
+    "kutox_driver_range": "crate::driver_memory::range",
+    "kutox_driver_size": "crate::driver_memory::size",
+    "kutox_linux_dma_alloc": "crate::linux_dma::allocate",
+    "kutox_linux_dma_free": "crate::linux_dma::free",
+    "kutox_linux_dma_mask": "crate::linux_dma::set_mask",
+    "kutox_linux_dma_publish": "crate::linux_dma::publish",
+    "kutox_linux_dma_reclaim": "crate::linux_dma::reclaim",
+    "kutox_linux_dma_rmb": "crate::dma::read_barrier",
+    "kutox_linux_dma_unregister": "crate::linux_dma::unregister",
+    "kutox_linux_dma_wmb": "crate::dma::write_barrier",
+    "kutox_storage_alloc": "crate::storage::allocate",
+    "kutox_storage_begin_reset": "crate::storage::begin_reset",
+    "kutox_storage_clock": "crate::storage::clock",
+    "kutox_storage_dma": "crate::storage::dma",
+    "kutox_storage_free": "crate::storage::free",
+    "kutox_storage_mmio": "crate::storage::mmio",
+    "kutox_storage_pci": "crate::storage::pci",
 }
 PACKET_PROVIDERS = {
     "alloc_etherdev", "register_netdev", "unregister_netdev", "free_netdev",
@@ -99,6 +125,8 @@ def inputs():
         ROOT / "compat/audit/common/abi_probe.rs", ROOT / "compat/audit/common/common_layout.c",
         ROOT / "compat/include/common/base_types.h", ROOT / "compat/include/common/device_types.h",
         ROOT / "src/linux_abi.rs", ROOT / "src/block_abi.rs", ROOT / "src/driver_memory.rs",
+        ROOT / "src/linux_dma.rs", ROOT / "src/dma.rs", ROOT / "src/block_services.rs",
+        ROOT / "src/storage.rs",
         ROOT / "compat/audit/common/service-ffi.txt",
     ]
     files.extend((ROOT / "src/linux_compat").glob("*.rs"))
@@ -142,16 +170,21 @@ def rust_dependencies(path):
     return dependency_paths(first[0] if first else "")
 
 
+def rust_source_provenance(dependency, root):
+    from linux_driver_check import digest
+    sources = {Path(path).resolve() for path in rust_dependencies(dependency)}
+    if not {ROOT / root, ROOT / NATIVE_BACKEND} <= sources:
+        raise ValueError("Rust provider did not compile the audit backend bindings")
+    return [{"path": str(path.relative_to(ROOT)), "sha256": digest(path)}
+            for path in sorted(sources)]
+
+
 def rust_provenance(output):
     from linux_driver_check import digest
-    sources = {Path(path).resolve() for path in rust_dependencies(output / "rust-services.d")}
-    if not {ROOT / "compat/audit/common/rust_services.rs", ROOT / NATIVE_BACKEND} <= sources:
-        raise ValueError("shared Rust provider did not compile the audit backend bindings")
     return {
         "command": rust_command(output),
         "object_sha256": digest(output / "rust-services.o"),
-        "sources": [{"path": str(path.relative_to(ROOT)), "sha256": digest(path)}
-                    for path in sorted(sources)],
+        "sources": rust_source_provenance(output / "rust-services.d", "compat/audit/common/rust_services.rs"),
         "native_bindings": dict(NATIVE_BINDINGS),
     }
 

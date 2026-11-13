@@ -99,10 +99,6 @@ static PACKETS: Bsp<Packets> = Bsp(UnsafeCell::new(Packets {
 }));
 
 unsafe extern "C" {
-    fn kutox_driver_size(pointer: usize) -> usize;
-    fn kutox_driver_free(pointer: usize) -> i32;
-    fn kutox_driver_range(pointer: usize, size: usize, operation: u32) -> i32;
-    fn kutox_driver_ingress(pointer: usize, size: usize) -> i32;
     fn kutox_net_wake();
     fn kutox_c_retire_napi_device(device: *mut NetDevice);
 }
@@ -130,7 +126,7 @@ fn data_align(size: usize) -> usize {
 fn skb_check(skb: *const SkBuff) {
     unsafe {
         require(
-            !skb.is_null() && kutox_driver_size(skb as usize) == size_of::<SkBuff>(),
+            !skb.is_null() && crate::driver_memory::size(skb as usize) == size_of::<SkBuff>(),
             c"skb_metadata",
         );
         require(
@@ -142,7 +138,7 @@ fn skb_check(skb: *const SkBuff) {
                 && (*skb).len as usize == (*skb).tail as usize - (*skb).data as usize,
             c"skb_metadata",
         );
-        let backing = kutox_driver_size((*skb).head as usize);
+        let backing = crate::driver_memory::size((*skb).head as usize);
         require(
             backing >= size_of::<SkbSharedInfo>()
                 && (*skb).end as usize - (*skb).head as usize
@@ -591,7 +587,7 @@ pub unsafe extern "C" fn skb_put(skb: *mut SkBuff, size: u32) -> *mut c_void {
         let tail = (*skb).tail;
         if size != 0 {
             checked(
-                kutox_driver_range(tail as usize, size as usize, 0),
+                crate::driver_memory::range(tail as usize, size as usize, 0),
                 c"skb_put_device_owned",
             );
         }
@@ -727,7 +723,7 @@ pub unsafe extern "C" fn eth_skb_pad(skb: *mut SkBuff) -> i32 {
             return -12;
         }
         checked(
-            kutox_driver_range((*skb).data as usize, (*skb).len as usize, 0),
+            crate::driver_memory::range((*skb).data as usize, (*skb).len as usize, 0),
             c"pad_device_owned",
         );
         ptr::copy_nonoverlapping((*skb).data, head.add(headroom), (*skb).len as usize);
@@ -773,7 +769,7 @@ pub unsafe extern "C" fn kutox_c_netdev_transmit(device: *mut NetDevice, skb: *m
         skb_check(skb);
         let info = skb_shinfo(skb);
         checked(
-            kutox_driver_range((*skb).data as usize, (*skb).len as usize, 0),
+            crate::driver_memory::range((*skb).data as usize, (*skb).len as usize, 0),
             c"transmit_device_owned",
         );
         if (*skb).len < ETH_HLEN
@@ -1049,7 +1045,7 @@ fn fragment_slot(pointer: *const c_void) -> usize {
             let base = (*state()).fragments[slot] as usize;
             if base != 0
                 && pointer as usize >= base
-                && (pointer as usize) - base < kutox_driver_size(base)
+                && (pointer as usize) - base < crate::driver_memory::size(base)
             {
                 return slot;
             }
@@ -1062,7 +1058,7 @@ pub extern "C" fn skb_free_frag(pointer: *mut c_void) {
     let slot = fragment_slot(pointer);
     unsafe {
         checked(
-            kutox_driver_free((*state()).fragments[slot] as usize),
+            crate::driver_memory::free((*state()).fragments[slot] as usize),
             c"fragment_free_pinned",
         );
         (*state()).fragments[slot] = ptr::null_mut();
@@ -1074,7 +1070,7 @@ pub unsafe extern "C" fn napi_build_skb(pointer: *mut c_void, size: u32) -> *mut
     unsafe {
         require(
             (*state()).fragments[slot] == pointer
-                && kutox_driver_size(pointer as usize) == size as usize
+                && crate::driver_memory::size(pointer as usize) == size as usize
                 && size as usize >= data_align(size_of::<SkbSharedInfo>()),
             c"build_skb_provenance",
         );
@@ -1083,7 +1079,7 @@ pub unsafe extern "C" fn napi_build_skb(pointer: *mut c_void, size: u32) -> *mut
             return skb;
         }
         checked(
-            kutox_driver_range(pointer as usize, size as usize, 1),
+            crate::driver_memory::range(pointer as usize, size as usize, 1),
             c"build_skb_claim",
         );
         (*skb).head = pointer.cast();
@@ -1093,7 +1089,7 @@ pub unsafe extern "C" fn napi_build_skb(pointer: *mut c_void, size: u32) -> *mut
             .cast::<u8>()
             .add(size as usize - data_align(size_of::<SkbSharedInfo>()));
         checked(
-            kutox_driver_range((*skb).end as usize, size_of::<SkbSharedInfo>(), 0),
+            crate::driver_memory::range((*skb).end as usize, size_of::<SkbSharedInfo>(), 0),
             c"build_skb_sharedinfo_owned",
         );
         (*skb).end.write_bytes(0, size_of::<SkbSharedInfo>());
@@ -1151,7 +1147,7 @@ pub unsafe extern "C" fn eth_type_trans(skb: *mut SkBuff, device: *mut NetDevice
             return 0;
         }
         checked(
-            kutox_driver_range((*skb).data as usize, (*skb).len as usize, 0),
+            crate::driver_memory::range((*skb).data as usize, (*skb).len as usize, 0),
             c"ethernet_device_owned",
         );
         (*skb).device = device;
@@ -1186,14 +1182,14 @@ pub unsafe extern "C" fn napi_gro_receive(napi: *mut Napi, skb: *mut SkBuff) -> 
             || protocol == 0x88a8;
         if size != 0 {
             checked(
-                kutox_driver_range(frame as usize, size, 0),
+                crate::driver_memory::range(frame as usize, size, 0),
                 c"ingress_device_owned",
             );
         }
         let result = if unsupported {
             diagnostic(c"ingress_profile", -95)
         } else {
-            kutox_driver_ingress(frame as usize, size)
+            crate::driver_memory::ingress(frame as usize, size)
         };
         if result < 0 {
             (*(*state()).netdev).stats.rx_dropped =

@@ -11,6 +11,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import check
 import linux_storage_check as storage
+import linux_compat_check as compat
 
 
 def symbol(name, owner=0, kind=0, binding=1):
@@ -148,6 +149,7 @@ class StorageAuditTests(unittest.TestCase):
             with patch.object(storage, "Elf", side_effect=[
                 elf(external), elf([symbol(name) for name in remaining]),
             ]), patch.object(storage, "lines", return_value=["platform"]), \
+                    patch.object(storage, "rust_source_provenance", return_value=[]), \
                     patch.object(storage, "digest", return_value="hash"):
                 if remaining == ["missing", "platform"] and external == source:
                     evidence = storage.service_evidence(Path("unused"), provided | {"missing"})
@@ -156,6 +158,33 @@ class StorageAuditTests(unittest.TestCase):
                 else:
                     with self.assertRaises(ValueError):
                         storage.service_evidence(Path("unused"), provided | {"missing"})
+
+    def test_isolated_provider_records_actual_adapter_dependencies_and_native_role_mapping(self):
+        provided = {
+            "blk_mq_alloc_tag_set", "blk_mq_alloc_request", "blk_mq_start_request",
+            "blk_mq_complete_request", "blk_mq_end_request", "blk_rq_map_sg",
+            "device_add_disk", "set_disk_ro", "del_gendisk", "put_disk",
+        }
+        ffi = storage.lines(storage.DECLARATIONS / "service-ffi.txt")
+        symbols = [symbol(name, 1, 2) for name in provided] + [symbol(name) for name in ffi]
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            for name in ("block-services.o", "block-services-closure.o"):
+                (output / name).write_bytes(b"object")
+            root = storage.ROOT / "compat/audit/storage/block_services.rs"
+            adapter = storage.ROOT / compat.NATIVE_BACKEND
+            dependency = output / "block-services.d"
+            dependency.write_text(f"block-services.o: {root} {adapter}\n")
+            with patch.object(storage, "Elf", return_value=elf(symbols)):
+                saved = storage.service_evidence(output, provided)
+                self.assertIn(compat.NATIVE_BACKEND,
+                              [source["path"] for source in saved["sources"]])
+                self.assertEqual(saved["native_bindings"]["kutox_block_allocate"],
+                                 "crate::block_services::allocate")
+                self.assertEqual(saved["platform_ffi"], sorted(ffi))
+                dependency.write_text(f"block-services.o: {root}\n")
+                with self.assertRaisesRegex(ValueError, "did not compile"):
+                    storage.service_evidence(output, provided)
 
     def test_failed_identity_invalidates_previous_success_without_building(self):
         with tempfile.TemporaryDirectory() as directory:

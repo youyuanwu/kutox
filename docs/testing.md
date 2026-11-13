@@ -59,12 +59,15 @@ Independent `--verify` checks
 stored objects and provenance without compiling. Source-only dependency
 inventories remain 209/203 and retain actual kernel-link exclusion.
 
-The standalone Rust root uses an
-[audit-only native binding](../compat/audit/common/native_backend.rs) for the
-direct Rust allocation API. Reports hash its actual compiler dependencies and
-record the unresolved-label/native-API mapping. Kernel profile checks require
+The shared and isolated block Rust roots use
+[audit-only native bindings](../compat/audit/common/native_backend.rs) for
+memory/DMA, block backing and native storage APIs. Reports hash their actual
+compiler dependencies and record unresolved-label/native-API mappings.
+Kernel profile checks require
 the adjacent Cargo `.d` file, reject audit sources and compile-only ELF markers,
-and verify that the obsolete native allocator export is absent.
+and reject obsolete Rust-only native exports. Required C fixture shims must be
+present in ON and absent in OFF; genuine Linux providers remain independently
+verified.
 
 Runtime declarations and header-forwarding manifests live under
 [compat/include/](../compat/include/), not audit directories. Audit-only

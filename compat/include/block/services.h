@@ -11,9 +11,8 @@ int kutox_block_cancel(u64);
 int kutox_block_release(u64);
 int kutox_block_pump(void);
 bool kutox_block_quiescent(void);
-uintptr_t kutox_block_allocate(size_t, size_t);
-void kutox_block_deallocate(uintptr_t, size_t, size_t);
+#if KUTOX_GUEST_TESTS
 int kutox_block_context(unsigned int);
-void kutox_block_diag(const char *, int);
 void kutox_block_fail(const char *) __attribute__((noreturn));
+#endif
 #endif

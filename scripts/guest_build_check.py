@@ -7,7 +7,7 @@ import re
 import struct
 import subprocess
 from linux_driver_check import Elf, digest
-from linux_compat_check import runtime_rust_sources, rust_dependencies
+from linux_compat_check import NATIVE_BINDINGS, runtime_rust_sources, rust_dependencies
 from make_iso import validate_image
 
 NATIVE_INIT_SYMBOLS = {f"kutox_guest_native_init_{identity}" for identity in (10, 20, 30, 40)}
@@ -18,6 +18,11 @@ USER_PROGRAM_SYMBOLS = {
 }
 INIT_MAGIC = 0x4b44494e
 INIT_RECORD_BYTES = 24
+FIXTURE_BACKEND_SYMBOLS = {
+    "kutox_driver_free", "kutox_driver_range", "kutox_driver_size", "kutox_driver_dma_operation",
+    "kutox_linux_dma_mask", "kutox_linux_dma_alloc", "kutox_linux_dma_free",
+    "kutox_block_context", "kutox_block_fail",
+}
 
 
 GUEST_SYMBOLS = {
@@ -47,11 +52,10 @@ GUEST_SYMBOLS = {
     "kutox_guest_storage_config",
     "kutox_guest_memory_storage",
     "kutox_e1000_rx_resident",
-} | NATIVE_INIT_SYMBOLS | USER_PROGRAM_SYMBOLS
+} | NATIVE_INIT_SYMBOLS | USER_PROGRAM_SYMBOLS | FIXTURE_BACKEND_SYMBOLS
 RUNTIME_SYMBOLS = {
     "e1000_probe", "e1000_open", "e1000_close", "e1000_xmit_frame",
-    "e1000_intr", "e1000_clean", "kutox_driver_free",
-    "kutox_driver_dma_map", "kutox_driver_dma_operation",
+    "e1000_intr", "e1000_clean",
     "kutox_linux_request_irq", "kutox_linux_work_init", "kutox_linux_napi_init",
     "kutox_e1000_init",
     "kutox_async_executor",
@@ -146,8 +150,9 @@ def validate_native_elf(kernel, enabled):
 
 
 def validate_symbols(symbols, enabled):
-    if "kutox_driver_alloc" in symbols:
-        raise AssertionError("obsolete native allocator C facade in kernel runtime")
+    obsolete = (NATIVE_BINDINGS.keys() - FIXTURE_BACKEND_SYMBOLS) & symbols
+    if obsolete:
+        raise AssertionError(f"obsolete native backend C facades in kernel runtime: {sorted(obsolete)}")
     missing = RUNTIME_SYMBOLS - symbols
     if missing:
         raise AssertionError(f"runtime driver/services missing: {sorted(missing)}")

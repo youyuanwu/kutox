@@ -99,11 +99,13 @@ class GuestBuildTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_symbols((RUNTIME_SYMBOLS - {"e1000_xmit_frame"}) | GUEST_SYMBOLS, True)
 
-    def test_native_allocation_has_no_export_but_linux_allocation_remains_required(self):
+    def test_native_backends_have_no_export_but_linux_allocation_remains_required(self):
         for enabled in (False, True):
             symbols = (RUNTIME_SYMBOLS | GUEST_SYMBOLS if enabled else RUNTIME_SYMBOLS) - {"kutox_driver_alloc"}
             validate_symbols(symbols, enabled)
-            for wrong in (symbols | {"kutox_driver_alloc"}, symbols - {"kmalloc"}):
+            obsolete = ("kutox_driver_alloc", "kutox_driver_dma_map", "kutox_storage_dma",
+                        "kutox_block_deallocate", "kutox_linux_dma_publish")
+            for wrong in (*[symbols | {name} for name in obsolete], symbols - {"kmalloc"}):
                 with self.subTest(enabled=enabled, wrong=wrong), self.assertRaises(AssertionError):
                     validate_symbols(wrong, enabled)
 

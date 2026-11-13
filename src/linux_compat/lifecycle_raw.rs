@@ -25,8 +25,6 @@ unsafe extern "C" {
     #[cfg(feature = "guest-tests")]
     fn kutox_e1000_rx_resident(device: *mut NetDevice) -> i32;
     fn kutox_linux_static_objects_retire();
-    #[cfg(feature = "guest-tests")]
-    fn kutox_linux_dma_free(key: usize, size: usize, cpu: usize, dma: u64) -> i32;
 }
 fn state() -> *mut Lifecycle {
     LIFE.0.get()
@@ -478,7 +476,7 @@ mod tests {
             {
                 return -22;
             }
-            kutox_linux_dma_free(
+            crate::linux_dma::free(
                 v.pci_device as usize,
                 v.tx_size as usize,
                 v.tx_desc as usize,
