@@ -5,7 +5,6 @@ use crate::{
     Failure, boot::BootInfo, driver_memory, driver_platform, irq, memory, pci, platform, threads,
 };
 unsafe extern "C" {
-    fn kutox_c_driver_device() -> usize;
     fn kutox_c_services_begin(irq: u32);
     fn kutox_c_services_end();
     fn kutox_c_services_allocations();
@@ -13,14 +12,13 @@ unsafe extern "C" {
     fn kutox_c_services_packets();
     fn kutox_c_services_capacity();
     fn kutox_c_services_failed_open();
-    fn kutox_c_packet_empty() -> bool;
 }
 fn worker(which: usize) {
     unsafe {
         match which {
             0 => kutox_c_services_allocations(),
             1 => {
-                crate::linux_compat::memory::test_network(kutox_c_driver_device());
+                crate::linux_compat::memory::test_network(crate::linux_compat::pci::device_key());
                 kutox_c_services_dma();
             }
             2 => kutox_c_services_packets(),
@@ -37,7 +35,7 @@ fn test(
     which: usize,
 ) -> Result<(), Failure> {
     let topology = platform::discover(boot, frames)?;
-    let key = unsafe { kutox_c_driver_device() };
+    let key = { crate::linux_compat::pci::device_key() };
     let device = pci::discover()?;
     let gsi = device.interrupt_route(&topology)?;
     let owner = driver_platform::Owner::bind(boot, frames, key, device)?;
@@ -51,7 +49,7 @@ fn test(
     scheduler.spawn(worker, which)?;
     if scheduler.run_with_timer(&timer)?.finished != if which == 2 { 3 } else { 1 }
         || !driver_memory::quiescent()
-        || !unsafe { kutox_c_packet_empty() }
+        || !{ crate::linux_compat::packet::quiescent() }
     {
         return Err(Failure::new("driver_service_cleanup", -1));
     }

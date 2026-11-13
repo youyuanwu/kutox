@@ -15,27 +15,6 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use moss_libkernel::CpuOps;
 static FAULT: AtomicU32 = AtomicU32::new(0);
 static FAULT_SEEN: AtomicBool = AtomicBool::new(false);
-unsafe extern "C" {
-    fn kutox_c_driver_device() -> usize;
-    fn kutox_c_linux_empty() -> bool;
-    fn kutox_c_linux_ready(ticket: u64) -> i32;
-    fn kutox_c_linux_tx(ticket: u64, retry: bool) -> i32;
-    fn kutox_c_linux_tx_release(ticket: u64) -> i32;
-    fn kutox_c_linux_rx_stop(ticket: u64) -> i32;
-    fn kutox_c_linux_rx_path(ticket: u64) -> i32;
-    fn kutox_c_linux_rx_failure_seen(ticket: u64) -> bool;
-    fn kutox_c_linux_bind(ticket: *mut u64) -> i32;
-    fn kutox_c_linux_info(ticket: u64, mac: *mut u8, mtu: *mut u32, link: *mut u32) -> i32;
-    fn kutox_c_linux_statistics(ticket: u64, out: *mut u64) -> i32;
-    fn kutox_c_linux_rx_state(
-        ticket: u64,
-        packets: u32,
-        bytes: u32,
-        dropped: u32,
-        failures: u32,
-        replenished: bool,
-    ) -> i32;
-}
 pub fn record_fault() {
     let fault = FAULT.load(Ordering::Acquire);
     if fault != 0 {
@@ -115,38 +94,37 @@ impl DriverHandle {
         failures: u32,
         replenished: bool,
     ) -> i32 {
-        control("rx-state", || unsafe {
-            kutox_c_linux_rx_state(self.0, packets, bytes, dropped, failures, replenished)
+        control("rx-state", || {
+            crate::linux_compat::lifecycle::tests::rx_state(
+                self.0,
+                packets,
+                bytes,
+                dropped,
+                failures,
+                replenished,
+            )
         })
     }
 
     pub(crate) fn rx_failure_seen(&self) -> bool {
         control("rx-failure", || {
-            i32::from(unsafe { kutox_c_linux_rx_failure_seen(self.0) })
+            i32::from(crate::linux_compat::lifecycle::tests::rx_failure_seen(
+                self.0,
+            ))
         }) == 1
     }
 
     pub(crate) fn unbind_checked(self) {
         let ticket = self.0;
         DriverHandle::unbind(self);
-        assert_eq!(
-            unsafe { kutox_c_linux_ready(ticket) },
-            -116,
-            "retired handle remained valid"
-        );
-        assert_eq!(unsafe { kutox_c_linux_tx(ticket, false) }, -116);
-        assert_eq!(unsafe { kutox_c_linux_tx_release(ticket) }, -116);
-        assert_eq!(unsafe { kutox_c_linux_rx_stop(ticket) }, -116);
         let typed = LifecycleHandle::from_ticket(ticket).unwrap();
         assert_eq!(typed.ready(), Err(-116));
-        let mut statistics = [u64::MAX; 7];
+        assert_eq!(typed.transmit(false), Err(-116));
+        assert_eq!(typed.release_packet(), Err(-116));
+        assert_eq!(typed.rx_stop(), Err(-116));
+        assert_eq!(typed.statistics(), Err(-19));
         assert_eq!(
-            unsafe { kutox_c_linux_statistics(ticket, statistics.as_mut_ptr()) },
-            -19
-        );
-        assert_eq!(statistics, [u64::MAX; 7]);
-        assert_eq!(
-            unsafe { kutox_c_linux_rx_state(ticket, 0, 0, 0, 0, true) },
+            { crate::linux_compat::lifecycle::tests::rx_state(ticket, 0, 0, 0, 0, true) },
             -116
         );
     }
@@ -155,7 +133,6 @@ impl DriverHandle {
         let typed = LifecycleHandle::from_ticket(handle.0).unwrap();
         typed.test_reentry();
         assert_eq!(typed.rx_path(), Err(-22));
-        assert_eq!(unsafe { kutox_c_linux_rx_path(handle.0) }, -22);
         let expected = typed.info().unwrap();
         crate::cpu::X86Cpu::enable_interrupts();
         let rejected = typed.info();
@@ -165,35 +142,8 @@ impl DriverHandle {
             Err(threads::SwitchError::InterruptsEnabled as i32)
         );
         assert_eq!(typed.info(), Ok(expected));
-        let mut mac = [0; 6];
-        let mut mtu = 0;
-        let mut link = 0;
-        assert_eq!(
-            unsafe { kutox_c_linux_info(handle.0, mac.as_mut_ptr(), &mut mtu, &mut link) },
-            0
-        );
-        assert_eq!(
-            (mac, mtu, link != 0),
-            (expected.mac, expected.mtu, expected.link)
-        );
-        let mut statistics = [u64::MAX; 7];
-        assert_eq!(
-            unsafe { kutox_c_linux_statistics(handle.0, statistics.as_mut_ptr()) },
-            0
-        );
-        assert_eq!(statistics, typed.statistics().unwrap());
-        mac.fill(0xa5);
-        link = u32::MAX;
-        assert_eq!(
-            unsafe {
-                kutox_c_linux_info(handle.0, mac.as_mut_ptr(), core::ptr::null_mut(), &mut link)
-            },
-            -22
-        );
-        assert_eq!((mac, link), ([0xa5; 6], u32::MAX));
-        let mut ticket = u64::MAX;
-        assert_eq!(unsafe { kutox_c_linux_bind(&mut ticket) }, -16);
-        assert_eq!(ticket, u64::MAX);
+        typed.statistics().unwrap();
+        assert_eq!(LifecycleHandle::bind(), Err(-16));
         assert_eq!(LifecycleHandle::from_ticket(0), Err(-116));
     }
 }
@@ -252,7 +202,7 @@ fn run(
     let device = pci::discover()?;
     let gsi = device.interrupt_route(&topology)?;
     let owner =
-        driver_platform::Owner::bind(boot, frames, unsafe { kutox_c_driver_device() }, device)?;
+        driver_platform::Owner::bind(boot, frames, crate::linux_compat::pci::device_key(), device)?;
     let apic = LocalApic::start(boot, frames)?;
     let controller = IoApic::start(boot, frames, &apic, &topology)?;
     let binding = BoundIrq::bind(&controller, gsi)?;
@@ -269,7 +219,7 @@ fn run(
         || !driver_memory::quiescent()
         || !linux_runtime::quiescent()
         || !linux_deferred::quiescent()
-        || !unsafe { kutox_c_linux_empty() }
+        || !{ crate::linux_compat::lifecycle::empty() }
         || !linux_driver::quiescent()
     {
         return Err(Failure::new("linux_driver_cleanup", -1));
@@ -292,9 +242,9 @@ fn fault_worker() {
         );
         clear_fault();
         assert!(
-            driver_memory::quiescent()
-                && linux_runtime::quiescent()
-                && unsafe { kutox_c_linux_empty() }
+            driver_memory::quiescent() && linux_runtime::quiescent() && {
+                crate::linux_compat::lifecycle::empty()
+            }
         );
     }
     let handle = DriverHandle::bind().expect("original Linux recovery probe failed");

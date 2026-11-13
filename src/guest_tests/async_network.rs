@@ -37,10 +37,6 @@ static HOLD: AtomicBool = AtomicBool::new(false);
 static HELD: AtomicBool = AtomicBool::new(false);
 static CHECKPOINT: threads::WaitQueue = threads::WaitQueue::new();
 
-unsafe extern "C" {
-    fn kutox_c_linux_rx_path(ticket: u64) -> i32;
-}
-
 fn current() -> kernel_runtime::Handle {
     (*RUNTIME.lock_save_irq()).unwrap()
 }
@@ -64,7 +60,11 @@ pub(crate) fn received(ticket: u64, length: usize) {
         return;
     }
     threads::check_thread_context().unwrap();
-    let path = linux_driver::control("async_rx_path", || unsafe { kutox_c_linux_rx_path(ticket) });
+    let path = linux_driver::control("async_rx_path", || {
+        crate::linux_compat::lifecycle::Handle::from_ticket(ticket)
+            .and_then(crate::linux_compat::lifecycle::Handle::rx_path)
+            .unwrap_or_else(|error| error)
+    });
     assert_eq!(path, if length <= 252 { 1 } else { 2 });
     PATH.store(path as usize, Ordering::Release);
 }

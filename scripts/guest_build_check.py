@@ -27,6 +27,21 @@ FIXTURE_BACKEND_SYMBOLS = {
     "kutox_linux_mutex", "kutox_linux_napi", "kutox_linux_object_generation",
     "kutox_linux_work", "kutox_linux_work_init",
 }
+FIXTURE_COMPAT_SYMBOLS = {
+    "kutox_c_netdev_open", "kutox_c_netdev_transmit",
+    "kutox_c_tx_begin", "kutox_c_tx_retry", "kutox_c_tx_status", "kutox_c_tx_release",
+    "kutox_c_driver_endpoint", "kutox_c_driver_endpoint_release",
+    "kutox_block_prepare", "kutox_block_submit", "kutox_block_pump", "kutox_block_result",
+    "kutox_block_cancel", "kutox_block_release", "kutox_block_quiescent",
+}
+REMOVED_COMPAT_PATTERN = re.compile(
+    r"^kutox_c_linux_|"
+    r"^kutox_c_(?:registered_netdev|netdev_close|packet_empty|"
+    r"tx_(?:abort|mapped|unmapped|mmio|many(?:_retry|_finish)?)|"
+    r"rx_(?:start|stop|path|dma|mmio)|driver_device|pci_clear_data|retire_napi_device|deferred_empty)$|"
+    r"^kutox_(?:storage_(?:start|stop|capacity|prepare|submit|poll|result|release|reset_request|empty)|"
+    r"block_(?:registered_(?:disk|queue)|reset_complete|ready)|compat_device_name|read_mac)$"
+)
 
 
 GUEST_SYMBOLS = {
@@ -58,7 +73,7 @@ GUEST_SYMBOLS = {
     "kutox_e1000_rx_resident",
     "kutox_driver_receive", "kutox_linux_workers_stop",
     "kutox_linux_irq_pending", "kutox_linux_irq_depth", "kutox_thread_yield_probe",
-} | NATIVE_INIT_SYMBOLS | USER_PROGRAM_SYMBOLS | FIXTURE_BACKEND_SYMBOLS
+} | NATIVE_INIT_SYMBOLS | USER_PROGRAM_SYMBOLS | FIXTURE_BACKEND_SYMBOLS | FIXTURE_COMPAT_SYMBOLS
 RUNTIME_SYMBOLS = {
     "e1000_probe", "e1000_open", "e1000_close", "e1000_xmit_frame",
     "e1000_intr", "e1000_clean",
@@ -74,7 +89,7 @@ RUNTIME_SYMBOLS = {
     "kutox_user_bringup", "kutox_user_enter", "kutox_user_resume", "kutox_user_dispatch",
     "kutox_user_load_elf",
     "kutox_boot_filesystem",
-    "kutox_storage_start", "virtblk_probe",
+    "virtblk_probe",
     "virtio_queue_rq", "virtblk_request_done", "vp_interrupt",
     "virtblk_done", "virtqueue_add_sgs", "virtqueue_get_buf", "vp_modern_probe",
     "pci_register_driver", "dma_map_page_attrs", "kmalloc", "mutex_lock",
@@ -159,6 +174,9 @@ def validate_symbols(symbols, enabled):
                 | {"kutox_driver_known", "kutox_storage_fail"}) & symbols
     if obsolete:
         raise AssertionError(f"obsolete native backend C facades in kernel runtime: {sorted(obsolete)}")
+    obsolete = sorted(name for name in symbols if REMOVED_COMPAT_PATTERN.search(name))
+    if obsolete:
+        raise AssertionError(f"obsolete compatibility C facades in kernel runtime: {obsolete}")
     missing = RUNTIME_SYMBOLS - symbols
     if missing:
         raise AssertionError(f"runtime driver/services missing: {sorted(missing)}")

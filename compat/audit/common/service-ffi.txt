@@ -3,7 +3,6 @@ kutox_block_context
 kutox_block_deallocate
 kutox_block_diag
 kutox_block_fail
-kutox_check_boot_context
 kutox_delay_us
 kutox_driver_alloc
 kutox_driver_device
@@ -48,7 +47,6 @@ kutox_linux_ratelimit
 kutox_linux_request_irq
 kutox_linux_sleep_range
 kutox_linux_spin_owner
-kutox_linux_static_objects_retire
 kutox_linux_wait_completion
 kutox_linux_work
 kutox_linux_work_init
@@ -56,7 +54,6 @@ kutox_net_wake
 kutox_platform_fail
 kutox_serial_byte
 kutox_storage_alloc
-kutox_storage_begin_reset
 kutox_storage_clock
 kutox_storage_dma
 kutox_storage_free

@@ -635,7 +635,7 @@ pub unsafe extern "C" fn dev_set_name(
     if device.is_null() || format.is_null() {
         return -22;
     }
-    let name = storage::kutox_compat_device_name(device);
+    let name = storage::device_name(device);
     let count = unsafe { format_message(name.cast(), 32, format.cast(), &mut args, false) };
     if count < 32 { 0 } else { -36 }
 }

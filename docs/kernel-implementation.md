@@ -382,7 +382,8 @@ The [native ABI cleanup](linux-compat-abi-cleanup.md) documents which
 internal C-ABI round trips can become ordinary Rust calls while preserving
 real Linux, fixture, callback and audit contracts. All audited compatibility-to-
 native calls now use Rust APIs, retaining C jiffies and actual guest-only shims.
-Compatibility-side internal facade cleanup remains proposed.
+Internal lifecycle, storage, packet/NAPI/PCI and boot control also use Rust APIs;
+genuine Linux-facing C exports and original callback types remain intact.
 
 [The common Rust modules](../src/linux_compat/) implement the selected
 Linux-facing C ABI using `#[unsafe(no_mangle)] extern "C"` exports:
@@ -397,13 +398,15 @@ Linux-facing C ABI using `#[unsafe(no_mangle)] extern "C"` exports:
   raw-pointer adoption and completion witnesses. Backing allocators, masks,
   pins and reset proofs stay with each device's existing Rust owner.
 - `storage.rs`: bus/driver/device references, local config-work queue, native
-  read tickets, admission checks and reset/remove/reprobe sequencing.
+  read tickets, admission checks and reset/remove/reprobe sequencing. Rust
+  controls return owned tickets and copy results into borrowed slices, using
+  actual shared block types rather than opaque-pointer extern declarations.
 - `packet.rs`: network-device lifecycle/queues, linear sk_buffs, fragment
   provenance, TX ownership/completion and native Ethernet ingress.
 - `lifecycle.rs`: safe module bind/open/close/remove services, generation-bearing
   handles, owned information/statistics snapshots and borrowed packet input.
-  `lifecycle_ffi.rs` preserves the C exports and their output-pointer contracts;
   `lifecycle_raw.rs` confines driver pointers, private-header access and callbacks.
+  The redundant C facade is removed; Rust fixtures call the service/test APIs.
 - `napi.rs`: generation-bearing NAPI registrations, queue associations and
   retirement, calling the native executor with the same ABI NAPI callback type
   and original callback pointer.

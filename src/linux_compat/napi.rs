@@ -133,8 +133,7 @@ pub unsafe extern "C" fn netif_napi_del(napi: *mut Napi) {
         (*napi).generation = 0;
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_c_deferred_empty() -> bool {
+pub(crate) fn quiescent() -> bool {
     unsafe {
         (0..4).all(|slot| {
             (*state()).napi[slot].is_null()
@@ -143,8 +142,7 @@ pub extern "C" fn kutox_c_deferred_empty() -> bool {
         })
     }
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kutox_c_retire_napi_device(device: *mut NetDevice) {
+pub(super) unsafe fn retire_device(device: *mut NetDevice) {
     unsafe {
         for slot in 0..4 {
             let napi = (*state()).napi[slot];

@@ -505,13 +505,7 @@ pub extern "C" fn blk_mq_rq_from_pdu(pdu: *mut c_void) -> *mut Request {
         ptr::addr_of_mut!((*live()).request)
     }
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kutox_block_prepare(
-    req: *mut Request,
-    sector: u64,
-    bytes: usize,
-    out: *mut u64,
-) -> i32 {
+pub(super) unsafe fn prepare(req: *mut Request, sector: u64, bytes: usize, out: *mut u64) -> i32 {
     context(0);
     request(req);
     unsafe {
@@ -541,8 +535,7 @@ pub unsafe extern "C" fn kutox_block_prepare(
         0
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_block_submit(value: u64) -> i32 {
+pub(super) fn submit(value: u64) -> i32 {
     context(0);
     let result = ticket(value);
     if result != 0 {
@@ -621,8 +614,7 @@ pub extern "C" fn blk_mq_complete_request(req: *mut Request) {
         (*live()).state = State::Pending;
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_block_pump() -> i32 {
+pub(super) fn pump() -> i32 {
     context(0);
     unsafe {
         let c = live();
@@ -654,8 +646,7 @@ pub extern "C" fn blk_mq_end_request(req: *mut Request, status: u8) {
         (*live()).state = State::Done;
     }
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kutox_block_result(value: u64, out: *mut c_void, capacity: usize) -> i32 {
+pub(super) unsafe fn result(value: u64, out: *mut c_void, capacity: usize) -> i32 {
     context(0);
     let result = ticket(value);
     if result != 0 {
@@ -680,8 +671,7 @@ pub unsafe extern "C" fn kutox_block_result(value: u64, out: *mut c_void, capaci
         (*c).bytes as i32
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_block_cancel(value: u64) -> i32 {
+pub(super) fn cancel(value: u64) -> i32 {
     context(0);
     let result = ticket(value);
     if result != 0 {
@@ -703,8 +693,7 @@ pub extern "C" fn kutox_block_cancel(value: u64) -> i32 {
         0
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_block_release(value: u64) -> i32 {
+pub(super) fn release(value: u64) -> i32 {
     context(0);
     let result = ticket(value);
     if result != 0 {
@@ -1102,12 +1091,10 @@ pub unsafe extern "C" fn rq_list_add_tail(list: *mut RequestList, req: *mut Requ
         (*list).head = req;
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_block_quiescent() -> bool {
+pub(crate) fn quiescent() -> bool {
     unsafe { live().is_null() && !(*registry()).major_live }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_block_registered_disk() -> *mut Disk {
+pub(super) fn registered_disk() -> *mut Disk {
     context(0);
     unsafe {
         require(
@@ -1117,12 +1104,12 @@ pub extern "C" fn kutox_block_registered_disk() -> *mut Disk {
         (*live()).disk
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_block_registered_queue() -> *mut Queue {
-    unsafe { (*kutox_block_registered_disk()).queue }
+pub(super) fn registered_queue() -> *mut Queue {
+    unsafe { (*registered_disk()).queue }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_block_reset_complete(req: *mut Request, status: u8) {
+/// # Safety
+/// Transport reset is acknowledged and all request DMA is stopped and drained.
+pub(super) unsafe fn reset_complete(req: *mut Request, status: u8) {
     context(0);
     request(req);
     unsafe {
@@ -1146,13 +1133,57 @@ pub extern "C" fn kutox_block_operations() -> *const Ops {
         (*(*live()).set).ops
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_block_ready(value: u64) -> i32 {
+pub(super) fn ready(value: u64) -> i32 {
     context(0);
     let result = ticket(value);
     if result != 0 {
         result
     } else {
         unsafe { i32::from((*live()).state == State::Done) }
+    }
+}
+
+#[cfg(feature = "guest-tests")]
+mod guest_ffi {
+    use super::*;
+
+    #[unsafe(no_mangle)]
+    unsafe extern "C" fn kutox_block_prepare(
+        req: *mut Request,
+        sector: u64,
+        bytes: usize,
+        out: *mut u64,
+    ) -> i32 {
+        unsafe { prepare(req, sector, bytes, out) }
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn kutox_block_submit(value: u64) -> i32 {
+        submit(value)
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn kutox_block_pump() -> i32 {
+        pump()
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe extern "C" fn kutox_block_result(value: u64, out: *mut c_void, capacity: usize) -> i32 {
+        unsafe { result(value, out, capacity) }
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn kutox_block_cancel(value: u64) -> i32 {
+        cancel(value)
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn kutox_block_release(value: u64) -> i32 {
+        release(value)
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn kutox_block_quiescent() -> bool {
+        quiescent()
     }
 }

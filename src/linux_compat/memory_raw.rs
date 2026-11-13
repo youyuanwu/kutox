@@ -5,9 +5,6 @@ use crate::{driver_memory, linux_dma, storage as native_storage};
 use core::{marker::PhantomData, ptr};
 
 unsafe extern "C" {
-    fn kutox_c_tx_mapped(pointer: usize, dma: u64, size: usize, direction: u32);
-    fn kutox_c_tx_unmapped(dma: u64, size: usize, direction: u32);
-    fn kutox_c_rx_dma(dma: u64, size: usize, event: u32);
     fn kutox_storage_page_range(page: *const c_void, address: *mut usize, length: *mut usize);
 }
 
@@ -205,10 +202,10 @@ pub(super) fn map_network(
     let address = unsafe {
         driver_memory::dma_map(device.key, range.address, range.length, direction as u32)
     };
-    unsafe {
-        kutox_c_tx_mapped(range.address, address, range.length, direction as u32);
+    {
+        packet::tx_mapped(range.address, address, range.length, direction as u32);
         if direction == Direction::FromDevice && address != u64::MAX {
-            kutox_c_rx_dma(address, range.length, 43);
+            packet::rx_dma(address, range.length, 43);
         }
     }
     mapped(address)
@@ -261,14 +258,14 @@ pub(super) fn unmap(device: DmaDevice, region: &DmaRegion, proof: Completed) -> 
         }
     } else {
         network_operation(device, region, 0)?;
-        unsafe {
-            kutox_c_tx_unmapped(
+        {
+            packet::tx_unmapped(
                 region.address.value(),
                 region.length,
                 region.direction as u32,
             );
             if region.direction == Direction::FromDevice {
-                kutox_c_rx_dma(region.address.value(), region.length, 39);
+                packet::rx_dma(region.address.value(), region.length, 39);
             }
         }
         Ok(())
@@ -278,7 +275,7 @@ pub(super) fn sync_cpu(device: DmaDevice, region: &DmaRegion, proof: Completed) 
     super::memory::matches(device, region, &proof)?;
     network_operation(device, region, 1)?;
     if region.direction == Direction::FromDevice {
-        unsafe { kutox_c_rx_dma(region.address.value(), region.length, 38) }
+        packet::rx_dma(region.address.value(), region.length, 38)
     }
     Ok(())
 }

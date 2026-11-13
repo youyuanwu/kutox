@@ -45,11 +45,6 @@ static STEP: AtomicUsize = AtomicUsize::new(0);
 static FAULT: AtomicUsize = AtomicUsize::new(0);
 static EVENT: threads::WaitQueue = threads::WaitQueue::new();
 
-unsafe extern "C" {
-    fn kutox_c_linux_kick(ticket: u64, operation: u32) -> i32;
-    fn kutox_c_linux_live_ring_free(ticket: u64) -> i32;
-}
-
 fn runtime() -> crate::kernel_runtime::Handle {
     (*RUNTIME.lock_save_irq()).unwrap()
 }
@@ -351,8 +346,8 @@ fn pending(device: net_device::Handle) {
     }
     assert!(crate::linux_irq::pending().unwrap());
     assert_eq!(
-        control("hard-kick", || unsafe {
-            kutox_c_linux_kick(MANAGED_TICKET.load(Ordering::Acquire), 0)
+        control("hard-kick", || {
+            crate::linux_compat::lifecycle::tests::kick(MANAGED_TICKET.load(Ordering::Acquire), 0)
         }),
         0
     );
@@ -399,8 +394,8 @@ fn pending(device: net_device::Handle) {
     assert!(new_device.receive().unwrap().is_none());
     serial::print(format_args!("# MANAGED_HARD_PURGE replaced=1 ingress=0\n"));
     assert_eq!(
-        control("hard-kick", || unsafe {
-            kutox_c_linux_kick(MANAGED_TICKET.load(Ordering::Acquire), 1)
+        control("hard-kick", || {
+            crate::linux_compat::lifecycle::tests::kick(MANAGED_TICKET.load(Ordering::Acquire), 1)
         }),
         1
     );
@@ -457,7 +452,11 @@ fn actor(_: usize) {
             let before = driver_memory::snapshot();
             assert!(before.2 > 0);
             assert_eq!(
-                unsafe { kutox_c_linux_live_ring_free(MANAGED_TICKET.load(Ordering::Acquire)) },
+                {
+                    crate::linux_compat::lifecycle::tests::live_ring_free(
+                        MANAGED_TICKET.load(Ordering::Acquire),
+                    )
+                },
                 -16
             );
             assert_eq!(driver_memory::snapshot(), before);

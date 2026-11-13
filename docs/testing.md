@@ -41,7 +41,7 @@ layouts and actual runtime-link rejection pass. No fake service providers or
 garbage collection hide dependencies. Failed builds invalidate an earlier
 success report. The separate `runtime/` subdirectory now contains the complete
 unmarked combined e1000/VirtIO/Rust-provider closure, with all sections retained
-and exactly 68 backend/libc entry points in one shared allowlist. Both inventories
+and exactly 65 backend/libc entry points in one shared allowlist. Both inventories
 and their source/header/command/object provenance are independently verified.
 
 Both driver audits use [linux_compat_check.py](../scripts/linux_compat_check.py)
@@ -51,10 +51,11 @@ Real Rust and boot/e1000/storage C probes must agree on all 37 shared
 device/PCI/execution-layout and GFP values. Rust and the network C profile also
 compare 122 network-device, skb, fragment, NAPI, callback-slot and constant
 values. Another 135 block and 41 original-header-accessor/MAC values check the
-migrated block services and retained C bridge. Migrated lifecycle, NAPI, optional,
+migrated block services and retained C bridge. Genuine NAPI, optional,
 MMIO, diagnostic and block entry points must be functions in the actual Rust
-object, not C/local/data definitions. Existing native Rust-only stop/quiescence
-helpers may inline in the optimized kernel ELF without losing provider proof.
+object, not C/local/data definitions. Private lifecycle, storage and boot control
+paths use real kernel compilation and guest behavior instead of artificial C
+exports. Rust-only helpers may inline without losing that proof.
 Independent `--verify` checks
 stored objects and provenance without compiling. Source-only dependency
 inventories remain 209/203 and retain actual kernel-link exclusion.
@@ -64,10 +65,15 @@ The shared and isolated block Rust roots use
 memory/DMA, execution/platform, block backing and native storage APIs.
 Reports hash their actual compiler dependencies and record every native role's
 Rust API or retained C-provider disposition against the exact dependency ledger.
+Boot-context, lifecycle-retirement and storage-reset setup are explicitly
+recorded private Rust control roles, not unexplained removals from the provider
+closure. Missing, live, unknown or reasonless exclusions are rejected.
 Kernel profile checks require
 the adjacent Cargo `.d` file, reject audit sources and compile-only ELF markers,
 and reject obsolete Rust-only native exports. Required C fixture shims must be
-present in ON and absent in OFF, including receive/worker/IRQ/thread facades.
+present in ON and absent in OFF, including receive/worker/IRQ/thread facades and
+the packet/PCI/block C control fixtures. Deleted lifecycle and internal control
+exports are rejected in both profiles.
 Production C jiffies and genuine Linux providers remain independently verified.
 
 Runtime declarations and header-forwarding manifests live under

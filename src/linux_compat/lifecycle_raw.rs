@@ -83,17 +83,17 @@ impl Access {
             if (*state()).loaded || !device().is_null() {
                 return Err(-16);
             }
-            pci::kutox_c_driver_endpoint((*state()).irq);
+            pci::driver_endpoint((*state()).irq);
             let init = callback(kutox_module_init, c"linux_module_init");
             crate::linux_driver::trace(1, init as usize, 0, 0);
             let result = init();
             if result < 0 {
                 crate::linux_runtime::retire_static_objects();
-                pci::kutox_c_driver_endpoint_release();
+                pci::release_driver_endpoint();
                 return Err(result);
             }
             (*state()).loaded = true;
-            (*state()).device = packet::kutox_c_registered_netdev();
+            (*state()).device = packet::registered_netdev();
             require(
                 !device().is_null()
                     && !(*device()).ethtool_ops.is_null()
@@ -138,17 +138,14 @@ impl Access {
             (*state()).device = ptr::null_mut();
             (*state()).loaded = false;
             crate::linux_runtime::retire_static_objects();
-            pci::kutox_c_driver_endpoint_release();
+            pci::release_driver_endpoint();
             Ok(())
         }
     }
 
     pub(super) fn empty(&self) -> bool {
         unsafe {
-            !(*state()).loaded
-                && device().is_null()
-                && packet::kutox_c_packet_empty()
-                && napi::kutox_c_deferred_empty()
+            !(*state()).loaded && device().is_null() && packet::quiescent() && napi::quiescent()
         }
     }
 }
@@ -229,16 +226,16 @@ impl Device<'_> {
         unsafe {
             let open = callback((*(*self.pointer).netdev_ops).open, c"linux_open_callback");
             crate::linux_driver::trace(6, open as usize, self.pointer as usize, 0);
-            packet::kutox_c_netdev_open(self.pointer)
+            packet::netdev_open(self.pointer)
         }
     }
 
     pub(super) fn close(&self) -> i32 {
-        packet::kutox_c_tx_abort(self.pointer);
+        packet::tx_abort(self.pointer);
         unsafe {
             let stop = callback((*(*self.pointer).netdev_ops).stop, c"linux_stop_callback");
             crate::linux_driver::trace(7, stop as usize, self.pointer as usize, 0);
-            packet::kutox_c_netdev_close(self.pointer)
+            packet::netdev_close(self.pointer)
         }
     }
 
@@ -253,38 +250,38 @@ impl Device<'_> {
     /// # Safety
     /// For an admitted packet length, bytes must be readable for size bytes.
     pub(super) unsafe fn packet_raw(&self, bytes: *const c_void, size: u32) -> i32 {
-        unsafe { packet::kutox_c_tx_begin(self.pointer, view().mmio, bytes, size) }
+        unsafe { packet::tx_begin(self.pointer, view().mmio, bytes, size) }
     }
 
     pub(super) fn transmit(&self, retry: bool) -> i32 {
         unsafe {
             if retry {
-                packet::kutox_c_tx_retry(self.pointer)
+                packet::tx_retry(self.pointer)
             } else {
-                packet::kutox_c_tx_status(self.pointer)
+                packet::tx_status(self.pointer)
             }
         }
     }
 
     pub(super) fn release_packet(&self) {
-        unsafe { packet::kutox_c_tx_release(self.pointer) }
+        unsafe { packet::tx_release(self.pointer) }
     }
 
     pub(super) fn rx_start(&self) {
         unsafe {
             let v = view();
-            packet::kutox_c_rx_start(self.pointer, v.mmio);
+            packet::rx_start(self.pointer, v.mmio);
             crate::linux_driver::trace(34, v.clean_rx, self.pointer as usize, 0);
             crate::linux_driver::trace(35, v.alloc_rx, self.pointer as usize, 0);
         }
     }
 
     pub(super) fn rx_stop(&self) {
-        packet::kutox_c_rx_stop();
+        packet::rx_stop();
     }
 
     pub(super) fn rx_path(&self) -> i32 {
-        packet::kutox_c_rx_path()
+        packet::rx_path()
     }
 }
 
@@ -303,10 +300,21 @@ pub(super) fn test_reentry(handle: Handle) {
 }
 
 #[cfg(feature = "guest-tests")]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    #[unsafe(no_mangle)]
-    pub extern "C" fn kutox_c_linux_rx_state(
+    pub(crate) fn rx_failure_seen(ticket: u64) -> bool {
+        let snapshot = (|| {
+            let handle = Handle::from_ticket(ticket)?;
+            let access = Access::enter()?;
+            Ok::<_, i32>(access.active(handle)?.profile().rx_failures != 0)
+        })();
+        match snapshot {
+            Ok(seen) => seen,
+            Err(_) => crate::platform_fail(c"linux_rx_snapshot_handle"),
+        }
+    }
+
+    pub(crate) fn rx_state(
         ticket: u64,
         packets: u32,
         bytes: u32,
@@ -335,8 +343,7 @@ mod tests {
             kutox_e1000_rx_resident(d)
         }
     }
-    #[unsafe(no_mangle)]
-    pub extern "C" fn kutox_c_linux_queue(ticket: u64, stopped: bool) -> i32 {
+    pub(crate) fn queue(ticket: u64, stopped: bool) -> i32 {
         let d = match active(ticket) {
             Ok(d) => d,
             Err(_) => return -116,
@@ -350,39 +357,31 @@ mod tests {
         }
         0
     }
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kutox_c_linux_many(
-        ticket: u64,
-        bytes: *const c_void,
-        count: u32,
-    ) -> i32 {
+    pub(crate) unsafe fn many(ticket: u64, bytes: *const u8, count: u32) -> i32 {
         let d = match active(ticket) {
             Ok(d) => d,
             Err(_) => return -116,
         };
-        unsafe { packet::kutox_c_tx_many(d, bytes, count, 60) }
+        unsafe { packet::tx_many(d, bytes.cast(), count, 60) }
     }
-    #[unsafe(no_mangle)]
-    pub extern "C" fn kutox_c_linux_many_retry(ticket: u64) -> i32 {
+    pub(crate) fn many_retry(ticket: u64) -> i32 {
         let d = match active(ticket) {
             Ok(d) => d,
             Err(_) => return -116,
         };
-        unsafe { packet::kutox_c_tx_many_retry(d) }
+        unsafe { packet::tx_many_retry(d) }
     }
-    #[unsafe(no_mangle)]
-    pub extern "C" fn kutox_c_linux_many_finish(ticket: u64) -> i32 {
+    pub(crate) fn many_finish(ticket: u64) -> i32 {
         let d = match active(ticket) {
             Ok(d) => d,
             Err(_) => return -116,
         };
         unsafe {
-            packet::kutox_c_tx_many_finish(d);
+            packet::tx_many_finish(d);
         }
         0
     }
-    #[unsafe(no_mangle)]
-    pub extern "C" fn kutox_c_linux_counts(
+    pub(crate) fn counts(
         ticket: u64,
         sent: u32,
         completed: u32,
@@ -410,8 +409,7 @@ mod tests {
             }
         }
     }
-    #[unsafe(no_mangle)]
-    pub extern "C" fn kutox_c_linux_indices(ticket: u64, tx: u32, rx: u32) -> i32 {
+    pub(crate) fn indices(ticket: u64, tx: u32, rx: u32) -> i32 {
         let d = match active(ticket) {
             Ok(d) => d,
             Err(_) => return -116,
@@ -432,8 +430,7 @@ mod tests {
             }
         }
     }
-    #[unsafe(no_mangle)]
-    pub extern "C" fn kutox_c_linux_kick(ticket: u64, operation: u32) -> i32 {
+    pub(crate) fn kick(ticket: u64, operation: u32) -> i32 {
         let d = match active(ticket) {
             Ok(d) => d,
             Err(_) => return -116,
@@ -460,8 +457,7 @@ mod tests {
             }
         }
     }
-    #[unsafe(no_mangle)]
-    pub extern "C" fn kutox_c_linux_live_ring_free(ticket: u64) -> i32 {
+    pub(crate) fn live_ring_free(ticket: u64) -> i32 {
         if active(ticket).is_err() {
             return -116;
         }
@@ -483,8 +479,7 @@ mod tests {
             )
         }
     }
-    #[unsafe(no_mangle)]
-    pub extern "C" fn kutox_c_linux_rx_failures(ticket: u64) -> i32 {
+    pub(crate) fn rx_failures(ticket: u64) -> i32 {
         if active(ticket).is_err() {
             return -116;
         }

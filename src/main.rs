@@ -214,30 +214,7 @@ impl Failure {
     }
 }
 
-#[repr(C)]
-#[derive(Default)]
-struct ProbeResult {
-    code: i32,
-    stage: u32,
-    denied_grants: u32,
-    eeprom_reads: u32,
-    mac: [u8; 6],
-}
-
-const _: () = assert!(core::mem::size_of::<ProbeResult>() == 24);
-const _: () = assert!(core::mem::offset_of!(ProbeResult, mac) == 16);
-
-unsafe extern "C" {
-    fn kutox_read_mac(
-        base: usize,
-        length: usize,
-        vendor: u16,
-        device: u16,
-        revision: u8,
-        deny_grant: u8,
-        result: *mut ProbeResult,
-    );
-}
+use linux_compat::abi::MacResult as ProbeResult;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn kmain() -> ! {
@@ -392,27 +369,23 @@ fn probe() -> Result<BootOutcome, Failure> {
         bar.base,
         memory::MMIO_LENGTH
     );
-    let mut result = ProbeResult::default();
-    unsafe {
-        kutox_read_mac(
-            mapping.address(),
-            memory::MMIO_LENGTH,
-            device.vendor,
-            device.device,
-            device.revision,
+    let result = linux_compat::mmio::read_mac(
+        mapping.address(),
+        memory::MMIO_LENGTH,
+        device.vendor,
+        device.device,
+        device.revision,
+        {
+            #[cfg(feature = "guest-tests")]
             {
-                #[cfg(feature = "guest-tests")]
-                {
-                    u8::from(boot.mode == BootMode::EepromTimeout)
-                }
-                #[cfg(not(feature = "guest-tests"))]
-                {
-                    0
-                }
-            },
-            &mut result,
-        );
-    }
+                u8::from(boot.mode == BootMode::EepromTimeout)
+            }
+            #[cfg(not(feature = "guest-tests"))]
+            {
+                0
+            }
+        },
+    );
     println!(
         "E1000_EEPROM reads={} denied_grants={}",
         result.eeprom_reads, result.denied_grants

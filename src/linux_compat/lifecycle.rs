@@ -2,6 +2,8 @@
 //! Safe lifecycle services. Handles are revalidated on every operation.
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "guest-tests")]
+pub(crate) use super::lifecycle_raw::tests;
 use super::{checked, lifecycle_raw::Access, require};
 use core::num::NonZeroU64;
 

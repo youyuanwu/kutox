@@ -140,9 +140,6 @@ pub(crate) fn trace(event: u32, function: usize, object: usize, result: i32) {
         ));
     }
 }
-unsafe extern "C" {
-    pub(crate) fn kutox_c_driver_device() -> usize;
-}
 
 use alloc::sync::Arc;
 use core::sync::atomic::AtomicU64;

@@ -2,23 +2,22 @@
 #![allow(dead_code)]
 #[path = "../linux_abi.rs"]
 pub(crate) mod abi;
-mod block;
+pub(crate) mod block;
 #[path = "../block_abi.rs"]
 mod block_abi;
 mod diagnostics;
 mod execution;
 pub(crate) mod lifecycle;
-mod lifecycle_ffi;
 mod lifecycle_raw;
 pub(crate) mod memory;
 mod memory_ffi;
 mod memory_raw;
-mod mmio;
-mod napi;
+pub(crate) mod mmio;
+pub(crate) mod napi;
 mod optional;
-mod packet;
-mod pci;
-mod storage;
+pub(crate) mod packet;
+pub(crate) mod pci;
+pub(crate) mod storage;
 use abi::*;
 use core::{
     cell::UnsafeCell,

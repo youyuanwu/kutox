@@ -1,6 +1,6 @@
 # Native Rust / Linux compatibility ABI cleanup
 
-Status: phases 1-3 implemented; compatibility-facade cleanup remains proposed.
+Status: phases 1-4 implemented; final documentation/accounting remains.
 
 Audit baseline: `829ec3217f9cccf6415737a27bc995b86ae4146e`.
 The counts below describe that revision, not permanent acceptance thresholds.
@@ -58,9 +58,31 @@ and stable Rust metadata labels are unchanged.
 Each C shim forwards to the same Rust implementation. Both the shared and
 [isolated block audit root](../compat/audit/storage/block_services.rs) use the
 common audit bindings and record their actual source dependencies and native
-API mappings, including the retained C provider. Their exact external allowlists
-are unchanged. Compatibility-side lifecycle/storage/control facades are the
-next cleanup phase, not a reason to keep native Rust-to-Rust extern imports.
+API mappings, including the retained C provider. The shared executable closure
+now has 65 explicit backend/compiler dependencies. Three private Rust control
+roles remain accounted for in the report but no longer enter that C-provider
+object: boot-context checking, lifecycle static retirement and storage reset
+deadline setup. Each exclusion has a reviewed reason; the isolated block
+dependency allowlist is unchanged.
+
+## Implemented compatibility controls
+
+The sixteen lifecycle C facades are removed. Rust fixtures use the
+[typed lifecycle service](../src/linux_compat/lifecycle.rs) and guest-only Rust
+inspectors, preserving admission and generation checks without redundant raw
+output-pointer APIs.
+
+Native storage control now returns owned tickets and accepts borrowed output
+slices. Its block calls use the actual shared request/queue/disk types rather
+than redeclaring Rust functions with opaque-pointer C signatures. Packet, NAPI,
+PCI, block inspectors and private device-name forwarding use ordinary Rust
+methods. Fifteen actual packet/PCI/block C fixture entry points remain behind
+`guest-tests`, forwarding to the same implementations.
+
+Boot MAC probing returns an owned shared ABI result to Rust while retaining the
+original C header-access bridge. Genuine Linux C providers, variadics, callback
+slots and explicit unsupported/debug APIs remain; an optimized-away optional
+call is not evidence that its C contract can be deleted.
 
 ## Audit findings
 
@@ -142,19 +164,19 @@ and `kutox_storage_check` in
 
 ### Compatibility-side Rust-to-Rust round trips
 
-All 16 exports in [lifecycle_ffi.rs](../src/linux_compat/lifecycle_ffi.rs)
-have no C consumers. Ten are used only by Rust fixtures. Six have no Rust
+All 16 exports in the former `lifecycle_ffi.rs` had no C consumers.
+Ten were used only by Rust fixtures. Six had no Rust
 callers: `kutox_c_linux_bind_irq`, `kutox_c_linux_open`,
 `kutox_c_linux_close`, `kutox_c_linux_tx_begin`, `kutox_c_linux_rx_start`
-and `kutox_c_linux_unbind`. Current audit requirements retain those six names
-artificially. Runtime Rust already uses the
+and `kutox_c_linux_unbind`. Earlier audit requirements retained those six names
+artificially. Runtime Rust uses the
 [typed lifecycle service](../src/linux_compat/lifecycle.rs).
 
-The cleanup should remove this production facade and migrate its Rust fixtures
-to the typed service. Preserve stale-generation, admission, ownership and
-retirement tests; do not retain unused pointer-output APIs just to test them.
+The facade is now deleted and its Rust fixtures migrated to the typed service.
+Stale-generation, admission, ownership and retirement tests remain; obsolete
+pointer-output APIs were not retained merely to test their null checks.
 
-Other candidates include:
+Other reviewed round trips, now ordinary Rust paths, included:
 
 - Native storage control calling `kutox_storage_start`, prepare/submit/poll/
   result/release/reset/stop/capacity/empty through Rust `extern` declarations.
@@ -163,8 +185,7 @@ Other candidates include:
 - The Rust boot-MAC entry and private device-name forwarding.
 - Guest helpers exported solely so another Rust module can redeclare them.
 
-These are candidates for ordinary, appropriately visible Rust functions.
-This does not authorize removal of actual Linux-facing APIs or callback ABIs.
+Actual Linux-facing APIs and callback ABIs remain intact.
 
 ## Proposed architecture
 

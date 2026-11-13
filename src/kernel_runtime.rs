@@ -576,7 +576,7 @@ impl<'a> Resources<'a> {
             Some(crate::driver_platform::Owner::bind(
                 &self.boot,
                 self.frames,
-                unsafe { linux_driver::kutox_c_driver_device() },
+                crate::linux_compat::pci::device_key(),
                 device,
             )?)
         } else {

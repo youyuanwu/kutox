@@ -55,12 +55,10 @@ fn storage_operation(op: u32, first: u64, second: u64) -> u64 {
     crate::storage::pci(op, first, second)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_c_driver_device() -> usize {
+pub(crate) fn device_key() -> usize {
     net_pointer() as usize
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_c_driver_endpoint(irq: u32) -> *mut PciDevice {
+pub(super) fn driver_endpoint(irq: u32) -> *mut PciDevice {
     context();
     require(unsafe { !(*net()).bound }, c"pci_endpoint_live");
     let read = |offset| checked(net_operation(10, offset, 0), c"pci_identity") as u16;
@@ -145,12 +143,10 @@ pub fn quiescent() -> bool {
             && (*storage()).driver.is_null()
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_c_driver_endpoint_release() {
+pub(super) fn release_driver_endpoint() {
     release(net());
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_c_pci_clear_data(data: *mut c_void) {
+pub(super) fn clear_data(data: *mut c_void) {
     unsafe {
         if (*net()).device.dev.driver_data == data {
             (*net()).device.dev.driver_data = ptr::null_mut();
@@ -747,5 +743,20 @@ pub unsafe extern "C" fn iowrite32(v: u32, p: *mut u32) {
     unsafe {
         crate::storage::mmio(p as usize, 4);
         p.write_volatile(v)
+    }
+}
+
+#[cfg(feature = "guest-tests")]
+mod guest_ffi {
+    use super::*;
+
+    #[unsafe(no_mangle)]
+    extern "C" fn kutox_c_driver_endpoint(irq: u32) -> *mut PciDevice {
+        driver_endpoint(irq)
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn kutox_c_driver_endpoint_release() {
+        release_driver_endpoint()
     }
 }

@@ -33,6 +33,17 @@ class SharedCompatibilityTests(unittest.TestCase):
             with patch.object(compat, "NATIVE_BINDINGS", changed), self.assertRaisesRegex(ValueError, "dispositions"):
                 compat.native_dispositions()
 
+    def test_private_control_exclusions_cannot_hide_live_unknown_or_unexplained_dependencies(self):
+        private = compat.PRIVATE_CONTROL_BACKENDS
+        for changed in (
+            {name: reason for name, reason in private.items() if name != "kutox_check_boot_context"},
+            {**private, "kutox_check_boot_context": ""},
+            {**private, "hidden_backend": "unreviewed native role"},
+            {**private, "kutox_linux_work": "attempt to waive a live dependency"},
+        ):
+            with patch.object(compat, "PRIVATE_CONTROL_BACKENDS", changed), self.assertRaisesRegex(ValueError, "dispositions"):
+                compat.native_dispositions()
+
     def test_rust_services_cannot_be_replaced_by_c_local_data_or_declarations(self):
         with patch.object(compat, "RUST_PROVIDERS", {"open"}):
             self.assertEqual(compat.rust_providers([symbol("open", 1, 2)]), ["open"])

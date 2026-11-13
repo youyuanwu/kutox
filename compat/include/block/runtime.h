@@ -22,14 +22,4 @@ extern void kutox_platform_fail(const char *) __attribute__((noreturn));
 #define module_exit(f) void (*const kutox_storage_exit_##f)(void) = f
 
 
-int kutox_storage_start(unsigned int);
-void kutox_storage_stop(void);
-int kutox_storage_prepare(sector_t, size_t, u64 *);
-int kutox_storage_submit(u64);
-int kutox_storage_result(u64, void *, size_t);
-int kutox_storage_poll(u64);
-int kutox_storage_release(u64);
-int kutox_storage_reset_request(u64);
-u64 kutox_storage_capacity(void);
-bool kutox_storage_empty(void);
 #endif

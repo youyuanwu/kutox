@@ -8,7 +8,7 @@ struct State {
     references: u32,
     added: bool,
     loaded: bool,
-    request: *mut c_void,
+    request: *mut block_abi::Request,
     ticket: u64,
     queue_live: bool,
     pending: *mut Work,
@@ -44,25 +44,6 @@ unsafe extern "C" {
     fn kutox_storage_device_status(device: *mut Device) -> u8;
     fn kutox_storage_detach(device: *mut Device) -> *mut c_void;
     fn kutox_storage_report_callbacks(device: *mut Device);
-    fn kutox_block_registered_disk() -> *mut c_void;
-    fn kutox_block_registered_queue() -> *mut c_void;
-    fn get_capacity(disk: *mut c_void) -> u64;
-    fn blk_mq_alloc_request(queue: *mut c_void, operation: u32, flags: u32) -> *mut c_void;
-    fn blk_mq_free_request(request: *mut c_void);
-    fn blk_mq_rq_to_pdu(request: *mut c_void) -> *mut c_void;
-    fn kutox_block_prepare(
-        request: *mut c_void,
-        sector: u64,
-        bytes: usize,
-        ticket: *mut u64,
-    ) -> i32;
-    fn kutox_block_submit(ticket: u64) -> i32;
-    fn kutox_block_result(ticket: u64, output: *mut c_void, capacity: usize) -> i32;
-    fn kutox_block_ready(ticket: u64) -> i32;
-    fn kutox_block_release(ticket: u64) -> i32;
-    fn kutox_block_cancel(ticket: u64) -> i32;
-    fn kutox_block_pump() -> i32;
-    fn kutox_block_reset_complete(request: *mut c_void, status: u8);
 }
 fn state() -> *mut State {
     STATE.0.get()
@@ -271,8 +252,7 @@ pub extern "C" fn dev_name(d: *const Device) -> *const c_char {
     );
     DEVICE_NAME.0.get().cast()
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_compat_device_name(d: *mut Device) -> *mut c_char {
+pub(super) fn device_name(d: *mut Device) -> *mut c_char {
     context();
     require(
         unsafe { d == (*state()).device && !d.is_null() && (*state()).references > 0 },
@@ -404,8 +384,7 @@ fn reset() {
         c"storage_reset_unacknowledged",
     );
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_storage_start(irq: u32) -> i32 {
+pub(crate) fn start(irq: u32) -> i32 {
     context();
     if !quiescent() || pci::storage_bound() {
         return diagnostic(c"storage_start_busy", -16);
@@ -449,58 +428,44 @@ pub extern "C" fn kutox_storage_start(irq: u32) -> i32 {
     }
     0
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_storage_capacity() -> u64 {
+pub(crate) fn capacity() -> u64 {
     context();
-    unsafe { get_capacity(kutox_block_registered_disk()) }
+    block::get_capacity(block::registered_disk())
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kutox_storage_prepare(sector: u64, bytes: usize, out: *mut u64) -> i32 {
+pub(crate) fn prepare(sector: u64, bytes: usize) -> Result<u64, i32> {
     context();
-    if out.is_null() {
-        return diagnostic(c"storage_prepare_output", -22);
-    }
     if unsafe { !(*state()).loaded || !(*state()).request.is_null() } {
-        return -16;
+        return Err(-16);
     }
-    let request = unsafe { blk_mq_alloc_request(kutox_block_registered_queue(), 0, 0) };
+    let request = block::blk_mq_alloc_request(block::registered_queue(), 0, 0);
     if request as usize >= usize::MAX - 4094 {
-        return request as isize as i32;
+        return Err(request as isize as i32);
     }
     let mut ticket = 0;
-    let result = unsafe { kutox_block_prepare(request, sector, bytes, &mut ticket) };
+    let result = unsafe { block::prepare(request, sector, bytes, &mut ticket) };
     if result != 0 {
-        unsafe { blk_mq_free_request(request) };
-        return result;
+        block::blk_mq_free_request(request);
+        return Err(result);
     }
     unsafe {
         (*state()).request = request;
         (*state()).ticket = ticket;
-        out.write(ticket);
     }
-    0
+    Ok(ticket)
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_storage_submit(ticket: u64) -> i32 {
-    unsafe { kutox_block_submit(ticket) }
+pub(crate) fn submit(ticket: u64) -> i32 {
+    block::submit(ticket)
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_storage_poll(ticket: u64) -> i32 {
-    unsafe {
-        kutox_block_pump();
-        kutox_block_ready(ticket)
-    }
+pub(crate) fn poll(ticket: u64) -> i32 {
+    block::pump();
+    block::ready(ticket)
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kutox_storage_result(ticket: u64, output: *mut c_void, n: usize) -> i32 {
-    unsafe {
-        kutox_block_pump();
-        kutox_block_result(ticket, output, n)
-    }
+pub(crate) fn result(ticket: u64, output: &mut [u8]) -> i32 {
+    block::pump();
+    unsafe { block::result(ticket, output.as_mut_ptr().cast(), output.len()) }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_storage_release(ticket: u64) -> i32 {
-    let result = unsafe { kutox_block_release(ticket) };
+pub(crate) fn release(ticket: u64) -> i32 {
+    let result = block::release(ticket);
     if result == 0 {
         unsafe {
             (*state()).request = ptr::null_mut();
@@ -509,8 +474,7 @@ pub extern "C" fn kutox_storage_release(ticket: u64) -> i32 {
     }
     result
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_storage_reset_request(ticket: u64) -> i32 {
+pub(crate) fn reset_request(ticket: u64) -> i32 {
     context();
     let (request, current, device) = unsafe {
         let s = &*state();
@@ -523,19 +487,16 @@ pub extern "C" fn kutox_storage_reset_request(ticket: u64) -> i32 {
     let pdu = unsafe { kutox_storage_detach(device) };
     if !pdu.is_null() {
         require(
-            pdu == unsafe { blk_mq_rq_to_pdu(request) },
+            pdu == block::blk_mq_rq_to_pdu(request),
             c"storage_reset_pdu",
         );
-        unsafe { kutox_block_reset_complete(request, 2) };
+        unsafe { block::reset_complete(request, 2) };
     } else {
-        unsafe {
-            kutox_block_pump();
-        }
+        block::pump();
     }
-    unsafe { kutox_block_cancel(ticket) }
+    block::cancel(ticket)
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_storage_stop() {
+pub(crate) fn stop() {
     context();
     require(
         unsafe { (*state()).loaded && (*state()).request.is_null() },
@@ -550,8 +511,7 @@ pub extern "C" fn kutox_storage_stop() {
     }
     pci::release_storage();
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_storage_empty() -> bool {
+pub(crate) fn empty() -> bool {
     quiescent() && !pci::storage_bound()
 }
 

@@ -17,13 +17,9 @@ static ALLOCATIONS: Allocations = Allocations(UnsafeCell::new([None; 4]));
 #[cfg(feature = "guest-tests")]
 static FAIL_AFTER: AtomicUsize = AtomicUsize::new(usize::MAX);
 
-unsafe extern "C" {
-    fn kutox_block_quiescent() -> bool;
-}
-
 pub fn quiescent() -> bool {
     !cpu::interrupts_enabled()
-        && unsafe { kutox_block_quiescent() }
+        && crate::linux_compat::block::quiescent()
         && unsafe { &*ALLOCATIONS.0.get() }.iter().all(Option::is_none)
 }
 

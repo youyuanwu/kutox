@@ -17,7 +17,6 @@ unsafe extern "C" {
     fn kutox_c_driver_irq_config(base: usize, irq: u32);
     fn kutox_c_driver_irq();
     fn kutox_c_driver_lifecycle(role: usize);
-    fn kutox_c_deferred_empty() -> bool;
 }
 
 pub fn atomics(_: &BootInfo, _: &memory::PhysicalFrames<'static>) -> Result<(), Failure> {
@@ -41,7 +40,7 @@ fn run(
     }
     if !linux_deferred::quiescent()
         || !linux_runtime::quiescent()
-        || !unsafe { kutox_c_deferred_empty() }
+        || !{ crate::linux_compat::napi::quiescent() }
     {
         return Err(Failure::new("linux_driver_cleanup", -1));
     }
@@ -110,7 +109,7 @@ pub fn irq(boot: &BootInfo, frames: &memory::PhysicalFrames<'static>) -> Result<
         || after.0 - before.0 != 2
         || after.1 - before.1 != 1
         || !linux_deferred::quiescent()
-        || !unsafe { kutox_c_deferred_empty() }
+        || !{ crate::linux_compat::napi::quiescent() }
     {
         return Err(Failure::new("linux_irq_lifetime", -1));
     }

@@ -94,6 +94,11 @@ NATIVE_BINDINGS = {
 NATIVE_C_BINDINGS = {
     "kutox_jiffies": "crate::linux_runtime::jiffies",
 }
+PRIVATE_CONTROL_BACKENDS = {
+    "kutox_check_boot_context": "Only the private Rust boot-MAC path calls this backend.",
+    "kutox_linux_static_objects_retire": "Only private Rust lifecycle bind/unbind paths retire static objects.",
+    "kutox_storage_begin_reset": "Only private Rust storage start/reset controls establish the reset deadline.",
+}
 
 
 def native_dispositions():
@@ -101,23 +106,21 @@ def native_dispositions():
     expected = set(lines(ROOT / "compat/audit/common/service-ffi.txt")) - {
         "memcpy", "memmove", "memset", "strlen",
     }
+    private = PRIVATE_CONTROL_BACKENDS
     if (NATIVE_BINDINGS.keys() & NATIVE_C_BINDINGS.keys()
-            or NATIVE_BINDINGS.keys() | NATIVE_C_BINDINGS.keys() != expected):
+            or private.keys() & expected
+            or not private.keys() <= NATIVE_BINDINGS.keys()
+            or any(not isinstance(reason, str) or not reason.strip() for reason in private.values())
+            or NATIVE_BINDINGS.keys() | NATIVE_C_BINDINGS.keys() != expected | private.keys()):
         raise ValueError("native backend dispositions do not match the explicit dependency ledger")
-    return {"rust": dict(NATIVE_BINDINGS), "c": dict(NATIVE_C_BINDINGS)}
+    return {"rust": dict(NATIVE_BINDINGS), "c": dict(NATIVE_C_BINDINGS), "private": dict(private)}
 
 
 PACKET_PROVIDERS = {
     "alloc_etherdev", "register_netdev", "unregister_netdev", "free_netdev",
     "alloc_skb", "skb_put", "dev_kfree_skb", "netdev_alloc_frag", "skb_free_frag",
     "napi_build_skb", "napi_alloc_skb", "eth_type_trans", "napi_gro_receive",
-    "netdev_sent_queue", "netdev_completed_queue", "kutox_c_packet_empty",
-    "kutox_c_netdev_transmit", "kutox_c_tx_begin", "kutox_c_tx_retry",
-    "kutox_c_tx_status", "kutox_c_tx_release", "kutox_c_tx_abort",
-    "kutox_c_tx_mapped", "kutox_c_tx_unmapped", "kutox_c_tx_mmio",
-    "kutox_c_tx_many", "kutox_c_tx_many_retry", "kutox_c_tx_many_finish",
-    "kutox_c_rx_start", "kutox_c_rx_stop", "kutox_c_rx_path",
-    "kutox_c_rx_dma", "kutox_c_rx_mmio",
+    "netdev_sent_queue", "netdev_completed_queue",
 }
 MEMORY_PROVIDERS = {
     "kmalloc", "kzalloc", "kmalloc_array", "kcalloc", "kfree", "vmalloc", "vzalloc", "vfree",
@@ -132,18 +135,12 @@ MEMORY_PROVIDERS = {
     "ida_alloc", "ida_free", "ida_destroy", "match_string",
 }
 RUST_PROVIDERS = PACKET_PROVIDERS | MEMORY_PROVIDERS | {
-    "kutox_c_linux_bind_irq", "kutox_c_linux_bind", "kutox_c_linux_open",
-    "kutox_c_linux_ready", "kutox_c_linux_close", "kutox_c_linux_unbind",
-    "kutox_c_linux_info", "kutox_c_linux_statistics", "kutox_c_linux_empty",
-    "kutox_c_linux_tx_begin", "kutox_c_linux_tx", "kutox_c_linux_tx_release",
-    "kutox_c_linux_rx_start", "kutox_c_linux_rx_stop", "kutox_c_linux_rx_path",
     "netif_napi_add", "netif_napi_set_irq", "netif_queue_set_napi",
     "napi_schedule_prep", "__napi_schedule", "napi_complete_done",
     "napi_enable", "napi_disable", "netif_napi_del",
-    "kutox_c_retire_napi_device", "kutox_c_deferred_empty",
     "pcix_get_mmrbc", "pci_set_power_state", "dma_map_page",
     "skb_frag_size", "skb_tcp_all_headers", "ethtool_convert_link_mode_to_legacy_u32",
-    "readl", "writel", "udelay", "outl", "kutox_read_mac",
+    "readl", "writel", "udelay", "outl",
     "kutox_vformat", "kutox_vprint", "printk", "netdev_printk", "dev_printk",
     "netdev_warn_once", "netif_log", "kutox_debug", "warn_on", "net_ratelimit",
     "print_hex_dump", "kutox_storage_trace_callback", "storage_snprintf",
@@ -155,9 +152,7 @@ RUST_PROVIDERS = PACKET_PROVIDERS | MEMORY_PROVIDERS | {
     "blk_mq_complete_request", "blk_mq_end_request", "blk_rq_map_sg",
     "sg_init_one", "sg_page", "sg_next", "bvec_set_virt", "bvec_virt",
     "blk_mq_quiesce_queue_nowait", "blk_mq_freeze_queue", "blk_mq_unfreeze_queue",
-    "kutox_block_prepare", "kutox_block_submit", "kutox_block_result",
-    "kutox_block_cancel", "kutox_block_release", "kutox_block_pump",
-    "kutox_block_reset_complete", "kutox_block_quiescent", "kutox_storage_stop",
+    "kutox_block_operations",
 }
 
 
@@ -244,6 +239,7 @@ def rust_provenance(output):
         "sources": rust_source_provenance(output / "rust-services.d", "compat/audit/common/rust_services.rs"),
         "native_bindings": bindings["rust"],
         "native_c_bindings": bindings["c"],
+        "private_backends": bindings["private"],
     }
 
 

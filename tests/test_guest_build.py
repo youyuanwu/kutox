@@ -125,6 +125,21 @@ class GuestBuildTests(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, "runtime driver"):
                 validate_symbols((RUNTIME_SYMBOLS | (GUEST_SYMBOLS if enabled else set())) - {"kutox_jiffies"}, enabled)
 
+    def test_removed_compatibility_facades_cannot_return_in_either_profile(self):
+        for enabled in (False, True):
+            symbols = RUNTIME_SYMBOLS | (GUEST_SYMBOLS if enabled else set())
+            for name in ("kutox_c_linux_info", "kutox_c_linux_many", "kutox_c_driver_device",
+                         "kutox_c_packet_empty", "kutox_c_tx_mapped", "kutox_block_registered_disk",
+                         "kutox_storage_start", "kutox_compat_device_name", "kutox_read_mac"):
+                with self.subTest(enabled=enabled, name=name), self.assertRaisesRegex(AssertionError, "obsolete compatibility"):
+                    validate_symbols(symbols | {name}, enabled)
+        for name in ("kutox_c_tx_begin", "kutox_c_driver_endpoint", "kutox_block_prepare"):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(AssertionError, "guest fixture"):
+                    validate_symbols((RUNTIME_SYMBOLS | GUEST_SYMBOLS) - {name}, True)
+                with self.assertRaisesRegex(AssertionError, "guest-only"):
+                    validate_symbols(RUNTIME_SYMBOLS | {name}, False)
+
     def test_runtime_dependencies_reject_audit_sources_including_aliases_and_missing_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             kernel = Path(directory) / "kutox"

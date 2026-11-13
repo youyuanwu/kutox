@@ -18,24 +18,6 @@ static DONE: AtomicU32 = AtomicU32::new(0);
 static QUIT: AtomicBool = AtomicBool::new(false);
 static PAUSE_QUEUE: threads::WaitQueue = threads::WaitQueue::new();
 
-unsafe extern "C" {
-    fn kutox_c_linux_many(ticket: u64, bytes: *const u8, count: u32) -> i32;
-    fn kutox_c_linux_many_retry(ticket: u64) -> i32;
-    fn kutox_c_linux_many_finish(ticket: u64) -> i32;
-    fn kutox_c_linux_counts(
-        ticket: u64,
-        sent: u32,
-        completed: u32,
-        tx: u32,
-        rx: u32,
-        bytes: u32,
-    ) -> i32;
-    fn kutox_c_linux_indices(ticket: u64, tx: u32, rx: u32) -> i32;
-    fn kutox_c_linux_kick(ticket: u64, operation: u32) -> i32;
-    fn kutox_c_linux_live_ring_free(ticket: u64) -> i32;
-    fn kutox_c_linux_rx_failures(ticket: u64) -> i32;
-}
-
 fn sleep() {
     assert_eq!(threads::sleep_us(1_000), Ok(threads::WakeReason::TimedOut));
 }
@@ -49,18 +31,18 @@ fn wait(mut ready: impl FnMut() -> bool) {
     panic!("Linux hardening deadline expired");
 }
 fn counts(handle: &DriverHandle, sent: u32, completed: u32, tx: u32, rx: u32, bytes: u32) -> i32 {
-    control("counts", || unsafe {
-        kutox_c_linux_counts(handle.0, sent, completed, tx, rx, bytes)
+    control("counts", || {
+        crate::linux_compat::lifecycle::tests::counts(handle.0, sent, completed, tx, rx, bytes)
     })
 }
 fn kick(handle: &DriverHandle, operation: u32) -> i32 {
-    control("kick", || unsafe {
-        kutox_c_linux_kick(handle.0, operation)
+    control("kick", || {
+        crate::linux_compat::lifecycle::tests::kick(handle.0, operation)
     })
 }
 fn rx_failures(handle: &DriverHandle) -> u32 {
-    let value = control("rx-failures", || unsafe {
-        kutox_c_linux_rx_failures(handle.0)
+    let value = control("rx-failures", || {
+        crate::linux_compat::lifecycle::tests::rx_failures(handle.0)
     });
     assert!(value >= 0);
     value as u32
@@ -175,7 +157,11 @@ pub(crate) fn actor(_: usize) {
             assert!(!linux_deferred::callbacks_idle());
             // Close is suspended at the join; these private pointers cannot change.
             assert_eq!(
-                unsafe { kutox_c_linux_live_ring_free(TICKET.load(Ordering::Acquire)) },
+                {
+                    crate::linux_compat::lifecycle::tests::live_ring_free(
+                        TICKET.load(Ordering::Acquire),
+                    )
+                },
                 -16
             );
             serial::print(format_args!(
@@ -232,8 +218,12 @@ fn wrap() {
             0
         );
         assert_eq!(
-            control("indices", || unsafe {
-                kutox_c_linux_indices(handle.0, sequence % 256, sequence % 256)
+            control("indices", || {
+                crate::linux_compat::lifecycle::tests::indices(
+                    handle.0,
+                    sequence % 256,
+                    sequence % 256,
+                )
             }),
             0
         );
@@ -285,13 +275,13 @@ fn backpressure() {
         frames.extend_from_slice(&packet(2, sequence, 60, false)[..60]);
     }
     let accepted = control("many", || unsafe {
-        kutox_c_linux_many(handle.0, frames.as_ptr(), 256)
+        crate::linux_compat::lifecycle::tests::many(handle.0, frames.as_ptr(), 256)
     });
     assert_eq!(accepted, 232, "original stop threshold");
     assert!(!handle.ready());
     assert_eq!(
-        control("many-retry", || unsafe {
-            kutox_c_linux_many_retry(handle.0)
+        control("many-retry", || {
+            crate::linux_compat::lifecycle::tests::many_retry(handle.0)
         }),
         16
     );
@@ -303,15 +293,15 @@ fn backpressure() {
     wait(|| counts(&handle, 232, 232, 232, 0, 0) == 0);
     assert!(handle.ready());
     assert_eq!(
-        control("many-retry", || unsafe {
-            kutox_c_linux_many_retry(handle.0)
+        control("many-retry", || {
+            crate::linux_compat::lifecycle::tests::many_retry(handle.0)
         }),
         0
     );
     wait(|| counts(&handle, 233, 233, 233, 0, 0) == 0);
     assert_eq!(
-        control("many-finish", || unsafe {
-            kutox_c_linux_many_finish(handle.0)
+        control("many-finish", || {
+            crate::linux_compat::lifecycle::tests::many_finish(handle.0)
         }),
         0
     );
