@@ -1,6 +1,6 @@
 # Native Rust / Linux compatibility ABI cleanup
 
-Status: proposed; implementation has not started.
+Status: allocation pilot implemented; remaining cleanup phases are proposed.
 
 Audit baseline: `829ec3217f9cccf6415737a27bc995b86ae4146e`.
 The counts below describe that revision, not permanent acceptance thresholds.
@@ -18,6 +18,22 @@ interrupt owners and failure policies remain authoritative.
 `extern "C"` selects a calling convention; `no_mangle` preserves a linker name.
 Neither establishes that a function has C callers. Conversely, a callback can
 need C ABI even when no C object references its name.
+
+## Implemented allocation pilot
+
+The owned memory service, packet-fragment provider and native coherent allocator
+now call ordinary Rust [driver_memory::allocate](../src/driver_memory.rs).
+The runtime `kutox_driver_alloc` C export and header declaration are removed.
+GFP checks, allocation kinds, failure injection, diagnostics and backing
+ownership are unchanged; genuine Linux allocation exports remain C ABI.
+
+The standalone [provider root](../compat/audit/common/rust_services.rs) supplies
+the same Rust module path through an
+[audit-only binding](../compat/audit/common/native_backend.rs). Its unresolved
+`kutox_driver_alloc` label is an audit dependency, not a shipping kernel export.
+Both audit reports record this mapping, compiler dependencies and source hashes.
+Kernel profile checks reject audit-source dependencies, compile-only markers
+and the obsolete allocator export. No runtime backend selector was introduced.
 
 ## Audit findings
 
@@ -152,7 +168,8 @@ currently includes compatibility code without the native kernel modules.
 That separation is useful; it does not require the runtime to call itself
 through C ABI.
 
-Add one audit-only binding adapter under `compat/audit/common/`. The audit root
+The allocation pilot adds one audit-only binding adapter under
+`compat/audit/common/`; later phases extend its namespaces. The audit root
 provides native-module namespaces from this adapter, while the real kernel root
 provides its actual native modules. The same compatibility source then uses
 ordinary Rust paths in both compilations. Any shared signature types must use

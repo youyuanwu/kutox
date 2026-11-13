@@ -3,7 +3,6 @@
 #define KUTOX_DRIVER_SERVICES_H
 #include "net/driver.h"
 extern void kutox_platform_fail(const char *) __attribute__((noreturn));
-uintptr_t kutox_driver_alloc(size_t, unsigned int, unsigned int);
 int kutox_driver_free(uintptr_t);
 int kutox_driver_range(uintptr_t, size_t, unsigned int);
 size_t kutox_driver_size(uintptr_t);

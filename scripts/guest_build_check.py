@@ -6,7 +6,8 @@ from pathlib import Path
 import re
 import struct
 import subprocess
-from linux_driver_check import Elf
+from linux_driver_check import Elf, digest
+from linux_compat_check import runtime_rust_sources, rust_dependencies
 from make_iso import validate_image
 
 NATIVE_INIT_SYMBOLS = {f"kutox_guest_native_init_{identity}" for identity in (10, 20, 30, 40)}
@@ -49,7 +50,7 @@ GUEST_SYMBOLS = {
 } | NATIVE_INIT_SYMBOLS | USER_PROGRAM_SYMBOLS
 RUNTIME_SYMBOLS = {
     "e1000_probe", "e1000_open", "e1000_close", "e1000_xmit_frame",
-    "e1000_intr", "e1000_clean", "kutox_driver_alloc", "kutox_driver_free",
+    "e1000_intr", "e1000_clean", "kutox_driver_free",
     "kutox_driver_dma_map", "kutox_driver_dma_operation",
     "kutox_linux_request_irq", "kutox_linux_work_init", "kutox_linux_napi_init",
     "kutox_e1000_init",
@@ -132,6 +133,8 @@ def validate_native_metadata(data, address, bounds, functions, enabled):
 
 def validate_native_elf(kernel, enabled):
     elf = Elf(kernel, expected_kind=2)
+    if ".kutox.compile_only" in elf.by_name:
+        raise AssertionError("compile-only object in kernel runtime")
     section = elf.by_name.get(".kutox.native_inits")
     if section is None or section["type"] != 1 or section["flags"] & ~0x200000 != 2 or section["alignment"] < 8:
         raise AssertionError("native initializers must be retained read-only aligned metadata")
@@ -143,6 +146,8 @@ def validate_native_elf(kernel, enabled):
 
 
 def validate_symbols(symbols, enabled):
+    if "kutox_driver_alloc" in symbols:
+        raise AssertionError("obsolete native allocator C facade in kernel runtime")
     missing = RUNTIME_SYMBOLS - symbols
     if missing:
         raise AssertionError(f"runtime driver/services missing: {sorted(missing)}")
@@ -156,6 +161,10 @@ def validate_symbols(symbols, enabled):
             raise AssertionError(f"guest-only symbols in feature-off kernel: {found[:12]}")
 
 
+def validate_runtime_dependencies(kernel):
+    return runtime_rust_sources(rust_dependencies(kernel.with_suffix(".d")))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--kernel", required=True, type=Path)
@@ -163,6 +172,7 @@ def main():
     parser.add_argument("--guest-tests", required=True, choices=("enabled", "disabled"))
     parser.add_argument("--image", type=Path)
     args = parser.parse_args()
+    sources = validate_runtime_dependencies(args.kernel)
     if args.image is not None:
         validate_image(args.image, args.kernel, "ON" if args.guest_tests == "enabled" else "OFF")
     output = subprocess.check_output(
@@ -175,6 +185,8 @@ def main():
             symbols.add(match[1])
     validate_symbols(symbols, args.guest_tests == "enabled")
     production, tests = validate_native_elf(args.kernel, args.guest_tests == "enabled")
+    print(f"KUTOX_RUNTIME_SOURCES_VERIFIED rust={len(sources)} "
+          f"dependencies_sha256={digest(args.kernel.with_suffix('.d'))} audit_sources=0")
     print(f"KUTOX_NATIVE_INIT_VERIFIED production={production} test={tests} record_bytes={INIT_RECORD_BYTES}")
     print(f"KUTOX_GUEST_BUILD_VERIFIED guest_tests={args.guest_tests}")
 

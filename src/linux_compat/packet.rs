@@ -100,7 +100,6 @@ static PACKETS: Bsp<Packets> = Bsp(UnsafeCell::new(Packets {
 
 unsafe extern "C" {
     fn kutox_driver_size(pointer: usize) -> usize;
-    fn kutox_driver_alloc(size: usize, flags: u32, kind: u32) -> usize;
     fn kutox_driver_free(pointer: usize) -> i32;
     fn kutox_driver_range(pointer: usize, size: usize, operation: u32) -> i32;
     fn kutox_driver_ingress(pointer: usize, size: usize) -> i32;
@@ -1035,7 +1034,7 @@ pub extern "C" fn netdev_alloc_frag(size: u32) -> *mut c_void {
             diagnostic(c"fragment_capacity", -12);
             return ptr::null_mut();
         };
-        let pointer = kutox_driver_alloc(size as usize, GFP_ATOMIC, 1) as *mut c_void;
+        let pointer = crate::driver_memory::allocate(size as usize, GFP_ATOMIC, 1) as *mut c_void;
         if !pointer.is_null() {
             (*state()).fragments[slot] = pointer;
         } else if (*state()).rx.enabled && (*state()).rx.identity != 0 {

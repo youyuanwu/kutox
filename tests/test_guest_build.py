@@ -1,10 +1,12 @@
 import sys
 import struct
 from pathlib import Path
+import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from guest_build_check import GUEST_SYMBOLS, RUNTIME_SYMBOLS, INIT_MAGIC, validate_native_metadata, validate_symbols
+from guest_build_check import GUEST_SYMBOLS, RUNTIME_SYMBOLS, INIT_MAGIC, validate_native_metadata, validate_symbols, validate_runtime_dependencies
+from linux_compat_check import ROOT
 from qemu_test import REVISION, validate_result
 
 
@@ -96,6 +98,35 @@ class GuestBuildTests(unittest.TestCase):
     def test_either_profile_rejects_missing_real_driver(self):
         with self.assertRaises(AssertionError):
             validate_symbols((RUNTIME_SYMBOLS - {"e1000_xmit_frame"}) | GUEST_SYMBOLS, True)
+
+    def test_native_allocation_has_no_export_but_linux_allocation_remains_required(self):
+        for enabled in (False, True):
+            symbols = (RUNTIME_SYMBOLS | GUEST_SYMBOLS if enabled else RUNTIME_SYMBOLS) - {"kutox_driver_alloc"}
+            validate_symbols(symbols, enabled)
+            for wrong in (symbols | {"kutox_driver_alloc"}, symbols - {"kmalloc"}):
+                with self.subTest(enabled=enabled, wrong=wrong), self.assertRaises(AssertionError):
+                    validate_symbols(wrong, enabled)
+
+    def test_runtime_dependencies_reject_audit_sources_including_aliases_and_missing_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            kernel = Path(directory) / "kutox"
+            dependencies = kernel.with_suffix(".d")
+            with self.assertRaises(FileNotFoundError):
+                validate_runtime_dependencies(kernel)
+            native = [ROOT / "src/main.rs", ROOT / "src/driver_memory.rs"]
+            dependencies.write_text("kutox: " + " ".join(map(str, native)) + "\n")
+            self.assertEqual(validate_runtime_dependencies(kernel), sorted(map(str, native)))
+            alias = Path(directory) / "backend.rs"
+            alias.symlink_to(ROOT / "compat/audit/common/native_backend.rs")
+            for path in (ROOT / "compat/audit/common/native_backend.rs",
+                         ROOT / "src/../compat/audit/common/rust_services.rs", alias):
+                dependencies.write_text("kutox: " + " ".join(map(str, [*native, path])) + "\n")
+                with self.subTest(path=path), self.assertRaisesRegex(ValueError, "audit source"):
+                    validate_runtime_dependencies(kernel)
+            for paths in ([], native[:1]):
+                dependencies.write_text("kutox: " + " ".join(map(str, paths)) + "\n")
+                with self.assertRaisesRegex(ValueError, "missing native kernel"):
+                    validate_runtime_dependencies(kernel)
 
 
 if __name__ == "__main__":

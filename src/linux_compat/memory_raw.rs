@@ -4,7 +4,6 @@ use super::{memory::*, *};
 use core::{marker::PhantomData, ptr};
 
 unsafe extern "C" {
-    fn kutox_driver_alloc(size: usize, flags: u32, kind: u32) -> usize;
     fn kutox_driver_free(pointer: usize) -> i32;
     fn kutox_driver_range(pointer: usize, size: usize, operation: u32) -> i32;
     fn kutox_storage_alloc(size: usize, alignment: usize, flags: u32) -> usize;
@@ -64,7 +63,7 @@ pub(super) unsafe fn adopt(allocator: Allocator, address: usize, length: usize) 
 pub(super) fn allocate(allocator: Allocator, size: usize, flags: u32) -> Result<Allocation, i32> {
     let address = unsafe {
         match allocator {
-            Allocator::Network => kutox_driver_alloc(size, flags, 0),
+            Allocator::Network => crate::driver_memory::allocate(size, flags, 0),
             Allocator::Storage => kutox_storage_alloc(size, 16, flags),
         }
     };

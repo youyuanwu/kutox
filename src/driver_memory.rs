@@ -186,8 +186,7 @@ fn range_index(state: &State, pointer: usize, size: usize) -> Result<usize, i32>
         .ok_or(-22)
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_driver_alloc(size: usize, flags: u32, kind: u32) -> usize {
+pub(crate) fn allocate(size: usize, flags: u32, kind: u32) -> usize {
     let result = state(|state| {
         // Actual selected GFP_KERNEL/GFP_ATOMIC, not the boot fixture's zero tag.
         if flags != GFP_KERNEL && flags != GFP_ATOMIC {
@@ -440,7 +439,7 @@ pub fn coherent_allocate(size: usize, flags: u32) -> Result<(usize, u64), i32> {
     if crate::driver_platform::mask() == 0 {
         return Err(-5);
     }
-    let pointer = kutox_driver_alloc(size, flags, 3);
+    let pointer = allocate(size, flags, 3);
     if pointer == 0 {
         return Err(-12);
     }

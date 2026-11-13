@@ -25,6 +25,10 @@ ENTRY_POINTS = {
 PACKET_LAYOUT_VALUES = 122
 BLOCK_LAYOUT_VALUES = 135
 ACCESSOR_LAYOUT_VALUES = 41
+NATIVE_BACKEND = "compat/audit/common/native_backend.rs"
+NATIVE_BINDINGS = {
+    "kutox_driver_alloc": "crate::driver_memory::allocate",
+}
 PACKET_PROVIDERS = {
     "alloc_etherdev", "register_netdev", "unregister_netdev", "free_netdev",
     "alloc_skb", "skb_put", "dev_kfree_skb", "netdev_alloc_frag", "skb_free_frag",
@@ -91,9 +95,11 @@ def inputs():
     from linux_driver_check import digest
     files = [
         Path(__file__).resolve(), ROOT / "rust-toolchain.toml",
-        ROOT / "compat/audit/common/rust_services.rs", ROOT / "compat/audit/common/abi_probe.rs", ROOT / "compat/audit/common/common_layout.c",
+        ROOT / "compat/audit/common/rust_services.rs", ROOT / NATIVE_BACKEND,
+        ROOT / "compat/audit/common/abi_probe.rs", ROOT / "compat/audit/common/common_layout.c",
         ROOT / "compat/include/common/base_types.h", ROOT / "compat/include/common/device_types.h",
-        ROOT / "src/linux_abi.rs", ROOT / "src/block_abi.rs", ROOT / "compat/audit/common/service-ffi.txt",
+        ROOT / "src/linux_abi.rs", ROOT / "src/block_abi.rs", ROOT / "src/driver_memory.rs",
+        ROOT / "compat/audit/common/service-ffi.txt",
     ]
     files.extend((ROOT / "src/linux_compat").glob("*.rs"))
     files.extend(path for path in (ROOT / "compat/include").rglob("*") if path.is_file())
@@ -123,8 +129,41 @@ def c_flags(output, profile):
 
 
 def rust_command(output, probe=False):
+    artifact = "abi-rust" if probe else "rust-services"
     return ["rustc", *rust_flags(), str(ROOT / ("compat/audit/common/abi_probe.rs" if probe else "compat/audit/common/rust_services.rs")),
-            "-o", str(output / ("abi-rust.o" if probe else "rust-services.o"))]
+            "--emit", f"obj,dep-info={output / (artifact + '.d')}",
+            "-o", str(output / (artifact + ".o"))]
+
+
+def rust_dependencies(path):
+    from linux_driver_check import dependency_paths
+    # rustc also emits rules for the dep-info target and each source.
+    first = path.read_text().replace("\\\n", "").splitlines()
+    return dependency_paths(first[0] if first else "")
+
+
+def rust_provenance(output):
+    from linux_driver_check import digest
+    sources = {Path(path).resolve() for path in rust_dependencies(output / "rust-services.d")}
+    if not {ROOT / "compat/audit/common/rust_services.rs", ROOT / NATIVE_BACKEND} <= sources:
+        raise ValueError("shared Rust provider did not compile the audit backend bindings")
+    return {
+        "command": rust_command(output),
+        "object_sha256": digest(output / "rust-services.o"),
+        "sources": [{"path": str(path.relative_to(ROOT)), "sha256": digest(path)}
+                    for path in sorted(sources)],
+        "native_bindings": dict(NATIVE_BINDINGS),
+    }
+
+
+def runtime_rust_sources(dependencies):
+    sources = {Path(path).resolve() for path in dependencies}
+    for path in sources:
+        if path.is_relative_to(ROOT / "compat/audit"):
+            raise ValueError(f"kernel runtime depends on an audit source: {path}")
+    if not {ROOT / "src/main.rs", ROOT / "src/driver_memory.rs"} <= sources:
+        raise ValueError("missing native kernel Rust dependency evidence")
+    return sorted(str(path) for path in sources if path.suffix == ".rs")
 
 
 def c_command(args, output, source, profile, *, probe=False):
@@ -195,7 +234,7 @@ def evidence(args, output):
     abi_paths = [output / "abi-rust.o", *(output / f"abi-{p}.o" for p in ("boot", "net", "storage"))]
     return {
         **shared, "units": units, "build_inputs": inputs(),
-        "rust": {"command": rust_command(output), "object_sha256": digest(rust), "defined": rust_defined},
+        "rust": {**rust_provenance(output), "defined": rust_defined},
         "linked_sha256": digest(output / "shared-runtime.o"), "compile_only_marker": False,
         "abi": {"values": layout(abi_paths),
                 "packet_values": layout([output / "abi-rust.o", output / "abi-net.o"],
