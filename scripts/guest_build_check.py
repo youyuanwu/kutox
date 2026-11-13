@@ -44,6 +44,7 @@ GUEST_SYMBOLS = {
     "kutox_guest_async_hardening",
     "kutox_c_block_services",
     "kutox_guest_storage_config",
+    "kutox_guest_memory_storage",
     "kutox_e1000_rx_resident",
 } | NATIVE_INIT_SYMBOLS | USER_PROGRAM_SYMBOLS
 RUNTIME_SYMBOLS = {

@@ -28,6 +28,7 @@ pub fn test(
         |_| {
             unsafe { kutox_c_dma_worker() };
             let key = unsafe { kutox_c_dma_key() };
+            crate::linux_compat::memory::test_coherent(key);
             {
                 use crate::cpu::X86Cpu;
                 use moss_libkernel::sync::spinlock::SpinLockIrq;

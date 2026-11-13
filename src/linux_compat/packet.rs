@@ -1,4 +1,5 @@
 //! Network-class services; descriptor programming and completion stay in Linux.
+use super::memory_ffi as memory;
 use super::*;
 use core::{mem::size_of, ptr};
 
@@ -541,7 +542,7 @@ pub extern "C" fn alloc_skb(size: u32, flags: u32) -> *mut SkBuff {
     let capacity = data_align(size as usize) + data_align(size_of::<SkbSharedInfo>());
     let head = memory::kzalloc(capacity, flags).cast::<u8>();
     if head.is_null() {
-        memory::kfree(skb.cast());
+        unsafe { memory::kfree(skb.cast()) };
         return ptr::null_mut();
     }
     unsafe {

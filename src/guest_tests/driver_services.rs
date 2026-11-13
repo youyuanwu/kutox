@@ -19,7 +19,10 @@ fn worker(which: usize) {
     unsafe {
         match which {
             0 => kutox_c_services_allocations(),
-            1 => kutox_c_services_dma(),
+            1 => {
+                crate::linux_compat::memory::test_network(kutox_c_driver_device());
+                kutox_c_services_dma();
+            }
             2 => kutox_c_services_packets(),
             3 => kutox_c_services_capacity(),
             4 => kutox_c_services_failed_open(),

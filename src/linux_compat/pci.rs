@@ -656,13 +656,15 @@ pub extern "C" fn pci_irq_get_affinity(p: *mut PciDevice, _v: i32) -> *const c_v
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn alloc_cpumask_var(out: *mut *mut usize, g: u32) -> bool {
     validate(out);
-    let p = super::memory::storage_kzalloc(core::mem::size_of::<usize>(), g).cast();
+    let p = super::memory_ffi::storage_kzalloc(core::mem::size_of::<usize>(), g).cast();
     unsafe { out.write(p) };
     !p.is_null()
 }
 #[unsafe(no_mangle)]
-pub extern "C" fn free_cpumask_var(p: *const usize) {
-    super::memory::storage_kfree(p.cast());
+/// # Safety
+/// p is the uniquely owned storage allocation returned by alloc_cpumask_var.
+pub unsafe extern "C" fn free_cpumask_var(p: *const usize) {
+    unsafe { super::memory_ffi::storage_kfree(p.cast()) };
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn cpumask_copy(dst: *mut usize, src: *const usize) {

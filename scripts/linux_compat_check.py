@@ -37,7 +37,19 @@ PACKET_PROVIDERS = {
     "kutox_c_rx_start", "kutox_c_rx_stop", "kutox_c_rx_path",
     "kutox_c_rx_dma", "kutox_c_rx_mmio",
 }
-RUST_PROVIDERS = PACKET_PROVIDERS | {
+MEMORY_PROVIDERS = {
+    "kmalloc", "kzalloc", "kmalloc_array", "kcalloc", "kfree", "vmalloc", "vzalloc", "vfree",
+    "storage_kmalloc", "storage_kzalloc", "storage_kmalloc_array", "storage_kcalloc", "storage_kfree",
+    "dma_set_mask_and_coherent", "dma_alloc_coherent", "dma_free_coherent",
+    "kutox_dma_publish", "kutox_dma_reclaim", "kutox_destroy_dma_device",
+    "dma_map_single", "dma_mapping_error", "dma_unmap_single",
+    "dma_sync_single_for_cpu", "dma_sync_single_for_device",
+    "dma_map_page_attrs", "dma_unmap_page_attrs", "sg_phys",
+    "strcpy", "strscpy", "INIT_LIST_HEAD", "list_add", "list_add_tail",
+    "list_del", "list_del_init", "list_empty", "ida_init", "ida_alloc_range",
+    "ida_alloc", "ida_free", "ida_destroy", "match_string",
+}
+RUST_PROVIDERS = PACKET_PROVIDERS | MEMORY_PROVIDERS | {
     "kutox_c_linux_bind_irq", "kutox_c_linux_bind", "kutox_c_linux_open",
     "kutox_c_linux_ready", "kutox_c_linux_close", "kutox_c_linux_unbind",
     "kutox_c_linux_info", "kutox_c_linux_statistics", "kutox_c_linux_empty",

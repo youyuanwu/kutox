@@ -385,9 +385,11 @@ Linux-facing C ABI using `#[unsafe(no_mangle)] extern "C"` exports:
   sleep/IRQ/work entry points, reusing existing native registries and waiters.
 - `pci.rs`: stable owned endpoint objects, matching/probe/remove, driver data,
   resource/config access and MMIO dispatch for both original drivers.
-- `memory.rs`: checked allocation/array helpers and device-keyed coherent and
-  streaming DMA adapters. Backing allocators, masks, pins and reset proofs stay
-  with each device's existing Rust owner.
+- `memory.rs`: unsafe-free owned allocations, checked ranges and typed device,
+  direction and DMA-address services. `memory_ffi.rs` retains C ownership,
+  raw strings/lists and rejected APIs; `memory_raw.rs` supplies native calls,
+  raw-pointer adoption and completion witnesses. Backing allocators, masks,
+  pins and reset proofs stay with each device's existing Rust owner.
 - `storage.rs`: bus/driver/device references, local config-work queue, native
   read tickets, admission checks and reset/remove/reprobe sequencing.
 - `packet.rs`: network-device lifecycle/queues, linear sk_buffs, fragment
@@ -475,11 +477,30 @@ Private device access borrows the admission token, so removal requires exclusive
 token access and cannot occur while a device accessor exists. Each operation
 revalidates its handle generation, and only owned snapshots escape admission.
 C pointer validity, lifetime, capacity and alignment remain caller obligations;
-null checks do not establish those properties. Packet/DMA internals and other
-compatibility providers are not yet converted to this safe-service structure.
+null checks do not establish those properties. Packet/block internals and the
+remaining compatibility providers are not yet converted to this structure.
 Native Rust-only helpers such as `kutox_net_wake` may inline out of the optimized
 kernel; guest acceptance checks their wake behavior rather than requiring a
 standalone helper symbol. Original driver callback and fixture gates remain.
+
+The memory service also uses `forbid(unsafe_code)`. Its allocation tokens are
+non-cloneable and BSP-local; explicit transfer to C consumes the token. Safe CPU
+copies are bounded and available only while Rust owns the allocation; no Rust
+slice or reference into C/DMA-owned backing is returned. Streaming mapping moves
+the allocation into a mapping token, and unmapping returns it only after consuming
+an exact, non-cloneable completion/unpublished-abort witness. Such witnesses can
+only be created through an unsafe boundary that establishes the driver's actual
+completion or stopped/drained transport contract. Numeric address equality or a
+memory barrier is not a completion proof.
+
+Allocation, mapping and coherent tokens deliberately have no automatic freeing
+`Drop`: failed release/unmap returns the retained token, and dropping it leaves
+backing registered rather than risking DMA into reclaimed memory. Coherent
+release still uses the native ring/IRQ/reset checks; C frees and CPU ownership
+transitions are explicitly unsafe. The native allocators and DMA registries
+remain authoritative, with distinct network and storage domains and no new
+shadow registry. Unsupported identity DMA, `sg_phys`, indirect/premapped storage
+DMA and bidirectional mappings remain rejected.
 
 Lifecycle/NAPI/block owners use raw BSP-owned state across original callbacks.
 No Rust registry borrow spans an original callback or native reentry. Completion
