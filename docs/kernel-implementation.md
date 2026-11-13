@@ -420,6 +420,8 @@ Linux-facing C ABI using `#[unsafe(no_mangle)] extern "C"` exports:
   and original callback pointer.
 - `mmio.rs`: checked MMIO, barriers, port forwarding and boot-MAC ownership/
   EEPROM fault policy; original e1000 initialization remains a C header bridge.
+  The raw-address Rust probe is unsafe; its caller must retain the identified
+  device's owned mapping for the complete C probe.
 - `block.rs`: owned request/PDU/payload, queue/scatterlist services, cancellation
   and deferred completion, with separate [block ABI types](../src/block_abi.rs).
 - `optional.rs`: explicit unsupported operations and bounded network helpers.

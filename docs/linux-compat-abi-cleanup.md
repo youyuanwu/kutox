@@ -1,7 +1,7 @@
 # Native Rust / Linux compatibility ABI cleanup
 
 Status: implemented, including the Rust guest-fixture migration and final
-documentation/accounting. Final implementation checkpoint: `62f4a1e`.
+documentation/accounting. Guest-fixture implementation checkpoint: `62f4a1e`.
 
 Audit baseline: `829ec3217f9cccf6415737a27bc995b86ae4146e`.
 Baseline inventory counts below describe that revision. Final dispositions
@@ -95,7 +95,10 @@ publish/reclaim/device teardown and work/completion/RTNL retirement likewise
 no longer expose non-Linux C extensions just for tests.
 
 Boot MAC probing returns an owned shared ABI result to Rust while retaining the
-original C header-access bridge. Genuine Linux C providers, variadics, callback
+original C header-access bridge. Its raw-address Rust entry remains unsafe:
+alignment/range checks do not prove a live device mapping. The caller retains
+the owned MMIO mapping throughout the original C probe.
+Genuine Linux C providers, variadics, callback
 slots and explicit unsupported/debug APIs remain; an optimized-away optional
 call is not evidence that its C contract can be deleted.
 
@@ -421,6 +424,9 @@ Contributor commands and the distinction between compile-only, executable
 provider and guest evidence are documented in [testing.md](testing.md).
 Documentation-only finalization reuses that implementation evidence rather
 than rebuilding the kernel solely to change prose.
+The final review's MMIO-contract correction was separately checked with both
+profile builds/Clippy, known/alternate MAC guests in both profiles, the ON
+EEPROM-denial timeout, and regenerated/independently verified provider audits.
 
 This work does not add drivers, disk-backed program boot, general Linux ABI,
 SMP, new DMA capabilities, concurrent NIC/storage scopes or a new test manager.

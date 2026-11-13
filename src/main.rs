@@ -369,23 +369,26 @@ fn probe() -> Result<BootOutcome, Failure> {
         bar.base,
         memory::MMIO_LENGTH
     );
-    let result = linux_compat::mmio::read_mac(
-        mapping.address(),
-        memory::MMIO_LENGTH,
-        device.vendor,
-        device.device,
-        device.revision,
-        {
-            #[cfg(feature = "guest-tests")]
+    // The owned device mapping remains live throughout the original C probe.
+    let result = unsafe {
+        linux_compat::mmio::read_mac(
+            mapping.address(),
+            memory::MMIO_LENGTH,
+            device.vendor,
+            device.device,
+            device.revision,
             {
-                u8::from(boot.mode == BootMode::EepromTimeout)
-            }
-            #[cfg(not(feature = "guest-tests"))]
-            {
-                0
-            }
-        },
-    );
+                #[cfg(feature = "guest-tests")]
+                {
+                    u8::from(boot.mode == BootMode::EepromTimeout)
+                }
+                #[cfg(not(feature = "guest-tests"))]
+                {
+                    0
+                }
+            },
+        )
+    };
     println!(
         "E1000_EEPROM reads={} denied_grants={}",
         result.eeprom_reads, result.denied_grants

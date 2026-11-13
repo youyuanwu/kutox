@@ -109,7 +109,11 @@ pub extern "C" fn iowrite16_rep(_address: *mut c_void, _buffer: *const c_void, _
 pub extern "C" fn memcpy_fromio(_dst: *mut c_void, _src: *const c_void, _count: usize) {
     require(false, c"memcpy_fromio");
 }
-pub(crate) fn read_mac(
+/// # Safety
+/// Call on the owning BSP during quiescent boot with IF clear. The supplied
+/// range must remain a live, writable MMIO mapping for the identified device,
+/// without conflicting device access, for the entire probe.
+pub(crate) unsafe fn read_mac(
     base: usize,
     length: usize,
     vendor: u16,
