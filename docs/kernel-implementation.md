@@ -402,7 +402,9 @@ Linux-facing C ABI using `#[unsafe(no_mangle)] extern "C"` exports:
   and deferred completion, with separate [block ABI types](../src/block_abi.rs).
 - `optional.rs`: explicit unsupported operations and bounded network helpers.
 - `diagnostics.rs`: bounded formatting, output sinks, warning state and logging
-  policy; C alone extracts variadic arguments using `va_copy`/`va_arg`.
+  policy, including C-variadic definitions using stable `core::ffi::VaList`.
+  Its `next_arg`, `Clone` and `Drop` provide `va_arg`/`va_copy`/`va_end`;
+  forwarding APIs clone the caller's cursor before formatting.
 
 [Shared base/device headers](../compat/include/common/device_types.h) and
 [Rust `repr(C)` contracts](../src/linux_abi.rs) replace the former incompatible
@@ -445,16 +447,18 @@ just as e1000 frees do. The threaded scheduler and BSP inline-flush policies
 remain distinct; this is not a general Linux workqueue implementation.
 
 The small [VirtIO C bridge](../compat/virtio_bridge.c) handles original
-header access/module parameters and C varargs. Both drivers share the bounded
-[Rust formatter](../src/linux_compat/diagnostics.rs) through
-[C variadic extraction](../compat/varargs_bridge.c); Rust does not reproduce the
-platform's `va_list` layout. The five remaining production C files are named
+header access/module parameters only. Both drivers share the bounded
+[Rust formatter and variadic providers](../src/linux_compat/diagnostics.rs).
+The pinned stable compiler supports C-variadic definitions and `VaList`, so
+no C extraction shim or handwritten platform `va_list` layout is needed.
+The four remaining production C files are named
 for their roles: the [e1000 bridge](../compat/e1000_bridge.c),
 [e1000 accessors](../compat/e1000_accessors.c),
-[TCP bitfield accessors](../compat/tcp_header_accessors.c), variadic bridge and
+[TCP bitfield accessors](../compat/tcp_header_accessors.c) and
 VirtIO bridge. Each file documents why its boundary remains C.
 They retain original private-structure access and TCP bitfield extraction, not
-lifecycle/NAPI/block/MMIO/formatter ownership state. The old C packet, deferred
+lifecycle/NAPI/block/MMIO/formatter ownership state or variadic wrappers.
+The old C packet, deferred
 and block-service implementations are removed rather than left as parallel
 providers. Existing C ABI names remain, including the historical `kutox_c_`
 prefix. Original Linux hardware/packet/ring algorithms remain unchanged C.
@@ -467,7 +471,7 @@ retains request/PDU/payload until off-IRQ completion or the proven reset boundar
 Shared declarations do not merge allocation/DMA domains or add simultaneous
 NIC/storage ownership: the existing single IRQ/MMIO owner limits still apply.
 Independent source-only audits retain their compile-only linker barrier; an
-additional whole-object link includes all eleven original driver units, five
+additional whole-object link includes all eleven original driver units, four
 C adapter units and the actual Rust provider object without garbage collection.
 It checks an exact 68-entry backend/libc FFI boundary and both drivers' callbacks,
 with source/header/object/command and C/Rust layout provenance.

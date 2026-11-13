@@ -137,14 +137,16 @@ queues, skb allocation, RX fragments, TX completion tracking and ingress.
 [Lifecycle](src/linux_compat/lifecycle.rs), [NAPI](src/linux_compat/napi.rs),
 [MMIO](src/linux_compat/mmio.rs), [block services](src/linux_compat/block.rs),
 optional-operation policy and bounded diagnostic formatting also live in Rust.
-The five remaining production C bridges contain original-header
-accessors/operations and variadic extraction/wrappers, not parallel kernel-service
+The four remaining production C bridges contain original-header
+accessors/operations, not parallel kernel-service
 state machines. C acceptance fixtures and independent compiler probes remain.
 Their names reflect their roles: [e1000 bridge](compat/e1000_bridge.c),
 [e1000 accessors](compat/e1000_accessors.c),
-[TCP bitfield accessors](compat/tcp_header_accessors.c),
-[variadic bridge](compat/varargs_bridge.c) and [VirtIO bridge](compat/virtio_bridge.c).
+[TCP bitfield accessors](compat/tcp_header_accessors.c) and [VirtIO bridge](compat/virtio_bridge.c).
 Each file explains why that boundary remains C.
+Variadic definitions and argument extraction also live in Rust, using stable
+`core::ffi::VaList` (Rust 1.99+) for the actual C ABI, including copied cursors;
+there is no C variadic bridge or handwritten `va_list` layout.
 Both audit tools compile the real Rust providers and compare all three C
 profiles with Rust layouts and GFP flags, plus 122 packet, 135 block and
 41 header-accessor/MAC contract values.

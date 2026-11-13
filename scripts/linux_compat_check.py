@@ -14,7 +14,7 @@ UNITS = (
     *((NET + name, "net") for name in ("e1000_main.c", "e1000_hw.c", "e1000_ethtool.c", "e1000_param.c")),
     *(("linux/" + name, "storage") for name in STORAGE),
     ("compat/tcp_header_accessors.c", "net"),
-    ("compat/e1000_accessors.c", "net"), ("compat/e1000_bridge.c", "net"), ("compat/varargs_bridge.c", "boot"),
+    ("compat/e1000_accessors.c", "net"), ("compat/e1000_bridge.c", "net"),
     ("compat/virtio_bridge.c", "storage"),
 )
 ENTRY_POINTS = {
@@ -50,8 +50,11 @@ RUST_PROVIDERS = PACKET_PROVIDERS | {
     "pcix_get_mmrbc", "pci_set_power_state", "dma_map_page",
     "skb_frag_size", "skb_tcp_all_headers", "ethtool_convert_link_mode_to_legacy_u32",
     "readl", "writel", "udelay", "outl", "kutox_read_mac",
-    "kutox_format", "kutox_log_prefix", "warn_on", "net_ratelimit",
-    "print_hex_dump", "kutox_storage_log", "kutox_storage_trace_callback",
+    "kutox_vformat", "kutox_vprint", "printk", "netdev_printk", "dev_printk",
+    "netdev_warn_once", "netif_log", "kutox_debug", "warn_on", "net_ratelimit",
+    "print_hex_dump", "kutox_storage_trace_callback", "storage_snprintf",
+    "storage_printk", "storage_dev_printk", "dev_set_name", "panic",
+    "add_uevent_var", "sysfs_emit", "sysfs_emit_at", "sprintf",
     "blk_mq_alloc_tag_set", "blk_mq_free_tag_set", "blk_mq_alloc_disk",
     "register_blkdev", "unregister_blkdev", "device_add_disk", "put_disk",
     "blk_mq_alloc_request", "blk_mq_free_request", "blk_mq_start_request",

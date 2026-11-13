@@ -1,11 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Kept in C for original e1000 private structures and variadic debug wrappers.
+/* Kept in C for original e1000 private structures and header operations.
  * Rust owns MMIO access, probe ownership and fault-injection policy. */
 #include "e1000.h"
 #include "net/bridge.h"
-extern int kutox_vprint(const char *, va_list);
 extern void kutox_platform_fail(const char *) __attribute__((noreturn));
-extern bool kutox_log_prefix(unsigned int, const void *, const char *, u32, const char *);
 #ifndef KUTOX_E1000_FULL_SOURCE
 struct net_device *e1000_get_hw_dev(struct e1000_hw *hw)
 {
@@ -14,15 +12,6 @@ struct net_device *e1000_get_hw_dev(struct e1000_hw *hw)
     return a->netdev;
 }
 #endif
-
-void kutox_debug(const struct net_device *dev, const char *format, ...)
-{
-    kutox_log_prefix(4, dev, NULL, 0, format);
-    va_list arguments;
-    va_start(arguments, format);
-    kutox_vprint(format, arguments);
-    va_end(arguments);
-}
 
 void kutox_e1000_mac(uintptr_t base, u16 vendor, u16 device, u8 revision,
                      struct kutox_result *result)

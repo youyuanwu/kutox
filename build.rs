@@ -68,20 +68,6 @@ fn main() {
         build_user_elf();
     }
     let guest_define = if guest_tests { "1" } else { "0" };
-    let mut build = cc::Build::new();
-    build
-        .compiler("clang")
-        .include(&include)
-        .include("compat/include")
-        .include("linux/include")
-        .include(&driver)
-        .file("compat/varargs_bridge.c")
-        .define("KUTOX_GUEST_TESTS", guest_define)
-        .warnings_into_errors(true);
-    for flag in flags.lines() {
-        build.flag(flag);
-    }
-
     fn build_user_elf() {
         let source = "src/guest_tests/user_elf.S";
         let linker = "src/guest_tests/user_elf.ld";
@@ -109,7 +95,6 @@ fn main() {
             .expect("ld.lld is required to link the guest ELF");
         assert!(status.success(), "guest ELF linking failed");
     }
-    build.compile("kutox_runtime");
     let source_include = forwarding_headers("e1000", "e1000", "net/services.h");
     let mut source = cc::Build::new();
     source

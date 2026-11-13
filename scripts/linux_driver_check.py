@@ -364,7 +364,7 @@ def execution_layouts(args, flags, output):
 
 
 SERVICE_SOURCES = ("tcp_header_accessors.c",)
-BOOT_SERVICE_SOURCES = ("varargs_bridge.c",)
+BOOT_SERVICE_SOURCES = ()
 
 
 def service_closure(args, output):

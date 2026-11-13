@@ -624,7 +624,7 @@ an enforced feature/configuration boundary and observable rejection.
 ### Executable storage provider closure
 
 The audit additionally compiles all eleven original e1000/VirtIO units with
-their runtime headers, five C header/variadic adapter units and
+their runtime headers, four C header-access adapter units and
 [the real Rust providers](../src/linux_compat/). This second
 relocatable closure has no compile-only marker, no garbage collection and no
 missing source-facing APIs. Its exact **68 backend/libc entry points** are
@@ -636,7 +636,7 @@ Rejected optional paths have explicit failure providers, not fake successful
 hardware services. The original 203/57/146 baseline counts are preserved as
 dependency evidence rather than misrepresented as the executable closure.
 
-`runtime_closure` records all sixteen C objects and the actual Rust provider
+`runtime_closure` records all fifteen C objects and the actual Rust provider
 object, exact commands, source/header/object hashes and the full external set.
 It also compares real Rust and boot/e1000/storage C layout probes, including
 shared device/PCI fields and actual Linux GFP values.
@@ -831,7 +831,7 @@ completion registrations. Pending/running callbacks, waits or pins prevent
 free; unchanged source need not call kutox destruction extensions.
 
 The independent source-plus-services proof now links both original drivers,
-the C class/header/varargs adapters and actual common Rust providers without
+the C header-access adapters and actual common Rust providers without
 garbage collection. Its 68 remaining backend/libc symbols have one exact
 allowlist; missing, stale or changed providers fail verification. Baseline
 source-only objects retain their separate compile-only barrier. All four unchanged

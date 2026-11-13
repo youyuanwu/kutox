@@ -2,13 +2,11 @@
 use super::*;
 use core::{
     arch::asm,
+    ffi::{VaList, c_int, c_long, c_longlong, c_uint, c_ulong, c_ulonglong},
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
 unsafe extern "C" {
-    fn kutox_va_unsigned(args: *mut c_void, longs: u32) -> u64;
-    fn kutox_va_signed(args: *mut c_void, longs: u32) -> i64;
-    fn kutox_va_pointer(args: *mut c_void) -> *const u8;
     fn kutox_serial_byte(byte: u8);
     fn kutox_driver_tracing() -> bool;
     fn kutox_linux_ratelimit() -> bool;
@@ -123,12 +121,11 @@ unsafe fn length(text: *const u8) -> usize {
     }
     unsafe { kutox_platform_fail(c"diagnostic_string_length".as_ptr()) }
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kutox_format(
+unsafe fn format_message(
     buffer: *mut u8,
     capacity: usize,
     format: *const u8,
-    args: *mut c_void,
+    args: &mut VaList<'_>,
     serial: bool,
 ) -> i32 {
     require(!format.is_null(), c"diagnostic_null_format");
@@ -195,7 +192,7 @@ pub unsafe extern "C" fn kutox_format(
                 continue;
             }
             if kind == b's' {
-                let text = kutox_va_pointer(args);
+                let text = args.next_arg::<*const u8>();
                 let size = length(text);
                 if !left {
                     out.padding(size, width, b' ');
@@ -207,7 +204,7 @@ pub unsafe extern "C" fn kutox_format(
                 continue;
             }
             if kind == b'c' {
-                out.emit(kutox_va_signed(args, 0) as u8);
+                out.emit(args.next_arg::<c_int>() as u8);
                 continue;
             }
             let base = if matches!(kind, b'x' | b'X' | b'p') {
@@ -218,7 +215,7 @@ pub unsafe extern "C" fn kutox_format(
             let mut negative = false;
             let value = match kind {
                 b'p' => {
-                    let pointer = kutox_va_pointer(args);
+                    let pointer = args.next_arg::<*const u8>();
                     if format.add(i).read() == b'M' {
                         require(!pointer.is_null(), c"diagnostic_null_mac");
                         i += 1;
@@ -244,7 +241,11 @@ pub unsafe extern "C" fn kutox_format(
                     pointer as usize as u64
                 }
                 b'd' | b'i' => {
-                    let value = kutox_va_signed(args, longs);
+                    let value = match longs {
+                        2 => args.next_arg::<c_longlong>(),
+                        1 => args.next_arg::<c_long>(),
+                        _ => i64::from(args.next_arg::<c_int>()),
+                    };
                     negative = value < 0;
                     if negative {
                         (value as u64).wrapping_neg()
@@ -252,7 +253,11 @@ pub unsafe extern "C" fn kutox_format(
                         value as u64
                     }
                 }
-                b'u' | b'x' | b'X' => kutox_va_unsigned(args, longs),
+                b'u' | b'x' | b'X' => match longs {
+                    2 => args.next_arg::<c_ulonglong>(),
+                    1 => args.next_arg::<c_ulong>(),
+                    _ => u64::from(args.next_arg::<c_uint>()),
+                },
                 _ => kutox_platform_fail(c"diagnostic_format".as_ptr()),
             };
             out.number(
@@ -272,8 +277,7 @@ pub unsafe extern "C" fn kutox_format(
     }
     out.count as i32
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kutox_log_prefix(
+unsafe fn log_prefix(
     kind: u32,
     device: *const c_void,
     level: *const u8,
@@ -487,10 +491,9 @@ pub unsafe extern "C" fn print_hex_dump(
         });
     }
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kutox_storage_log(format: *const u8, args: *mut c_void) -> i32 {
+unsafe fn storage_log(format: *const c_char, args: &mut VaList<'_>) -> i32 {
     let mut text = [0u8; 512];
-    let n = unsafe { kutox_format(text.as_mut_ptr(), text.len(), format, args, false) };
+    let n = unsafe { format_message(text.as_mut_ptr(), text.len(), format.cast(), args, false) };
     require(n >= 0 && (n as usize) < text.len(), c"storage_log_capacity");
     unsafe {
         for byte in b"# STORAGE_LINUX " {
@@ -552,4 +555,152 @@ pub unsafe extern "C" fn string_get_size(
         buffer.add(out.count.min(capacity as usize - 1)).write(0);
     }
     out.count as i32
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kutox_vformat(
+    buffer: *mut c_char,
+    capacity: usize,
+    format: *const c_char,
+    args: VaList<'_>,
+) -> i32 {
+    let mut copy = args.clone();
+    unsafe { format_message(buffer.cast(), capacity, format.cast(), &mut copy, false) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kutox_vprint(format: *const c_char, args: VaList<'_>) -> i32 {
+    let mut copy = args.clone();
+    unsafe { format_message(ptr::null_mut(), 0, format.cast(), &mut copy, true) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn printk(format: *const c_char, mut args: ...) -> i32 {
+    unsafe { format_message(ptr::null_mut(), 0, format.cast(), &mut args, true) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn netdev_printk(
+    device: *const NetDevice,
+    format: *const c_char,
+    mut args: ...
+) {
+    unsafe {
+        log_prefix(0, device.cast(), ptr::null(), 0, format);
+        format_message(ptr::null_mut(), 0, format.cast(), &mut args, true);
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dev_printk(device: *const Device, format: *const c_char, mut args: ...) {
+    unsafe {
+        log_prefix(1, device.cast(), ptr::null(), 0, format);
+        format_message(ptr::null_mut(), 0, format.cast(), &mut args, true);
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn netdev_warn_once(
+    device: *const NetDevice,
+    format: *const c_char,
+    mut args: ...
+) {
+    unsafe {
+        if log_prefix(2, device.cast(), ptr::null(), 0, format) {
+            format_message(ptr::null_mut(), 0, format.cast(), &mut args, true);
+        }
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn netif_log(
+    mask: u32,
+    level: *const c_char,
+    device: *const NetDevice,
+    format: *const c_char,
+    mut args: ...
+) {
+    unsafe {
+        if log_prefix(3, device.cast(), level.cast(), mask, format) {
+            format_message(ptr::null_mut(), 0, format.cast(), &mut args, true);
+        }
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kutox_debug(
+    device: *const NetDevice,
+    format: *const c_char,
+    mut args: ...
+) {
+    unsafe {
+        log_prefix(4, device.cast(), ptr::null(), 0, format);
+        format_message(ptr::null_mut(), 0, format.cast(), &mut args, true);
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dev_set_name(
+    device: *mut Device,
+    format: *const c_char,
+    mut args: ...
+) -> i32 {
+    if device.is_null() || format.is_null() {
+        return -22;
+    }
+    let name = storage::kutox_compat_device_name(device);
+    let count = unsafe { format_message(name.cast(), 32, format.cast(), &mut args, false) };
+    if count < 32 { 0 } else { -36 }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn storage_snprintf(
+    buffer: *mut c_char,
+    capacity: usize,
+    format: *const c_char,
+    mut args: ...
+) -> i32 {
+    unsafe { format_message(buffer.cast(), capacity, format.cast(), &mut args, false) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn storage_printk(format: *const c_char, mut args: ...) -> i32 {
+    unsafe { storage_log(format, &mut args) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn storage_dev_printk(
+    device: *const Device,
+    format: *const c_char,
+    mut args: ...
+) {
+    require(!device.is_null(), c"storage_log_device");
+    unsafe {
+        storage_log(format, &mut args);
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn panic(format: *const c_char, mut args: ...) -> ! {
+    unsafe {
+        storage_log(format, &mut args);
+        kutox_platform_fail(c"storage_linux_panic".as_ptr())
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn add_uevent_var(
+    _env: *mut c_void,
+    _format: *const c_char,
+    _args: ...
+) -> i32 {
+    rejected(c"storage_uevent_not_admitted")
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sysfs_emit(
+    _buffer: *mut c_char,
+    _format: *const c_char,
+    _args: ...
+) -> i32 {
+    rejected(c"storage_sysfs")
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sysfs_emit_at(
+    _buffer: *mut c_char,
+    _offset: i32,
+    _format: *const c_char,
+    _args: ...
+) -> i32 {
+    rejected(c"storage_sysfs")
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sprintf(_buffer: *mut c_char, _format: *const c_char, _args: ...) -> i32 {
+    rejected(c"storage_unbounded_format")
 }

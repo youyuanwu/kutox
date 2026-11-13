@@ -45,7 +45,7 @@ and exactly 68 backend/libc entry points in one shared allowlist. Both inventori
 and their source/header/command/object provenance are independently verified.
 
 Both driver audits use [linux_compat_check.py](../scripts/linux_compat_check.py)
-for the same executable provider proof: sixteen C objects plus the real
+for the same executable provider proof: fifteen C objects plus the real
 freestanding Rust provider object, not declaration-only Rust symbols or mocks.
 Real Rust and boot/e1000/storage C probes must agree on all 37 shared
 device/PCI/execution-layout and GFP values. Rust and the network C profile also
@@ -89,8 +89,13 @@ separately without that marker in both profiles.
 
 The existing C atomic/diagnostic fixture additionally checks mixed promoted
 variadic arguments, signed 64-bit minimum, unsigned widths, string padding,
-truncation/canaries and zero/one-byte destination capacities through the actual
-C `va_list` bridge and Rust formatter. NAPI/lifecycle/ring, synchronous callback
+truncation/canaries and zero/one-byte destination capacities through actual
+C calls to Rust variadic definitions and Rust `VaList` forwarding APIs.
+Repeated formatting checks that the original C cursor remains unchanged;
+mixed register/stack arguments exercise the platform ABI, not a mocked layout.
+The storage fixture tests exact 31-byte device-name capacity and 32-byte
+truncation/recovery through the real Rust `dev_set_name` variadic provider.
+NAPI/lifecycle/ring, synchronous callback
 reentry, cancellation/IRQ completion and real storage reset tests remain enabled.
 
 [Bounded block acceptance](kernel-implementation.md#bounded-block-services)

@@ -523,8 +523,10 @@ The remaining lifecycle, NAPI registration, optional-operation, MMIO ownership,
 block-state and diagnostic-formatting services have likewise moved to Rust
 without copying or replacing original Linux device algorithms. Their native
 backends reuse the previously attributed Moss allocators, synchronization and
-task services. The retained C original-header accessors, variadic extraction/
-wrappers, independent layout probes and C-call acceptance fixtures retain their
+task services. Variadic logging/formatting providers now use stable Rust
+`core::ffi::VaList`, without copying a platform `va_list` representation or Linux
+formatter implementation. The retained C original-header accessors,
+independent layout probes and C-call acceptance fixtures retain their
 existing attribution.
 
 ## Native driver infrastructure and persistent integration
