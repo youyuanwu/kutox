@@ -155,6 +155,16 @@ class RuntimeBootTests(unittest.TestCase):
             "# USER_TASKS source=moss-context format=elf64 tasks=2 fifo=alternating epochs=8 slices=64 quanta=48 exits=65,66 memory=isolated context=continued rsp=unaligned df=preserved if=enabled kernel_work=64 frames=balanced",
             "# USER_RUNTIME epoch=1 source=moss-dispatch tasks=2 slices=32 early=8 memory=isolated progress=2 fault=isolated timeout=isolated survivor=66 cancel=paused stale=rejected shutdown=2 handler=delivered locks=0",
             "# USER_RUNTIME_ERRORS invalid=2 admission=joined observer=joined entry=joined startup=joined callbacks=1 frames=balanced",
+            "# USER_BLOCKING source=moss-boundary yield=6 sleep=6 resumes=12 exits=65,66 zero=immediate invalid=-22 context=preserved early=0 idle=hlt peer=preempted budget=active syscall_limit=32 cancel=sleeping stale=rejected drop=sleeping single_run=unsupported frames=balanced",
+            "# USER_SLEEP_IDLE tasks=2 sleep=4 exits=2 wake=timer early=0 idle=hlt callbacks=bounded budget=uncharged shutdown=sleeping frames=balanced",
+            "# USER_RUNTIME_BLOCKING epoch=1 yield=3 sleep=3 early=0 shutdown=sleeping cancel=sleeping",
+            "# USER_INPUT source=moss-pipe fd=0 capacity=256 bytes=261 calls=10,9 short=2,3 cross_page=checked eof=drained errors=-9,-14,-22 backpressure=-11 closed=-32 context=preserved wait=event budget=active cancel=reading stale=rejected drop=reading revalidate=checked single_run=unsupported frames=balanced",
+            "# USER_INPUT_IDLE tasks=2 bytes=6 wake=kernel idle=hlt callbacks=bounded budget=uncharged shutdown=reading frames=balanced",
+            "# USER_RUNTIME_INPUT epoch=1 source=moss-pipe fd=0 wait=event bytes=3 producer=http context=continued",
+            "BOOT_FS_OK source=moss-ext4plus format=ext2 image_bytes=2097152 path=/bin/init file_bytes=4744",
+            "BOOT_USER_EXIT status=0 calls=2 writes=1 bytes=27 frames=balanced heap=balanced",
+            "USER_BOOT_OK exit=0",
+            "INIT: hello from /bin/init",
         ]:
             with self.subTest(extra=extra), self.assertRaises(AssertionError):
                 runner.validate_live_boot("driver-runtime-default", live_log() + extra + "\n", SYMBOLS)

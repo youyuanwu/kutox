@@ -291,6 +291,39 @@ fn bridge_bus_master_is_not_an_io_or_memory_forwarding_requirement() {
     for parent in [address(0, 3, 0), address(1, 4, 0)] {
         config.set(parent, 4, 0x103);
     }
+
+    #[test]
+    fn memory_only_devices_need_no_io_window_and_use_the_correct_prefetch_window() {
+        let (mut config, inventory, endpoint) = nested();
+        for parent in [address(0, 3, 0), address(1, 4, 0)] {
+            config.set(parent, 4, 2);
+            config.set(parent, 0x1c, 0xffff);
+            config.set(parent, 0x24, 0x90019001);
+            config.set(parent, 0x28, 1);
+            config.set(parent, 0x2c, 1);
+        }
+        assert_eq!(
+            inventory.validate_memory_window(endpoint, (0x80020000, 0x4000), false, |a, o| config
+                .read(a, o)),
+            Ok(())
+        );
+        assert_eq!(
+            inventory.validate_memory_window(endpoint, (0x190020000, 0x4000), true, |a, o| config
+                .read(a, o)),
+            Ok(())
+        );
+        assert_eq!(
+            inventory.validate_memory_window(endpoint, (0x90020000, 0x4000), true, |a, o| config
+                .read(a, o)),
+            Err(Error::Window)
+        );
+        config.set(address(0, 3, 0), 0x24, 0x90019000);
+        assert_eq!(
+            inventory.validate_memory_window(endpoint, (0x190020000, 0x4000), true, |a, o| config
+                .read(a, o)),
+            Err(Error::Window)
+        );
+    }
     assert_eq!(
         inventory.validate_windows(endpoint, (0x80020000, 0x20000), (0xc000, 64), |a, o| config
             .read(a, o)),

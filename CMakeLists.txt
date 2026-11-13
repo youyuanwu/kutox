@@ -6,6 +6,9 @@ file(REMOVE "${CMAKE_BINARY_DIR}/CTestTestfile.cmake" "${CMAKE_BINARY_DIR}/DartC
 
 find_program(CARGO cargo REQUIRED)
 find_program(XORRISO xorriso REQUIRED)
+find_program(CLANG clang REQUIRED)
+find_program(LLD ld.lld REQUIRED)
+find_program(MKE2FS mke2fs REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 include(FetchContent)
@@ -33,13 +36,32 @@ add_custom_target(kernel
 )
 
 add_custom_command(
+    OUTPUT "${CMAKE_BINARY_DIR}/init.elf"
+    COMMAND ${CLANG} --target=x86_64-unknown-none -c
+        "${CMAKE_SOURCE_DIR}/userspace/init.S" -o "${CMAKE_BINARY_DIR}/init.o"
+    COMMAND ${LLD} --build-id=none --fatal-warnings --script
+        "${CMAKE_SOURCE_DIR}/userspace/linker.ld" -o "${CMAKE_BINARY_DIR}/init.elf"
+        "${CMAKE_BINARY_DIR}/init.o"
+    DEPENDS userspace/init.S userspace/linker.ld
+    VERBATIM
+)
+add_custom_command(
+    OUTPUT "${CMAKE_BINARY_DIR}/rootfs.img"
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/make_rootfs.py"
+        --program "${CMAKE_BINARY_DIR}/init.elf" --output "${CMAKE_BINARY_DIR}/rootfs.img"
+        --mke2fs "${MKE2FS}"
+    DEPENDS "${CMAKE_BINARY_DIR}/init.elf" scripts/make_rootfs.py
+    VERBATIM
+)
+add_custom_command(
     OUTPUT "${CMAKE_BINARY_DIR}/kutox.iso"
     BYPRODUCTS "${CMAKE_BINARY_DIR}/kutox.iso.manifest.json"
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/make_iso.py"
         --kernel "${KERNEL}" --limine "${limine_SOURCE_DIR}"
         --output "${CMAKE_BINARY_DIR}/kutox.iso" --xorriso "${XORRISO}"
+        --rootfs "${CMAKE_BINARY_DIR}/rootfs.img"
         --profile "${IMAGE_PROFILE}"
-    DEPENDS kernel "${KERNEL}" "${CMAKE_SOURCE_DIR}/scripts/make_iso.py"
+    DEPENDS kernel "${KERNEL}" "${CMAKE_BINARY_DIR}/rootfs.img" "${CMAKE_SOURCE_DIR}/scripts/make_iso.py"
     VERBATIM
 )
 add_custom_target(images DEPENDS "${CMAKE_BINARY_DIR}/kutox.iso")

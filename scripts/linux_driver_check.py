@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REVISION = "c03c1a14507dfaf8b856c2608f9ac216021fc222"
 SOURCES = ("e1000_main.c", "e1000_hw.c", "e1000_ethtool.c", "e1000_param.c")
 DRIVER = ROOT / "linux/drivers/net/ethernet/intel/e1000"
-DECLARATIONS = ROOT / "compat/driver-check"
+DECLARATIONS = ROOT / "compat/audit/e1000"
 LAYOUT_NAMES = (
     "pointer", "dma_address", "tx_descriptor", "rx_descriptor", "tx_count", "rx_count",
     "adapter", "tx_ring", "rx_ring", "tx_buffer_info", "rx_buffer_info", "net_device",
@@ -110,7 +110,7 @@ class Elf:
         result = []
         for offset in range(0, len(section["data"]), 24):
             name, info, _, owner, value, size = struct.unpack_from("<IBBHQQ", section["data"], offset)
-            result.append({"name": self.string(strings, name), "type": info & 15,
+            result.append({"name": self.string(strings, name), "type": info & 15, "binding": info >> 4,
                            "owner": owner, "value": value, "size": size})
         return result
 
@@ -190,9 +190,12 @@ def metadata(path):
     return result
 
 
-def make_headers(output, wrapper="driver.h"):
-    include = output / "include"
-    headers = lines(ROOT / "compat/headers.txt") + lines(DECLARATIONS / "headers.txt")
+def make_headers(output, wrapper="driver.h", profile="e1000"):
+    include = output / "headers/include"
+    profiles = ROOT / "compat/include/profiles"
+    if profile not in ("e1000", "storage"):
+        raise ValueError(f"unknown forwarding profile: {profile}")
+    headers = lines(profiles / "common.headers") + lines(profiles / f"{profile}.headers")
     if len(set(headers)) != len(headers):
         raise ValueError("compile-check header allowlists overlap")
     for header in headers:
@@ -201,7 +204,7 @@ def make_headers(output, wrapper="driver.h"):
         path = include / header
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f'#include "{wrapper}"\n')
-    for header, target in json.loads((DECLARATIONS / "uapi-forwarders.json").read_text()).items():
+    for header, target in json.loads((profiles / "uapi-forwarders.json").read_text()).items():
         if not re.fullmatch(r"(?:[a-z0-9_-]+/)+[a-z0-9_-]+\.h", header) or ".." in Path(target).parts:
             raise ValueError(f"invalid original UAPI path: {header}: {target}")
         if header in headers or not (ROOT / "linux/include/uapi" / target).is_file():
@@ -240,22 +243,24 @@ def contracts():
 def compiler_flags(output):
     return ["-O2", "-Wall", "-Wextra", "-Werror", "-ferror-limit=0",
             "-Wno-pointer-sign", "-Wno-sign-compare", *lines(ROOT / "compat/cflags.txt"),
-            "-DKUTOX_DRIVER_COMPILE_ONLY=1", "-I" + str(output / "include"),
+            "-DKUTOX_DRIVER_COMPILE_ONLY=1", "-I" + str(output / "headers/include"),
             "-I" + str(DECLARATIONS), "-I" + str(DRIVER),
+            "-I" + str(ROOT / "compat/include"),
             "-I" + str(ROOT / "linux/include"), "-I" + str(ROOT / "linux/include/uapi"),
             "-I" + str(ROOT / "linux/arch/x86/include/uapi")]
 
 
 def build_inputs():
     files = [ROOT / "scripts/linux_driver_check.py", ROOT / "compat/cflags.txt",
-             ROOT / "compat/headers.txt", ROOT / "compat/bridge.c", ROOT / "compat/kutox_compat.h",
-             ROOT / "compat/execution_types.h", ROOT / "compat/execution_services.h",
-             ROOT / "compat/execution_layout.c", ROOT / "compat/diagnostics_services.h",
+             ROOT / "compat/include/profiles/common.headers", ROOT / "compat/e1000_bridge.c", ROOT / "compat/include/common/kutox_compat.h",
+             ROOT / "compat/include/common/execution_types.h", ROOT / "compat/include/common/execution_services.h",
+             ROOT / "compat/audit/common/execution_layout.c", ROOT / "compat/include/common/diagnostics_services.h",
              ROOT / "linker.ld", DRIVER / "Makefile"]
     files += sorted(path for path in DECLARATIONS.rglob("*") if path.is_file())
     files += [ROOT / "compat" / name for name in SERVICE_SOURCES + BOOT_SERVICE_SOURCES]
-    files += [ROOT / "compat/driver_services.h"]
-    return {str(path.relative_to(ROOT)): digest(path) for path in files}
+    files += [ROOT / "compat/include/net/services.h"]
+    from linux_compat_check import inputs
+    return {**{str(path.relative_to(ROOT)): digest(path) for path in files}, **inputs()}
 
 
 def dependency_paths(text):
@@ -287,18 +292,15 @@ def read_layout(path):
 
 
 def check_bridge_guard(args, output):
-    include = output / "boot-include"
-    for header in lines(ROOT / "compat/headers.txt"):
-        path = include / header
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("#include <kutox_compat.h>\n")
+    include = make_headers(output / "boot", "common/kutox_compat.h")
     flags = ["-Wall", "-Wextra", "-Werror", *lines(ROOT / "compat/cflags.txt"),
-             "-DKUTOX_DRIVER_COMPILE_ONLY=1", "-include", str(DECLARATIONS / "marker.h"),
-             "-I" + str(include), "-I" + str(ROOT / "compat"), "-I" + str(DRIVER)]
+             "-DKUTOX_DRIVER_COMPILE_ONLY=1", "-include", str(ROOT / "compat/audit/common/marker.h"),
+             "-I" + str(include), "-I" + str(ROOT / "compat/include"), "-I" + str(DRIVER)]
+    flags += ["-I" + str(ROOT / "linux/include")]
     for full in (False, True):
         path = output / f"bridge-guard-{int(full)}.o"
         mode = ["-DKUTOX_E1000_FULL_SOURCE=1"] if full else []
-        run([args.clang, *flags, *mode, "-c", str(ROOT / "compat/bridge.c"), "-o", str(path)],
+        run([args.clang, *flags, *mode, "-c", str(ROOT / "compat/e1000_bridge.c"), "-o", str(path)],
             output / f"bridge-guard-{int(full)}.log")
         symbols = Elf(path).symbols()
         present = any(symbol["name"] == "e1000_get_hw_dev" and symbol["owner"] for symbol in symbols)
@@ -307,14 +309,15 @@ def check_bridge_guard(args, output):
     return "boot helper present normally; omitted with KUTOX_E1000_FULL_SOURCE; runtime bridge uses source-facing structs"
 
 
-def check_runtime_exclusion(args, flags, output):
+def check_runtime_exclusion(args, flags, output, *, objects=()):
     source = output / "runtime-exclusion.c"
     obj = output / "runtime-exclusion.o"
     elf = output / "runtime-exclusion.elf"
     source.write_text('#include "driver.h"\nvoid kmain(void) {}\n')
     run([args.clang, *flags, "-c", str(source), "-o", str(obj)], output / "runtime-exclusion-compile.log")
     elf.unlink(missing_ok=True)
-    result = subprocess.run([args.ld, "-T", str(ROOT / "linker.ld"), "-o", str(elf), str(obj)],
+    result = subprocess.run([args.ld, "-T", str(ROOT / "linker.ld"), "-o", str(elf),
+                             str(obj), *map(str, objects)],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
     (output / "runtime-exclusion-link.log").write_text(result.stdout)
     elf.unlink(missing_ok=True)
@@ -347,86 +350,39 @@ def read_execution_layout(path):
 
 def execution_layouts(args, flags, output):
     boot_flags = ["-Wall", "-Wextra", "-Werror", *lines(ROOT / "compat/cflags.txt"),
-                  "-DKUTOX_DRIVER_COMPILE_ONLY=1", "-include", str(DECLARATIONS / "marker.h"),
-                  "-I" + str(output / "boot-include"), "-I" + str(ROOT / "compat")]
+                  "-DKUTOX_DRIVER_COMPILE_ONLY=1", "-include", str(ROOT / "compat/audit/common/marker.h"),
+                  "-I" + str(output / "boot/headers/include"), "-I" + str(ROOT / "compat/include"),
+                  "-I" + str(ROOT / "linux/include")]
     result = {}
-    for name, selected in (("source", [*flags, "-I" + str(ROOT / "compat"), "-DKUTOX_EXECUTION_SOURCE_PROFILE=1"]),
+    for name, selected in (("source", [*flags, "-DKUTOX_EXECUTION_SOURCE_PROFILE=1"]),
                            ("runtime", boot_flags)):
         path = output / f"execution-layout-{name}.o"
-        run([args.clang, *selected, "-c", str(ROOT / "compat/execution_layout.c"), "-o", str(path)],
+        run([args.clang, *selected, "-c", str(ROOT / "compat/audit/common/execution_layout.c"), "-o", str(path)],
             output / f"execution-layout-{name}.log")
         result[name] = {"sha256": digest(path), "layouts": read_execution_layout(path)}
     return result
 
 
-SERVICE_SOURCES = ("driver_memory.c", "driver_pci.c", "driver_packet.c", "driver_optional.c")
-BOOT_SERVICE_SOURCES = ("runtime.c", "execution_ops.c", "deferred.c", "diagnostics.c")
+SERVICE_SOURCES = ("tcp_header_accessors.c",)
+BOOT_SERVICE_SOURCES = ()
 
 
-def service_closure(args, flags, output):
-    objects = [output / "e1000-closure.o", output / "bridge-guard-1.o"]
-    evidence = []
-    service_include = make_headers(output / "services", "driver_services.h")
-    boot_flags = ["-Wall", "-Wextra", "-Werror", *lines(ROOT / "compat/cflags.txt"),
-                  "-DKUTOX_DRIVER_COMPILE_ONLY=1", "-include", str(DECLARATIONS / "marker.h"),
-                  "-I" + str(output / "boot-include"), "-I" + str(ROOT / "compat")]
-    for filename in SERVICE_SOURCES + BOOT_SERVICE_SOURCES:
-        path = output / ("service-" + Path(filename).stem + ".o")
-        selected = [*["-I" + str(service_include) if flag == "-I" + str(output / "include") else flag for flag in flags],
-                    "-I" + str(ROOT / "compat")] if filename in SERVICE_SOURCES else boot_flags
-        source = ROOT / "compat" / filename
-        command = [args.clang, *selected, "-c", str(source), "-o", str(path)]
-        run(command, output / ("service-" + Path(filename).stem + ".log"))
-        objects.append(path)
-        evidence.append({"source": str(source.relative_to(ROOT)), "sha256": digest(source),
-                         "object": path.name, "object_sha256": digest(path), "command": command})
-    closure = output / "e1000-services-closure.o"
-    run([args.ld, "-r", "-o", str(closure), *map(str, objects)], output / "services-link.log")
-    symbols = Elf(closure).symbols()
-    undefined = sorted({symbol["name"] for symbol in symbols if not symbol["owner"] and symbol["name"]})
-    expected = lines(DECLARATIONS / "service-ffi.txt")
-    if undefined != expected:
-        raise ValueError("service Rust ABI mismatch: " + ", ".join(sorted(set(undefined) ^ set(expected))))
-    rust_providers = {"memcpy", "memset", "kutox_jiffies"}
-    remaining = sorted((set(undefined) & contracts().keys()) - rust_providers)
+def service_closure(args, output):
+    from linux_compat_check import audit
+    shared = audit(args, output / "shared-runtime")
+    remaining = sorted(contracts().keys() - set(shared["defined"]) - {"memcpy", "memset", "kutox_jiffies"})
     if remaining:
         raise ValueError("driver services missing providers: " + ", ".join(remaining))
-    (output / "service-ffi.txt").write_text("\n".join(undefined) + "\n")
-    return {"units": evidence, "sha256": digest(closure), "undefined": undefined,
-            "rust_driver_providers": sorted(rust_providers), "missing_providers": 0}
+    return {"shared": shared, "missing_providers": 0}
 
-def verify_service_closure(output, evidence):
-    if not isinstance(evidence, dict) or evidence.get("missing_providers") != 0:
+def verify_service_closure(args, output, evidence):
+    from linux_compat_check import verify
+    if (not isinstance(evidence, dict) or evidence.get("missing_providers") != 0
+            or not isinstance(evidence.get("shared"), dict)):
         raise ValueError("missing service provider evidence")
-    units = evidence.get("units")
-    if not isinstance(units, list) or [unit.get("source") for unit in units] != [
-        f"compat/{name}" for name in SERVICE_SOURCES + BOOT_SERVICE_SOURCES
-    ]:
-        raise ValueError("missing or reordered service provider units")
-    for unit in units:
-        if digest(ROOT / unit["source"]) != unit["sha256"] or digest(output / unit["object"]) != unit["object_sha256"]:
-            raise ValueError("stale service provider object")
-        filename = Path(unit["source"]).name
-        flags = compiler_flags(output)
-        if filename in SERVICE_SOURCES:
-            flags = ["-I" + str(output / "services/include") if flag == "-I" + str(output / "include") else flag
-                     for flag in flags] + ["-I" + str(ROOT / "compat")]
-        else:
-            flags = ["-Wall", "-Wextra", "-Werror", *lines(ROOT / "compat/cflags.txt"),
-                     "-DKUTOX_DRIVER_COMPILE_ONLY=1", "-include", str(DECLARATIONS / "marker.h"),
-                     "-I" + str(output / "boot-include"), "-I" + str(ROOT / "compat")]
-        if unit["command"][1:] != [*flags, "-c", str(ROOT / unit["source"]), "-o", str(output / unit["object"])]:
-            raise ValueError("service provider compiler arguments changed")
-    closure = output / "e1000-services-closure.o"
-    if digest(closure) != evidence.get("sha256"):
-        raise ValueError("stale service closure")
-    undefined = sorted({symbol["name"] for symbol in Elf(closure).symbols() if not symbol["owner"] and symbol["name"]})
-    if undefined != lines(DECLARATIONS / "service-ffi.txt") or evidence.get("undefined") != undefined:
-        raise ValueError("service ABI changed or provider omitted")
-    if evidence.get("rust_driver_providers") != ["kutox_jiffies", "memcpy", "memset"]:
-        raise ValueError("Rust driver primitive provider classification changed")
-    if ".kutox.compile_only" not in Elf(closure).by_name:
-        raise ValueError("service closure lost runtime barrier")
+    verify(args, output / "shared-runtime", evidence.get("shared"))
+    if contracts().keys() - set(evidence["shared"]["defined"]) - {"memcpy", "memset", "kutox_jiffies"}:
+        raise ValueError("missing shared Rust/C providers for original e1000 APIs")
 
 
 def validate_symbols(report, symbols, inventory):
@@ -485,7 +441,7 @@ def verify(args, report=None):
     validate_symbols(report, symbols, inventory)
     if digest(output / "layout.o") != report.get("layout_sha256") or read_layout(output / "layout.o") != report.get("layouts"):
         raise ValueError("compiler layout evidence changed")
-    verify_service_closure(output, report.get("service_closure"))
+    verify_service_closure(args, output, report.get("service_closure"))
     for name in ("source", "runtime"):
         path = output / f"execution-layout-{name}.o"
         evidence = report.get("execution_layouts", {}).get(name, {})
@@ -563,7 +519,7 @@ def build(args):
     layouts = probe_layout(args, flags, output)
     guard = check_bridge_guard(args, output)
     execution = execution_layouts(args, flags, output)
-    services = service_closure(args, flags, output)
+    services = service_closure(args, output)
     excluded = check_runtime_exclusion(args, flags, output)
     macros = run([args.clang, *flags, "-dM", "-E", str(DECLARATIONS / "layout.c")], output / "macros.log")
     macro_inventory = parse_macros(macros)

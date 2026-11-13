@@ -373,9 +373,13 @@ def user_log(name):
         ],
         "user.task_limits": [
             "# USER_TASK_LIMITS capacity=2 stale=rejected retry=preserved cancel=paused irq_context=rejected resume_fault=contained budgets=cumulative gaps_us=10000 timeouts=2 fault=isolated survivor=66 syscall_limit=32 writes=32 bytes=0 frames=balanced",
+            "# USER_BLOCKING source=moss-boundary yield=6 sleep=6 resumes=12 exits=65,66 zero=immediate invalid=-22 context=preserved early=0 idle=hlt peer=preempted budget=active syscall_limit=32 cancel=sleeping stale=rejected drop=sleeping single_run=unsupported frames=balanced",
+            "# USER_INPUT source=moss-pipe fd=0 capacity=256 bytes=261 calls=10,9 short=2,3 cross_page=checked eof=drained errors=-9,-14,-22 backpressure=-11 closed=-32 context=preserved wait=event budget=active cancel=reading stale=rejected drop=reading revalidate=checked single_run=unsupported frames=balanced",
         ],
         "user.runtime_cleanup": [
             "# USER_RUNTIME_ERRORS_BEGIN",
+            "# USER_SLEEP_IDLE tasks=2 sleep=4 exits=2 wake=timer early=0 idle=hlt callbacks=bounded budget=uncharged shutdown=sleeping frames=balanced",
+            "# USER_INPUT_IDLE tasks=2 bytes=6 wake=kernel idle=hlt callbacks=bounded budget=uncharged shutdown=reading frames=balanced",
             "# RUNTIME_ERROR stage=user_task_duration code=-1",
             "# RUNTIME_ERROR stage=user_task_duration code=-1",
             "# RUNTIME_ERROR stage=runtime_startup_injected code=-210",
@@ -386,6 +390,28 @@ def user_log(name):
             "# USER_RUNTIME_ERRORS invalid=2 admission=joined observer=joined entry=joined startup=joined callbacks=1 frames=balanced",
         ],
     }[name]
+
+
+def block_log():
+    errors = {
+        ("allocate_injected", -12): 4, ("tag_profile", -95): 1,
+        ("read_only_operation", -95): 32, ("request_capacity", -11): 16,
+        ("read_range", -22): 96, ("synchronous_execute_not_admitted", -95): 16,
+        ("submit_metadata", -22): 16,
+        ("borrowed_payload_not_admitted", -95): 16, ("result_cancelled", -125): 32,
+        ("stale_ticket", -116): 16, ("transport_backpressure", -11): 16,
+        ("submit_backpressure", -11): 16, ("result_pending", -11): 16,
+        ("release_inflight", -16): 32, ("cancel_inflight", -16): 16,
+        ("queue_quiesced", -16): 32, ("result_capacity", -105): 16,
+        ("result_io", -5): 16, ("queue_limits", -95): 16,
+        ("queue_closed", -19): 1,
+    }
+    return [
+        *(f"# BLOCK_ERROR operation={operation} code={code}"
+          for (operation, code), count in errors.items() for _ in range(count)),
+        "# BLOCK_SERVICES epochs=16 queues=1 tags=1 read_max=4096 rollback=4 "
+        "ranges=checked pressure=retained cancel=joined stale=isolated irq=deferred",
+    ]
 
 
 def suite_log(case="kernel-tests"):
@@ -407,6 +433,8 @@ def suite_log(case="kernel-tests"):
             lines.extend(pci_log(case))
         if name.startswith("native."):
             lines.extend(native_log(name, case))
+        if name == "storage.block_services":
+            lines.extend(block_log())
         if name.startswith("linux.e1000_"):
             if name.endswith(("_wrap","_backpressure","_teardown")):
                 lines.extend(hard_log(name.rsplit("_",1)[1]))
@@ -428,6 +456,22 @@ def suite_log(case="kernel-tests"):
 
 
 class KernelSuiteTests(unittest.TestCase):
+    def test_block_service_proof_requires_bounds_rollback_irq_deferral_and_own_case(self):
+        output = suite_log()
+        marker = block_log()[-1]
+        for replacement in ("", marker + "\n" + marker, marker.replace("irq=deferred", "irq=inline"),
+                            marker.replace("read_max=4096", "read_max=8192"),
+                            marker.replace("cancel=joined", "cancel=freed")):
+            with self.subTest(replacement=replacement), self.assertRaises(AssertionError):
+                validate_result("kernel-tests", 1, output.replace(marker, replacement, 1))
+        for changed in (
+            output.replace(block_log()[0] + "\n", "", 1),
+            output.replace(marker, marker + "\n# BLOCK_UNKNOWN", 1),
+            marker + "\n" + output.replace(marker, "", 1),
+        ):
+            with self.assertRaises(AssertionError):
+                validate_result("kernel-tests", 1, changed)
+
     def test_user_run_proofs_require_cpl3_exact_bounds_faults_recovery_and_order(self):
         names = ("user.entry_exit", "user.syscalls", "user.faults", "user.reclamation")
         self.assertEqual(KERNEL_TEST_NAMES[-12:-8], names)
@@ -599,6 +643,48 @@ class KernelSuiteTests(unittest.TestCase):
         ):
             with self.subTest(changed=changed), self.assertRaises(AssertionError):
                 validate_result("kernel-tests", 1, changed)
+
+    def test_blocking_proofs_require_resume_deadlines_limits_and_sleeping_cleanup(self):
+        output = suite_log()
+        markers = (user_log("user.task_limits")[1], user_log("user.runtime_cleanup")[1])
+        for marker in markers:
+            for old, new in (
+                ("yield=6", "yield=0"), ("sleep=6", "sleep=0"), ("resumes=12", "resumes=0"),
+                ("zero=immediate", "zero=parked"), ("invalid=-22", "invalid=0"),
+                ("context=preserved", "context=reset"), ("early=0", "early=1"),
+                ("idle=hlt", "idle=spin"), ("peer=preempted", "peer=starved"),
+                ("budget=active", "budget=wall"), ("syscall_limit=32", "syscall_limit=reset"),
+                ("cancel=sleeping", "cancel=ready"), ("stale=rejected", "stale=accepted"),
+                ("drop=sleeping", "drop=empty"), ("single_run=unsupported", "single_run=parked"),
+                ("tasks=2", "tasks=1"), ("sleep=4", "sleep=0"), ("exits=2", "exits=0"),
+                ("wake=timer", "wake=poll"), ("callbacks=bounded", "callbacks=unbounded"),
+                ("budget=uncharged", "budget=charged"), ("shutdown=sleeping", "shutdown=ready"),
+                ("frames=balanced", "frames=leaked"),
+            ):
+                if old in marker:
+                    with self.subTest(old=old), self.assertRaises(AssertionError):
+                        validate_result("kernel-tests", 1, output.replace(marker, marker.replace(old, new)))
+            for replacement in ("", marker + "\n" + marker):
+                with self.subTest(marker=marker), self.assertRaises(AssertionError):
+                    validate_result("kernel-tests", 1, output.replace(marker, replacement))
+        proof = markers[0]
+        result = f"ok {KERNEL_TEST_NAMES.index('user.task_limits') + 1} user.task_limits"
+        with self.assertRaises(AssertionError):
+            validate_result("kernel-tests", 1, output.replace(proof + "\n", "").replace(result, result + "\n" + proof))
+
+    def test_input_proofs_require_delivery_eof_copy_safety_and_joined_cleanup(self):
+        output = suite_log()
+        for marker in (user_log("user.task_limits")[-1], user_log("user.runtime_cleanup")[2]):
+            for field in marker.split()[2:]:
+                with self.subTest(field=field), self.assertRaises(AssertionError):
+                    validate_result("kernel-tests", 1, output.replace(marker, marker.replace(field, field.split("=")[0] + "=invalid", 1)))
+            for replacement in ("", marker + "\n" + marker):
+                with self.subTest(marker=marker), self.assertRaises(AssertionError):
+                    validate_result("kernel-tests", 1, output.replace(marker, replacement))
+            name = "user.task_limits" if marker.startswith("# USER_INPUT ") else "user.runtime_cleanup"
+            result = f"ok {KERNEL_TEST_NAMES.index(name) + 1} {name}"
+            with self.assertRaises(AssertionError):
+                validate_result("kernel-tests", 1, output.replace(marker + "\n", "").replace(result, result + "\n" + marker))
 
     def test_pci_hierarchy_rejects_missing_duplicate_and_wrong_identity(self):
         case = "kernel-tests-nested"

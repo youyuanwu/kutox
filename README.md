@@ -21,7 +21,7 @@ port of its IRQ-safe spinlock. Kernel-owned x86_64 exception tables and test
 modes verify interrupt-state restoration and fault diagnostics.
 
 The portable ports live in one adapted [Moss libkernel crate](third_party/moss-libkernel/),
-with `CpuOps` at the root and separate `memory`, `sync`, and `task` modules. They share
+with `CpuOps` at the root and separate `memory`, `sync`, `task`, and optional `fs` modules. They share
 one upstream revision and MIT license. The task-bound sleeping-mutex adaptation
 lives beside the kernel runtime in [src/mutex.rs](src/mutex.rs), retaining the
 same pinned source attribution and MIT notice.
@@ -53,8 +53,17 @@ now alternates two owned ELF tasks without restarting them and returns to kernel
 work between quanta. An explicit
 [persistent-runtime integration](docs/kernel-implementation.md#userspace-in-the-persistent-runtime)
 now runs these slices alongside Linux-backed networking, honoring kernel
-deadlines and joined shutdown. Blocking syscalls and a full process runtime
-remain absent.
+deadlines and joined shutdown. Resumable tasks now have bounded native
+[yield/sleep syscalls](docs/kernel-implementation.md#bounded-user-yield-and-sleep),
+including timer-driven idle wakeup and sleeping-task cancellation.
+A bounded [input channel](docs/kernel-implementation.md#bounded-user-input)
+adds blocking native reads, kernel delivery and drain-before-EOF close.
+An opt-in [filesystem boot](docs/kernel-implementation.md#read-only-boot-filesystem)
+now reads `/bin/init` from a 2-MiB ext2 Limine module using Moss's `ext4plus`
+baseline, then executes it with the existing ELF loader. The separately linked
+[init program](userspace/init.S) is packaged as a file, not embedded in the
+kernel. Normal boot still starts networking without running userspace.
+General file/socket I/O and a full process runtime remain absent.
 
 The scoped [kernel runtime](src/kernel_runtime.rs) now retains the dispatcher,
 native manager, APIC/timer/controllers and shared Linux workers through client
@@ -93,7 +102,7 @@ The current route is single-CPU, single-source, and not a Linux `request_irq` AP
 
 Owned coherent DMA buffers now reuse Moss contiguous frame guards, with checked
 32/64-bit masks, size/alignment, distinct CPU/device addresses, zero initialization,
-and explicit CPU/device ownership. A bounded C adapter supplies coherent allocation,
+and explicit CPU/device ownership. Bounded Rust C-ABI services supply coherent allocation,
 free, mask selection and ordering barriers. The allocation-only tests keep
 bus mastering disabled; the original Linux TX case performs real device DMA.
 
@@ -112,11 +121,45 @@ An isolated compile-only target now compiles unchanged `e1000_main.c` with its
 hardware, parameter and ethtool units. It records original registration/callbacks,
 parameter arrays, layouts, headers and **209 unresolved runtime dependencies**.
 These objects are explicitly rejected by the runtime linker. A second
-source-plus-services relocatable closure now checks every driver API has a
-C provider or an explicitly listed Rust primitive; its remaining 52 platform
-symbols are recorded, not hidden by success stubs.
+combined relocatable closure now checks both drivers against actual Rust and
+C providers; its remaining 68 kernel/backend symbols are recorded, not hidden
+by success stubs.
 The marked check objects remain excluded from the runtime image. Runtime
 objects are compiled separately against the same selected source profile.
+
+The [shared compatibility implementation](src/linux_compat/) exports Linux-facing
+C ABI functions from Rust. Both drivers share checked
+[device/PCI/execution contracts](src/linux_abi.rs), synchronization, allocation
+adapters, PCI registration/access and DMA dispatch. Storage device references,
+work tracking and lifecycle/recovery orchestration also live in Rust.
+[Network packet services](src/linux_compat/packet.rs) own network-device
+queues, skb allocation, RX fragments, TX completion tracking and ingress.
+[Lifecycle](src/linux_compat/lifecycle.rs), [NAPI](src/linux_compat/napi.rs),
+[MMIO](src/linux_compat/mmio.rs), [block services](src/linux_compat/block.rs),
+optional-operation policy and bounded diagnostic formatting also live in Rust.
+The four remaining production C bridges contain original-header
+accessors/operations, not parallel kernel-service
+state machines. C acceptance fixtures and independent compiler probes remain.
+Their names reflect their roles: [e1000 bridge](compat/e1000_bridge.c),
+[e1000 accessors](compat/e1000_accessors.c),
+[TCP bitfield accessors](compat/tcp_header_accessors.c) and [VirtIO bridge](compat/virtio_bridge.c).
+Each file explains why that boundary remains C.
+Variadic definitions and argument extraction also live in Rust, using stable
+`core::ffi::VaList` (Rust 1.99+) for the actual C ABI, including copied cursors;
+there is no C variadic bridge or handwritten `va_list` layout.
+Both audit tools compile the real Rust providers and compare all three C
+profiles with Rust layouts and GFP flags, plus 122 packet, 135 block and
+41 header-accessor/MAC contract values.
+See the
+[shared boundary](docs/kernel-implementation.md#shared-linux-compatibility-boundary)
+for the remaining per-device policies and resource limits.
+
+Compatibility headers live under [compat/include/](compat/include/): `common/`
+holds shared declarations, `net/` and `block/` hold class-specific extensions,
+and `profiles/` holds separate e1000/storage feature selections and forwarding
+manifests. Runtime builds do not include audit headers. Dependency inventories,
+layout probes, compile-only wrappers and FFI proof lists live separately under
+[compat/audit/](compat/audit/); both driver audits remain enabled.
 
 The [driver-reuse roadmap](docs/rust-kernel-linux-drivers.md#linux-e1000-driver-reuse-roadmap)
 now has tested execution/object, workqueue, NAPI/IRQ and PCI/skb/streaming-DMA
@@ -192,15 +235,61 @@ production HTTP client or userspace.
 - Linux host with rustup; the repository pins Rust `1.99.1` and the
   `x86_64-unknown-none` target.
 - Clang, an archiver, and GNU binutils (`nm`, `ld`).
-- LLD (`ld.lld`) to link the embedded ELF fixture in guest-enabled builds
-  (the default); on Debian/Ubuntu install the `lld` package separately from Clang.
+- LLD (`ld.lld`) to link the packaged init program in both image profiles and
+  the embedded ELF fixture in guest-enabled builds; on Debian/Ubuntu install
+  the `lld` package separately from Clang.
+- e2fsprogs (`mke2fs`, `debugfs`) for the root image and filesystem tests.
 - CMake 3.24+, Ninja, Python 3, and xorriso.
 - `qemu-system-x86_64` with user-mode networking.
 - Network access on initial setup for Cargo dependencies and the
   SHA256-verified Limine `v12.0.2` binary release.
 
-No full Linux kernel configuration or build is needed. No sibling repository
-is needed at build or run time.
+No Linux kernel configuration or Kbuild is needed, including for the driver
+audits. No sibling repository is needed at build or run time.
+
+### Linux storage
+
+Unchanged Linux `virtio-blk`, VirtIO core/ring and modern PCI transport sources
+now execute real read-only QEMU disk reads. The bounded profile admits one
+modern device, one split queue, one outstanding read (up to 4096 bytes), and
+INTx. Rust supplies PCI/MMIO, frame-backed DMA and lifetime services, not a
+replacement device queue or descriptor algorithm.
+
+```sh
+python3 scripts/check.py full --scope host --select linux-storage-dependency-audit
+```
+
+This follows the e1000 audit: direct serial Clang compilation for
+`x86_64-unknown-none`, the shared freestanding flags, explicit kutox
+compatibility declarations and unchanged Linux VirtIO headers. It uses the
+ordinary pinned sparse submodule; there is no second source checkout, generated
+Linux kernel configuration or additional toolchain. Rerun
+`bash scripts/linux_source.sh` to expose storage sources in an older checkout.
+
+The generated `build/linux-storage-check/report.json` records the profile,
+source/header/object hashes, original callbacks and classified unresolved APIs.
+Compilation and independent `--verify` run through the coordinator; the existing
+kernel linker rejects declaration-only objects. A separate complete runtime
+provider closure retains all sections and checks its exact shared/platform FFI.
+
+The [bounded block services](docs/kernel-implementation.md#bounded-block-services)
+now provide one owned read request, tag/PDU/payload storage, read-only limits,
+backpressure, deferred completion and joined cancellation. The audit separately
+links these real providers and records the remaining APIs and Rust platform
+boundary. Its synthetic transport tests remain separate from the new
+[real disk acceptance](docs/kernel-implementation.md#linux-virtio-blk-runtime):
+
+```sh
+python3 scripts/check.py full --profiles both --scope guest \
+  --select 'storage-*'
+```
+
+The host creates temporary project-owned read-only disks; no host disk device
+is used. `storage-run` works in both profiles; `storage-tests` adds exact bytes,
+real device EIO, DMA-map rollback, lost-IRQ timeout/reset/reprobe and balanced
+teardown. Both run at 128/32 MiB. Default network boot remains unchanged.
+Filesystem/program loading still uses the Limine RAM module: disk-backed
+`/bin/init` boot is the next, separate milestone.
 
 ### Test code and build profiles
 
@@ -243,6 +332,27 @@ This is one image per selected build profile, not separate images per test mode.
 bash scripts/linux_source.sh
 python3 scripts/check.py full
 ```
+
+To test the file-backed program in both build profiles:
+
+```sh
+CARGO_BUILD_JOBS=1 python3 scripts/check.py full --profiles both --scope guest \
+  --select 'user-boot*'
+```
+
+For a manual boot after building the image:
+
+```sh
+qemu-system-x86_64 -machine pc -accel tcg -cpu qemu64 -m 32M -smp 1 \
+  -cdrom build/kutox.iso -boot d -nic none -display none -serial stdio \
+  -no-reboot -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+  -fw_cfg name=opt/kutox/test-mode,string=user-run
+```
+
+The sample prints `INIT: hello from /bin/init`, exits zero, and checks reclamation.
+QEMU's debug-exit success status is 1. This mode needs neither a NIC nor disk
+hardware. The image is RAM-backed, not persistent storage; normal boot remains
+the default when the explicit selector is absent.
 
 The [source script](scripts/linux_source.sh) uses Git 2.36+ to fetch the staged submodule pin
 with shallow, blob-filtered history and sparse checkout of e1000, `include`,

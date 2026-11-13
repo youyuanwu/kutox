@@ -155,9 +155,330 @@ boundary through stack creation, with exact reclamation and a live old space
 remaining intact. Portable tests cover malformed images and injected map errors.
 
 The native loader is retained in both profiles; the linked ELF and acceptance
-entry exist only in ON. Normal boot loads no program. This is not general
-`execve`, a dynamic linker, filesystem loading, ASLR, Linux binary compatibility
+entry exist only in ON. Normal boot loads no program; the separate opt-in
+filesystem boot below loads a packaged file in both profiles. This is not general
+`execve`, a dynamic linker, ASLR, Linux binary compatibility
 or a process scheduler. Execution uses the bounded runner below.
+
+## Read-only boot filesystem
+
+The explicit `user-run` mode follows pinned Moss's
+`src/main.rs::launch_init`: bootloader-supplied filesystem image, RAM-backed
+reader, filesystem lookup, then ELF loading and user entry. Its read-only
+[filesystem adaptation](../third_party/moss-libkernel/src/fs.rs) follows Moss's
+`libkernel/src/fs/blk/ramdisk.rs`, byte-read boundary in `blk/buffer.rs`, and
+`filesystems/ext4/mod.rs`. It uses the same exact `ext4plus = 0.1.0-rc.2`
+dependency rather than implementing an ext-family parser.
+
+The user selected a small ext-family image instead of FAT32, whose standard
+minimum volume would exceed the 32-MiB guest's memory. The initial admitted
+profile is deliberately narrow: one clean 2-MiB ext2 volume, 1-KiB blocks,
+one group, at most 128 inodes, 256-byte inodes, FILETYPE incompatibility only,
+no compatible/read-only-compatible feature bits and no journal. Geometry,
+feature and size checks precede upstream mount/descriptor allocations.
+This is not general ext4 image compatibility or writable disk support.
+
+[CMake](../CMakeLists.txt) separately assembles/links
+[userspace/init.S](../userspace/init.S) with its
+[linker](../userspace/linker.ld), then [make_rootfs.py](../scripts/make_rootfs.py)
+uses unprivileged `mke2fs -d` to put it at `/bin/init`. No host mount or block
+device is used. Formatting uses a temporary output followed by atomic
+replacement, so a failed formatter preserves the previous image.
+[ISO packaging](../scripts/make_iso.py) includes that file-backed root image
+and a named Limine module. Both ON and OFF package the same ordinary program;
+it is not a guest fixture or an `include_bytes!` payload in the kernel.
+The existing whole-ISO/kernel/profile identity manifest still protects packaging.
+
+[Boot collection](../src/boot.rs) accepts at most one `kutox-rootfs` module,
+checks its exact size and its whole physical span against Limine
+EXECUTABLE_AND_MODULES memory, then borrows the mapped bytes immutably. Those
+frames are not USABLE and are never handed to the physical allocator. The
+module is permanent boot storage: every image boot reserves these 2 MiB,
+but default networking and other modes do not mount it or start a user program.
+There is no full-image allocation/copy or bootloader-memory reclamation.
+
+The adapter exposes only immutable byte reads with checked conversion/addition
+and whole-range validation before copying. It supplies no `Ext4Write` backend.
+Unlike Moss's async filesystem adapter, this RAM-only boot path enables
+ext4plus's `sync` feature, disables its default multithreaded feature, and runs
+before kernel workers/CPL3. It needs no new executor, waker or scheduler.
+The primitive Moss crate remains dependency-free without its optional `fs`
+feature; the kernel and filesystem host checks enable that feature explicitly.
+
+File lookup accepts bounded absolute ASCII paths without empty/dot components
+or symlink traversal. It follows Moss's directory-entry/inode lookup ordering;
+directory sizes are bounded before iteration and regular-file size before open.
+Only nonempty regular files up to 64 KiB are loaded; fallible allocation and
+chunked reads retain short-I/O handling. Lookup, format, range, size and upstream
+filesystem errors are explicit, with upstream diagnostic detail logged.
+The [native boot service](../src/boot_fs.rs) reads the fixed `/bin/init` path,
+passes those bytes to the existing checked x86_64 static ELF loader, then drops
+the temporary file/filesystem before entry. All existing ELF/window/W^X/stack
+restrictions remain; this does not add Linux binary compatibility.
+
+The owned dispatcher gets a 100-ms cumulative active CPU budget and 5-ms
+quanta, with at most 128 dispatch steps. Input starts closed, so reads see EOF;
+sleeping tasks use the existing timer/HLT deadline path. Faults, budget limits
+and missing wake sources fail explicitly. The sample writes its message and
+exits zero; the mode requires exact frame/heap reclamation before reporting
+success. The permanently borrowed module is excluded from that temporary-work
+balance. Nonzero program exits fail the boot command. The finite mode does not
+start network services or require a NIC; normal boot remains network-enabled.
+
+`user-boot` and `user-boot-low-memory` exercise the actual shared ISO at
+128/32 MiB in both profiles. Host tests independently read the generated
+file using `debugfs`, and reject malformed/duplicate/reordered execution
+proofs. Portable tests mount a real generated ext2 image, verify cross-block
+file bytes, reject missing/directories/symlinks/empty/oversized files and bad paths,
+and exercise truncated/unsupported geometry and out-of-range RAM reads.
+The filesystem modes add no kernel cases. Disk hardware, partitions, writes,
+general VFS/file syscalls, dynamic ELF loading and init supervision are deferred.
+
+## Bounded block services
+
+The [Rust block provider](../src/linux_compat/block.rs) implements the first storage
+source-facing service boundary, not a Linux block layer or a hardware driver.
+Its [runtime header](../compat/include/block/services.h) uses the same block-class
+declarations as the audit, without including audit headers or markers.
+The [Rust platform adapter](../src/block_services.rs)
+uses the existing Moss-backed kernel heap and the existing boot/thread context
+check; it does not reuse e1000's NIC-bound allocation/DMA registry or reinterpret
+its device structs.
+
+The admitted profile has one global queue, one tag, one native read, 512-byte
+sectors and at most 4096 bytes per request. A tag set owns its stable request,
+one page-aligned PDU page and a separate page-aligned payload page. Disk metadata
+is a fourth fallible allocation. Every partial allocation rolls back; exact
+pointer/layout tracking rejects wrong/double frees. Driver-private PDU size is
+bounded by one page, and advertised queue limits are reduced to the admitted
+segment/sector ceilings. Native capacity, registration and read-only state are
+real bounded registry state, not a VFS or general Linux device model.
+
+Request allocation reserves the only tag. Preparation validates operation,
+length and the whole sector range without changing the caller's ticket on
+failure. Submission revalidates the visible request metadata against owned
+sector/length state before calling the registered queue callback. Unsupported
+operations are rejected before publication. Resource backpressure retains the
+same request/PDU/payload and generation; stop/restart controls retry admission.
+Requeue is permitted only during the dispatch callback, before it returns an
+accepted publication. Released requests zero private/payload bytes before reuse.
+
+Native clients use generation-bearing tickets for prepare/submit/result/cancel/
+release. Old tickets cannot affect a replacement request or a recreated queue.
+The C/Linux raw pointer APIs remain internal lifetime-bound interfaces; stale
+raw pointers are not a supported native handle. Result copying occurs only
+after completion, validates destination capacity before copying and never copies
+cancelled or failed I/O. Destinations are trusted kernel buffers, not user
+pointers.
+
+On the single BSP, lifecycle/admission/pump calls require IF clear in an
+off-lock boot/thread context. Completion signaling may run in IRQ/locked
+context but only marks the existing request pending: it neither allocates,
+invokes the completion callback nor releases memory. The native owner calls
+`kutox_block_pump` off IRQ, which invokes the registered completion callback.
+Only that callback may end the request. Batched/polling completion and remote
+CPU completion are not admitted; the batch helper declines the optional
+optimization rather than manufacturing completion.
+
+Cancellation before publication completes locally. After publication it records
+cancellation and returns `-EBUSY`, retaining all backing until actual completion
+and off-IRQ callback acknowledgment. There is no force-free/reset shortcut.
+The standalone block service does not implement a deadline or hardware reset:
+without a transport completion/reset proof the request stays owned and busy.
+The Linux storage adapter below adds that protocol-specific boundary.
+Deleting a disk closes admission while an outstanding completion can still
+drain; tag/disk destruction requires the request released. Quiesce is nonblocking;
+freeze/limit changes are admitted only when idle, with an exact unfreeze cookie.
+There is no general blocking Linux freeze or synchronous I/O executor yet.
+`blk_execute_rq` and borrowed `blk_rq_map_kern` return explicit unsupported errors.
+
+The runtime provider archive builds in both profiles; normal boot merely checks
+its cold quiescent state and starts no storage queue. The source-plus-provider audit
+resolves 57 original API names, keeps 146 remaining APIs visible, and records
+five implemented Rust allocation/context/diagnostic entry points. Its combined
+audit object retains runtime exclusion.
+
+The new `storage.block_services` case makes the kernel registry 76 cases. A
+guest-only C transport fixture exercises four allocation rollback points,
+sixteen request/teardown epochs, invalid ranges/metadata, tags, read-only and
+limit rejection, retained backpressure, stale tickets, successful/error result
+bytes and cancellation before/after publication. A real timer IRQ then marks a
+request pending after disk admission closes; only the off-IRQ pump completes
+it. Existing fixture guards require exact heap/frame balance and block allocator
+quiescence. This remains service acceptance, separate from the real driver
+acceptance below.
+
+## Linux virtio-blk runtime
+
+[The Rust compatibility adapter](../src/linux_compat/storage.rs) connects all
+seven unchanged Linux storage units to the bounded block provider.
+[The platform backend](../src/storage.rs)
+supplies owned PCI/BAR/MMIO, allocation and DMA services. Compilation follows
+e1000's direct freestanding Clang approach; no Kbuild or native Rust VirtIO ring
+implementation is introduced. Both drivers now use the same checked
+device/PCI/execution ABI and common Rust exports. Unkeyed allocation and
+boot-only reset-delay policy remain explicitly namespaced; a storage bounce
+lease is never reinterpreted as an e1000 streaming mapping.
+
+The admitted profile is one modern PCI block function (`1af4:1042`), a single
+split queue, depth one, 512-byte sectors and at most one 4096-byte read.
+The original `queue_depth`, `num_request_queues` and `poll_queues` module
+parameters select 1/1/0; upstream request, descriptor and callback algorithms
+are unchanged. Read-only and ACCESS_PLATFORM features are required. Packed
+and indirect rings, admin queues, zoned/discard/write-zeroes/secure-erase and
+writable cache configuration are rejected before the block probe. General
+sysfs/uevent, synchronous Get-ID/borrowed-payload execution, MSI-X, SR-IOV and
+device-tree paths are not admitted. Real MSI-X allocation failures drive
+upstream's INTx fallback rather than pretending vectors exist.
+
+PCI takeover validates the complete bounded capability chain, a 64-bit MMIO
+BAR below 4 GiB, its size/alignment and any parent memory forwarding windows
+(including prefetchable windows). Firmware may leave mastering enabled:
+takeover gates it before sizing the BAR and acknowledges a status-zero reset
+before allocating storage DMA. Firmware mastering is never restored on drop.
+Every mapped capability span and width/alignment of MMIO access is checked.
+The existing ACPI/PIIX/I/O-APIC route delivers the original `vp_interrupt`,
+which calls the original ring and block callbacks. This scope uses the single
+existing IRQ/MMIO owner and cannot coexist with an active NIC service scope.
+Normal networking remains unchanged and does not start storage.
+
+Coherent queue memory owns contiguous Moss frame allocations. Three permanent
+4096-byte frame guards back streaming DMA bounce leases for the outgoing
+header, incoming payload and incoming status. Mapping and IRQ-side unmapping
+allocate nothing, enforce exact direction/length/lifetime, and copy incoming
+bytes back only when upstream consumes or detaches the descriptor.
+All read results remain in the owned block payload until successful native
+result copying; errors never expose a prefix. Identity-DMA, indirect and
+premapped DMA paths fail explicitly rather than bypassing ownership.
+
+Native reads have a 100-ms TSC deadline and use returning timer/INTx interrupts
+with off-IRQ completion pumping. On deadline, the adapter invokes upstream's
+`virtio_reset_device`, requires acknowledged status zero and joined IRQs, then
+uses upstream `virtqueue_detach_unused_buf` to unmap the retained request.
+Only after that proof may the internal block reset-completion boundary mark
+the request failed/cancelled and release its PDU/payload. Recovery removes and
+reprobes the original driver with a fresh queue before the next read.
+All removals reset before freeing tags, join the original IRQ handler, clear
+mastering, and release mappings and frame guards. A reset that never
+acknowledges fails closed with a diagnostic after its own 100-ms budget;
+it never reports recovery or frees potentially live DMA backing.
+
+Explicit `storage-run` in both profiles reads sector zero and reports its
+FNV-1a checksum, then verifies complete frame/heap reclamation. Guest-only
+`storage-tests` checks exact first/interior/final-sector data, 4096-byte reads,
+range rejection, all three streaming-map rollback points, real IRQ delivery,
+lost-IRQ deadline/reset/reprobe, and actual device EIO from a host-owned
+`blkdebug` backend followed by a good read. Per-case fixture guards check
+heap/frame balance and all storage/IRQ/MMIO owners. The host checks original
+callback addresses, exact proof placement, the complete rejection ledger,
+read-only backing and production/fixture separation at 128/32 MiB.
+
+This is native kernel disk I/O, not disk-backed boot. The existing filesystem
+and `/bin/init` loader continue to use the immutable Limine RAM module.
+
+## Shared Linux compatibility boundary
+
+[The common Rust modules](../src/linux_compat/) implement the selected
+Linux-facing C ABI using `#[unsafe(no_mangle)] extern "C"` exports:
+
+- `execution.rs`: scalar atomics/barriers, mutex/spinlock/completion wrappers,
+  sleep/IRQ/work entry points, reusing existing native registries and waiters.
+- `pci.rs`: stable owned endpoint objects, matching/probe/remove, driver data,
+  resource/config access and MMIO dispatch for both original drivers.
+- `memory.rs`: checked allocation/array helpers and device-keyed coherent and
+  streaming DMA adapters. Backing allocators, masks, pins and reset proofs stay
+  with each device's existing Rust owner.
+- `storage.rs`: bus/driver/device references, local config-work queue, native
+  read tickets, admission checks and reset/remove/reprobe sequencing.
+- `packet.rs`: network-device lifecycle/queues, linear sk_buffs, fragment
+  provenance, TX ownership/completion and native Ethernet ingress.
+- `lifecycle.rs`: module bind/open/close/remove orchestration and generation
+  tickets, using small C accessors for original private e1000 structures.
+- `napi.rs`: generation-bearing NAPI registrations, queue associations and
+  retirement, forwarding to the existing native executor.
+- `mmio.rs`: checked MMIO, barriers, port forwarding and boot-MAC ownership/
+  EEPROM fault policy; original e1000 initialization remains a C header bridge.
+- `block.rs`: owned request/PDU/payload, queue/scatterlist services, cancellation
+  and deferred completion, with separate [block ABI types](../src/block_abi.rs).
+- `optional.rs`: explicit unsupported operations and bounded network helpers.
+- `diagnostics.rs`: bounded formatting, output sinks, warning state and logging
+  policy, including C-variadic definitions using stable `core::ffi::VaList`.
+  Its `next_arg`, `Clone` and `Drop` provide `va_arg`/`va_copy`/`va_end`;
+  forwarding APIs clone the caller's cursor before formatting.
+
+[Shared base/device headers](../compat/include/common/device_types.h) and
+[Rust `repr(C)` contracts](../src/linux_abi.rs) replace the former incompatible
+minimal/e1000/storage device and PCI declarations. A freestanding Rust probe
+and actual C probes in all three profiles compare 37 layout/offset/GFP values.
+The network profile additionally compares 122 packet/device/NAPI layout and
+constant values with the actual Rust contracts, including every field offset
+and callback-table slot. An additional 135 block values cover all owned block
+types, callback slots, statuses and selected VirtIO feature masks; 41 values
+cover the original-header accessor snapshot, MAC result and selected constants.
+The whole-object audit requires migrated service exports
+to come from the Rust object, not a C replacement or declaration-only mock.
+The early synthetic `GFP_KERNEL=0` declaration is gone: boot fixtures and both
+driver paths now use the pinned Linux header's actual GFP values.
+
+The runtime declaration hierarchy is [compat/include/](../compat/include/):
+`common/` owns shared core/execution/PCI contracts, `net/` owns socket/packet/
+ethtool declarations, and `block/` owns block/VirtIO platform extensions.
+Common driver headers no longer import network wire definitions or depend on
+an e1000 audit directory. `profiles/e1000.h` and `profiles/storage.h` select
+different admitted feature sets; mixing them in either include order is an
+explicit compile error. Shared and per-profile forwarding manifests live
+beside these profiles, so a storage build does not generate network-only Linux
+header shims or borrow the e1000 forwarding list.
+
+[compat/audit/](../compat/audit/) contains only audit assets: `e1000/` and
+`storage/` hold dependency inventories, original-source layout probes and
+thin wrappers; `common/` holds cross-language probes, the compile-only marker
+and shared backend FFI evidence. Audit wrappers include the runtime declarations
+and add the marker, never the reverse. Runtime compiler dependency manifests
+reject audit headers and foreign-class extensions; no compatibility forwarding
+headers remain in the old `driver-check` or `storage-check` directories.
+
+Storage configuration work uses the same generation-checked native work
+registry as e1000. Its bounded off-worker queue marks an invocation running
+before calling the original callback off-lock, then acknowledges completion.
+Pending/running work and held boot/thread mutexes forbid owner reclamation.
+Storage frees now retire idle embedded work and synchronization registrations,
+just as e1000 frees do. The threaded scheduler and BSP inline-flush policies
+remain distinct; this is not a general Linux workqueue implementation.
+
+The small [VirtIO C bridge](../compat/virtio_bridge.c) handles original
+header access/module parameters only. Both drivers share the bounded
+[Rust formatter and variadic providers](../src/linux_compat/diagnostics.rs).
+The pinned stable compiler supports C-variadic definitions and `VaList`, so
+no C extraction shim or handwritten platform `va_list` layout is needed.
+The four remaining production C files are named
+for their roles: the [e1000 bridge](../compat/e1000_bridge.c),
+[e1000 accessors](../compat/e1000_accessors.c),
+[TCP bitfield accessors](../compat/tcp_header_accessors.c) and
+VirtIO bridge. Each file documents why its boundary remains C.
+They retain original private-structure access and TCP bitfield extraction, not
+lifecycle/NAPI/block/MMIO/formatter ownership state or variadic wrappers.
+The old C packet, deferred
+and block-service implementations are removed rather than left as parallel
+providers. Existing C ABI names remain, including the historical `kutox_c_`
+prefix. Original Linux hardware/packet/ring algorithms remain unchanged C.
+
+Lifecycle/NAPI/block owners use raw BSP-owned state across original callbacks.
+No Rust registry borrow spans an original callback or native reentry. Completion
+still only marks the existing request pending in IRQ context; cancellation
+retains request/PDU/payload until off-IRQ completion or the proven reset boundary.
+
+Shared declarations do not merge allocation/DMA domains or add simultaneous
+NIC/storage ownership: the existing single IRQ/MMIO owner limits still apply.
+Independent source-only audits retain their compile-only linker barrier; an
+additional whole-object link includes all eleven original driver units, four
+C adapter units and the actual Rust provider object without garbage collection.
+It checks an exact 68-entry backend/libc FFI boundary and both drivers' callbacks,
+with source/header/object/command and C/Rust layout provenance.
+The extra backend entry retires static Linux objects during Rust-owned e1000
+unbind. Native Rust-only stop/quiescence helpers may inline in the production
+ELF; their exports are checked in the actual freestanding provider object,
+while guest guards still verify complete resource retirement.
 
 ## Timer-bounded ring-3 runs
 
@@ -212,11 +533,16 @@ of Linux binary compatibility:
 
 | RAX | Operation | Arguments | Result |
 |---|---|---|---|
+| 0 | input read (resumable tasks only) | RDI = fd 0, RSI = writable user address, RDX = byte length, 0..=256 | RAX = bytes read, 0 for EOF/zero length, or negative error |
 | 1 | serial write | RDI = fd 1 or 2, RSI = user address, RDX = byte length | RAX = bytes written or negative error |
+| 24 | yield (resumable tasks only) | None | RAX = 0 after FIFO resumption |
+| 35 | sleep (resumable tasks only) | RDI = duration in microseconds, 0..=1,000,000 | RAX = 0 after the deadline, or `-22` for invalid/overflowing duration |
 | 60 | exit | RDI = status | Returns to the kernel caller, not to user code |
 
 Other general registers are preserved on syscall return. Unknown numbers
-return `-38`; unsupported descriptors return `-9`. Writes are all-or-error,
+return `-38`; the single-run bring-up frontend also returns `-38` for read, yield
+and sleep because it has no retained task owner. Sleep uses a scalar duration,
+not Linux's `timespec`/`nanosleep` ABI. Unsupported descriptors return `-9`. Writes are all-or-error,
 at most 256 bytes each and 1024 bytes total per run. Oversize or over-budget
 requests return `-22`. A zero-length write to a valid descriptor succeeds
 without dereferencing its pointer. Invalid/unmapped/supervisor ranges, including
@@ -236,6 +562,8 @@ against a snapshot of owned, effectively readable user mappings before copying
 at most two physical segments through the kernel direct map. The exclusive
 address-space borrow pins these frames throughout the run; no raw user pointer
 is dereferenced in the kernel and no page-fault recovery is required for copy.
+Input copies reuse this planner and also require effective write permission on
+every destination page.
 
 The dispatcher accepts user traps only from CPL3 on the TSS entry stack with
 the expected user selectors and a live native run. Ordinary user exceptions
@@ -271,7 +599,7 @@ CPL3 timer/trap return; it does not requeue a context. The separate resumable
 layer below reuses the same trap engine. This is not kernel preemption. Kernel trap work keeps
 IF clear and must remain bounded; expiry cannot interrupt a stuck kernel handler.
 Ready kernel workers run only after the user call returns. There is no
-asynchronous/blocking user API, VFS, signals, CoW/fork,
+general asynchronous/blocking user I/O API, VFS, signals, CoW/fork,
 demand paging, SMP, Linux userspace ABI, TLS or FPU/SIMD context switching.
 The permanent TSS entry stack, like the existing exception stacks, has no guard
 page. Normal boot runs no userspace demo or fixture.
@@ -292,7 +620,8 @@ budget. Rejection, including capacity and invalid duration, drops that
 unpublished owner. `kutox_user_dispatch_next` runs the next ready task for one
 quantum and returns a handle, cumulative report and measured slice ticks.
 Both budget and quantum requests use 1..=1,000,000 microseconds, converted to
-calibrated ticks. An empty dispatcher returns `None`. After every step the
+calibrated ticks. `None` now means no task is ready, including when all owners
+are sleeping; `is_empty` means no task owner remains. After every step the
 original kernel CR3/CR0/segments and IF-clear state are restored, the timer is
 stopped/drained and all user/mapper locks are released. The caller may then run
 kernel work, including the existing cooperative kernel scheduler, before the
@@ -331,7 +660,7 @@ errors requeue the unchanged task for retry without charging execution time;
 they never replace or drain an already armed caller event. An error after handing control
 to native user entry retires the task rather than replaying a stale frame;
 the error is still propagated to the caller. Cancellation can remove a
-runnable task whether fresh or paused; stale handles are rejected after slot
+runnable task whether fresh or paused, or a sleeping task; stale handles are rejected after slot
 reuse. Dropping the dispatcher releases any remaining parked owners without
 reentering userspace.
 
@@ -347,9 +676,134 @@ zero-length writes across quanta before the cumulative syscall limit. Every
 case checks exact frame reclamation; the host requires ordered in-case proofs.
 The dispatcher frontend exists in both profiles, but fixtures remain ON-only.
 
-This is not full Moss process VM, VFS, signals, fork, blocking syscalls, priority
+This is not full Moss process VM, VFS, signals, fork, general blocking I/O, priority
 scheduling or a Linux process ABI. Kernel trap work remains non-preemptive and
 must be bounded; ready kernel workers run only between explicit steps.
+
+## Bounded user yield and sleep
+
+The native trap/dispatcher boundary follows pinned Moss's
+`src/sched/syscalls/mod.rs::sys_sched_yield`, `src/process/sleep.rs` and
+`src/drivers/timer/mod.rs::SysTimer::sleep`: complete the syscall result before
+switching away, and sleep against one monotonic deadline rather than a fresh
+duration on each wake. This is native integration using the existing ported
+Moss context and task states, not a copy of Moss's process-bound syscall futures,
+unbounded timer heap or signal-interruption ABI.
+
+Yield writes success into the saved RAX, returns `Stop::Yielded` to the kernel
+and requeues the owned context at the FIFO tail. Positive sleep validates its
+scalar microsecond duration, checked tick multiplication and deadline addition,
+then writes success and returns `Stop::Sleeping { deadline }`. The existing
+`RunQueue` parks it in `Sleeping` with no new ready list or lifecycle flags.
+Zero sleep succeeds immediately without parking, matching Moss; oversized or
+overflowing requests return `-22` without parking. Both syscalls count against
+the cumulative 32-call limit, including invalid/zero calls. RIP is already
+after `int 0x80`: neither syscall is replayed on resume.
+
+The trap keeps IF clear and cannot switch a kernel stack or free a user owner.
+Only after root restoration does the dispatcher expire elapsed sleeps, save
+the returning frame and yield/block its queue entry. Due sleepers enter FIFO
+order before the outgoing task requeues. A slice hitting its total CPU budget
+is terminal even if its syscall otherwise requested a yield or sleep; the
+request cannot evade the budget. User RIP/RSP/flags pass the same return gate
+before any retained context is published. Counts and owned pages remain live
+while sleeping; only active slices are charged, not time spent parked.
+
+The persistent scheduler's scoped background callback returns readiness and
+the earliest sleeping-user deadline as values, never borrowed payload pointers.
+All-sleeping users therefore do not prevent `hlt`. Idle arbitration includes
+kernel waits, user sleeps and the registered handler. During another user's
+slice, that same sleeping-user deadline caps the one-shot timer and common
+return gate; it forces a resumable quantum yield even within a final-budget
+slice, rather than starving a sleeper or falsely timing out its peer.
+Callers of the explicit stepping API likewise use the queue's next deadline;
+no-ready is not completion.
+
+Cancellation removes either a runnable or sleeping queue entry and revokes its
+deadline before dropping its owner. Reused slots have new handles; a stale
+cancel or old deadline cannot wake the replacement. Dispatcher drop also frees
+parked images. Runtime stop cancels sleeping tasks before another user step,
+and retains the existing joined worker/service cleanup.
+
+Acceptance extends `user.task_limits` with two real ELF tasks yielding and
+sleeping for three rounds, preserved GPRs/DF/IF and unaligned SP, zero/invalid
+durations, six checked TSC sleep intervals, and CPU budgets shorter than the
+sleeping wall time. It also checks a 10-ms sleeper interrupting a CPU-bound
+peer's requested 50-ms quantum/final 30-ms budget slice, cumulative syscall
+limits, invalid return context, sleeping cancellation/drop, stale handles and
+single-run gating. `user.runtime_cleanup` adds an all-sleeping runtime with a
+kernel client blocked without polling, bounded dispatcher callbacks, actual
+idle sleeps, timer wakes and two sleeping images cancelled at shutdown.
+All cases retain exact frame/heap balance and ordered host evidence.
+
+## Bounded user input
+
+Each admitted task owns one inline 256-byte FIFO input channel, initially open
+and empty. Native `read` uses fd 0, a user destination and a length of at most
+256 bytes. It returns a short count when fewer bytes are available, blocks
+when empty/open, and returns zero only for zero length or drained/closed EOF.
+Zero length needs no pointer. Bad descriptors return `-9`, oversized lengths
+`-22`, and invalid, RO, supervisor, overflowing or partly unmapped destinations
+`-14` before any input is consumed or destination prefix is changed. The whole
+requested range is checked even when fewer bytes are available or at EOF.
+
+This follows pinned Moss's `src/fs/syscalls/rw.rs::sys_read`,
+`src/fs/pipe.rs::PipeReader::do_read`,
+`src/kernel/kpipe.rs::KPipe::copy_to_user` and
+`libkernel/src/memory/kbuf.rs::KBufCore::pop_slice`: bounded copying, predicate
+waiting, short reads and draining before EOF. It does not import the VFS,
+page-backed ring dependency, async syscall futures, signals or descriptor table.
+The native buffer and dispatcher integration are kutox code, not an unchanged
+Moss pipe port or a Linux read ABI guarantee.
+
+For a nonzero valid request, the trap saves the post-int80 context and returns
+`Stop::Reading(ReadRequest)` without retaining a user pointer or consuming
+input. Under the restored kernel root the dispatcher retains only address/
+length metadata, registers its existing FIFO wait key, then checks readiness.
+Buffered input or an already closed channel wakes that same entry immediately;
+otherwise it has no deadline and contributes no runnable work. Producers and
+wait registration exclusively borrow the same dispatcher with IF clear, so
+delivery cannot race between predicate testing and wait registration. No IRQ
+handler mutates the channel, queue or user owner.
+
+Before native resumption the dispatcher revalidates the full destination
+against the task's current owned mappings, consumes at most the available
+bytes, copies only that count through the direct map and writes saved RAX.
+Mapping/permission changes during suspension return `-14` without draining
+input. Kernel translation errors are propagated and retire the task.
+The saved RIP is already past int80; neither syscall counting nor copying is
+replayed if later native setup fails. Even buffered nonzero reads cross this
+dispatcher boundary. Invalid and zero reads complete in the trap.
+
+`Dispatcher::send_input(handle, bytes)` is a bounded nonblocking producer:
+it returns the accepted count, possibly short, `-11` when full, or `-32` after
+close. An empty send to an open channel returns zero without waking a reader.
+`close_input(handle)` is idempotent and wakes a pending reader; already buffered
+bytes remain readable before EOF. Both APIs require dispatcher/boot context
+and a current generation-bearing task handle. A stale producer cannot feed or
+close a replacement slot. Kernel clients deliver through the existing scoped
+runtime callback, bridging their own completion/readiness state rather than
+retaining references into task storage.
+
+Reads retain the cumulative 32-call and active CPU limits. Parked time and
+bounded dispatcher-side completion work are not active CPL3 slices. An
+all-reading runtime can `hlt` without a user polling timer. There is deliberately
+no read timeout or nonblocking user mode: an open empty channel waits until
+delivery, close, cancellation or shutdown. Task cancellation/drop revokes its
+queue entry and releases the pending request, buffer and image together;
+runtime shutdown joins the existing services after cancelling readers.
+
+Acceptance extends `user.task_limits` with buffered-before-wait and blocked
+delivery, two isolated readers, 2/3-byte short reads, a wrapped full 256-byte
+transfer across pages, drain-before-EOF, exact cumulative counts, error returns,
+GPR/DF/IF/SP preservation, mapping revalidation, blocked cancellation, stale
+producers and blocked drop. `user.runtime_cleanup` checks an all-reading
+runtime, a sleeping kernel producer, bounded callback counts, uncharged parked
+budgets and two pending readers cancelled at joined shutdown. The HTTP fixture
+also delivers three bytes to a blocked ELF reader only after receiving real
+response data. All proofs require exact frame/heap balance and ordered journals.
+No new boot mode, dependency, VFS, user writer, general pipe/socket API or
+production demo is added.
 
 ## Userspace in the persistent runtime
 
@@ -372,8 +826,8 @@ kernel FIFO order before another slice begins. Runnable users prevent idle
 sleep; an empty user dispatcher preserves the original persistent idle policy.
 Kernel threads still cannot be switched while a user root is active.
 
-The shared one-shot timer targets the earliest of the slice deadline, blocked
-kernel-thread deadline and registered handler, including when rearming an
+The shared one-shot timer targets the earliest of the slice deadline, sleeping
+user deadline, blocked kernel-thread deadline and registered handler, including when rearming an
 early IRQ. Kernel deadlines also represent sleeping executor futures and
 network timeouts. Timer/device IRQs complete their normal notification and
 EOI path first. A valid user return that wakes kernel work saves the context
@@ -394,10 +848,10 @@ runtime ownership and leaves the caller's tasks unchanged.
 The existing guest-only HTTP workload now proves this boundary at 128/32 MiB
 and nested bridges: two isolated ELF contexts progress during real
 DHCP/DNS/TCP/HTTP traffic, one faults, a replacement times out, and its peer
-continues through all three transfers before exiting 66. It checks paused
+continues through all three transfers while yielding and sleeping before exiting 66. It checks sleeping
 cancellation/stale handles, a registered timer handler, eight 1-ms kernel
 sleeps completing below the requested 20-ms user quantum, and cancellation of
-two paused tasks at shutdown. Every epoch balances frames/heap. A separate
+two sleeping tasks at shutdown. Every epoch balances frames/heap. A separate
 `user.runtime_cleanup` kernel case covers invalid preflight, service-admission
 rollback, observer failure, native pre-entry failure and startup failure.
 Normal boot still admits no user program; the native integration remains in
@@ -479,10 +933,10 @@ both builds, with all images and acceptance code ON-only.
   A bounded unsafe `device_read_u32()` permits an aligned, in-range coherent
   descriptor-status observation while device-owned, without exposing a slice or
   transferring ownership.
-- [The coherent C adapter](../src/linux_dma.rs) explicitly binds one static opaque
+- [The coherent Rust backend](../src/linux_dma.rs) explicitly binds one static opaque
   C device and at most eight buffers. It supplies `dma_set_mask_and_coherent`,
   `dma_alloc_coherent`, `dma_free_coherent`, `dma_wmb` and `dma_rmb`.
-  Only `GFP_KERNEL` (the adapter's zero-valued tag) is accepted. Exhaustion/capacity
+  Only the admitted Linux `GFP_KERNEL` flags are accepted. Exhaustion/capacity
   failures return null with a diagnostic and unchanged DMA handle; invalid void
   API operations are fatal. Free validates device, CPU address, size, DMA address
   and ownership. Native publish/reclaim extensions retain the same caller
@@ -494,7 +948,8 @@ both builds, with all images and acceptance code ON-only.
   preservation, invalid free/lifecycle/context requests and full cleanup.
   They never enable bus mastering or a DMA engine.
 - [The original Linux TX fixture](../src/linux_driver.rs) calls registered source
-  callbacks through [the C adapter](../compat/driver_lifecycle.c). Only Linux
+  callbacks through [the Rust lifecycle adapter](../src/linux_compat/lifecycle.rs).
+  Only Linux
   constructs and reclaims descriptors. Rust supplies source-facing allocation,
   streaming DMA and execution services; there is no native Rust TX fallback.
 - The four timer registry cases cover repeated hardware delivery/EOI, ordinary
@@ -612,8 +1067,8 @@ both builds, with all images and acceptance code ON-only.
   cooperatively yield. Woken tasks recheck availability: there is no reserved
   ownership handoff, strict fairness, priority inheritance, poisoning,
   abandoned-owner recovery, or SMP support. These are native Rust mutexes;
-  the C execution adapter below supplies a deliberately smaller Linux-facing API.
-- [C execution services](../compat/runtime.c) call the
+  the shared Rust compatibility adapter supplies a smaller Linux-facing API.
+- [Rust C-ABI execution services](../src/linux_compat/execution.rs) call the
   [native adapter](../src/linux_runtime.rs) for `msleep`, `cond_resched`, mutexes,
   and selected completion APIs. In thread context `msleep` genuinely suspends
   the C stack and `cond_resched` yields, returning 1. In the interrupt-disabled
@@ -730,12 +1185,13 @@ both builds, with all images and acceptance code ON-only.
   mapping,   and PIT-channel-2-calibrated TSC delays. The boot MAC platform path needs no
   scheduler; reference-counted APIC ownership and firmware copies use the
   already-initialized heap.
-- [The C bridge](../compat/bridge.c) owns all Linux-facing structs. Rust passes
-  primitive PCI/MMIO parameters and receives a checked, fixed-layout result.
-- [The compatibility header](../compat/kutox_compat.h) supplies the limited types,
+- [The e1000 C bridge](../compat/e1000_bridge.c) constructs original private
+  e1000 structures for the boot-MAC operation. Rust passes primitive PCI/MMIO
+  parameters and receives a checked, fixed-layout result.
+- [The compatibility header](../compat/include/common/kutox_compat.h) supplies the limited types,
   macros, and platform interfaces needed to compile the upstream translation
   unit. Execution types are shared with the source check and synthetic tests;
-  separately compiled [source services](../compat/driver_services.h) implement
+  separately compiled [source services](../compat/include/net/services.h) implement
   the selected PCI/allocation/linear-packet/DMA contracts. This is not a
   compatible Linux binary ABI or proof of original driver execution.
 - [The build script](../build.rs) generates forwarding headers from an explicit
@@ -770,8 +1226,11 @@ It runs before returning failed IRQ registration and before source reset.
 Later QEMU receive callbacks reject disabled RX; CTRL.RST and the grace delay
 are not independent quiescence witnesses. This is not physical-hardware support.
 
-[C packet services](../compat/driver_packet.c) own netdev/private objects, queue/
+[Rust packet services](../src/linux_compat/packet.rs) own netdev/private objects, queue/
 carrier/feature state, linear skb backing, RX fragments and build-skb handoff.
+They export the same C ABI used by unchanged Linux and the synthetic C cases.
+No Rust state borrow spans an original callback, allocation or native ingress;
+callbacks may synchronously reenter packet services on the IF-clear BSP.
 Native ingress is an owned bounded eight-packet FIFO, not an IP/GRO stack.
 Freeing private backing retires idle embedded synchronization/work registrations;
 pending/running users prevent reclamation. Offload/fragment/PM controls remain
@@ -785,7 +1244,7 @@ probe/open/IRQ/NAPI/packet callback executes in these cases.
 
 ### Original Linux lifecycle acceptance
 
-[The lifecycle adapter](../compat/driver_lifecycle.c) calls the captured original
+[The Rust lifecycle adapter](../src/linux_compat/lifecycle.rs) calls the captured original
 module initializer and registered PCI/net-device callbacks explicitly. It uses
 generation-checked handles, original EEPROM/options/PHY/reset behavior, default
 256-entry TX/RX rings and legitimate zero-offload feature negotiation. Metadata

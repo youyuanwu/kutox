@@ -2,7 +2,7 @@
 #if !KUTOX_GUEST_TESTS
 #error "guest test unit requires guest-tests"
 #endif
-#include "kutox_compat.h"
+#include "common/kutox_compat.h"
 extern void kutox_platform_fail(const char *) __attribute__((noreturn));
 extern int kutox_linux_context(void);
 extern u64 kutox_linux_test_now_us(void);
@@ -20,9 +20,74 @@ static void check(bool value, const char *operation)
 {
     if (!value) kutox_platform_fail(operation);
 }
+extern int kutox_vformat(char *, size_t, const char *, va_list);
+extern int storage_snprintf(char *, size_t, const char *, ...);
+static void check_forwarded_list(const char *format, ...)
+{
+    char first[128], second[128];
+    const char expected[] = "-7/42/-17/4294967296/18446744073709551615/0000000000001234/spill/Z/-123/99";
+    va_list args, copy;
+    va_start(args, format);
+    int a = kutox_vformat(first, sizeof(first), format, args);
+    int b = kutox_vformat(second, sizeof(second), format, args);
+    check(a == sizeof(expected) - 1 && b == a, "c_rust_va_list_repeat_length");
+    for (size_t i = 0; i < sizeof(expected); i++)
+        check(first[i] == expected[i] && second[i] == expected[i], "c_rust_va_list_repeat_bytes");
+    va_copy(copy, args);
+    check(va_arg(args, int) == -7 && va_arg(copy, int) == -7 &&
+          va_arg(args, unsigned int) == 42 && va_arg(copy, unsigned int) == 42,
+          "c_rust_va_list_cursor_preserved");
+    va_end(copy);
+    va_end(args);
+}
+static int print_preserving_list(const char *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    int n = kutox_vprint(format, args);
+    check(va_arg(args, int) == -7, "c_rust_vprint_cursor_preserved");
+    va_end(args);
+    return n;
+}
+static int format_buffer(char *out, size_t capacity, const char *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    int n = kutox_vformat(out, capacity, format, args);
+    va_end(args);
+    return n;
+}
+static void check_formatting(void)
+{
+    check_forwarded_list("%d/%u/%ld/%llu/%zu/%p/%s/%c/%d/%u",
+                         -7, 42U, -17L, 4294967296ULL, SIZE_MAX, (void *)0x1234,
+                         "spill", 'Z', -123, 99U);
+    char text[96];
+    const char expected[] = "-9223372036854775808/-17/18446744073709551615/4294967296/x  /%";
+    int n = format_buffer(text, sizeof(text), "%lld/%ld/%zu/%lu/%-3s/%%",
+                         -9223372036854775807LL - 1, -17L, SIZE_MAX, 4294967296UL, "x");
+    check(n == sizeof(expected) - 1, "c_rust_format_mixed_length");
+    for (size_t i = 0; i < sizeof(expected); i++)
+        check(text[i] == expected[i], "c_rust_format_mixed_bytes");
+    n = storage_snprintf(text, sizeof(text), "%lld/%ld/%zu/%lu/%-3s/%%",
+                         -9223372036854775807LL - 1, -17L, SIZE_MAX, 4294967296UL, "x");
+    check(n == sizeof(expected) - 1, "c_rust_variadic_definition_length");
+    for (size_t i = 0; i < sizeof(expected); i++)
+        check(text[i] == expected[i], "c_rust_variadic_definition_bytes");
+    struct { char text[5]; char guard; } short_output = {.guard='Q'};
+    check(format_buffer(short_output.text, sizeof(short_output.text), "%s", "abcdef") == 6 &&
+          short_output.text[0] == 'a' && short_output.text[3] == 'd' &&
+          short_output.text[4] == 0 && short_output.guard == 'Q', "c_rust_format_truncation");
+    char untouched = 'Q';
+    check(format_buffer(&untouched, 0, "%llu", UINT64_MAX) == 20 && untouched == 'Q',
+          "c_rust_format_zero_capacity");
+    check(format_buffer(&untouched, 1, "%d", -1) == 2 && untouched == 0,
+          "c_rust_format_nul_capacity");
+}
 
 void kutox_c_driver_atomics(void)
 {
+    check_formatting();
     atomic_t counter;
     atomic_set(&counter, -7);
     check(atomic_read(&counter) == -7, "driver_atomic_signed");
@@ -63,7 +128,7 @@ void kutox_c_driver_atomics(void)
           netif_msg_tx_done(1U << 10) && netif_msg_rx_status(1U << 11), "driver_message_masks");
     check(!warn_on(false, "not_reached"), "driver_warn_false"); bug_on(false);
     const u8 mac[6] = {0x12,0x34,0x56,0x78,0x9a,0xbc};
-    check(printk("# linux format=%d/%08X/%llu/%pM/%-3s\n",
+    check(print_preserving_list("# linux format=%d/%08X/%llu/%pM/%-3s\n",
                  -7, 42U, 4294967296ULL, mac, "end") == 60, "driver_format_count");
     struct net_device device = { .name = "synthetic" };
     netif_log(0, "drv", &device, "must not emit\n");

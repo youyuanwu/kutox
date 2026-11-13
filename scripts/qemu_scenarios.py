@@ -76,6 +76,7 @@ KERNEL_TEST_NAMES = (
     "native.initializers",
     "native.probes",
     "native.dependencies",
+    "storage.block_services",
     "memory.user_switching",
     "memory.user_permissions",
     "memory.user_rollback",
@@ -151,6 +152,8 @@ DHCP_CASES = {"dhcp-tests", "dhcp-tests-low-memory", "dhcp-tests-nested-low-memo
 DNS_CASES = {"dns-tests", "dns-tests-low-memory", "dns-tests-nested-low-memory"}
 TCP_CASES = {"tcp-tests", "tcp-tests-low-memory", "tcp-tests-nested-low-memory"}
 HTTP_CASES = {"http-tests", "http-tests-low-memory", "http-tests-nested-low-memory"}
+STORAGE_CASES = {"storage-tests", "storage-tests-low-memory", "storage-run", "storage-run-low-memory",
+                 "storage-missing", "storage-unsupported"}
 DHCP_LIVE_CASES = {"network-dhcp", "network-dhcp-low-memory"}
 
 ASYNC_HARD_CASES = {case: "async-hardening-tests" for case in (
@@ -227,6 +230,8 @@ FAULT_RESULTS = {
 
 
 CASES = {
+    "user-boot": (None, None),
+    "user-boot-low-memory": (None, None),
     "known": ("52:54:00:12:34:56", None),
     "alternate": ("52:54:00:ab:cd:ef", None),
     "missing": (None, "missing_device"),
@@ -270,6 +275,8 @@ CASES = {
     **{case: (None, None) for case in DNS_CASES},
     **{case: (None, None) for case in TCP_CASES},
     **{case: (None, None) for case in HTTP_CASES},
+    **{case: (None, None) for case in STORAGE_CASES},
+    "storage-tests-disabled": (None, "boot_mode"),
 }
 
 
@@ -415,6 +422,9 @@ class Scenario:
 
 def _scenario(case):
     mode = {
+        "user-boot": "user-run", "user-boot-low-memory": "user-run",
+        **{name: name.removesuffix("-low-memory") for name in STORAGE_CASES},
+        "storage-missing": "storage-run", "storage-unsupported": "storage-run",
         **KERNEL_SUITE_CASES, **RUNTIME_SUITE_CASES, **NETWORK_SUITE_CASES,
         **RUNTIME_NETWORK_CASES, **HARDENING_CASES, **ASYNC_CORE_CASES,
         **ASYNC_NETWORK_CASES, **IP_SUITE_CASES, **ASYNC_HARD_CASES,
@@ -440,11 +450,13 @@ def _scenario(case):
     ) if case in cases), None)
     transport = "socket" if protocol or case in LIVE_CASES and not case.endswith("no-nic") else None
     if transport is None and case not in TEST_OPTIONS_FAILURES and case not in (
-        "missing", "smp-unsupported", "heap-oom", "thread-stack-guard",
+        "missing", "smp-unsupported", "heap-oom", "thread-stack-guard", "user-boot", "user-boot-low-memory",
     ) and not case.endswith("-disabled") and case not in (
         CONFIG_FAILURES | FAULT_RESULTS | RUNTIME_SUITE_CASES | ASYNC_CORE_CASES
     ) and case not in LIVE_CASES:
         transport = "user"
+    if case in STORAGE_CASES:
+        transport = None
     nic = ("e1000e" if case == "unsupported" or case in UNCLAIMED_CASES or case.endswith("unsupported") else "e1000") if transport else None
     capture = protocol is not None or case in LIVE_CASES and live_network(case) and LIVE_CASES[case][1]
     return Scenario(mode, 32 if case.endswith("low-memory") else 128, nic, transport, protocol, capture)

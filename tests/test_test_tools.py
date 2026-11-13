@@ -38,6 +38,10 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(runner.validate_test_listing(1, output), list(runner.KERNEL_TEST_NAMES))
         banner = "limine: Loading executable `boot():/boot/kernel`...\n"
         self.assertEqual(runner.validate_test_listing(1, banner + output), list(runner.KERNEL_TEST_NAMES))
+        module = "limine: Loading module `boot():/boot/rootfs.img`...\n"
+        self.assertEqual(runner.validate_test_listing(1, banner + module + output), list(runner.KERNEL_TEST_NAMES))
+        with self.assertRaises(AssertionError):
+            runner.validate_test_listing(1, banner + module + module + output)
         with self.assertRaises(AssertionError):
             runner.validate_test_listing(1, banner + banner + output)
         with self.assertRaises(AssertionError):

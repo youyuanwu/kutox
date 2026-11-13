@@ -12,6 +12,9 @@ pub enum BootMode {
     Run,
     DriverRun,
     NetworkRun,
+    UserRun,
+    StorageRun,
+    StorageTests,
     Probe,
     EepromTimeout,
     PageFault,
@@ -66,6 +69,9 @@ impl BootMode {
             Self::Run => "run",
             Self::DriverRun => "driver-run",
             Self::NetworkRun => "network-run",
+            Self::UserRun => "user-run",
+            Self::StorageRun => "storage-run",
+            Self::StorageTests => "storage-tests",
             Self::Probe => "probe",
             Self::EepromTimeout => "eeprom-timeout",
             Self::PageFault => "page-fault",
@@ -130,6 +136,7 @@ impl BootMode {
                 | Self::TcpTests
                 | Self::HttpTests
                 | Self::AsyncHardeningTests
+                | Self::StorageTests
                 | Self::HeapOom
                 | Self::ThreadStackGuard
         )
@@ -181,6 +188,9 @@ pub fn read_mode(
         b"run" => Ok(Some(BootMode::Run)),
         b"driver-run" => Ok(Some(BootMode::DriverRun)),
         b"network-run" => Ok(Some(BootMode::NetworkRun)),
+        b"user-run" => Ok(Some(BootMode::UserRun)),
+        b"storage-run" => Ok(Some(BootMode::StorageRun)),
+        b"storage-tests" => Ok(Some(BootMode::StorageTests)),
         b"probe" => Ok(Some(BootMode::Probe)),
         b"eeprom-timeout" => Ok(Some(BootMode::EepromTimeout)),
         b"page-fault" => Ok(Some(BootMode::PageFault)),
@@ -405,6 +415,18 @@ mod tests {
             ])),
             Ok(Some(BootMode::EepromTimeout))
         );
+    }
+
+    #[test]
+    fn user_boot_is_explicit_and_available_without_guest_fixtures() {
+        assert_eq!(
+            run(&fixture(&[("opt/kutox/test-mode", b"user-run")])),
+            Ok(Some(BootMode::UserRun))
+        );
+        assert!(BootMode::UserRun.validate_build().is_ok());
+        assert!(!BootMode::UserRun.is_guest_test());
+        assert!(!BootMode::UserRun.uses_ipv4());
+        assert_eq!(BootMode::selected(None), BootMode::Run);
     }
 
     #[test]

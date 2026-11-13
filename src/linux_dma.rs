@@ -95,7 +95,7 @@ unsafe extern "C" fn kutox_linux_dma_alloc(
         };
     }
     let result = with_registry(|state| {
-        if flags != 0 || cpu.is_null() || address.is_null() {
+        if flags != kutox::linux_abi::GFP_KERNEL || cpu.is_null() || address.is_null() {
             return Err(dma_state::Error::Layout.into());
         }
         dma_state::Layout::new(size, 4096)?;

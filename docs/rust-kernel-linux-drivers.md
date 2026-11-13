@@ -519,6 +519,158 @@ Initially, statically link selected upstream C translation units. Loading
 prebuilt Linux `.ko` files, reproducing Linux's module ABI, and implementing
 a general module loader are outside this direction's initial scope.
 
+### Linux storage dependency audit
+
+The selected storage driver is Linux `virtio-blk` at the same pinned
+`v7.3` revision as e1000. The first implemented runtime profile is one modern PCI
+device, one split virtqueue and one outstanding read against a read-only raw
+disk, with INTx rather than a new MSI-X implementation. There are no partitions,
+writes or general file syscalls. **The dependency audit, bounded block services
+and real Linux storage-driver reads are implemented; disk-backed boot is not.**
+
+[linux_storage_check.py](../scripts/linux_storage_check.py) follows the e1000
+compile-only boundary: direct Clang compilation for `x86_64-unknown-none` using
+the shared [freestanding flags](../compat/cflags.txt), unchanged source in the
+normal pinned submodule, and explicit
+[block-class declarations](../compat/include/block/driver.h). No Kbuild, generated
+Linux configuration, second worktree or Linux block-layer implementation is
+used.
+
+The runtime headers are organized under `compat/include/common`, `net`, `block`
+and `profiles`. Audit-only wrappers and inventories live under `compat/audit`.
+The storage audit wrapper imports the same block declarations as production and
+adds the compile-only marker. It no longer imports common types through an
+e1000-specific directory. The forwarding manifests combine shared headers with
+only the selected class, retaining distinct driver feature gates.
+
+The [source-facing profile](../compat/include/profiles/storage.h) enables only
+x86-64, PCI, BLOCK, VirtIO/anchor, modern PCI and VirtIO block. The preprocessor
+gate rejects missing/extra configuration, including SMP, PCI MSI, legacy
+transport/admin, PM, debug and zoned-device configuration. Original Linux
+VirtIO device/config/feature/ring/PCI headers and UAPI wire definitions are
+retained; kutox supplies explicit platform and block types. Shared
+core/execution declarations are reused from e1000, not reimplemented.
+
+Seven unchanged translation units are compiled serially:
+
+- `drivers/block/virtio_blk.c`
+- `drivers/virtio/virtio.c`, `virtio_anchor.c`, `virtio_ring.c`
+- `drivers/virtio/virtio_pci_common.c`, `virtio_pci_modern.c`,
+  `virtio_pci_modern_dev.c`
+
+The anchor is original Linux code. Legacy-admin helpers are excluded by the
+explicit profile, rather than implicitly selected by native Kconfig. The ring
+source retains split/packed algorithms and the block source retains more than
+the proposed read path; this is not a runtime reachability or minimum-footprint
+result. Unsupported optional platform calls remain visible declarations,
+not successful stub implementations.
+
+An ordinary relocatable link retains every section and unresolved dependency;
+no provider stubs or garbage collection hide requirements. The audit checks
+the original probe/request/completion/ring/transport functions survived and
+verifies that the linked external set equals the input undefined set minus
+actual global/weak providers. Local symbols cannot satisfy another object's
+external reference.
+
+The freestanding closure retains **203 unresolved APIs**. Every API is explicitly
+classified in [apis.json](../compat/audit/storage/apis.json), with contexts,
+required/profile-rejected policy, ownership/error obligations and future runtime
+acceptance requirements. An unclassified or unexpectedly provided API fails the
+audit. These replace the old native-Linux 118-symbol inventory, which was not a
+kutox compatibility closure.
+
+The generated JSON records per-unit definitions/undefined references,
+source/included-header/object hashes, exact commands, original module/device
+registration and operation-table relocations, caller references and toolchain
+identity. Wire and shared execution layouts are compiler-checked. Every baseline object
+retains the compile-only marker, and the actual kernel linker must reject it.
+Independent `--verify` rejects native/stale/tampered evidence without compiling.
+A failed build removes the previous success report.
+
+The audit also compiles the actual [Rust block services](../src/linux_compat/block.rs)
+through a minimal [compile-only Rust entry point](../compat/audit/storage/block_services.rs) and
+links it with the unchanged source objects. This resolves 57 API names and
+leaves exactly 146 source-facing APIs plus the five Rust functions listed in
+[service-ffi.txt](../compat/audit/storage/service-ffi.txt). The report records
+provider/remaining sets and provenance independently; no unknown external or
+fake provider may hide a dependency. The two synchronous/borrowed-payload APIs
+are supplied as explicit unsupported rejections, not implemented I/O executors.
+The [native block contract](kernel-implementation.md#bounded-block-services)
+describes the real one-request lifecycle and its limits. Guest acceptance runs
+these providers with a synthetic transport and a real timer IRQ, not original
+Linux storage callbacks or hardware. Production provider objects omit the
+compile-only marker; the combined audit object still must be rejected by the
+kernel linker.
+The baseline source-facing service families are:
+
+| Family | Representative unresolved symbols | Runtime obligation |
+| --- | --- | --- |
+| Block requests and queues | `blk_mq_alloc_disk`, `blk_mq_alloc_tag_set`, `blk_mq_start_request`, `blk_mq_complete_request`, `blk_mq_end_request`, `blk_mq_requeue_request` | Real bounded request/tag ownership, queue stop/restart, completion and quiescence. |
+| Disk registration and limits | `register_blkdev`, `device_add_disk`, `set_capacity_and_notify`, `set_disk_ro`, `queue_limits_commit_update_frozen` | Valid capacity/read-only/limit state and explicit unsupported-operation rejection, not success stubs. |
+| PCI, MMIO and IRQ | `pci_find_capability`, `pci_iomap_range`, `ioread32`, `request_irq`, `synchronize_irq` | Connect checked BAR/capability access and original transport IRQ handling to owned platform resources; preserve teardown ordering. |
+| DMA and scatter/gather | `dma_alloc_coherent`, `dma_map_page_attrs`, `dma_sync_single_range_for_cpu`, `sg_alloc_table_chained`, `sg_init_one` | Queue/data leases, direction/range checks, exact mapping lifetimes and no release while DMA can continue. |
+| Memory and containers | `kmalloc`, `alloc_pages_exact`, `virt_to_page`, `list_add`, `ida_alloc_range` | Checked allocation, address ownership, bounded IDs and stable intrusive-list objects. |
+| Device model and execution | `bus_register`, `driver_register`, `device_initialize`, `queue_work`, `wait_for_completion`, `mutex_lock`, `synchronize_rcu` | Registration/rollback, callback lifetimes, off-lock waits, cancellation and joined removal. |
+| Optional platform paths | `pci_alloc_irq_vectors_affinity`, `pci_enable_sriov`, `dev_of_node`, `xen_domain` | Explicit unsupported errors/feature boundaries; original MSI-X failure must select INTx, not fabricate vector allocation. |
+| Metadata and diagnostics | `add_uevent_var`, `sysfs_emit`, `snprintf`, `panic` | Bounded metadata and explicit diagnostics/profile policies. |
+
+These are source-facing names in the kutox-header audit, not a count of wholly new
+kutox services. Existing e1000 services cover parts of PCI/DMA/IRQ/allocation
+and execution, but matching names do not prove compatible types or semantics.
+Conversely, optional-path references must not automatically become first-boot
+requirements. Every admitted path needs implementation; unsupported paths need
+an enforced feature/configuration boundary and observable rejection.
+
+### Executable storage provider closure
+
+The audit additionally compiles all eleven original e1000/VirtIO units with
+their runtime headers, four C header-access adapter units and
+[the real Rust providers](../src/linux_compat/). This second
+relocatable closure has no compile-only marker, no garbage collection and no
+missing source-facing APIs. Its exact **68 backend/libc entry points** are
+listed in [service-ffi.txt](../compat/audit/common/service-ffi.txt).
+This boundary includes the existing device-specific Rust allocation/DMA/PCI
+backends and shared native execution/IRQ services. Both source audits use the
+same provider/compiler proof implementation and allowlist.
+Rejected optional paths have explicit failure providers, not fake successful
+hardware services. The original 203/57/146 baseline counts are preserved as
+dependency evidence rather than misrepresented as the executable closure.
+
+`runtime_closure` records all fifteen C objects and the actual Rust provider
+object, exact commands, source/header/object hashes and the full external set.
+It also compares real Rust and boot/e1000/storage C layout probes, including
+shared device/PCI fields and actual Linux GFP values.
+Runtime dependency manifests reject audit headers and foreign class headers.
+The audit additionally compiles both feature-profile include orders as negative
+checks; missing profile-isolation failure evidence invalidates verification.
+Independent verification checks that set against the complete inputs minus
+actual global/weak definitions, so section loss or same-named local symbols
+cannot hide a dependency. Production objects are separately built and linked
+into both kernel profiles; ELF gates and real guest callbacks establish runtime
+execution, not merely matching symbol names.
+
+See [the runtime contract](kernel-implementation.md#linux-virtio-blk-runtime)
+for the depth-one module-parameter profile, checked PCI/DMA/INTx boundary,
+100-ms read/reset deadlines, lost-IRQ recovery and remaining limitations.
+
+The runtime implementation should proceed in separately validated stages:
+
+1. The first bounded `blk-mq` request/completion and native read contracts are
+   implemented and guest-tested. Keep the remaining API/ABI work explicit;
+   never link declaration-only audit objects or reinterpret storage-private
+   layouts as e1000 runtime device structs.
+2. Reuse original Linux VirtIO core/ring/modern PCI and block callbacks. Adapt
+   PCI resources, coherent DMA and INTx; prove negotiation, an actual disk read,
+   error/timeout handling and reset/IRQ/DMA teardown before recycling memory.
+3. Expose a narrow owned block-read interface to the existing filesystem
+   adaptation, retaining RAM-backed boot and its current bounds.
+4. Prove `/bin/init` execution with no rootfs Limine module, using only a
+   project-owned read-only QEMU disk. Cover absent/unsupported devices, invalid
+   ranges/media, I/O failure and low-memory cleanup in both image profiles.
+
+Ginux remains a design/test reference, not copied driver implementation.
+No new native Rust descriptor loop substitutes for the Linux storage driver.
+
 ### Selected e1000 source and configuration
 
 The first packet-driver target is the mainline `v7.3` source baseline,
@@ -559,7 +711,7 @@ synthetic-service cases remain isolated from explicit original module startup.
 
 ### Tested execution-service profile
 
-[Shared C execution types](../compat/execution_types.h) and
+[Shared C execution types](../compat/include/common/execution_types.h) and
 [native deferred services](../src/linux_deferred.rs) now supply Phase 2's
 bounded environment, tested through [synthetic C callbacks](../compat/guest_tests/driver_execution_test.c).
 These are OS services, not replacement implementations of Linux's watchdog,
@@ -610,7 +762,7 @@ or replace Linux cleanup with native descriptor observation.
 
 ### Source-facing PCI, packet and DMA services
 
-Phase 3 supplies [C providers](../compat/driver_services.h) using the same
+Phase 3 supplies [C providers](../compat/include/net/services.h) using the same
 source-facing PCI/netdev/skb types as the compile check. Rust retains physical
 allocation/MMIO/PCI ownership; C owns its structs and original callback tables.
 The normal image now links all four original driver units for lifecycle and
@@ -678,17 +830,24 @@ Freed driver containers automatically retire idle embedded work/mutex/
 completion registrations. Pending/running callbacks, waits or pins prevent
 free; unchanged source need not call kutox destruction extensions.
 
-The independent source-plus-services closure resolves driver APIs to actual C
-providers, optional-profile errors or three existing Rust primitives
-(`memcpy`, `memset`, elapsed jiffies). Its 52 remaining platform symbols have an
-explicit exact allowlist; missing, stale or changed providers fail evidence
-verification. The compile-only barrier remains present. All four unchanged
+The independent source-plus-services proof now links both original drivers,
+the C header-access adapters and actual common Rust providers without
+garbage collection. Its 68 remaining backend/libc symbols have one exact
+allowlist; missing, stale or changed providers fail verification. Baseline
+source-only objects retain their separate compile-only barrier. All four unchanged
 source units, callbacks and default 256-ring layouts remain audited; resolving
 providers alone is not execution of original lifecycle or packets.
 
+[Network packet services](../src/linux_compat/packet.rs) now implement the
+network-device lifecycle, sk_buffs, fragment ownership, TX tracking and ingress
+in Rust rather than a C kernel-service layer. Existing C ABI names and original
+Linux callbacks remain unchanged. Actual C/Rust probes compare all packet
+contract field offsets, alignments, callback slots and selected constants
+(122 values); the executable audit verifies Rust owns packet-service exports.
+
 ### Original lifecycle execution
 
-[The lifecycle C adapter](../compat/driver_lifecycle.c) invokes retained module
+[The Rust lifecycle adapter](../src/linux_compat/lifecycle.rs) invokes retained module
 metadata explicitly, then original PCI probe/remove and registered open/stop
 callbacks. Its source structs match all four runtime units, including the boot
 MAC bridge. Generation-checked control handles reject use after unbind; no
@@ -941,7 +1100,7 @@ Synchronization and ownership requirements:
 - Worker and interrupt paths must agree on buffer lifetimes and ordering.
 
 Embassy's executor alone does not provide these Linux execution semantics.
-The C adapter distinguishes boot, sleepable thread/worker, deferred-atomic
+The Rust C-ABI services distinguish boot, sleepable thread/worker, deferred-atomic
 poll/BH and hardware-IRQ semantics. Synthetic work/NAPI/C-IRQ tests do not
 authorize arbitrary C MMIO access and allocation in those contexts or establish
 execution of the original full driver.

@@ -13,6 +13,136 @@ build the ELF and package Limine/ISO. Python owns QEMU lifecycle, independent
 acceptance and reports. CTest registrations and recursive CMake check targets
 have been removed; no additional test-management framework is required.
 
+### Storage dependency audit
+
+The full-tier host check `linux-storage-dependency-audit` runs once, independently
+of guest profiles. It is intentionally absent from `fast` and guest-only runs.
+Portable CI runs it explicitly after fast checks and uploads its JSON and logs.
+
+```sh
+python3 scripts/check.py full --scope host --select linux-storage-dependency-audit
+```
+
+This is original-source compile/partial-link evidence, not a disk-driver guest
+test. [The findings](rust-kernel-linux-drivers.md#linux-storage-dependency-audit)
+explain the seven unchanged translation units, explicit source-facing profile
+and missing services. Like e1000, this uses Clang, GNU binutils, the shared
+freestanding flags and compatibility headers, not Kbuild or a native Linux
+configuration. Compilation is serial. Storage source lives in the same pinned
+sparse submodule; every guest mode still shares one ISO.
+
+Evidence lives under `build/linux-storage-check`: `report.json`, per-unit
+compile/dependency logs, `undefined.txt`, `macros.log`, `layout.log`, `link.log`,
+`runtime-exclusion-link.log` and the partially linked `linux-storage.o`.
+Each unresolved API has an explicit required or profile-rejected contract and
+object caller evidence. The report is written only after source/header/object
+provenance, exact flags/profile, original registration/callbacks, wire/shared
+layouts and actual runtime-link rejection pass. No fake service providers or
+garbage collection hide dependencies. Failed builds invalidate an earlier
+success report. The separate `runtime/` subdirectory now contains the complete
+unmarked combined e1000/VirtIO/Rust-provider closure, with all sections retained
+and exactly 68 backend/libc entry points in one shared allowlist. Both inventories
+and their source/header/command/object provenance are independently verified.
+
+Both driver audits use [linux_compat_check.py](../scripts/linux_compat_check.py)
+for the same executable provider proof: fifteen C objects plus the real
+freestanding Rust provider object, not declaration-only Rust symbols or mocks.
+Real Rust and boot/e1000/storage C probes must agree on all 37 shared
+device/PCI/execution-layout and GFP values. Rust and the network C profile also
+compare 122 network-device, skb, fragment, NAPI, callback-slot and constant
+values. Another 135 block and 41 original-header-accessor/MAC values check the
+migrated block services and retained C bridge. Migrated lifecycle, NAPI, optional,
+MMIO, diagnostic and block entry points must be functions in the actual Rust
+object, not C/local/data definitions. Existing native Rust-only stop/quiescence
+helpers may inline in the optimized kernel ELF without losing provider proof.
+Independent `--verify` checks
+stored objects and provenance without compiling. Source-only dependency
+inventories remain 209/203 and retain actual kernel-link exclusion.
+
+Runtime declarations and header-forwarding manifests live under
+[compat/include/](../compat/include/), not audit directories. Audit-only
+inventories, wrappers, probes and FFI allowlists live under
+[compat/audit/](../compat/audit/). Production compiler dependency evidence must
+contain neither audit headers nor foreign class extensions. Both e1000/storage
+profile include orders must fail explicitly, while every standalone runtime
+profile still compiles and matches the Rust ABI. Host mutation tests cover
+dependency leakage and per-class forwarding isolation.
+
+The catalog independently verifies the existing report without recompiling.
+This can also be requested directly:
+
+```sh
+python3 scripts/linux_storage_check.py --verify
+```
+
+Native Kbuild reports, stale/tampered evidence, unsupported profile definitions,
+omitted dependencies and unexpectedly supplied providers are rejected.
+Declaration-only compatibility layouts are not an implemented runtime ABI.
+
+The audit also compiles the real [Rust block provider](../src/linux_compat/block.rs)
+with a minimal marked Rust wrapper and partially links it with the original units.
+The report separately records 57 supplied API names, 146 remaining APIs, five
+Rust platform entry points, provider/input/object hashes and exact commands.
+Unexpected external functions or hidden dependencies fail verification. The
+combined audit object remains compile-only; the production provider is compiled
+separately without that marker in both profiles.
+
+The existing C atomic/diagnostic fixture additionally checks mixed promoted
+variadic arguments, signed 64-bit minimum, unsigned widths, string padding,
+truncation/canaries and zero/one-byte destination capacities through actual
+C calls to Rust variadic definitions and Rust `VaList` forwarding APIs.
+Repeated formatting checks that the original C cursor remains unchanged;
+mixed register/stack arguments exercise the platform ABI, not a mocked layout.
+The storage fixture tests exact 31-byte device-name capacity and 32-byte
+truncation/recovery through the real Rust `dev_set_name` variadic provider.
+NAPI/lifecycle/ring, synchronous callback
+reentry, cancellation/IRQ completion and real storage reset tests remain enabled.
+
+[Bounded block acceptance](kernel-implementation.md#bounded-block-services)
+adds `storage.block_services` to the existing kernel suites, bringing their
+registry to 76 cases. It uses real kernel allocation and a synthetic transport,
+with a real timer IRQ for deferred completion after admission closes. Sixteen
+epochs cover tags, ranges/metadata, limits, backpressure, cancellation, stale
+tickets, copy/error results and joined teardown; four failures cover allocation
+rollback. The host checks exact bounded/IRQ evidence and the expected rejection
+ledger inside that case, and rejects missing/duplicate/moved/changed proofs.
+Fixture guards require exact frame/heap balance and no retained block objects.
+The C/Rust fixture and fault injection are absent from OFF; default network boot
+rejects block acceptance/error evidence. This fixture is not the hardware driver.
+
+### Real storage acceptance
+
+```sh
+python3 scripts/check.py full --profiles both --scope guest --select 'storage-*'
+```
+
+`storage-run` and `storage-run-low-memory` exercise the production native read
+API in ON/OFF. `storage-tests` and `storage-tests-low-memory` run two guest-only
+cases independently of the 76-case kernel registry:
+
+- `storage.linux_disk`: exact sector/4096-byte reads, capacity/range rejection,
+  three real-driver DMA-map rollback points, original INTx completion, a masked
+  completion IRQ, measured 100-ms deadline, acknowledged reset/detach/reprobe,
+  then a successful read. It also queues the original VirtIO configuration
+  callback, requires one real shared-registry inline work flush during removal,
+  and proves its work/mutex registrations retire before the owner is freed.
+- `storage.io_error`: actual QEMU `blkdebug` EIO on sector 64, unchanged caller
+  output and a subsequent exact successful read of sector 65.
+
+The Python runner creates a temporary 64-KiB patterned image and opens it
+read-only; it never opens a host disk device and verifies backing bytes after
+QEMU exits. An owned error configuration applies only to the fixture disk.
+The host checks original probe/request/completion/ring/IRQ callback addresses
+against the linked ELF, exact in-case proofs, rejection counts and final KTAP.
+Every case must reclaim all heap/frame/IRQ/MMIO/storage resources. Production
+mode requires the independent exact checksum and balanced shutdown markers,
+and rejects guest proofs. `storage-missing` and `storage-unsupported` require
+observable missing-device/feature rejection and balanced rollback.
+`storage-tests-disabled` requires rejection before initialization in OFF.
+No storage fixture or fault injection is linked in OFF.
+
+## Guest acceptance
+
 The [UDP guest acceptance](udp-kernel-sockets.md) extends this same catalog.
 `udp-tests*` runs a guest-only kernel client at 128/32 MiB in the ON profile,
 including nested bridges; `udp-tests-low-memory` also runs in smoke CI. Its
@@ -144,14 +274,51 @@ remain mandatory. Normal boot still creates no user dispatcher or task.
 extends the existing HTTP case with two isolated ELF tasks, live task progress
 in every HTTP transfer, contained fault/timeout, paused cancellation/stale
 handles, registered-handler delivery, kernel deadlines shorter than the user
-quantum and two parked owners cancelled at shutdown. Strict journals require
+quantum and two sleeping owners cancelled at shutdown. Strict journals require
 these proofs within each runtime epoch, alongside the unchanged independent
-wire/PCAP oracle and exact resource balance. `user.runtime_cleanup` brings the
-kernel suite to seventy-five cases and verifies invalid preflight plus joined
+wire/PCAP oracle and exact resource balance. `user.runtime_cleanup` verifies invalid preflight plus joined
 admission/observer/native-entry/startup failures. The portable FIFO test checks
 that a pending wake remains visible until its thread actually receives it.
 The native runtime entry is required in both profile ELFs; no new selector,
 ISO or test manager is introduced.
+
+[Yield/sleep acceptance](kernel-implementation.md#bounded-user-yield-and-sleep)
+extends these same cases without adding test modes or cases of its own.
+Real ELF programs retain syscall results and seeded registers across
+six yields and six sleeps, measure no early wakeups, outlive their active CPU
+budgets while parked, enforce the cumulative syscall cap and exercise zero/
+invalid durations, stale cancellation, sleeping drop and single-run gating.
+An earlier sleeper interrupts a CPU-bound peer before its quantum/total budget
+expires. The runtime case checks actual idle sleep with bounded callbacks and
+an event-blocked kernel client, then cancels two sleeping tasks at shutdown.
+Every HTTP transfer requires live user counter progress plus a yield and sleep;
+no-early-wake and sleeping cancellation/shutdown evidence stay in the owning
+epoch. Portable tests cover deadline arithmetic/bounds and revoking a parked
+queue entry without waking a reused slot. Strict host mutation tests reject
+missing, duplicate, reordered or invalid blocking/idle proofs.
+
+[Input acceptance](kernel-implementation.md#bounded-user-input) extends the same
+user cases. Two ELF readers verify buffered and blocked delivery, wrapped
+256-byte cross-page copying, short reads, drain-before-EOF, full/closed producer
+errors, bad destinations without partial copies, revalidation after RO/unmap
+changes, retained registers and cumulative syscall counts. Cancellation,
+stale producers, replacement isolation and pending-reader drop reclaim all
+frames. A real kernel producer wakes an all-reading runtime with bounded
+callbacks and uncharged parked budgets; shutdown joins with two reads pending.
+Every HTTP epoch also requires a blocked ELF read completed only after response
+bytes arrive. Portable tests cover ring wrap/backpressure/close and writable
+copy plans. Strict host mutations reject missing, duplicate, malformed and
+out-of-case/epoch proofs; OFF and production boot still reject guest evidence.
+
+[Filesystem boot acceptance](kernel-implementation.md#read-only-boot-filesystem)
+adds `user-boot` and `user-boot-low-memory` in both profiles, without changing
+the kernel registry or creating per-mode ISOs. These ordinary boot modes
+read `/bin/init` from the actual Limine ext2 module, execute it in CPL3 and require
+its write/exit plus exact frame/heap balance. They need no NIC or disk device.
+Default network boot must reject any filesystem/program-execution proof.
+The OFF build retains the real filesystem/ELF boot service, while guest payloads
+remain absent. `mke2fs`/`debugfs` from e2fsprogs are required for filesystem fast
+tests; no privileged filesystem mounts are performed.
 
 ## Validation tiers
 
@@ -164,7 +331,7 @@ python3 scripts/check.py soak
 
 - `fast`: formatting, portable kutox tests/Clippy with guest fixtures both enabled
   and disabled, adapted Moss host tests/Clippy, and Python harness tests.
-  It requires the initialized Linux submodule for source-audit input tests, but
+  It requires e2fsprogs and the initialized Linux submodule for source-audit input tests, but
   does not configure, build or boot a freestanding kernel.
 - `smoke`: build and kernel Clippy for each profile, actual ELF checks, normal
   networking at 128/32 MiB, no/unsupported NIC, driver-only operation, early

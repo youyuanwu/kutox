@@ -16,7 +16,7 @@ guest-tests = []
 
 [dependencies]
 limine = "0.5"
-moss-libkernel = { path = "third_party/moss-libkernel" }
+moss-libkernel = { path = "third_party/moss-libkernel", features = ["fs"] }
 smoltcp = { version = "=0.13.0", default-features = false, features = [
     "alloc",
     "medium-ethernet",

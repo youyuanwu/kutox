@@ -78,10 +78,12 @@ Moss component or vendor-driver source is imported.
   [third_party/moss-libkernel](third_party/moss-libkernel/); the task-bound
   mutex adaptation in [src/mutex.rs](src/mutex.rs).
 
-This single, dependency-free `no_std` crate groups the selected ports under
-`memory`, `sync`, and `task` modules, with `CpuOps` at the crate root as in upstream
+This single `no_std` crate groups the selected ports under
+`memory`, `sync`, `task`, and optional `fs` modules, with `CpuOps` at the crate root as in upstream
 libkernel. It is not the complete upstream library. One license and one pinned
 provenance record cover these components; host tests exercise them together.
+Core primitives remain dependency-free; the optional filesystem feature adds
+the exact ext4plus dependency described below.
 The mutex's kernel-specific ownership/wait integration is described separately
 below; it does not add a task-runtime dependency to the portable crate.
 
@@ -178,7 +180,7 @@ entry/return assembly, cumulative execution accounting and
 [guest acceptance](src/guest_tests/user_tasks.rs) are kutox integration.
 They reuse the existing FIFO and previously adapted Moss `TaskState`; no second
 queue policy, full Moss scheduler or ARM user-context/assembly is imported.
-The complete process VM, signals, VFS, blocking syscall work and FPU/TLS context
+The complete process VM, signals, VFS, general blocking I/O and FPU/TLS context
 switching remain outside this subset.
 
 ### Persistent user dispatch
@@ -193,6 +195,59 @@ pending-wake visibility, shared local-APIC deadline arbitration, scoped
 admission/event callbacks and joined shutdown use the existing kutox services.
 The previously ported Moss contexts and task states remain unchanged. The
 guest HTTP/task fixtures and strict host journals are kutox acceptance code.
+
+The bounded native yield/sleep extension follows the ordering in pinned Moss's
+[yield syscall](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/sched/syscalls/mod.rs),
+[sleep syscalls](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/process/sleep.rs)
+and [timer sleep future](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/timer/mod.rs):
+defer yielding until the syscall result is complete; retain one monotonic sleep
+deadline and resume only when due. It reuses the already ported context/task
+states and native FIFO/timer services rather than copying process futures,
+signal interruption, `timespec` user-copy or the timer heap. The scalar native
+microsecond ABI, bounded arithmetic, scoped ready/deadline values, cancellation
+and ELF/network acceptance are kutox code; no new upstream component is imported.
+
+The [bounded input channel](docs/kernel-implementation.md#bounded-user-input)
+follows pinned Moss's
+[read syscall dispatch](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/fs/syscalls/rw.rs),
+[pipe reader and close ordering](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/fs/pipe.rs),
+[bounded user-copy chunks](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/kernel/kpipe.rs)
+and [buffer readiness/short reads](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/memory/kbuf.rs).
+It retains predicate-driven waiting and drains buffered bytes before EOF,
+using the existing ported task/context state and native FIFO. The inline
+256-byte per-task buffer, deferred metadata-only read, revalidated writable
+copy plan, generation-checked producer, cancellation and acceptance are kutox
+implementations. No additional Moss source, VFS/descriptor layer, signals,
+page-backed ring dependency or async syscall future is copied.
+
+### Read-only boot filesystem
+
+The optional [filesystem adapter](third_party/moss-libkernel/src/fs.rs) follows
+pinned Moss's [RAM block device](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/fs/blk/ramdisk.rs),
+[byte-level block buffer](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/fs/blk/buffer.rs)
+and [ext-family adapter](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/fs/filesystems/ext4/mod.rs).
+It retains read-exact semantics, filesystem-backed file lookup and the upstream
+ext4plus parser, but uses checked borrowed/owned byte slices instead of ARM
+mapping, a small validated ext2 profile, bounded file allocation and synchronous
+read-only boot access. No VFS/process layer, inode cache, write adapter,
+hand-coded ext4 metadata edits, disk driver or architecture code is imported.
+The Moss MIT notice is retained in the adaptation and shared license.
+
+- Parser: [ext4plus](https://github.com/arihant2math/ext4plus), exact
+  `0.1.0-rc.2`, matching pinned Moss's declared version, with checksum and
+  transitive dependencies pinned in [Cargo.lock](Cargo.lock).
+- License: MIT OR Apache-2.0; use under its MIT option. The registry source
+  retains `LICENSE-MIT` (Copyright 2023 Google LLC) and `LICENSE-APACHE`.
+- Default features are disabled; only `sync` is enabled. No `std` feature or
+  multithreaded filesystem runtime is enabled.
+
+The Limine module admission, [native boot service](src/boot_fs.rs),
+[image builder](scripts/make_rootfs.py), separate [init program](userspace/init.S)
+and acceptance are kutox integration code. Their boot-image -> filesystem ->
+ELF ordering follows Moss's
+[launch_init](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/main.rs#L79).
+The image is RAM-backed ext2, not FAT32 or persistent disk storage; see the
+[scope and bounds](docs/kernel-implementation.md#read-only-boot-filesystem).
 
 ### Bootstrap memory allocator
 
@@ -394,7 +449,7 @@ The port is not an unchanged async mutex:
 
 The adapted mutex file retains MIT licensing. The separate kutox ownership
 policy, general thread/wait runtime, and tests retain their own repository
-licensing. The separate native C adapter uses this Rust primitive for its
+licensing. The separate native Rust C-ABI adapter uses this Rust primitive for its
 bounded sleeping-mutex API; the adapted file itself is not Linux C code.
 
 ## Linux
@@ -412,7 +467,43 @@ net-feature definitions are also used unchanged. Linux source is not relicensed
 by the MIT Moss port; its redistribution obligations remain applicable when
 linked into the kernel.
 
-The native [C execution adapter](compat/runtime.c),
+The [storage compile-only audit](scripts/linux_storage_check.py) also compiles
+unchanged `drivers/block/virtio_blk.c` and the selected VirtIO core, anchor, ring
+and modern PCI units from that same revision. Their original per-file SPDX
+notices remain in the submodule, including GPL-2.0-or-later for the ring/common
+transport and GPL-2.0-only for the core/modern device helpers. Original VirtIO
+headers and UAPI wire definitions are included directly. The GPL-2.0-only
+[storage declarations](compat/include/block/) adapt the source-facing API and
+reuse existing kutox core/execution declarations; they supply no device,
+block-layer or DMA algorithms. These marked audit objects are rejected by the
+runtime linker and are not linked into the boot image.
+The declarations are shared with runtime compilation; only the wrappers,
+dependency inventories and layout/provenance probes under
+[compat/audit/](compat/audit/) are audit-only. Shared/runtime declarations live
+under [compat/include/](compat/include/), with network/block extensions and
+independent e1000/storage feature profiles.
+
+The [bounded Rust block provider](src/linux_compat/block.rs), its
+[Rust allocation/context adapter](src/block_services.rs) and
+[guest fixture](compat/guest_tests/block_services_test.c) are kutox implementations
+of a restricted source-facing service API. They implement request ownership,
+metadata and completion lifecycle, not VirtIO ring/PCI/DMA or storage hardware
+algorithms. The provider reuses the already attributed Moss-backed kernel heap
+and existing execution types. The guest transport fixture is not a storage driver.
+
+The same seven unchanged Linux storage units are now also linked into both
+runtime profiles through [the small VirtIO C header bridge](compat/virtio_bridge.c),
+[shared Rust compatibility services](src/linux_compat/)
+and [Rust PCI/DMA ownership services](src/storage.rs). All original notices and
+GPL obligations remain applicable. The original VirtIO core, split ring,
+modern PCI and block implementation performs hardware I/O; no native Rust
+descriptor or storage-driver algorithm replaces it. The bounded device model,
+frame-backed coherent/bounce DMA leases, deadline/reset/reprobe integration,
+QEMU fixture and native APIs are kutox integration code. They reuse the
+previously attributed Moss allocators and shared kernel execution/IRQ services;
+no Ginux or additional Moss driver source is imported.
+
+The native [Rust C-ABI execution adapter](src/linux_compat/execution.rs),
 [Rust registry/backend](src/linux_runtime.rs), and
 [C acceptance test](compat/guest_tests/execution_test.c) are kutox code. They expose a
 tested static-object subset of Linux-facing mutex, spinlock, sleep, and completion
@@ -420,6 +511,23 @@ APIs without copying a Linux synchronization implementation. The Linux submodule
 and all four selected upstream units remain unchanged. These services now back
 original driver execution for the selected profile, not general Linux
 synchronization or binary ABI compatibility.
+
+The shared compatibility modules and [C/Rust ABI contracts](src/linux_abi.rs)
+are kutox implementations of selected Linux-facing services. They replace the
+former C allocation/PCI/execution adapters and storage device/work/lifecycle
+policy; they do not replace original Linux device algorithms. Network-device,
+skb, RX-fragment and TX/ingress services now live in the kutox
+[Rust packet adapter](src/linux_compat/packet.rs), replacing the former
+`compat/driver_packet.c` without changing the original e1000 implementation.
+The remaining lifecycle, NAPI registration, optional-operation, MMIO ownership,
+block-state and diagnostic-formatting services have likewise moved to Rust
+without copying or replacing original Linux device algorithms. Their native
+backends reuse the previously attributed Moss allocators, synchronization and
+task services. Variadic logging/formatting providers now use stable Rust
+`core::ffi::VaList`, without copying a platform `va_list` representation or Linux
+formatter implementation. The retained C original-header accessors,
+independent layout probes and C-call acceptance fixtures retain their
+existing attribution.
 
 ## Native driver infrastructure and persistent integration
 
@@ -436,7 +544,8 @@ loader is copied. The native x86 PCI inventory, swizzle/window validation and
 unlocked callback/lifecycle policy are not imported Moss implementations.
 
 The managed [e1000 control adapter](src/linux_driver.rs) and
-[C lifecycle boundary](compat/driver_lifecycle.c) invoke the same four unchanged
+[Rust lifecycle boundary](src/linux_compat/lifecycle.rs), with
+[C private-header accessors](compat/e1000_accessors.c), invoke the same four unchanged
 GPL-2.0-only Linux units described above. Linux retains its packet/descriptor,
 PHY, IRQ/NAPI and cleanup algorithms. Native frame/receipt ownership, source
 statistics snapshots, persistent service admission and managed guest hardening

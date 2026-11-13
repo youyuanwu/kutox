@@ -42,9 +42,67 @@ pub struct Device {
 }
 
 impl Device {
+    pub(crate) fn storage_read(&self, offset: u8) -> u32 {
+        self.read(offset)
+    }
+
+    pub(crate) fn storage_bar(&self, index: u8) -> Result<Bar, Failure> {
+        self.check_identity()?;
+        if index >= 5 {
+            return Err(Failure::new("storage_bar_owner", -16));
+        }
+        let offset = 0x10 + index * 4;
+        let low = self.read(offset);
+        let high = self.read(offset + 4);
+        // Firmware may leave virtio-blk mastering enabled. Take over with DMA
+        // gated, and never restore firmware queue access on owner destruction.
+        let saved_command = self.read(4) as u16 & !4;
+        if low & 7 != 4 || high != 0 || low & !15 == 0 {
+            return Err(Failure::new("storage_bar_type", -95));
+        }
+        self.command(saved_command & !7);
+        self.write(offset, u32::MAX);
+        self.write(offset + 4, u32::MAX);
+        let mask_low = self.read(offset) & !15;
+        let mask_high = self.read(offset + 4);
+        self.write(offset + 4, high);
+        self.write(offset, low);
+        let result = (|| {
+            if self.read(offset) != low || self.read(offset + 4) != high {
+                return Err(Failure::new("storage_bar_restore", -5));
+            }
+            let mask = (u64::from(mask_high) << 32) | u64::from(mask_low);
+            let length = (!mask).wrapping_add(1);
+            let base = u64::from(low & !15);
+            if !length.is_power_of_two()
+                || !(4096..=crate::memory::MMIO_LENGTH as u64).contains(&length)
+                || base & (length - 1) != 0
+                || base + length > 0x1_0000_0000
+            {
+                return Err(Failure::new("storage_bar_size", -95));
+            }
+            self.inventory
+                .validate_memory_window(self.address, (base, length), low & 8 != 0, policy_read)
+                .map_err(policy_error)?;
+            self.set_command((saved_command | 2) & !4)?;
+            Ok(Bar {
+                device: self.clone(),
+                saved_command,
+                base,
+                length,
+                io_port: 0,
+            })
+        })();
+        if result.is_err() {
+            self.command(saved_command);
+        }
+        result
+    }
+
     pub fn bus_mastering_disabled(&self) -> bool {
         self.read(4) & 4 == 0
     }
+
     fn read(&self, offset: u8) -> u32 {
         read(self.address, offset)
     }

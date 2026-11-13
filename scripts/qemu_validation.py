@@ -289,6 +289,15 @@ def validate_http_suite(case, returncode, output):
         if not 8 <= int(match[1]) <= 100000 or not 1 <= int(match[2]) <= int(match[1]):
             raise AssertionError("userspace did not resume or yield to earlier kernel work")
         runtime_evidence.extend([deadlines, users[0]])
+        blocking = [line for line in block if line.startswith("# USER_RUNTIME_BLOCKING ")]
+        pattern = rf"# USER_RUNTIME_BLOCKING epoch={epoch} yield=(\d+) sleep=(\d+) early=0 shutdown=sleeping cancel=sleeping"
+        if len(blocking) != 1 or (counts := re.fullmatch(pattern, blocking[0])) is None or not 3 <= int(counts[1]) <= 14 or counts[1] != counts[2] or not lines.index(users[0]) < lines.index(blocking[0]) < end:
+            raise AssertionError("missing bounded user blocking or sleeping-shutdown proof")
+        runtime_evidence.extend(blocking)
+        input_proof = f"# USER_RUNTIME_INPUT epoch={epoch} source=moss-pipe fd=0 wait=event bytes=3 producer=http context=continued"
+        if lines.count(input_proof) != 1 or input_proof not in block or not lines.index(blocking[0]) < lines.index(input_proof) < end:
+            raise AssertionError("missing event-driven userspace input during HTTP")
+        runtime_evidence.append(input_proof)
         configs = [line for line in block if line.startswith("# DHCP_CONFIG ")]
         suffix = f"generation=1 cidr=10.0.2.{epoch + 14}/24 router=Some(10.0.2.2) dns=[Some({server}), None]"
         if len(configs) != 1 or re.fullmatch(r"# DHCP_CONFIG identity=[1-9]\d* " + re.escape(suffix), configs[0]) is None:
@@ -325,8 +334,8 @@ def validate_http_suite(case, returncode, output):
             if positions != sorted(positions) or not stage_end < positions[0] or positions[-1] >= end:
                 raise AssertionError("HTTP stages or cleanup are reordered")
             progress = [line for line in block if line.startswith(f"# USER_RUNTIME_NETWORK epoch={epoch} stage={stage} ")]
-            pattern = rf"# USER_RUNTIME_NETWORK epoch={epoch} stage={stage} slices=([1-9]\d*) progress=([1-9]\d*) survivor=running"
-            if len(progress) != 1 or (overlap := re.fullmatch(pattern, progress[0])) is None or not 1 <= int(overlap[2]) <= int(overlap[1]) or not positions[-1] < lines.index(progress[0]) < lines.index(users[0]):
+            pattern = rf"# USER_RUNTIME_NETWORK epoch={epoch} stage={stage} slices=([1-9]\d*) progress=([1-9]\d*) yield=([1-9]\d*) sleep=([1-9]\d*) survivor=running"
+            if len(progress) != 1 or (overlap := re.fullmatch(pattern, progress[0])) is None or any(not 1 <= int(value) <= int(overlap[1]) for value in overlap.groups()[1:]) or not positions[-1] < lines.index(progress[0]) < lines.index(users[0]):
                 raise AssertionError("HTTP traffic did not overlap live user tasks")
             runtime_evidence.extend(progress)
             stage_end = positions[-1]
@@ -380,6 +389,14 @@ def validate_pci_hierarchy(lines, case):
         raise AssertionError("PCI hierarchy evidence is missing or follows acceptance")
 
 
+def strip_limine_preamble(lines):
+    if lines and lines[0] == "limine: Loading executable `boot():/boot/kernel`...":
+        lines = lines[1:]
+        if lines and lines[0] == "limine: Loading module `boot():/boot/rootfs.img`...":
+            lines = lines[1:]
+    return lines
+
+
 def validate_boot_preamble(lines, mode, source="fw_cfg"):
     if [line for line in lines if line.startswith("KUTOX_BOOT")] != [
         f"KUTOX_BOOT linux={REVISION}"
@@ -414,6 +431,7 @@ def validate_kernel_suite(case, returncode, output):
     failures = validate_ktap(normalized, returncode, expected_names)
     validate_linux_callbacks(output)
     validate_native_drivers(lines, case)
+    validate_block_services(lines, expected_names)
     validate_user_runs(lines, expected_names)
     if case == "kernel-tests-fail" and failures != {"harness.intentional_failure"}:
         raise AssertionError("intentional failure did not fire or another test failed")
@@ -428,6 +446,42 @@ def validate_kernel_suite(case, returncode, output):
             raise AssertionError("intentional assertion or cleaned-error failure proof is missing")
     if failures:
         raise KernelSuiteFailure(f"kernel suite failed: {', '.join(sorted(failures))}")
+
+def validate_block_services(lines, names):
+    marker = (
+        "# BLOCK_SERVICES epochs=16 queues=1 tags=1 read_max=4096 rollback=4 "
+        "ranges=checked pressure=retained cancel=joined stale=isolated irq=deferred"
+    )
+    number = names.index("storage.block_services") + 1
+    end = next(index for index, line in enumerate(lines) if line in (
+        f"ok {number} storage.block_services", f"not ok {number} storage.block_services",
+    ))
+    start = max(index for index, line in enumerate(lines[:end]) if line.startswith(("ok ", "not ok ")))
+    evidence = [(index, line) for index, line in enumerate(lines) if line.startswith("# BLOCK_")]
+    if (not evidence or evidence[-1][1] != marker or lines.count(marker) != 1
+            or any(not start < index < end for index, _ in evidence)):
+        raise AssertionError("missing, duplicate or misplaced bounded block-service proof")
+    expected = Counter({
+        ("allocate_injected", -12): 4, ("tag_profile", -95): 1,
+        ("read_only_operation", -95): 32, ("request_capacity", -11): 16,
+        ("read_range", -22): 96, ("synchronous_execute_not_admitted", -95): 16,
+        ("submit_metadata", -22): 16,
+        ("borrowed_payload_not_admitted", -95): 16, ("result_cancelled", -125): 32,
+        ("stale_ticket", -116): 16, ("transport_backpressure", -11): 16,
+        ("submit_backpressure", -11): 16, ("result_pending", -11): 16,
+        ("release_inflight", -16): 32, ("cancel_inflight", -16): 16,
+        ("queue_quiesced", -16): 32, ("result_capacity", -105): 16,
+        ("result_io", -5): 16, ("queue_limits", -95): 16,
+        ("queue_closed", -19): 1,
+    })
+    errors = Counter()
+    for _, line in evidence[:-1]:
+        match = re.fullmatch(r"# BLOCK_ERROR operation=([a-z_]+) code=(-?\d+)", line)
+        if match is None:
+            raise AssertionError("malformed block-service evidence")
+        errors[match[1], int(match[2])] += 1
+    if errors != expected:
+        raise AssertionError("block-service rejection/rollback evidence is incomplete")
 
 
 def validate_user_runs(lines, names):
@@ -471,9 +525,13 @@ def validate_user_runs(lines, names):
         ],
         "user.task_limits": [
             "# USER_TASK_LIMITS capacity=2 stale=rejected retry=preserved cancel=paused irq_context=rejected resume_fault=contained budgets=cumulative gaps_us=10000 timeouts=2 fault=isolated survivor=66 syscall_limit=32 writes=32 bytes=0 frames=balanced",
+            "# USER_BLOCKING source=moss-boundary yield=6 sleep=6 resumes=12 exits=65,66 zero=immediate invalid=-22 context=preserved early=0 idle=hlt peer=preempted budget=active syscall_limit=32 cancel=sleeping stale=rejected drop=sleeping single_run=unsupported frames=balanced",
+            "# USER_INPUT source=moss-pipe fd=0 capacity=256 bytes=261 calls=10,9 short=2,3 cross_page=checked eof=drained errors=-9,-14,-22 backpressure=-11 closed=-32 context=preserved wait=event budget=active cancel=reading stale=rejected drop=reading revalidate=checked single_run=unsupported frames=balanced",
         ],
         "user.runtime_cleanup": [
             "# USER_RUNTIME_ERRORS_BEGIN",
+            "# USER_SLEEP_IDLE tasks=2 sleep=4 exits=2 wake=timer early=0 idle=hlt callbacks=bounded budget=uncharged shutdown=sleeping frames=balanced",
+            "# USER_INPUT_IDLE tasks=2 bytes=6 wake=kernel idle=hlt callbacks=bounded budget=uncharged shutdown=reading frames=balanced",
             "# RUNTIME_ERROR stage=user_task_duration code=-1",
             "# RUNTIME_ERROR stage=user_task_duration code=-1",
             "# RUNTIME_ERROR stage=runtime_startup_injected code=-210",
@@ -1074,6 +1132,28 @@ def validate_thread_guard(returncode, output):
 
 
 def validate_result(case, returncode, output):
+    if case in ("user-boot", "user-boot-low-memory"):
+        lines = strip_limine_preamble(output.splitlines())
+        validate_boot_preamble(lines, "user-run")
+        validate_allocator(lines, 32 if case.endswith("low-memory") else 128)
+        proofs = [line for line in lines if line.startswith(("BOOT_FS_", "INIT:", "BOOT_USER_", "USER_BOOT_"))]
+        if (returncode != 1 or len(proofs) != 4
+                or re.fullmatch(r"BOOT_FS_OK source=moss-ext4plus format=ext2 image_bytes=2097152 path=/bin/init file_bytes=([1-9]\d*)", proofs[0]) is None
+                or not 1 <= int(proofs[0].split("file_bytes=")[1]) <= 65536
+                or proofs[1:] != [
+                    "INIT: hello from /bin/init",
+                    "BOOT_USER_EXIT status=0 calls=2 writes=1 bytes=27 frames=balanced heap=balanced",
+                    "USER_BOOT_OK exit=0",
+                ] or lines[-1] != proofs[-1]):
+            raise AssertionError("missing or malformed file-backed ELF execution/reclamation")
+        if (len([line for line in lines if re.fullmatch(r"TSC ticks_per_us=[1-9]\d*", line)]) != 1
+                or any(not line.startswith((
+                    "KUTOX_BOOT ", "CPU_FOUNDATION_OK ", "BOOT_MODE ", "BOOT_MEMORY_OK ",
+                    "FRAME_ALLOCATOR_OK ", "HEAP_OK ", "TSC ", "BOOT_FS_OK ", "INIT:",
+                    "BOOT_USER_EXIT ", "USER_BOOT_OK ",
+                )) for line in lines)):
+            raise AssertionError("filesystem boot reached a failure, fixture or network runtime")
+        return
     if case in HTTP_CASES:
         validate_http_suite(case, returncode, output)
         return
@@ -1123,7 +1203,7 @@ def validate_result(case, returncode, output):
         if any(line.startswith(("BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "# DRIVER_", "# KERNEL_SERVICES", "# NETWORK_STACK")) for line in lines):
             raise AssertionError("invalid CIDR reached allocation or source admission")
         return
-    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled", "async-network-tests-disabled", "network-tests-disabled", "udp-tests-disabled", "dhcp-tests-disabled", "dns-tests-disabled", "tcp-tests-disabled", "http-tests-disabled", "async-hardening-tests-disabled"):
+    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled", "async-network-tests-disabled", "network-tests-disabled", "udp-tests-disabled", "dhcp-tests-disabled", "dns-tests-disabled", "tcp-tests-disabled", "http-tests-disabled", "async-hardening-tests-disabled", "storage-tests-disabled"):
         lines = output.splitlines()
         expected = "E1000_MAC_FAIL stage=boot_mode code=-25"
         if returncode != 3 or not lines or lines[-1] != expected:
@@ -1822,7 +1902,7 @@ def validate_live_boot(case, output, symbols):
     validate_boot_preamble(lines, mode or "run", "fw_cfg" if mode else "default")
     validate_allocator(lines, 32 if case.endswith("low-memory") else 128)
     if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "E1000_", "KERNEL_RUNTIME_", "THREAD_", "KTAP", "ok ", "not ok ",
-                            "Bail out!", "KERNEL_PANIC", "# LINUX_CALLBACK", "# LINUX_FAULT", "# LINUX_RX_", "# LINUX_HARD_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR", "# NET_IP_", "# ASYNC_NET_", "# ASYNC_ERROR", "# NETWORK_STACK_ERROR", "# NETWORK_STACK_STOP", "# HOST_", "# DHCP_ERROR", "# DHCP_REJECT", "# DHCP_TEST_", "# DNS_", "# TCP_", "# HTTP_", "# USER_")) for line in lines):
+                            "Bail out!", "KERNEL_PANIC", "BOOT_FS_", "BOOT_USER_", "USER_BOOT_", "INIT:", "# BLOCK_", "# LINUX_CALLBACK", "# LINUX_FAULT", "# LINUX_RX_", "# LINUX_HARD_", "# NATIVE_", "# RUNTIME_", "# NET_ERROR", "# NET_IP_", "# ASYNC_NET_", "# ASYNC_ERROR", "# NETWORK_STACK_ERROR", "# NETWORK_STACK_STOP", "# HOST_", "# DHCP_ERROR", "# DHCP_REJECT", "# DHCP_TEST_", "# DNS_", "# TCP_", "# HTTP_", "# USER_")) for line in lines):
         raise AssertionError("default runtime exited, failed, or entered a probe/fixture path")
     bound = int(LIVE_CASES[case][1])
     normalized = [line.removeprefix("# ") for line in lines]

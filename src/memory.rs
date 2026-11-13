@@ -312,12 +312,24 @@ pub fn map_mmio<'a, 'storage>(
     physical: u64,
     allocator: &'a PhysicalFrames<'storage>,
 ) -> Result<MmioMapping<'a, 'storage>, Failure> {
+    map_mmio_length(boot, physical, MMIO_LENGTH, allocator)
+}
+
+pub(crate) fn map_mmio_length<'a, 'storage>(
+    boot: &BootInfo,
+    physical: u64,
+    length: usize,
+    allocator: &'a PhysicalFrames<'storage>,
+) -> Result<MmioMapping<'a, 'storage>, Failure> {
+    if length == 0 || length > MMIO_LENGTH || !length.is_multiple_of(PAGE_SIZE) {
+        return Err(Failure::new("mmio_length", -22));
+    }
     map_window(
         boot,
         physical,
         allocator,
         MMIO_BASE,
-        MMIO_LENGTH,
+        length,
         &MMIO_CLAIMED,
         PageTableFlags::WRITABLE | PageTableFlags::NO_CACHE | PageTableFlags::WRITE_THROUGH,
     )

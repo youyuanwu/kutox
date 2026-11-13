@@ -5,7 +5,9 @@ extern crate alloc;
 
 mod async_runtime;
 mod async_sync;
+mod block_services;
 mod boot;
+mod boot_fs;
 mod completion;
 mod cpu;
 #[cfg_attr(
@@ -54,6 +56,7 @@ mod irq;
     )
 )]
 mod kernel_runtime;
+mod linux_compat;
 #[cfg_attr(
     not(feature = "guest-tests"),
     allow(
@@ -165,6 +168,7 @@ mod pci;
 )]
 mod platform;
 mod serial;
+mod storage;
 #[cfg_attr(
     not(feature = "guest-tests"),
     allow(
@@ -252,6 +256,15 @@ pub extern "C" fn kmain() -> ! {
             println!("KERNEL_RUNTIME_STOPPED");
             io::finish(true);
         }
+        Ok(BootOutcome::StorageRead) => io::finish(true),
+        Ok(BootOutcome::UserExited(status)) => {
+            if status == 0 {
+                println!("USER_BOOT_OK exit=0");
+            } else {
+                println!("USER_BOOT_FAIL exit={status}");
+            }
+            io::finish(status == 0);
+        }
         Err(failure) => {
             println!(
                 "E1000_MAC_FAIL stage={} code={}",
@@ -265,10 +278,15 @@ pub extern "C" fn kmain() -> ! {
 enum BootOutcome {
     Mac([u8; 6]),
     RuntimeStopped,
+    UserExited(u64),
+    StorageRead,
 }
 
 fn probe() -> Result<BootOutcome, Failure> {
     exceptions::initialize()?;
+    if !block_services::quiescent() || !storage::quiescent() || !linux_compat::quiescent() {
+        return Err(Failure::new("block_services_initial", -1));
+    }
     let boot = boot::collect()?;
     driver_init::validate_boot_metadata()?;
     println!(
@@ -297,6 +315,7 @@ fn probe() -> Result<BootOutcome, Failure> {
             | BootMode::TcpTests
             | BootMode::HttpTests
             | BootMode::AsyncHardeningTests
+            | BootMode::StorageTests
     ) {
         guest_tests::run(&boot);
     }
@@ -344,6 +363,13 @@ fn probe() -> Result<BootOutcome, Failure> {
     );
     let ticks = time::calibrate()?;
     println!("TSC ticks_per_us={ticks}");
+    if boot.mode == BootMode::UserRun {
+        return boot_fs::kutox_boot_filesystem(&boot, allocator).map(BootOutcome::UserExited);
+    }
+    if boot.mode == BootMode::StorageRun {
+        storage::run(&boot, allocator)?;
+        return Ok(BootOutcome::StorageRead);
+    }
     if matches!(
         boot.mode,
         BootMode::Run | BootMode::DriverRun | BootMode::NetworkRun

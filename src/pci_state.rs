@@ -305,6 +305,27 @@ impl Inventory {
         io: (u64, u64),
         mut read: impl FnMut(PciAddress, u8) -> Result<u32, Error>,
     ) -> Result<(), Error> {
+        self.validate_windows_inner(address, memory, Some(io), false, &mut read)
+    }
+
+    pub fn validate_memory_window(
+        &self,
+        address: PciAddress,
+        memory: (u64, u64),
+        prefetchable: bool,
+        mut read: impl FnMut(PciAddress, u8) -> Result<u32, Error>,
+    ) -> Result<(), Error> {
+        self.validate_windows_inner(address, memory, None, prefetchable, &mut read)
+    }
+
+    fn validate_windows_inner(
+        &self,
+        address: PciAddress,
+        memory: (u64, u64),
+        io: Option<(u64, u64)>,
+        prefetchable: bool,
+        mut read: impl FnMut(PciAddress, u8) -> Result<u32, Error>,
+    ) -> Result<(), Error> {
         let end = |(start, size): (u64, u64)| {
             if size == 0 {
                 return Err(Error::Window);
@@ -312,37 +333,49 @@ impl Inventory {
             start.checked_add(size - 1).ok_or(Error::Window)
         };
         let memory_end = end(memory)?;
-        let io_end = end(io)?;
+        let io_end = io.map(end).transpose()?;
         let mut entry = self.find(address)?;
         Self::check(entry, &mut read)?;
         let mut depth = 0;
         while let Some(parent) = self.parent(entry)? {
             Self::check(parent, &mut read)?;
             // Bridge BAR forwarding uses decode bits, not its own bus-master bit.
-            if read(parent.address, 4)? & 3 != 3 {
+            let decode = if io.is_some() { 3 } else { 2 };
+            if read(parent.address, 4)? & decode != decode {
                 return Err(Error::Window);
             }
-            let window = read(parent.address, 0x20)?;
-            if window & 0x000f000f != 0 {
+            let window = read(parent.address, if prefetchable { 0x24 } else { 0x20 })?;
+            let kind = window & 0xf;
+            if (window >> 16) & 0xf != kind || kind > u32::from(prefetchable) {
                 return Err(Error::Window);
             }
-            let base = u64::from((window & 0xfff0) << 16);
-            let limit = u64::from(window & 0xfff00000) | 0xfffff;
-            let window = read(parent.address, 0x1c)?;
-            let low = window as u8;
-            let high = (window >> 8) as u8;
-            if low & 15 != high & 15 || low & 15 > 1 {
+            let mut base = u64::from((window & 0xfff0) << 16);
+            let mut limit = u64::from(window & 0xfff00000) | 0xfffff;
+            if prefetchable && kind == 1 {
+                base |= u64::from(read(parent.address, 0x28)?) << 32;
+                limit |= u64::from(read(parent.address, 0x2c)?) << 32;
+            }
+            if base > memory.0 || memory_end > limit {
                 return Err(Error::Window);
             }
-            let upper = if low & 15 == 1 {
-                read(parent.address, 0x30)?
-            } else {
-                0
-            };
-            let io_base = u64::from((upper & 0xffff) << 16) | (u64::from(low & 0xf0) << 8);
-            let io_limit = u64::from(upper & 0xffff0000) | (u64::from(high & 0xf0) << 8) | 0xfff;
-            if base > memory.0 || memory_end > limit || io_base > io.0 || io_end > io_limit {
-                return Err(Error::Window);
+            if let (Some(io), Some(io_end)) = (io, io_end) {
+                let window = read(parent.address, 0x1c)?;
+                let low = window as u8;
+                let high = (window >> 8) as u8;
+                if low & 15 != high & 15 || low & 15 > 1 {
+                    return Err(Error::Window);
+                }
+                let upper = if low & 15 == 1 {
+                    read(parent.address, 0x30)?
+                } else {
+                    0
+                };
+                let io_base = u64::from((upper & 0xffff) << 16) | (u64::from(low & 0xf0) << 8);
+                let io_limit =
+                    u64::from(upper & 0xffff0000) | (u64::from(high & 0xf0) << 8) | 0xfff;
+                if io_base > io.0 || io_end > io_limit {
+                    return Err(Error::Window);
+                }
             }
             depth += 1;
             if depth >= MAX_FUNCTIONS {

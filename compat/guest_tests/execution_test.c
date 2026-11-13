@@ -2,7 +2,7 @@
 #if !KUTOX_GUEST_TESTS
 #error "guest test unit requires guest-tests"
 #endif
-#include "kutox_compat.h"
+#include "common/kutox_compat.h"
 
 extern void kutox_platform_fail(const char *operation) __attribute__((noreturn));
 extern int kutox_linux_context(void);

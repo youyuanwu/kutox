@@ -347,6 +347,16 @@ impl<const N: usize> RunQueue<N> {
         Ok(())
     }
 
+    pub fn remove_suspended(&mut self, handle: TaskHandle) -> Result<(), Error> {
+        if self.handle(TaskId(handle.slot()))? != handle {
+            return Err(Error::InvalidTask);
+        }
+        if self.states[handle.slot()] == Some(TaskState::Sleeping) {
+            self.cancel_wait(handle)?;
+        }
+        self.remove_runnable(handle)
+    }
+
     pub fn check_invariants(&self) -> Result<(), Error> {
         if self.length > N
             || self.blocked_length > N
@@ -392,6 +402,36 @@ impl<const N: usize> RunQueue<N> {
 mod tests {
     use super::*;
     use std::{collections::VecDeque, vec::Vec};
+
+    #[test]
+    fn removing_sleepers_revokes_deadlines_without_waking_reused_slots() {
+        let mut queue = RunQueue::<2>::new();
+        queue.add(TaskId(0)).unwrap();
+        queue.add(TaskId(1)).unwrap();
+        let old = queue.handle(TaskId(0)).unwrap();
+        queue.dispatch().unwrap();
+        queue.block_running(None, Some(10)).unwrap();
+        assert_eq!(queue.next_deadline(), Some(10));
+        queue.remove_suspended(old).unwrap();
+        assert_eq!(queue.next_deadline(), None);
+        queue.add(TaskId(0)).unwrap();
+        assert_eq!(queue.remove_suspended(old), Err(Error::InvalidTask));
+        assert_eq!(queue.expire(10), 0);
+        assert_eq!(queue.dispatch(), Ok(Some(TaskId(1))));
+        queue.block_running(None, Some(20)).unwrap();
+        let sleeping = queue.handle(TaskId(1)).unwrap();
+        assert_eq!(queue.expire(19), 0);
+        assert_eq!(queue.expire(20), 1);
+        queue.remove_suspended(sleeping).unwrap();
+        assert_eq!(queue.next_deadline(), None);
+        assert_eq!(queue.dispatch(), Ok(Some(TaskId(0))));
+        assert_eq!(queue.take_wake_reason(TaskId(0)), Ok(None));
+        assert_eq!(
+            queue.remove_suspended(queue.handle(TaskId(0)).unwrap()),
+            Err(Error::InvalidState)
+        );
+        queue.check_invariants().unwrap();
+    }
 
     #[test]
     fn pending_wake_remains_visible_until_its_fifo_turn() {

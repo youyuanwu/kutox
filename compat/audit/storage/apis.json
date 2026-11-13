@@ -1,0 +1,140 @@
+{
+  "groups": [
+    {
+      "name": "block-request-lifecycle",
+      "policy": "required",
+      "contexts": ["thread", "completion"],
+      "contract": "Bounded tags and request-private storage, validated payload/operation/limits, exact completion, real queue backpressure and joined quiescence. Reject unsupported operations before publication.",
+      "test": "Runtime acceptance must cover actual reads, invalid requests, exhausted tags, completion/requeue and cancellation before request release.",
+      "symbols": [
+        "blk_mq_add_to_batch", "blk_mq_alloc_disk", "blk_mq_alloc_request",
+        "blk_mq_alloc_tag_set", "blk_mq_complete_request", "blk_mq_complete_request_remote",
+        "blk_mq_end_request", "blk_mq_end_request_batch", "blk_mq_free_request", "blk_mq_free_tag_set",
+        "blk_mq_freeze_queue", "blk_mq_map_hw_queues", "blk_mq_map_queues", "blk_mq_num_possible_queues",
+        "blk_mq_quiesce_queue_nowait", "blk_mq_requeue_request", "blk_mq_rq_from_pdu", "blk_mq_rq_to_pdu",
+        "blk_mq_start_request", "blk_mq_start_stopped_hw_queues", "blk_mq_stop_hw_queue",
+        "blk_mq_unfreeze_queue", "blk_mq_unquiesce_queue", "blk_rq_map_sg",
+        "blk_rq_nr_discard_segments", "blk_rq_nr_phys_segments", "blk_rq_pos", "blk_rq_sectors",
+        "blk_should_fake_timeout", "blk_status_to_errno", "bvec_set_virt", "bvec_virt",
+        "op_is_zone_mgmt", "req_get_ioprio", "req_op", "rq_list_add_tail", "rq_list_pop"
+      ]
+    },
+    {
+      "name": "unsupported-synchronous-block-api",
+      "policy": "profile-rejected",
+      "contexts": ["thread"],
+      "contract": "The first native client uses owned asynchronous reads. Reject synchronous Linux execution/Get-ID and borrowed kernel payload mapping before request publication; leave the allocated request releasable.",
+      "test": "Guest acceptance must verify explicit EOPNOTSUPP, no submission, unchanged destination bytes and successful request release.",
+      "symbols": ["blk_execute_rq", "blk_rq_map_kern"]
+    },
+    {
+      "name": "disk-registration",
+      "policy": "required",
+      "contexts": ["thread"],
+      "contract": "Owned disk and queue registration with capacity, read-only and limit state; roll back partial registration and retire only after requests and callbacks drain.",
+      "test": "Runtime acceptance must verify capacity/range and read-only rejection, registration rollback and repeated removal.",
+      "symbols": [
+        "del_gendisk", "dev_to_disk", "device_add_disk", "get_capacity", "put_disk",
+        "queue_limits_commit_update_frozen", "queue_limits_start_update", "queue_logical_block_size",
+        "queue_max_discard_segments", "register_blkdev", "set_capacity_and_notify", "set_disk_ro", "unregister_blkdev"
+      ]
+    },
+    {
+      "name": "dma-and-scatterlist",
+      "policy": "required",
+      "contexts": ["thread", "completion"],
+      "contract": "Checked DMA direction, address and length; owned coherent ring/data leases and scatterlists; sync and unmap once, never recycle while device DMA can continue.",
+      "test": "Runtime acceptance must cover multi-segment reads, map failure, out-of-range DMA, synchronization and device-reset-before-release.",
+      "symbols": [
+        "dma_alloc_coherent", "dma_free_coherent", "dma_map_page_attrs", "dma_mapping_error",
+        "dma_max_mapping_size", "dma_need_sync", "dma_set_mask_and_coherent",
+        "dma_sync_single_range_for_cpu", "dma_sync_single_range_for_device", "dma_unmap_page_attrs",
+        "offset_in_page", "sg_alloc_table_chained", "sg_free_table_chained", "sg_init_one",
+        "sg_next", "sg_page", "sg_phys", "virt_to_page", "virt_to_phys"
+      ]
+    },
+    {
+      "name": "pci-mmio-and-intx",
+      "policy": "required",
+      "contexts": ["thread", "irq"],
+      "contract": "Use owned PCI functions, checked configuration capabilities/BAR spans, width-correct MMIO and original INTx handler; revoke bus mastering and synchronize IRQs before release.",
+      "test": "Runtime acceptance must cover malformed capabilities, BAR bounds, real completion IRQs, missing devices and teardown with pending IRQ/DMA.",
+      "symbols": [
+        "free_irq", "ioread16", "ioread32", "ioread8", "iowrite16", "iowrite32", "iowrite8",
+        "pci_device_is_present", "pci_disable_device", "pci_enable_device", "pci_find_capability",
+        "pci_find_ext_capability", "pci_find_next_capability", "pci_get_drvdata", "pci_iomap_range",
+        "pci_iounmap", "pci_is_enabled", "pci_name", "pci_read_config_byte", "pci_read_config_dword",
+        "pci_register_driver", "pci_release_selected_regions", "pci_request_selected_regions",
+        "pci_resource_flags", "pci_resource_len", "pci_resource_start", "pci_set_drvdata",
+        "pci_set_master", "pci_unregister_driver", "request_irq", "synchronize_irq"
+      ]
+    },
+    {
+      "name": "execution-and-ordering",
+      "policy": "required",
+      "contexts": ["thread", "irq", "completion"],
+      "contract": "Reuse shared execution types, ordered scalar/IRQ-safe access and real barriers; wait off-lock and join deferred callbacks before owner destruction. Matching names alone do not prove provider ABI compatibility.",
+      "test": "Runtime acceptance must verify no sleeping in IRQ/locked regions, no lost completion, queue ordering and joined work cancellation.",
+      "symbols": [
+        "alloc_workqueue", "complete", "cpu_relax", "destroy_workqueue", "dma_rmb", "dma_wmb",
+        "flush_work", "init_completion", "init_work", "kutox_check_read_once",
+        "kutox_check_spin_lock_irqsave", "kutox_check_spin_unlock_irqrestore", "kutox_check_write_once",
+        "mb", "might_sleep", "msleep", "mutex_destroy", "mutex_init", "mutex_lock", "mutex_unlock",
+        "queue_work", "spin_lock", "spin_lock_init", "spin_lock_irq", "spin_unlock", "spin_unlock_irq",
+        "synchronize_rcu", "virt_mb", "virt_rmb", "virt_wmb", "wait_for_completion"
+      ]
+    },
+    {
+      "name": "memory-and-containers",
+      "policy": "required",
+      "contexts": ["thread", "atomic-allocation"],
+      "contract": "Checked and fallible allocation with correct GFP context, page ownership, bounded IDs and intrusive list lifetimes. No success-shaped allocation fallbacks.",
+      "test": "Runtime acceptance must inject allocation failures and ID exhaustion and verify complete rollback and no use-after-release.",
+      "symbols": [
+        "INIT_LIST_HEAD", "alloc_pages_exact", "free_pages_exact", "ida_alloc", "ida_alloc_range",
+        "ida_destroy", "ida_free", "ida_init", "is_power_of_2", "is_vmalloc_addr",
+        "kcalloc", "kfree", "kmalloc", "kmalloc_array", "kzalloc", "list_add", "list_add_tail",
+        "list_del", "memcpy", "memmove", "memset"
+      ]
+    },
+    {
+      "name": "device-model",
+      "policy": "required",
+      "contexts": ["thread"],
+      "contract": "Explicit bus/device/driver registration and references; original probe/remove callbacks retain backing objects until joined teardown.",
+      "test": "Runtime acceptance must cover failed probe rollback, duplicate registration and reference-safe driver removal.",
+      "symbols": [
+        "bus_register", "bus_unregister", "dev_name", "dev_set_name", "device_add",
+        "device_initialize", "device_unregister", "driver_register", "driver_unregister",
+        "get_device", "kutox_module", "put_device"
+      ]
+    },
+    {
+      "name": "diagnostics-and-metadata",
+      "policy": "required",
+      "contexts": ["thread", "irq"],
+      "contract": "Keep bounded original diagnostics and failure paths observable; metadata parsers and formatting must validate their inputs.",
+      "test": "Runtime acceptance must reject malformed metadata, preserve errors and bounded logs, and never convert BUG/panic into success.",
+      "symbols": [
+        "add_uevent_var", "bug", "bug_on", "dev_printk", "kobj_to_dev", "match_string",
+        "panic", "printk", "snprintf", "sprintf", "string_get_size", "strlen",
+        "sysfs_emit", "sysfs_emit_at", "warn_on"
+      ]
+    },
+    {
+      "name": "unsupported-platform-paths",
+      "policy": "profile-rejected",
+      "contexts": ["thread"],
+      "contract": "Initial runtime admits only BSP/INTx modern PCI. MSI-X allocation must return an explicit unsupported error so original INTx fallback executes; reject SR-IOV/Xen and sanitizer modes, and admit no device-tree nodes. Audit declarations supply no fallback implementations.",
+      "test": "Runtime acceptance must prove unsupported vector allocation cannot claim success, INTx is selected, and unsupported platform/device features are rejected before DMA.",
+      "symbols": [
+        "alloc_cpumask_var", "cpumask_copy", "dev_num_vf", "dev_of_node", "free_cpumask_var",
+        "irq_set_affinity_and_hint", "irq_update_affinity_hint", "kmsan_handle_dma",
+        "of_device_is_compatible", "of_get_available_child_count", "of_get_next_available_child",
+        "of_node_put", "pci_alloc_irq_vectors_affinity", "pci_disable_sriov", "pci_enable_sriov",
+        "pci_free_irq_vectors", "pci_iov_get_pf_drvdata", "pci_iov_vf_id", "pci_irq_get_affinity",
+        "pci_irq_vector", "pci_vfs_assigned", "xen_domain"
+      ]
+    }
+  ]
+}

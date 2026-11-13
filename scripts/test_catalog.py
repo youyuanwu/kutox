@@ -38,10 +38,16 @@ HOST_CHECKS = (
     host("kutox-clippy-off", ("cargo", "clippy", "--locked", "-p", "kutox", "--lib",
          "--target", "x86_64-unknown-linux-gnu", "--jobs", "1", "--no-default-features", "--", "-D", "warnings")),
     host("moss-libkernel-unit", ("cargo", "test", "--locked", "-p", "moss-libkernel",
-         "--target", "x86_64-unknown-linux-gnu", "--jobs", "1", "--quiet")),
+         "--features", "fs", "--target", "x86_64-unknown-linux-gnu", "--jobs", "1", "--quiet")),
     host("moss-clippy", ("cargo", "clippy", "--locked", "-p", "moss-libkernel",
-         "--all-targets", "--target", "x86_64-unknown-linux-gnu", "--jobs", "1", "--", "-D", "warnings")),
+         "--features", "fs", "--all-targets", "--target", "x86_64-unknown-linux-gnu", "--jobs", "1", "--", "-D", "warnings")),
     host("harness-unit", ("{python}", "-m", "unittest", "discover", "-s", "tests", "-q")),
+    Check("linux-storage-dependency-audit", (
+        ("{python}", "{root}/scripts/linux_storage_check.py", "--build-dir", "{build}",
+         "--clang", "{clang}", "--ld", "{ld}"),
+        ("{python}", "{root}/scripts/linux_storage_check.py", "--build-dir", "{build}",
+         "--clang", "{clang}", "--ld", "{ld}", "--verify"),
+    ), ("full",), timeout=65),
 )
 
 IMAGE_CHECK = Check("kernel-build-profile", (
@@ -62,6 +68,15 @@ PROFILE_CHECKS = (
 
 
 GUEST_CHECKS = (
+    guest('storage-run', 'storage-run', 30, 35, ('ON', 'OFF')),
+    guest('storage-run-low-memory', 'storage-run-low-memory', 30, 35, ('ON', 'OFF')),
+    guest('storage-tests', 'storage-tests', 30, 35, ('ON',)),
+    guest('storage-tests-low-memory', 'storage-tests-low-memory', 30, 35, ('ON',)),
+    guest('storage-tests-disabled', 'storage-tests-disabled', 20, 25, ('OFF',)),
+    guest('storage-missing', 'storage-missing', 30, 35, ('ON', 'OFF')),
+    guest('storage-unsupported', 'storage-unsupported', 30, 35, ('ON', 'OFF')),
+    guest('user-boot', 'user-boot', 30, 35, ('ON', 'OFF')),
+    guest('user-boot-low-memory', 'user-boot-low-memory', 30, 35, ('ON', 'OFF'), ('full', 'smoke')),
     guest('network-dhcp', 'network-dhcp', 30, 35, ('ON', 'OFF')),
     guest('network-dhcp-low-memory', 'network-dhcp-low-memory', 30, 35, ('ON', 'OFF'), ('full', 'smoke')),
     guest('dhcp-tests', 'dhcp-tests', 100, 105, ('ON',)),

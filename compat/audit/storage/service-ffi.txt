@@ -1,0 +1,5 @@
+kutox_block_allocate
+kutox_block_context
+kutox_block_deallocate
+kutox_block_diag
+kutox_block_fail

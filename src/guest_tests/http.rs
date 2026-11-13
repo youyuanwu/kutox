@@ -79,6 +79,7 @@ async fn fetch(
     transfer: &mut Transfer,
 ) -> Result<(), Error> {
     let user_progress = user_tasks::runtime_progress();
+    let blocking = user_tasks::blocking_counts();
     let answer = net_dns::resolve("http.test", remaining(deadline)?)
         .await
         .expect("HTTP DNS resolution");
@@ -137,13 +138,17 @@ async fn fetch(
         }
         transfer.received += length;
         if transfer.received == 7 {
+            user_tasks::http_input_ready();
             if stage == 2 {
                 async_sync::sleep_us(150_000).unwrap().await.unwrap();
                 serial::print(format_args!(
                     "# HTTP_TEST_DELAY epoch={epoch} stage=2 delay_ms=150\n"
                 ));
             }
-            while user_tasks::runtime_progress() == user_progress {
+            while user_tasks::runtime_progress() == user_progress
+                || user_tasks::blocking_counts().0 == blocking.0
+                || user_tasks::blocking_counts().1 == blocking.1
+            {
                 remaining(deadline)?;
                 async_sync::sleep_us(10_000).unwrap().await.unwrap();
             }
@@ -182,6 +187,7 @@ async fn exercise() -> Result<(), async_runtime::TaskFailure> {
     for stage in 1..=3 {
         let user_before = user_tasks::runtime_slices();
         let progress_before = user_tasks::runtime_progress();
+        let blocking = user_tasks::blocking_counts();
         let mut transfer = Transfer::default();
         let start = millis();
         let polls = async_runtime::stats().polls;
@@ -223,13 +229,19 @@ async fn exercise() -> Result<(), async_runtime::TaskFailure> {
         ));
         let slices = user_tasks::runtime_slices() - user_before;
         let progress = user_tasks::runtime_progress() - progress_before;
+        let yields = user_tasks::blocking_counts().0 - blocking.0;
+        let sleeps = user_tasks::blocking_counts().1 - blocking.1;
         assert!(slices > 0, "HTTP transfer ran without userspace progress");
         assert!(
             progress > 0,
             "surviving ELF task did not advance during HTTP"
         );
+        assert!(
+            yields > 0 && sleeps > 0,
+            "HTTP did not overlap user yield/sleep"
+        );
         serial::print(format_args!(
-            "# USER_RUNTIME_NETWORK epoch={epoch} stage={stage} slices={slices} progress={progress} survivor=running\n"
+            "# USER_RUNTIME_NETWORK epoch={epoch} stage={stage} slices={slices} progress={progress} yield={yields} sleep={sleeps} survivor=running\n"
         ));
     }
     user_tasks::network_done();
@@ -308,6 +320,9 @@ fn exchange(
                         .as_mut()
                         .expect("admitted runtime user tasks")
                         .observe(users, event)?;
+                }
+                if let Some(proof) = proof.as_mut() {
+                    proof.deliver_input(users)?;
                 }
                 if event.is_some() && !handler {
                     resources.async_test_irq(time::now_ticks(), user_tasks::runtime_handler)?;

@@ -65,6 +65,7 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--xorriso", default="xorriso")
     parser.add_argument("--profile", required=True, choices=("ON", "OFF"))
+    parser.add_argument("--rootfs", required=True, type=Path)
     args = parser.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="kutox-iso-", dir=args.output.parent) as temp:
@@ -74,6 +75,7 @@ def main():
         boot.mkdir(parents=True)
         efi.mkdir(parents=True)
         shutil.copyfile(args.kernel, root / "boot" / "kernel")
+        shutil.copyfile(args.rootfs, root / "boot" / "rootfs.img")
         for name in ("limine-bios.sys", "limine-bios-cd.bin", "limine-uefi-cd.bin"):
             shutil.copyfile(args.limine / name, boot / name)
         shutil.copyfile(args.limine / "BOOTX64.EFI", efi / "BOOTX64.EFI")
@@ -82,6 +84,8 @@ def main():
             "/kutox MAC probe\n"
             "    protocol: limine\n"
             "    kernel_path: boot():/boot/kernel\n"
+            "    module_path: boot():/boot/rootfs.img\n"
+            "    module_string: kutox-rootfs\n"
             "    cmdline:\n",
             encoding="ascii",
         )
