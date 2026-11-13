@@ -252,7 +252,7 @@ def compiler_flags(output):
 
 def build_inputs():
     files = [ROOT / "scripts/linux_driver_check.py", ROOT / "compat/cflags.txt",
-             ROOT / "compat/include/profiles/common.headers", ROOT / "compat/bridge.c", ROOT / "compat/include/common/kutox_compat.h",
+             ROOT / "compat/include/profiles/common.headers", ROOT / "compat/e1000_bridge.c", ROOT / "compat/include/common/kutox_compat.h",
              ROOT / "compat/include/common/execution_types.h", ROOT / "compat/include/common/execution_services.h",
              ROOT / "compat/audit/common/execution_layout.c", ROOT / "compat/include/common/diagnostics_services.h",
              ROOT / "linker.ld", DRIVER / "Makefile"]
@@ -300,7 +300,7 @@ def check_bridge_guard(args, output):
     for full in (False, True):
         path = output / f"bridge-guard-{int(full)}.o"
         mode = ["-DKUTOX_E1000_FULL_SOURCE=1"] if full else []
-        run([args.clang, *flags, *mode, "-c", str(ROOT / "compat/bridge.c"), "-o", str(path)],
+        run([args.clang, *flags, *mode, "-c", str(ROOT / "compat/e1000_bridge.c"), "-o", str(path)],
             output / f"bridge-guard-{int(full)}.log")
         symbols = Elf(path).symbols()
         present = any(symbol["name"] == "e1000_get_hw_dev" and symbol["owner"] for symbol in symbols)
@@ -363,8 +363,8 @@ def execution_layouts(args, flags, output):
     return result
 
 
-SERVICE_SOURCES = ("driver_optional.c",)
-BOOT_SERVICE_SOURCES = ("diagnostics.c",)
+SERVICE_SOURCES = ("tcp_header_accessors.c",)
+BOOT_SERVICE_SOURCES = ("varargs_bridge.c",)
 
 
 def service_closure(args, output):

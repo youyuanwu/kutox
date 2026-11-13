@@ -1,4 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+/* Kept in C for original VirtIO layouts/header-only operations and varargs.
+ * Rust owns device, request, DMA and logging policy. */
 #include "block/runtime.h"
 #include "block/services.h"
 #include <linux/virtio.h>

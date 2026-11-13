@@ -1,4 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+/* Kept in C for compiler-owned va_list and variadic calling conventions.
+ * Rust owns formatting, output sinks and warning policy. */
 #include "common/kutox_compat.h"
 #include "common/diagnostics_services.h"
 extern int kutox_format(char *, size_t, const char *, void *, bool);

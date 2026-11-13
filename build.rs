@@ -75,7 +75,7 @@ fn main() {
         .include("compat/include")
         .include("linux/include")
         .include(&driver)
-        .file("compat/diagnostics.c")
+        .file("compat/varargs_bridge.c")
         .define("KUTOX_GUEST_TESTS", guest_define)
         .warnings_into_errors(true);
     for flag in flags.lines() {
@@ -120,13 +120,13 @@ fn main() {
         .include("linux/include")
         .include("linux/include/uapi")
         .include("linux/arch/x86/include/uapi")
-        .file("compat/driver_optional.c")
-        .file("compat/bridge.c")
+        .file("compat/tcp_header_accessors.c")
+        .file("compat/e1000_bridge.c")
         .file(driver.join("e1000_main.c"))
         .file(driver.join("e1000_hw.c"))
         .file(driver.join("e1000_param.c"))
         .file(driver.join("e1000_ethtool.c"))
-        .file("compat/driver_lifecycle.c")
+        .file("compat/e1000_accessors.c")
         .define("KUTOX_E1000_FULL_SOURCE", "1")
         .define("KUTOX_GUEST_TESTS", guest_define)
         .warnings_into_errors(true);
@@ -147,7 +147,7 @@ fn main() {
         .include("linux/drivers/virtio")
         .flag("-include")
         .flag("compat/include/block/runtime.h")
-        .file("compat/storage_runtime.c")
+        .file("compat/virtio_bridge.c")
         .warnings_into_errors(true);
     for unit in [
         "drivers/block/virtio_blk.c",

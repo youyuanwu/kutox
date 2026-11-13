@@ -1,4 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+/* Kept in C for original e1000 private structures and variadic debug wrappers.
+ * Rust owns MMIO access, probe ownership and fault-injection policy. */
 #include "e1000.h"
 #include "net/bridge.h"
 extern int kutox_vprint(const char *, va_list);

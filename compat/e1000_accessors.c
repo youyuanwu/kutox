@@ -1,4 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+/* Kept in C to read original e1000 private layouts and header macros.
+ * Rust owns lifecycle state, tickets and callback orchestration. */
 #include "net/services.h"
 #include "net/accessors.h"
 #include "e1000.h"

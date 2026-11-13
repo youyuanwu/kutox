@@ -444,11 +444,15 @@ Storage frees now retire idle embedded work and synchronization registrations,
 just as e1000 frees do. The threaded scheduler and BSP inline-flush policies
 remain distinct; this is not a general Linux workqueue implementation.
 
-The small [storage C bridge](../compat/storage_runtime.c) handles original
+The small [VirtIO C bridge](../compat/virtio_bridge.c) handles original
 header access/module parameters and C varargs. Both drivers share the bounded
 [Rust formatter](../src/linux_compat/diagnostics.rs) through
-[C variadic extraction](../compat/diagnostics.c); Rust does not reproduce the
-platform's `va_list` layout. The five remaining production C files total 264 lines.
+[C variadic extraction](../compat/varargs_bridge.c); Rust does not reproduce the
+platform's `va_list` layout. The five remaining production C files are named
+for their roles: the [e1000 bridge](../compat/e1000_bridge.c),
+[e1000 accessors](../compat/e1000_accessors.c),
+[TCP bitfield accessors](../compat/tcp_header_accessors.c), variadic bridge and
+VirtIO bridge. Each file documents why its boundary remains C.
 They retain original private-structure access and TCP bitfield extraction, not
 lifecycle/NAPI/block/MMIO/formatter ownership state. The old C packet, deferred
 and block-service implementations are removed rather than left as parallel
@@ -1177,8 +1181,9 @@ both builds, with all images and acceptance code ON-only.
   mapping,   and PIT-channel-2-calibrated TSC delays. The boot MAC platform path needs no
   scheduler; reference-counted APIC ownership and firmware copies use the
   already-initialized heap.
-- [The C bridge](../compat/bridge.c) owns all Linux-facing structs. Rust passes
-  primitive PCI/MMIO parameters and receives a checked, fixed-layout result.
+- [The e1000 C bridge](../compat/e1000_bridge.c) constructs original private
+  e1000 structures for the boot-MAC operation. Rust passes primitive PCI/MMIO
+  parameters and receives a checked, fixed-layout result.
 - [The compatibility header](../compat/include/common/kutox_compat.h) supplies the limited types,
   macros, and platform interfaces needed to compile the upstream translation
   unit. Execution types are shared with the source check and synthetic tests;

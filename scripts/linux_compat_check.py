@@ -13,9 +13,9 @@ STORAGE = (
 UNITS = (
     *((NET + name, "net") for name in ("e1000_main.c", "e1000_hw.c", "e1000_ethtool.c", "e1000_param.c")),
     *(("linux/" + name, "storage") for name in STORAGE),
-    ("compat/driver_optional.c", "net"),
-    ("compat/driver_lifecycle.c", "net"), ("compat/bridge.c", "net"), ("compat/diagnostics.c", "boot"),
-    ("compat/storage_runtime.c", "storage"),
+    ("compat/tcp_header_accessors.c", "net"),
+    ("compat/e1000_accessors.c", "net"), ("compat/e1000_bridge.c", "net"), ("compat/varargs_bridge.c", "boot"),
+    ("compat/virtio_bridge.c", "storage"),
 )
 ENTRY_POINTS = {
     "e1000_probe", "e1000_open", "e1000_intr", "e1000_clean", "e1000_xmit_frame",

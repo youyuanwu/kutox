@@ -492,7 +492,7 @@ algorithms. The provider reuses the already attributed Moss-backed kernel heap
 and existing execution types. The guest transport fixture is not a storage driver.
 
 The same seven unchanged Linux storage units are now also linked into both
-runtime profiles through [the small C header bridge](compat/storage_runtime.c),
+runtime profiles through [the small VirtIO C header bridge](compat/virtio_bridge.c),
 [shared Rust compatibility services](src/linux_compat/)
 and [Rust PCI/DMA ownership services](src/storage.rs). All original notices and
 GPL obligations remain applicable. The original VirtIO core, split ring,
@@ -542,7 +542,8 @@ loader is copied. The native x86 PCI inventory, swizzle/window validation and
 unlocked callback/lifecycle policy are not imported Moss implementations.
 
 The managed [e1000 control adapter](src/linux_driver.rs) and
-[C lifecycle boundary](compat/driver_lifecycle.c) invoke the same four unchanged
+[Rust lifecycle boundary](src/linux_compat/lifecycle.rs), with
+[C private-header accessors](compat/e1000_accessors.c), invoke the same four unchanged
 GPL-2.0-only Linux units described above. Linux retains its packet/descriptor,
 PHY, IRQ/NAPI and cleanup algorithms. Native frame/receipt ownership, source
 statistics snapshots, persistent service admission and managed guest hardening

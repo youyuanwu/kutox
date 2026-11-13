@@ -57,7 +57,7 @@ def build_inputs():
         ROOT / "linker.ld",
         ROOT / "compat/audit/storage/block_services.rs", ROOT / "compat/include/block/services.h",
         ROOT / "src/block_services.rs", ROOT / "build.rs",
-        ROOT / "compat/storage_runtime.c", ROOT / "compat/include/block/runtime.h",
+        ROOT / "compat/virtio_bridge.c", ROOT / "compat/include/block/runtime.h",
         ROOT / "src/storage.rs",
     ]
     files.extend(path for path in DECLARATIONS.rglob("*") if path.is_file())
