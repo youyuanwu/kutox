@@ -21,6 +21,18 @@ def elf(symbols, marked=False):
 
 
 class SharedCompatibilityTests(unittest.TestCase):
+    def test_native_dispositions_reject_missing_extra_and_overlapping_roles(self):
+        bindings = compat.native_dispositions()
+        self.assertIn("kutox_jiffies", bindings["c"])
+        self.assertNotIn("kutox_jiffies", bindings["rust"])
+        for changed in (
+            {name: api for name, api in compat.NATIVE_BINDINGS.items() if name != "kutox_linux_work"},
+            {**compat.NATIVE_BINDINGS, "hidden_backend": "crate::hidden"},
+            {**compat.NATIVE_BINDINGS, "kutox_jiffies": "crate::linux_runtime::jiffies"},
+        ):
+            with patch.object(compat, "NATIVE_BINDINGS", changed), self.assertRaisesRegex(ValueError, "dispositions"):
+                compat.native_dispositions()
+
     def test_rust_services_cannot_be_replaced_by_c_local_data_or_declarations(self):
         with patch.object(compat, "RUST_PROVIDERS", {"open"}):
             self.assertEqual(compat.rust_providers([symbol("open", 1, 2)]), ["open"])

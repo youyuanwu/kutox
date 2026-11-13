@@ -24,7 +24,6 @@ unsafe extern "C" {
     fn kutox_e1000_view(device: *mut NetDevice, out: *mut E1000View);
     #[cfg(feature = "guest-tests")]
     fn kutox_e1000_rx_resident(device: *mut NetDevice) -> i32;
-    fn kutox_linux_static_objects_retire();
 }
 fn state() -> *mut Lifecycle {
     LIFE.0.get()
@@ -59,7 +58,7 @@ pub(super) struct Access(PhantomData<*mut ()>);
 
 impl Access {
     pub(super) fn enter() -> Result<Self, i32> {
-        let result = unsafe { kutox_linux_context() };
+        let result = { crate::linux_runtime::context_code() };
         if result < 0 {
             return Err(diagnostic(c"linux_lifecycle_context", result));
         }
@@ -86,10 +85,10 @@ impl Access {
             }
             pci::kutox_c_driver_endpoint((*state()).irq);
             let init = callback(kutox_module_init, c"linux_module_init");
-            kutox_driver_trace(1, init as usize, 0, 0);
+            crate::linux_driver::trace(1, init as usize, 0, 0);
             let result = init();
             if result < 0 {
-                kutox_linux_static_objects_retire();
+                crate::linux_runtime::retire_static_objects();
                 pci::kutox_c_driver_endpoint_release();
                 return Err(result);
             }
@@ -102,7 +101,7 @@ impl Access {
                 c"linux_registered_device",
             );
             let xmit = callback((*(*device()).netdev_ops).start_xmit, c"linux_xmit_callback");
-            kutox_driver_trace(33, xmit as usize, device() as usize, 0);
+            crate::linux_driver::trace(33, xmit as usize, device() as usize, 0);
             (*state()).generation += 1;
             Handle::from_ticket((*state()).generation)
         }
@@ -134,11 +133,11 @@ impl Access {
                 return Err(-116);
             }
             let exit = callback(kutox_module_exit, c"linux_module_exit");
-            kutox_driver_trace(2, exit as usize, 0, 0);
+            crate::linux_driver::trace(2, exit as usize, 0, 0);
             exit();
             (*state()).device = ptr::null_mut();
             (*state()).loaded = false;
-            kutox_linux_static_objects_retire();
+            crate::linux_runtime::retire_static_objects();
             pci::kutox_c_driver_endpoint_release();
             Ok(())
         }
@@ -229,7 +228,7 @@ impl Device<'_> {
     pub(super) fn open(&self) -> i32 {
         unsafe {
             let open = callback((*(*self.pointer).netdev_ops).open, c"linux_open_callback");
-            kutox_driver_trace(6, open as usize, self.pointer as usize, 0);
+            crate::linux_driver::trace(6, open as usize, self.pointer as usize, 0);
             packet::kutox_c_netdev_open(self.pointer)
         }
     }
@@ -238,7 +237,7 @@ impl Device<'_> {
         packet::kutox_c_tx_abort(self.pointer);
         unsafe {
             let stop = callback((*(*self.pointer).netdev_ops).stop, c"linux_stop_callback");
-            kutox_driver_trace(7, stop as usize, self.pointer as usize, 0);
+            crate::linux_driver::trace(7, stop as usize, self.pointer as usize, 0);
             packet::kutox_c_netdev_close(self.pointer)
         }
     }
@@ -275,8 +274,8 @@ impl Device<'_> {
         unsafe {
             let v = view();
             packet::kutox_c_rx_start(self.pointer, v.mmio);
-            kutox_driver_trace(34, v.clean_rx, self.pointer as usize, 0);
-            kutox_driver_trace(35, v.alloc_rx, self.pointer as usize, 0);
+            crate::linux_driver::trace(34, v.clean_rx, self.pointer as usize, 0);
+            crate::linux_driver::trace(35, v.alloc_rx, self.pointer as usize, 0);
         }
     }
 

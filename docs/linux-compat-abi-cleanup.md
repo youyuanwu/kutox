@@ -1,7 +1,6 @@
 # Native Rust / Linux compatibility ABI cleanup
 
-Status: phases 1-2 implemented; execution/platform and facade cleanup remain
-proposed.
+Status: phases 1-3 implemented; compatibility-facade cleanup remains proposed.
 
 Audit baseline: `829ec3217f9cccf6415737a27bc995b86ae4146e`.
 The counts below describe that revision, not permanent acceptance thresholds.
@@ -20,7 +19,7 @@ interrupt owners and failure policies remain authoritative.
 Neither establishes that a function has C callers. Conversely, a callback can
 need C ABI even when no C object references its name.
 
-## Implemented memory, DMA and storage backends
+## Implemented native backend boundary
 
 The owned memory service, packet-fragment provider and native coherent allocator
 now call ordinary Rust [driver_memory::allocate](../src/driver_memory.rs).
@@ -43,12 +42,25 @@ Raw ownership, pointer-validity and completion obligations remain unsafe.
 The existing registries, retained-token behavior and exact diagnostics remain
 authoritative; no allocation or DMA policy was moved into an adapter.
 
-Nine native C shims remain behind `guest-tests`: four network allocation/DMA
-checks, three coherent-DMA probes and two block context/failure helpers.
-Each forwards to the same Rust implementation. Both the shared and
+Execution, work/NAPI, IRQ registration, PCI/MMIO/ports, tracing, diagnostics,
+delays and network wake now call native Rust APIs directly too. Work and IRQ
+callback backing remains an unsafe registration contract. Native NAPI callbacks
+use the actual [ABI NAPI type](../src/linux_abi.rs), not a cast or trampoline,
+so original callback identities remain unchanged. Static-object retirement is
+now a module-level Rust function with the same live-object and context guards.
+
+All baseline backend roles have explicit dispositions: 43 Rust-only APIs,
+20 Rust APIs with guest-only C shims, and the production C jiffies provider.
+The receive, worker-stop, IRQ pending/depth and thread-probe facades are also
+guest-gated; receive retains its production Rust core. Boot/assembly entries
+and stable Rust metadata labels are unchanged.
+
+Each C shim forwards to the same Rust implementation. Both the shared and
 [isolated block audit root](../compat/audit/storage/block_services.rs) use the
 common audit bindings and record their actual source dependencies and native
-API mappings. Their exact external allowlists are unchanged.
+API mappings, including the retained C provider. Their exact external allowlists
+are unchanged. Compatibility-side lifecycle/storage/control facades are the
+next cleanup phase, not a reason to keep native Rust-to-Rust extern imports.
 
 ## Audit findings
 
@@ -99,29 +111,31 @@ types, raw-pointer contracts and the current source.
 | [storage.rs](../src/storage.rs) | 7 | 0 | 0 | Storage allocation, PCI, MMIO, DMA and reset clock |
 | Total | 43 | 20 | 1 | |
 
-The native allocation example is
-[kutox_driver_alloc](../src/driver_memory.rs#L190). Its users are Rust:
+The baseline native allocation example was `kutox_driver_alloc`, now
+[driver_memory::allocate](../src/driver_memory.rs). Its users are Rust:
 the memory service, fragment allocation and coherent allocation. The declaration
 in a C header is not a C call.
 
 ### Other native surfaces
 
-The remaining 13 native-side C-ABI definitions comprise:
+At the baseline, the other 13 native-side C-ABI definitions comprised:
 
 - Two unused exports: `kutox_driver_known` and `kutox_storage_fail`.
-  The latter also has an obsolete declaration in
+  The latter also had an obsolete declaration in
   [block/runtime.h](../compat/include/block/runtime.h).
 - Five unconditionally defined fixture facades: `kutox_driver_receive`,
   `kutox_linux_workers_stop`, `kutox_linux_irq_pending`,
   `kutox_linux_irq_depth` and `kutox_thread_yield_probe`.
-  Split the Rust receive core before gating its C facade; preserve the probe's
-  C ABI when the guest assembly fixture is enabled.
+  Their C facades are now guest-gated, with a separate Rust receive core and
+  the probe's C ABI preserved for the enabled assembly fixture.
 - Three already-gated test helpers: `kutox_block_fail_after`,
   `kutox_driver_fail_after` and `kutox_linux_test_now_us`.
 - Three production entry points: `kmain`, `kutox_exception_dispatch` and
   `kutox_thread_entry`. Their linker/assembly contracts remain.
 
-Two additional obsolete declarations have no current implementation or users:
+The two unused exports above and their obsolete declarations are now removed.
+Two additional obsolete declarations without implementations or users were
+also removed:
 `kutox_driver_retire` in [net/services.h](../compat/include/net/services.h)
 and `kutox_storage_check` in
 [block/runtime.h](../compat/include/block/runtime.h).

@@ -456,18 +456,7 @@ impl ProbeResult {
     }
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_serial_byte(byte: u8) {
-    serial::byte(byte);
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn kutox_delay_us(usec: u64) {
-    time::delay_us(usec);
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn kutox_check_boot_context() {
+pub(crate) fn check_boot_context() {
     let flags: u64;
     unsafe { asm!("pushfq; pop {}", out(reg) flags, options(preserves_flags)) };
     assert!(flags & (1 << 9) == 0, "probe requires interrupts disabled");
@@ -477,13 +466,16 @@ extern "C" fn kutox_check_boot_context() {
     );
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn kutox_platform_fail(operation: *const core::ffi::c_char) -> ! {
-    let operation = unsafe { CStr::from_ptr(operation) }
-        .to_str()
-        .expect("invalid platform failure string");
+pub(crate) fn platform_fail(operation: &CStr) -> ! {
+    let operation = operation.to_str().expect("invalid platform failure string");
     println!("E1000_MAC_FAIL stage=platform operation={operation} code=-1");
     io::finish(false);
+}
+
+#[cfg(feature = "guest-tests")]
+#[unsafe(no_mangle)]
+unsafe extern "C" fn kutox_platform_fail(operation: *const core::ffi::c_char) -> ! {
+    platform_fail(unsafe { CStr::from_ptr(operation) })
 }
 
 #[panic_handler]

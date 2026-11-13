@@ -63,8 +63,6 @@ unsafe extern "C" {
     fn kutox_block_cancel(ticket: u64) -> i32;
     fn kutox_block_pump() -> i32;
     fn kutox_block_reset_complete(request: *mut c_void, status: u8);
-    fn kutox_linux_local_work(address: usize, generation: u64, operation: u32) -> i32;
-    fn kutox_linux_work(address: usize, generation: u64, operation: u32, delay: u64) -> i32;
 }
 fn state() -> *mut State {
     STATE.0.get()
@@ -175,7 +173,7 @@ pub unsafe extern "C" fn device_add(d: *mut Device) -> i32 {
     }
     let matches = match unsafe { (*bus).matches } {
         Some(f) => f,
-        None => unsafe { kutox_platform_fail(c"bus_match_missing".as_ptr()) },
+        None => crate::platform_fail(c"bus_match_missing"),
     };
     if unsafe { matches(d, driver) } == 0 {
         return diagnostic(c"device_add_match", -19);
@@ -195,7 +193,7 @@ pub unsafe extern "C" fn device_add(d: *mut Device) -> i32 {
     }
     let probe = match unsafe { (*bus).probe } {
         Some(f) => f,
-        None => unsafe { kutox_platform_fail(c"bus_probe_missing".as_ptr()) },
+        None => crate::platform_fail(c"bus_probe_missing"),
     };
     let result = unsafe { probe(d) };
     if result != 0 {
@@ -237,7 +235,7 @@ pub unsafe extern "C" fn put_device(d: *mut Device) {
     require(unsafe { !(*state()).added }, c"storage_device_added");
     let release = match unsafe { (*d).release } {
         Some(f) => f,
-        None => unsafe { kutox_platform_fail(c"device_release_missing".as_ptr()) },
+        None => crate::platform_fail(c"device_release_missing"),
     };
     unsafe {
         (*state()).device = ptr::null_mut();
@@ -253,7 +251,7 @@ pub unsafe extern "C" fn device_unregister(d: *mut Device) {
     );
     let remove = match unsafe { (*(*state()).bus).remove } {
         Some(f) => f,
-        None => unsafe { kutox_platform_fail(c"bus_remove_missing".as_ptr()) },
+        None => crate::platform_fail(c"bus_remove_missing"),
     };
     unsafe {
         remove(d);
@@ -284,7 +282,7 @@ pub extern "C" fn kutox_compat_device_name(d: *mut Device) -> *mut c_char {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn kobj_to_dev(_k: *mut c_void) -> *mut Device {
-    unsafe { kutox_platform_fail(c"storage_sysfs_not_admitted".as_ptr()) }
+    crate::platform_fail(c"storage_sysfs_not_admitted")
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn dev_of_node(d: *mut Device) -> *mut c_void {
@@ -296,14 +294,14 @@ pub unsafe extern "C" fn dev_of_node(d: *mut Device) -> *mut c_void {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn of_get_available_child_count(_node: *const c_void) -> u32 {
-    unsafe { kutox_platform_fail(c"storage_device_tree_children".as_ptr()) }
+    crate::platform_fail(c"storage_device_tree_children")
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn of_get_next_available_child(
     _node: *const c_void,
     _previous: *mut c_void,
 ) -> *mut c_void {
-    unsafe { kutox_platform_fail(c"storage_device_tree_next".as_ptr()) }
+    crate::platform_fail(c"storage_device_tree_next")
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn of_node_put(node: *mut c_void) {
@@ -311,7 +309,7 @@ pub extern "C" fn of_node_put(node: *mut c_void) {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn of_device_is_compatible(_node: *const c_void, _name: *const c_char) -> bool {
-    unsafe { kutox_platform_fail(c"storage_device_tree_compatible".as_ptr()) }
+    crate::platform_fail(c"storage_device_tree_compatible")
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn dev_num_vf(d: *mut Device) -> i32 {
@@ -343,7 +341,7 @@ pub unsafe extern "C" fn queue_work(queue: *mut c_void, work: *mut Work) -> bool
         c"storage_work_capacity",
     );
     let queued = checked(
-        unsafe { kutox_linux_local_work(work as usize, generation, 0) },
+        crate::linux_deferred::local_work(work as usize, generation, 0),
         c"local_work_enqueue",
     ) != 0;
     if queued {
@@ -366,7 +364,7 @@ pub unsafe extern "C" fn flush_work(work: *mut Work) -> bool {
         (*state()).running = true;
     }
     let result = checked(
-        unsafe { kutox_linux_local_work(work as usize, generation, 1) },
+        crate::linux_deferred::local_work(work as usize, generation, 1),
         c"local_work_flush",
     ) != 0;
     unsafe {

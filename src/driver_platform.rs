@@ -136,17 +136,11 @@ pub fn selected_location() -> Result<(u8, u8, u8), i32> {
         .map(|binding| binding.device.location())
         .ok_or(-19)
 }
-#[unsafe(no_mangle)]
-extern "C" fn kutox_driver_device() -> usize {
+pub(crate) fn device_key() -> usize {
     KEY.load(Ordering::Acquire)
 }
-#[unsafe(no_mangle)]
-extern "C" fn kutox_driver_known(key: usize) -> bool {
-    check_device(key).is_ok()
-}
 
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_driver_pci(operation: u32, first: u64, second: u64) -> i32 {
+pub(crate) fn pci_operation(operation: u32, first: u64, second: u64) -> i32 {
     let result = (|| {
         driver_memory::context(false)?;
         #[cfg(feature = "guest-tests")]
@@ -274,8 +268,7 @@ pub extern "C" fn kutox_driver_pci(operation: u32, first: u64, second: u64) -> i
         error
     })
 }
-#[unsafe(no_mangle)]
-extern "C" fn kutox_driver_pci_value(operation: u32) -> u64 {
+pub(crate) fn pci_value(operation: u32) -> u64 {
     let binding = unsafe { (&*BINDING.0.get()).as_ref() }.expect("unbound PCI query");
     match operation {
         0 => binding.bar.base,
@@ -289,8 +282,7 @@ extern "C" fn kutox_driver_pci_value(operation: u32) -> u64 {
         _ => fail(Failure::new("driver_pci_query", -22)),
     }
 }
-#[unsafe(no_mangle)]
-extern "C" fn kutox_driver_mmio(address: usize, value: u32, writing: bool) -> bool {
+pub(crate) fn check_mmio(address: usize, value: u32, writing: bool) -> bool {
     let base = MMIO.load(Ordering::Acquire);
     if base == 0
         || address < base
@@ -317,7 +309,7 @@ extern "C" fn kutox_driver_mmio(address: usize, value: u32, writing: bool) -> bo
         GATED.store(false, Ordering::Release);
     }
     if writing && address == base + 0xc8 {
-        crate::linux_driver::kutox_driver_trace(16, 0, KEY.load(Ordering::Acquire), value as i32);
+        crate::linux_driver::trace(16, 0, KEY.load(Ordering::Acquire), value as i32);
     }
     if writing && address == base + 0x2818 {
         driver_memory::rx_rearm()
@@ -347,6 +339,7 @@ pub fn gate() {
     time::delay_us(10_000);
     GATED.store(true, Ordering::Release);
 }
+#[cfg(feature = "guest-tests")]
 #[unsafe(no_mangle)]
 extern "C" fn kutox_driver_gate() {
     gate();
@@ -367,8 +360,7 @@ pub fn quiescent() -> bool {
     KEY.load(Ordering::Acquire) == 0 && unsafe { (&*BINDING.0.get()).is_none() }
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_driver_outl(value: u32, port: usize) {
+pub(crate) fn outl(value: u32, port: usize) {
     driver_memory::context(false)
         .unwrap_or_else(|error| fail(Failure::new("driver_pio_context", error)));
     let is_reset = {

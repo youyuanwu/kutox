@@ -34,7 +34,6 @@ unsafe extern "C" {
     fn kutox_c_linux_kick(ticket: u64, operation: u32) -> i32;
     fn kutox_c_linux_live_ring_free(ticket: u64) -> i32;
     fn kutox_c_linux_rx_failures(ticket: u64) -> i32;
-    fn kutox_linux_irq_pending() -> i32;
 }
 
 fn sleep() {
@@ -372,14 +371,14 @@ fn teardown() {
     let start = time::now_ticks();
     let budget = time::ticks_for_us(100_000)
         .unwrap_or_else(|error| panic!("pending TX IRQ clock: {} {}", error.stage, error.code));
-    while unsafe { kutox_linux_irq_pending() } == 0 {
+    while !crate::linux_irq::pending().unwrap() {
         assert!(
             time::now_ticks().wrapping_sub(start) < budget,
             "TX IRQ did not become pending"
         );
         core::hint::spin_loop();
     }
-    assert_eq!(unsafe { kutox_linux_irq_pending() }, 1);
+    assert!(crate::linux_irq::pending().unwrap());
     serial::print(format_args!(
         "# LINUX_HARD_IRQ pending=1 tx=1 watchdog=queued\n"
     ));

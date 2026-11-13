@@ -61,13 +61,14 @@ inventories remain 209/203 and retain actual kernel-link exclusion.
 
 The shared and isolated block Rust roots use
 [audit-only native bindings](../compat/audit/common/native_backend.rs) for
-memory/DMA, block backing and native storage APIs. Reports hash their actual
-compiler dependencies and record unresolved-label/native-API mappings.
+memory/DMA, execution/platform, block backing and native storage APIs.
+Reports hash their actual compiler dependencies and record every native role's
+Rust API or retained C-provider disposition against the exact dependency ledger.
 Kernel profile checks require
 the adjacent Cargo `.d` file, reject audit sources and compile-only ELF markers,
 and reject obsolete Rust-only native exports. Required C fixture shims must be
-present in ON and absent in OFF; genuine Linux providers remain independently
-verified.
+present in ON and absent in OFF, including receive/worker/IRQ/thread facades.
+Production C jiffies and genuine Linux providers remain independently verified.
 
 Runtime declarations and header-forwarding manifests live under
 [compat/include/](../compat/include/), not audit directories. Audit-only

@@ -13,14 +13,14 @@
 #define msleep storage_msleep
 #define kutox_module kutox_storage_module
 #include "block/driver.h"
+#if KUTOX_GUEST_TESTS
 extern void kutox_platform_fail(const char *) __attribute__((noreturn));
+#endif
 #undef module_init
 #undef module_exit
 #define module_init(f) int (*const kutox_storage_init_##f)(void) = f
 #define module_exit(f) void (*const kutox_storage_exit_##f)(void) = f
 
-void kutox_storage_fail(const char *) __attribute__((noreturn));
-void kutox_storage_check(bool, const char *);
 
 int kutox_storage_start(unsigned int);
 void kutox_storage_stop(void);

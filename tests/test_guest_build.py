@@ -104,10 +104,26 @@ class GuestBuildTests(unittest.TestCase):
             symbols = (RUNTIME_SYMBOLS | GUEST_SYMBOLS if enabled else RUNTIME_SYMBOLS) - {"kutox_driver_alloc"}
             validate_symbols(symbols, enabled)
             obsolete = ("kutox_driver_alloc", "kutox_driver_dma_map", "kutox_storage_dma",
-                        "kutox_block_deallocate", "kutox_linux_dma_publish")
+                        "kutox_block_deallocate", "kutox_linux_dma_publish",
+                        "kutox_linux_request_irq", "kutox_linux_napi_init",
+                        "kutox_linux_static_objects_retire", "kutox_driver_trace",
+                        "kutox_driver_known", "kutox_storage_fail")
             for wrong in (*[symbols | {name} for name in obsolete], symbols - {"kmalloc"}):
                 with self.subTest(enabled=enabled, wrong=wrong), self.assertRaises(AssertionError):
                     validate_symbols(wrong, enabled)
+
+    def test_native_fixture_facades_are_required_only_in_enabled_profile(self):
+        for name in ("kutox_driver_receive", "kutox_linux_workers_stop", "kutox_linux_irq_pending",
+                     "kutox_linux_irq_depth", "kutox_thread_yield_probe", "kutox_platform_fail",
+                     "kutox_linux_context", "kutox_linux_work_init"):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(AssertionError, "guest fixture"):
+                    validate_symbols((RUNTIME_SYMBOLS | GUEST_SYMBOLS) - {name}, True)
+                with self.assertRaisesRegex(AssertionError, "guest-only"):
+                    validate_symbols(RUNTIME_SYMBOLS | {name}, False)
+        for enabled in (False, True):
+            with self.assertRaisesRegex(AssertionError, "runtime driver"):
+                validate_symbols((RUNTIME_SYMBOLS | (GUEST_SYMBOLS if enabled else set())) - {"kutox_jiffies"}, enabled)
 
     def test_runtime_dependencies_reject_audit_sources_including_aliases_and_missing_evidence(self):
         with tempfile.TemporaryDirectory() as directory:

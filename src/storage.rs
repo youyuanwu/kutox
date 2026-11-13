@@ -10,7 +10,6 @@ use alloc::alloc::{alloc_zeroed, dealloc};
 use core::{
     alloc::Layout,
     cell::UnsafeCell,
-    ffi::{CStr, c_char},
     sync::atomic::{Ordering, compiler_fence},
 };
 use moss_libkernel::memory::allocators::phys::PageAllocation;
@@ -406,13 +405,6 @@ pub fn run(
     result
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn kutox_storage_fail(operation: *const c_char) -> ! {
-    let name = unsafe { CStr::from_ptr(operation) }
-        .to_str()
-        .expect("storage operation encoding");
-    panic!("storage invariant: {name}");
-}
 pub(crate) fn allocate(size: usize, alignment: usize, gfp: u32) -> usize {
     if driver_memory::context(false).is_err()
         || gfp & !kutox::linux_abi::GFP_ZERO != kutox::linux_abi::GFP_KERNEL

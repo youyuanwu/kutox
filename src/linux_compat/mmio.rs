@@ -26,10 +26,6 @@ static PROBE: Bsp<Probe> = Bsp(UnsafeCell::new(Probe {
     denied: 0,
 }));
 unsafe extern "C" {
-    fn kutox_driver_mmio(address: usize, value: u32, writing: bool) -> bool;
-    fn kutox_driver_outl(value: u32, port: usize);
-    fn kutox_delay_us(usec: u64);
-    fn kutox_check_boot_context();
     fn kutox_e1000_mac(base: usize, vendor: u16, device: u16, revision: u8, result: *mut MacResult);
 }
 fn state() -> *mut Probe {
@@ -37,7 +33,7 @@ fn state() -> *mut Probe {
 }
 fn check(address: usize, value: u32, writing: bool) {
     unsafe {
-        if !(*state()).active && kutox_driver_mmio(address, value, writing) {
+        if !(*state()).active && crate::driver_platform::check_mmio(address, value, writing) {
             return;
         }
         require(
@@ -90,11 +86,11 @@ pub unsafe extern "C" fn writel(value: u32, address: *mut u32) {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn udelay(usec: usize) {
-    unsafe { kutox_delay_us(usec as u64) }
+    crate::time::delay_us(usec as u64)
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn outl(value: u32, port: usize) {
-    unsafe { kutox_driver_outl(value, port) }
+    crate::driver_platform::outl(value, port)
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn phys_to_virt(_address: usize) -> *mut c_void {
@@ -143,7 +139,7 @@ pub unsafe extern "C" fn kutox_read_mac(
         {
             return;
         }
-        kutox_check_boot_context();
+        crate::check_boot_context();
         #[cfg(not(feature = "guest-tests"))]
         if deny != 0 {
             (*out).code = -95;

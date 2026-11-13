@@ -103,14 +103,6 @@ static EPOCH: AtomicU64 = AtomicU64::new(0);
 static WAKE: threads::WaitQueue = threads::WaitQueue::new();
 static WORK_WAKE: threads::WaitQueue = threads::WaitQueue::new();
 
-unsafe extern "C" {
-    fn kutox_linux_work_init(
-        address: usize,
-        callback: Option<unsafe extern "C" fn(*mut c_void)>,
-    ) -> i64;
-    fn kutox_linux_work(address: usize, key: u64, operation: u32, delay: u64) -> i32;
-}
-
 pub(crate) fn checkpoint(stage: Stage) -> Result<(), Failure> {
     if FAIL_STAGE
         .compare_exchange(stage as usize, 0, Ordering::AcqRel, Ordering::Acquire)
@@ -305,7 +297,8 @@ fn client(_: usize) {
     ));
     let object = alloc::boxed::Box::new([0usize; 1]);
     let address = object.as_ptr() as usize;
-    let key = unsafe { kutox_linux_work_init(address, Some(kutox_guest_runtime_work)) };
+    let key =
+        unsafe { crate::linux_deferred::register_work(address, Some(kutox_guest_runtime_work)) };
     assert!(key > 0);
     let count = if MODE.load(Ordering::Relaxed) == 2 {
         2
@@ -313,7 +306,10 @@ fn client(_: usize) {
         1
     };
     for expected in 1..=count {
-        assert_eq!(unsafe { kutox_linux_work(address, key as u64, 0, 0) }, 1);
+        assert_eq!(
+            { crate::linux_deferred::work_operation(address, key as u64, 0, 0) },
+            1
+        );
         loop {
             let token = WORK_WAKE.prepare();
             if WORK.load(Ordering::Acquire) == expected {
@@ -331,8 +327,14 @@ fn client(_: usize) {
             ));
         }
     }
-    assert_eq!(unsafe { kutox_linux_work(address, key as u64, 1, 0) }, 0);
-    assert_eq!(unsafe { kutox_linux_work(address, key as u64, 2, 0) }, 0);
+    assert_eq!(
+        { crate::linux_deferred::work_operation(address, key as u64, 1, 0) },
+        0
+    );
+    assert_eq!(
+        { crate::linux_deferred::work_operation(address, key as u64, 2, 0) },
+        0
+    );
     drop(object);
     serial::print(format_args!(
         "# RUNTIME_WORK callbacks={count} workers_retained=2 objects_retired=1\n"

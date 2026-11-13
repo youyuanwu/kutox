@@ -20,11 +20,6 @@ pub const METADATA_BYTES: usize = core::mem::size_of::<threads::WaitQueue>()
 pub const SESSION_METADATA_BYTES: usize = core::mem::size_of::<SpinLockIrq<SessionGate, X86Cpu>>()
     + core::mem::size_of::<PacketSession>();
 
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_net_wake() {
-    wake();
-}
-
 pub fn wake() {
     EVENT
         .notify_without_switch(true)

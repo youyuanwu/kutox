@@ -43,7 +43,7 @@ fn device(state: &State, key: usize) -> Result<&Device<'static, 'static>, Error>
 
 pub(crate) fn set_mask(key: usize, mask: u64) -> i32 {
     if crate::driver_platform::check_device(key).is_ok() {
-        return crate::driver_platform::kutox_driver_pci(8, mask, 0);
+        return crate::driver_platform::pci_operation(8, mask, 0);
     }
     with_registry(|state| device(state, key)?.set_mask(mask))
         .map(|()| 0)

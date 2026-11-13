@@ -380,9 +380,9 @@ and `/bin/init` loader continue to use the immutable Limine RAM module.
 
 The [native ABI cleanup](linux-compat-abi-cleanup.md) documents which
 internal C-ABI round trips can become ordinary Rust calls while preserving
-real Linux, fixture, callback and audit contracts. Allocation, DMA, block backing
-and native storage calls now use Rust APIs; execution/platform and internal
-facade cleanup remain proposed.
+real Linux, fixture, callback and audit contracts. All audited compatibility-to-
+native calls now use Rust APIs, retaining C jiffies and actual guest-only shims.
+Compatibility-side internal facade cleanup remains proposed.
 
 [The common Rust modules](../src/linux_compat/) implement the selected
 Linux-facing C ABI using `#[unsafe(no_mangle)] extern "C"` exports:
@@ -405,7 +405,8 @@ Linux-facing C ABI using `#[unsafe(no_mangle)] extern "C"` exports:
   `lifecycle_ffi.rs` preserves the C exports and their output-pointer contracts;
   `lifecycle_raw.rs` confines driver pointers, private-header access and callbacks.
 - `napi.rs`: generation-bearing NAPI registrations, queue associations and
-  retirement, forwarding to the existing native executor.
+  retirement, calling the native executor with the same ABI NAPI callback type
+  and original callback pointer.
 - `mmio.rs`: checked MMIO, barriers, port forwarding and boot-MAC ownership/
   EEPROM fault policy; original e1000 initialization remains a C header bridge.
 - `block.rs`: owned request/PDU/payload, queue/scatterlist services, cancellation

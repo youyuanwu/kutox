@@ -32,13 +32,28 @@ NATIVE_BINDINGS = {
     "kutox_block_deallocate": "crate::block_services::deallocate",
     "kutox_block_diag": "crate::block_services::diag",
     "kutox_block_fail": "crate::block_services::fail",
+    "kutox_check_boot_context": "crate::check_boot_context",
+    "kutox_delay_us": "crate::time::delay_us",
     "kutox_driver_alloc": "crate::driver_memory::allocate",
+    "kutox_driver_device": "crate::driver_platform::device_key",
+    "kutox_driver_diag": "crate::driver_memory::diag",
     "kutox_driver_dma_map": "crate::driver_memory::dma_map",
     "kutox_driver_dma_operation": "crate::driver_memory::dma_operation",
     "kutox_driver_free": "crate::driver_memory::free",
+    "kutox_driver_gate": "crate::driver_platform::gate",
     "kutox_driver_ingress": "crate::driver_memory::ingress",
+    "kutox_driver_mmio": "crate::driver_platform::check_mmio",
+    "kutox_driver_outl": "crate::driver_platform::outl",
+    "kutox_driver_pci": "crate::driver_platform::pci_operation",
+    "kutox_driver_pci_value": "crate::driver_platform::pci_value",
     "kutox_driver_range": "crate::driver_memory::range",
     "kutox_driver_size": "crate::driver_memory::size",
+    "kutox_driver_trace": "crate::linux_driver::trace",
+    "kutox_driver_tracing": "crate::linux_driver::tracing",
+    "kutox_linux_bh": "crate::linux_deferred::bh",
+    "kutox_linux_completion": "crate::linux_runtime::completion",
+    "kutox_linux_cond_resched": "crate::linux_runtime::cond_resched",
+    "kutox_linux_context": "crate::linux_runtime::context_code",
     "kutox_linux_dma_alloc": "crate::linux_dma::allocate",
     "kutox_linux_dma_free": "crate::linux_dma::free",
     "kutox_linux_dma_mask": "crate::linux_dma::set_mask",
@@ -47,6 +62,27 @@ NATIVE_BINDINGS = {
     "kutox_linux_dma_rmb": "crate::dma::read_barrier",
     "kutox_linux_dma_unregister": "crate::linux_dma::unregister",
     "kutox_linux_dma_wmb": "crate::dma::write_barrier",
+    "kutox_linux_irq": "crate::linux_irq::operation",
+    "kutox_linux_irq_acquired": "crate::linux_runtime::irq_acquired",
+    "kutox_linux_irq_released": "crate::linux_runtime::irq_released",
+    "kutox_linux_irq_save": "crate::linux_runtime::irq_save",
+    "kutox_linux_local_work": "crate::linux_deferred::local_work",
+    "kutox_linux_msleep": "crate::linux_runtime::msleep",
+    "kutox_linux_mutex": "crate::linux_runtime::mutex",
+    "kutox_linux_napi": "crate::linux_deferred::napi_operation",
+    "kutox_linux_napi_init": "crate::linux_deferred::register_napi",
+    "kutox_linux_object_generation": "crate::linux_runtime::object_generation",
+    "kutox_linux_ratelimit": "crate::linux_runtime::ratelimit",
+    "kutox_linux_request_irq": "crate::linux_irq::request_irq",
+    "kutox_linux_sleep_range": "crate::linux_runtime::sleep_range",
+    "kutox_linux_spin_owner": "crate::linux_runtime::spin_owner",
+    "kutox_linux_static_objects_retire": "crate::linux_runtime::retire_static_objects",
+    "kutox_linux_wait_completion": "crate::linux_runtime::wait_completion",
+    "kutox_linux_work": "crate::linux_deferred::work_operation",
+    "kutox_linux_work_init": "crate::linux_deferred::register_work",
+    "kutox_net_wake": "crate::net_device::wake",
+    "kutox_platform_fail": "crate::platform_fail",
+    "kutox_serial_byte": "crate::serial::byte",
     "kutox_storage_alloc": "crate::storage::allocate",
     "kutox_storage_begin_reset": "crate::storage::begin_reset",
     "kutox_storage_clock": "crate::storage::clock",
@@ -55,6 +91,22 @@ NATIVE_BINDINGS = {
     "kutox_storage_mmio": "crate::storage::mmio",
     "kutox_storage_pci": "crate::storage::pci",
 }
+NATIVE_C_BINDINGS = {
+    "kutox_jiffies": "crate::linux_runtime::jiffies",
+}
+
+
+def native_dispositions():
+    from linux_driver_check import lines
+    expected = set(lines(ROOT / "compat/audit/common/service-ffi.txt")) - {
+        "memcpy", "memmove", "memset", "strlen",
+    }
+    if (NATIVE_BINDINGS.keys() & NATIVE_C_BINDINGS.keys()
+            or NATIVE_BINDINGS.keys() | NATIVE_C_BINDINGS.keys() != expected):
+        raise ValueError("native backend dispositions do not match the explicit dependency ledger")
+    return {"rust": dict(NATIVE_BINDINGS), "c": dict(NATIVE_C_BINDINGS)}
+
+
 PACKET_PROVIDERS = {
     "alloc_etherdev", "register_netdev", "unregister_netdev", "free_netdev",
     "alloc_skb", "skb_put", "dev_kfree_skb", "netdev_alloc_frag", "skb_free_frag",
@@ -127,6 +179,10 @@ def inputs():
         ROOT / "src/linux_abi.rs", ROOT / "src/block_abi.rs", ROOT / "src/driver_memory.rs",
         ROOT / "src/linux_dma.rs", ROOT / "src/dma.rs", ROOT / "src/block_services.rs",
         ROOT / "src/storage.rs",
+        ROOT / "src/linux_runtime.rs", ROOT / "src/linux_deferred.rs", ROOT / "src/linux_irq.rs",
+        ROOT / "src/linux_driver.rs", ROOT / "src/driver_platform.rs", ROOT / "src/main.rs",
+        ROOT / "src/net_device.rs", ROOT / "src/serial.rs", ROOT / "src/time.rs",
+        ROOT / "src/threads.rs",
         ROOT / "compat/audit/common/service-ffi.txt",
     ]
     files.extend((ROOT / "src/linux_compat").glob("*.rs"))
@@ -181,11 +237,13 @@ def rust_source_provenance(dependency, root):
 
 def rust_provenance(output):
     from linux_driver_check import digest
+    bindings = native_dispositions()
     return {
         "command": rust_command(output),
         "object_sha256": digest(output / "rust-services.o"),
         "sources": rust_source_provenance(output / "rust-services.d", "compat/audit/common/rust_services.rs"),
-        "native_bindings": dict(NATIVE_BINDINGS),
+        "native_bindings": bindings["rust"],
+        "native_c_bindings": bindings["c"],
     }
 
 

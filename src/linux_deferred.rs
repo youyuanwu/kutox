@@ -13,7 +13,7 @@ use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
 const CAPACITY: usize = 32;
 pub const BUDGET: i32 = 64;
 type WorkFn = unsafe extern "C" fn(*mut c_void);
-type PollFn = unsafe extern "C" fn(*mut c_void, i32) -> i32;
+type PollFn = unsafe extern "C" fn(*mut crate::linux_compat::abi::Napi, i32) -> i32;
 
 #[derive(Clone, Copy)]
 enum Callback {
@@ -154,8 +154,7 @@ fn notify(queue: &'static threads::WaitQueue) {
         .unwrap_or_else(|error| fail("notify", error as i32));
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_bh(operation: u32) -> i32 {
+pub(crate) fn bh(operation: u32) -> i32 {
     if exceptions::is_dispatching() || cpu::interrupts_enabled() {
         return Error::Context as i32;
     }
@@ -175,8 +174,9 @@ extern "C" fn kutox_linux_bh(operation: u32) -> i32 {
     }
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_work_init(address: usize, callback: Option<WorkFn>) -> i64 {
+/// # Safety
+/// Callback backing remains valid and address-bound until cancellation and removal.
+pub(crate) unsafe fn register_work(address: usize, callback: Option<WorkFn>) -> i64 {
     let result = (|| {
         sleepable()?;
         let callback = callback.ok_or(Error::Invalid)?;
@@ -187,8 +187,7 @@ extern "C" fn kutox_linux_work_init(address: usize, callback: Option<WorkFn>) ->
     result.map_or_else(|error| i64::from(error as i32), |key| key.raw() as i64)
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_work(address: usize, raw: u64, operation: u32, delay: u64) -> i32 {
+pub(crate) fn work_operation(address: usize, raw: u64, operation: u32, delay: u64) -> i32 {
     work(address, Key::from_raw(raw), operation, delay).map_or_else(|error| error as i32, i32::from)
 }
 
@@ -263,8 +262,9 @@ fn work(address: usize, key: Key, operation: u32, delay: u64) -> Result<bool, Er
     }
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_napi_init(address: usize, callback: Option<PollFn>) -> i64 {
+/// # Safety
+/// The actual ABI NAPI object and callback remain live until disabled and removed.
+pub(crate) unsafe fn register_napi(address: usize, callback: Option<PollFn>) -> i64 {
     let result = (|| {
         sleepable()?;
         let callback = callback.ok_or(Error::Invalid)?;
@@ -275,8 +275,7 @@ extern "C" fn kutox_linux_napi_init(address: usize, callback: Option<PollFn>) ->
     result.map_or_else(|error| i64::from(error as i32), |key| key.raw() as i64)
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_local_work(address: usize, raw: u64, operation: u32) -> i32 {
+pub(crate) fn local_work(address: usize, raw: u64, operation: u32) -> i32 {
     let result = (|| {
         if ACTIVE.load(Ordering::Acquire) || WORKERS.load(Ordering::Acquire) != 0 {
             return Err(Error::Context);
@@ -323,8 +322,7 @@ extern "C" fn kutox_linux_local_work(address: usize, raw: u64, operation: u32) -
     result.map_or_else(|error| error as i32, i32::from)
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_napi(address: usize, raw: u64, operation: u32, done: i32) -> i32 {
+pub(crate) fn napi_operation(address: usize, raw: u64, operation: u32, done: i32) -> i32 {
     napi(address, Key::from_raw(raw), operation, done).map_or_else(|error| error as i32, i32::from)
 }
 
@@ -453,8 +451,8 @@ fn request_stop() -> Result<(), Error> {
     Ok(())
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_workers_stop() {
+#[cfg(feature = "guest-tests")]
+pub(crate) fn stop_workers() {
     checked(request_stop(), "workers_stop");
 }
 
@@ -509,12 +507,7 @@ fn worker(which: usize) {
             let done = match callback {
                 Callback::Work(callback) => {
                     CURRENT_WORK.store(invocation.key.raw(), Ordering::Release);
-                    crate::linux_driver::kutox_driver_trace(
-                        11,
-                        callback as usize,
-                        invocation.address,
-                        0,
-                    );
+                    crate::linux_driver::trace(11, callback as usize, invocation.address, 0);
                     #[cfg(feature = "guest-tests")]
                     if crate::linux_driver::tracing() {
                         crate::guest_tests::linux_hardening::pause_source(1);
@@ -533,19 +526,9 @@ fn worker(which: usize) {
                     if crate::linux_driver::tracing() {
                         crate::guest_tests::linux_hardening::atomic_reentry();
                     }
-                    crate::linux_driver::kutox_driver_trace(
-                        13,
-                        callback as usize,
-                        invocation.address,
-                        BUDGET,
-                    );
-                    let done = unsafe { callback(invocation.address as *mut c_void, BUDGET) };
-                    crate::linux_driver::kutox_driver_trace(
-                        26,
-                        callback as usize,
-                        invocation.address,
-                        done,
-                    );
+                    crate::linux_driver::trace(13, callback as usize, invocation.address, BUDGET);
+                    let done = unsafe { callback(invocation.address as *mut _, BUDGET) };
+                    crate::linux_driver::trace(26, callback as usize, invocation.address, done);
                     CURRENT_NAPI.store(0, Ordering::Release);
                     done
                 }
@@ -575,6 +558,36 @@ fn worker(which: usize) {
         ACTIVE.store(false, Ordering::Release);
     }
     notify(&JOIN);
+}
+
+#[cfg(feature = "guest-tests")]
+mod guest_ffi {
+    use super::*;
+
+    #[unsafe(no_mangle)]
+    extern "C" fn kutox_linux_bh(operation: u32) -> i32 {
+        bh(operation)
+    }
+
+    #[unsafe(no_mangle)]
+    unsafe extern "C" fn kutox_linux_work_init(address: usize, callback: Option<WorkFn>) -> i64 {
+        unsafe { register_work(address, callback) }
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn kutox_linux_work(address: usize, raw: u64, operation: u32, delay: u64) -> i32 {
+        work_operation(address, raw, operation, delay)
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn kutox_linux_napi(address: usize, raw: u64, operation: u32, done: i32) -> i32 {
+        napi_operation(address, raw, operation, done)
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn kutox_linux_workers_stop() {
+        stop_workers()
+    }
 }
 
 pub fn quiescent() -> bool {

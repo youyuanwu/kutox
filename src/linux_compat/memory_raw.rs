@@ -235,7 +235,7 @@ pub(super) unsafe fn completed_network(
 ) -> (DmaDevice, DmaRegion, Completed) {
     let direction = match Direction::try_from(direction) {
         Ok(direction) => direction,
-        Err(_) => unsafe { kutox_platform_fail(c"dma_direction".as_ptr()) },
+        Err(_) => crate::platform_fail(c"dma_direction"),
     };
     let device = DmaDevice::network(key);
     let region = DmaRegion::new(DmaAddress::from_abi(address), length, direction);

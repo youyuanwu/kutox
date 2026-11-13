@@ -2,7 +2,7 @@ use crate::{
     Failure,
     boot::BootInfo,
     cpu::{self, X86Cpu},
-    exceptions, io, linux_deferred, linux_runtime, memory, serial, threads,
+    exceptions, linux_deferred, linux_runtime, memory, serial, threads,
 };
 use core::cell::UnsafeCell;
 #[cfg(feature = "guest-tests")]
@@ -106,8 +106,7 @@ pub(crate) unsafe fn ingress(pointer: usize, size: usize) -> i32 {
     crate::net_device::wake();
     0
 }
-#[unsafe(no_mangle)]
-unsafe extern "C" fn kutox_driver_receive(pointer: *mut u8, capacity: usize) -> usize {
+unsafe fn receive_into(pointer: *mut u8, capacity: usize) -> usize {
     let mut ingress = INGRESS.lock_save_irq();
     if ingress.count == 0 {
         return 0;
@@ -128,7 +127,7 @@ unsafe extern "C" fn kutox_driver_receive(pointer: *mut u8, capacity: usize) -> 
 }
 
 pub fn receive(output: &mut [u8; 1514]) -> usize {
-    unsafe { kutox_driver_receive(output.as_mut_ptr(), output.len()) }
+    unsafe { receive_into(output.as_mut_ptr(), output.len()) }
 }
 
 pub fn discard_ingress() {
@@ -501,6 +500,11 @@ mod guest_ffi {
     use super::*;
 
     #[unsafe(no_mangle)]
+    unsafe extern "C" fn kutox_driver_receive(pointer: *mut u8, capacity: usize) -> usize {
+        unsafe { receive_into(pointer, capacity) }
+    }
+
+    #[unsafe(no_mangle)]
     extern "C" fn kutox_driver_size(pointer: usize) -> usize {
         size(pointer)
     }
@@ -568,13 +572,7 @@ pub fn rx_cpu_grants() -> usize {
         .count()
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_driver_diag(operation: *const core::ffi::c_char, error: i32) {
-    if operation.is_null() {
-        io::finish(false);
-    }
-    let operation = unsafe { core::ffi::CStr::from_ptr(operation) }
-        .to_str()
-        .expect("invalid driver error encoding");
+pub(crate) fn diag(operation: &core::ffi::CStr, error: i32) {
+    let operation = operation.to_str().expect("invalid driver error encoding");
     report(operation, error);
 }

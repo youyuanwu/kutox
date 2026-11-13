@@ -7,7 +7,7 @@ import re
 import struct
 import subprocess
 from linux_driver_check import Elf, digest
-from linux_compat_check import NATIVE_BINDINGS, runtime_rust_sources, rust_dependencies
+from linux_compat_check import NATIVE_BINDINGS, NATIVE_C_BINDINGS, runtime_rust_sources, rust_dependencies
 from make_iso import validate_image
 
 NATIVE_INIT_SYMBOLS = {f"kutox_guest_native_init_{identity}" for identity in (10, 20, 30, 40)}
@@ -22,6 +22,10 @@ FIXTURE_BACKEND_SYMBOLS = {
     "kutox_driver_free", "kutox_driver_range", "kutox_driver_size", "kutox_driver_dma_operation",
     "kutox_linux_dma_mask", "kutox_linux_dma_alloc", "kutox_linux_dma_free",
     "kutox_block_context", "kutox_block_fail",
+    "kutox_driver_gate", "kutox_platform_fail",
+    "kutox_linux_bh", "kutox_linux_completion", "kutox_linux_context", "kutox_linux_irq",
+    "kutox_linux_mutex", "kutox_linux_napi", "kutox_linux_object_generation",
+    "kutox_linux_work", "kutox_linux_work_init",
 }
 
 
@@ -52,11 +56,12 @@ GUEST_SYMBOLS = {
     "kutox_guest_storage_config",
     "kutox_guest_memory_storage",
     "kutox_e1000_rx_resident",
+    "kutox_driver_receive", "kutox_linux_workers_stop",
+    "kutox_linux_irq_pending", "kutox_linux_irq_depth", "kutox_thread_yield_probe",
 } | NATIVE_INIT_SYMBOLS | USER_PROGRAM_SYMBOLS | FIXTURE_BACKEND_SYMBOLS
 RUNTIME_SYMBOLS = {
     "e1000_probe", "e1000_open", "e1000_close", "e1000_xmit_frame",
     "e1000_intr", "e1000_clean",
-    "kutox_linux_request_irq", "kutox_linux_work_init", "kutox_linux_napi_init",
     "kutox_e1000_init",
     "kutox_async_executor",
     "kutox_packet_broker",
@@ -75,9 +80,9 @@ RUNTIME_SYMBOLS = {
     "pci_register_driver", "dma_map_page_attrs", "kmalloc", "mutex_lock",
     "kutox_user_dispatch_next",
     "kutox_runtime_users",
-}
+} | NATIVE_C_BINDINGS.keys()
 GUEST_ONLY_PATTERN = re.compile(
-    r"::(?:guest_tests|tests|wait_tests|irq_tests|test_cleanup)::|"
+    r"::(?:guest_tests|guest_ffi|tests|wait_tests|irq_tests|test_cleanup)::|"
     r"::(?:FAIL_AFTER|FAIL_KIND|MAP_FAIL_AFTER|MAP_FAIL_DIRECTION|FAIL_OPERATION|FAIL_REQUEST)$|"
     r"^(?:kutox_c_execution_|kutox_c_irq_|kutox_c_services_|kutox_c_dma_|kutox_c_block_)|"
     r"^kutox_block_fail_after$|"
@@ -150,7 +155,8 @@ def validate_native_elf(kernel, enabled):
 
 
 def validate_symbols(symbols, enabled):
-    obsolete = (NATIVE_BINDINGS.keys() - FIXTURE_BACKEND_SYMBOLS) & symbols
+    obsolete = ((NATIVE_BINDINGS.keys() - FIXTURE_BACKEND_SYMBOLS)
+                | {"kutox_driver_known", "kutox_storage_fail"}) & symbols
     if obsolete:
         raise AssertionError(f"obsolete native backend C facades in kernel runtime: {sorted(obsolete)}")
     missing = RUNTIME_SYMBOLS - symbols

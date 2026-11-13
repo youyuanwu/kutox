@@ -109,12 +109,7 @@ pub(crate) fn set_tracing(enabled: bool) {
 pub(crate) fn quiescent() -> bool {
     CONTROL.snapshot() == kutox::mutex_state::MutexState::new()
 }
-#[unsafe(no_mangle)]
-extern "C" fn kutox_driver_tracing() -> bool {
-    tracing()
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_driver_trace(event: u32, function: usize, object: usize, result: i32) {
+pub(crate) fn trace(event: u32, function: usize, object: usize, result: i32) {
     {
         let mut proof = CALLBACKS.lock_save_irq();
         proof.ordinal = proof

@@ -18,7 +18,6 @@ static FAULT_SEEN: AtomicBool = AtomicBool::new(false);
 unsafe extern "C" {
     fn kutox_c_driver_device() -> usize;
     fn kutox_c_linux_empty() -> bool;
-    fn kutox_linux_workers_stop();
     fn kutox_c_linux_ready(ticket: u64) -> i32;
     fn kutox_c_linux_tx(ticket: u64, retry: bool) -> i32;
     fn kutox_c_linux_tx_release(ticket: u64) -> i32;
@@ -203,25 +202,25 @@ fn worker(which: usize) {
     if which == 1 {
         fault_worker();
         linux_driver::set_tracing(false);
-        unsafe { kutox_linux_workers_stop() };
+        crate::linux_deferred::stop_workers();
         return;
     }
     if which == 2 {
         tx_worker();
         linux_driver::set_tracing(false);
-        unsafe { kutox_linux_workers_stop() };
+        crate::linux_deferred::stop_workers();
         return;
     }
     if which == 3 {
         rx_worker();
         linux_driver::set_tracing(false);
-        unsafe { kutox_linux_workers_stop() };
+        crate::linux_deferred::stop_workers();
         return;
     }
     if which >= 4 {
         crate::guest_tests::linux_hardening::worker(which);
         linux_driver::set_tracing(false);
-        unsafe { kutox_linux_workers_stop() };
+        crate::linux_deferred::stop_workers();
         return;
     }
     let mut retired: Option<LifecycleHandle> = None;
@@ -241,7 +240,7 @@ fn worker(which: usize) {
         handle.unbind_checked();
     }
     linux_driver::set_tracing(false);
-    unsafe { kutox_linux_workers_stop() };
+    crate::linux_deferred::stop_workers();
 }
 
 fn run(
