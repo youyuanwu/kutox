@@ -363,7 +363,7 @@ def execution_layouts(args, flags, output):
     return result
 
 
-SERVICE_SOURCES = ("driver_packet.c", "driver_optional.c")
+SERVICE_SOURCES = ("driver_optional.c",)
 BOOT_SERVICE_SOURCES = ("deferred.c", "diagnostics.c")
 
 

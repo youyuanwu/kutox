@@ -13,7 +13,7 @@ STORAGE = (
 UNITS = (
     *((NET + name, "net") for name in ("e1000_main.c", "e1000_hw.c", "e1000_ethtool.c", "e1000_param.c")),
     *(("linux/" + name, "storage") for name in STORAGE),
-    ("compat/driver_packet.c", "net"), ("compat/driver_optional.c", "net"),
+    ("compat/driver_optional.c", "net"),
     ("compat/bridge.c", "net"), ("compat/deferred.c", "boot"), ("compat/diagnostics.c", "boot"),
     ("compat/storage_runtime.c", "storage"), ("compat/block_services.c", "storage"),
 )
@@ -21,6 +21,19 @@ ENTRY_POINTS = {
     "e1000_probe", "e1000_open", "e1000_intr", "e1000_clean", "e1000_xmit_frame",
     "virtblk_probe", "virtio_queue_rq", "virtblk_done", "virtblk_request_done",
     "virtqueue_add_sgs", "virtqueue_get_buf", "vp_interrupt", "vp_modern_probe",
+}
+PACKET_LAYOUT_VALUES = 122
+PACKET_PROVIDERS = {
+    "alloc_etherdev", "register_netdev", "unregister_netdev", "free_netdev",
+    "alloc_skb", "skb_put", "dev_kfree_skb", "netdev_alloc_frag", "skb_free_frag",
+    "napi_build_skb", "napi_alloc_skb", "eth_type_trans", "napi_gro_receive",
+    "netdev_sent_queue", "netdev_completed_queue", "kutox_c_packet_empty",
+    "kutox_c_netdev_transmit", "kutox_c_tx_begin", "kutox_c_tx_retry",
+    "kutox_c_tx_status", "kutox_c_tx_release", "kutox_c_tx_abort",
+    "kutox_c_tx_mapped", "kutox_c_tx_unmapped", "kutox_c_tx_mmio",
+    "kutox_c_tx_many", "kutox_c_tx_many_retry", "kutox_c_tx_many_finish",
+    "kutox_c_rx_start", "kutox_c_rx_stop", "kutox_c_rx_path",
+    "kutox_c_rx_dma", "kutox_c_rx_mmio",
 }
 
 
@@ -97,17 +110,17 @@ def inventory(paths, linked, expected):
     return {"undefined": sorted(external), "defined": sorted(defined)}
 
 
-def layout(paths):
+def layout(paths, section_name=".kutox.common_layouts", count=37):
     from linux_driver_check import Elf
     values = []
     for path in paths:
-        section = Elf(path).by_name.get(".kutox.common_layouts")
-        if not section or len(section["data"]) != 37 * 8:
+        section = Elf(path).by_name.get(section_name)
+        if not section or len(section["data"]) != count * 8:
             raise ValueError("missing or malformed shared C/Rust layout")
         values.append(section["data"])
     if any(value != values[0] for value in values[1:]):
-        raise ValueError("C/Rust device, PCI, execution or GFP contract mismatch")
-    return list(struct.unpack("<" + "Q" * 37, values[0]))
+        raise ValueError(f"C/Rust ABI contract mismatch in {section_name}")
+    return list(struct.unpack("<" + "Q" * count, values[0]))
 
 
 def evidence(args, output):
@@ -130,12 +143,17 @@ def evidence(args, output):
     shared = inventory(paths, output / "shared-runtime.o", set(lines(ROOT / "compat/audit/common/service-ffi.txt")))
     rust_defined = sorted(s["name"] for s in Elf(rust).symbols()
                           if s["owner"] and s["binding"] in (1, 2))
+    if not PACKET_PROVIDERS <= set(rust_defined):
+        raise ValueError("network packet services are not provided by the actual Rust object")
     abi_paths = [output / "abi-rust.o", *(output / f"abi-{p}.o" for p in ("boot", "net", "storage"))]
     return {
         **shared, "units": units, "build_inputs": inputs(),
         "rust": {"command": rust_command(output), "object_sha256": digest(rust), "defined": rust_defined},
         "linked_sha256": digest(output / "shared-runtime.o"), "compile_only_marker": False,
-        "abi": {"values": layout(abi_paths), "objects": {path.name: digest(path) for path in abi_paths},
+        "abi": {"values": layout(abi_paths),
+                "packet_values": layout([output / "abi-rust.o", output / "abi-net.o"],
+                                       ".kutox.packet_layouts", PACKET_LAYOUT_VALUES),
+                "objects": {path.name: digest(path) for path in abi_paths},
                 "commands": [rust_command(output, True), *(c_command(args, output, "compat/audit/common/common_layout.c", p, probe=True)
                                                          for p in ("boot", "net", "storage"))]},
         "profile_isolation": isolation_evidence(args, output),

@@ -515,9 +515,13 @@ synchronization or binary ABI compatibility.
 The shared compatibility modules and [C/Rust ABI contracts](src/linux_abi.rs)
 are kutox implementations of selected Linux-facing services. They replace the
 former C allocation/PCI/execution adapters and storage device/work/lifecycle
-policy; they do not replace original Linux device algorithms. Their native
+policy; they do not replace original Linux device algorithms. Network-device,
+skb, RX-fragment and TX/ingress services now live in the kutox
+[Rust packet adapter](src/linux_compat/packet.rs), replacing the former
+`compat/driver_packet.c` without changing the original e1000 implementation.
+Their native
 backends reuse the previously attributed Moss allocators, synchronization and
-task services. The remaining C network/block class adapters, original-header
+task services. The remaining C NAPI/block class adapters, original-header
 accessors and common variadic formatter retain their existing attribution.
 
 ## Native driver infrastructure and persistent integration

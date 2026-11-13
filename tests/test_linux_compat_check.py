@@ -59,6 +59,19 @@ class SharedCompatibilityTests(unittest.TestCase):
             with patch.object(driver, "Elf", side_effect=[layout(raw), layout(wrong)]), self.assertRaises(ValueError):
                 compat.layout(["rust", "changed"])
 
+    def test_packet_layout_rejects_offset_changes_and_missing_or_truncated_evidence(self):
+        count = compat.PACKET_LAYOUT_VALUES
+        raw = struct.pack("<" + "Q" * count, *range(count))
+        def packet_layout(data):
+            return SimpleNamespace(by_name={".kutox.packet_layouts": {"data": data}})
+        with patch.object(driver, "Elf", side_effect=[packet_layout(raw)] * 2):
+            self.assertEqual(compat.layout(["rust", "net"], ".kutox.packet_layouts", count), list(range(count)))
+        for wrong in (raw[:-8], raw[:16] + struct.pack("<Q", 999) + raw[24:], b""):
+            with self.subTest(wrong=wrong[:24]), patch.object(driver, "Elf", side_effect=[
+                packet_layout(raw), packet_layout(wrong),
+            ]), self.assertRaises(ValueError):
+                compat.layout(["rust", "net"], ".kutox.packet_layouts", count)
+
 
 if __name__ == "__main__":
     unittest.main()

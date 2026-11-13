@@ -390,11 +390,17 @@ Linux-facing C ABI using `#[unsafe(no_mangle)] extern "C"` exports:
   with each device's existing Rust owner.
 - `storage.rs`: bus/driver/device references, local config-work queue, native
   read tickets, admission checks and reset/remove/reprobe sequencing.
+- `packet.rs`: network-device lifecycle/queues, linear sk_buffs, fragment
+  provenance, TX ownership/completion and native Ethernet ingress.
 
 [Shared base/device headers](../compat/include/common/device_types.h) and
 [Rust `repr(C)` contracts](../src/linux_abi.rs) replace the former incompatible
 minimal/e1000/storage device and PCI declarations. A freestanding Rust probe
 and actual C probes in all three profiles compare 37 layout/offset/GFP values.
+The network profile additionally compares 122 packet/device/NAPI layout and
+constant values with the actual Rust contracts, including every field offset
+and callback-table slot. The whole-object audit requires packet-service exports
+to come from the Rust object, not a C replacement or declaration-only mock.
 The early synthetic `GFP_KERNEL=0` declaration is gone: boot fixtures and both
 driver paths now use the pinned Linux header's actual GFP values.
 
@@ -429,8 +435,10 @@ header-only accessors/module parameters and C varargs. It shares one bounded
 formatter with e1000 in [diagnostics.c](../compat/diagnostics.c). The old C
 allocation, PCI and execution service files have been removed rather than kept
 as parallel implementations. Original Linux hardware/packet/ring algorithms
-remain unchanged C. The network/sk_buff/NAPI and block-class C adapters remain
-separate, header-coupled boundaries, not one monolithic common C implementation.
+remain unchanged C. Network packet services have moved entirely from
+`compat/driver_packet.c` to Rust, retaining their existing exported ABI names.
+The NAPI registry, block-class adapters and header-dependent bridges remain
+separate C boundaries, not one monolithic common C implementation.
 
 Shared declarations do not merge allocation/DMA domains or add simultaneous
 NIC/storage ownership: the existing single IRQ/MMIO owner limits still apply.
@@ -1184,8 +1192,11 @@ It runs before returning failed IRQ registration and before source reset.
 Later QEMU receive callbacks reject disabled RX; CTRL.RST and the grace delay
 are not independent quiescence witnesses. This is not physical-hardware support.
 
-[C packet services](../compat/driver_packet.c) own netdev/private objects, queue/
+[Rust packet services](../src/linux_compat/packet.rs) own netdev/private objects, queue/
 carrier/feature state, linear skb backing, RX fragments and build-skb handoff.
+They export the same C ABI used by unchanged Linux and the synthetic C cases.
+No Rust state borrow spans an original callback, allocation or native ingress;
+callbacks may synchronously reenter packet services on the IF-clear BSP.
 Native ingress is an owned bounded eight-packet FIFO, not an IP/GRO stack.
 Freeing private backing retires idle embedded synchronization/work registrations;
 pending/running users prevent reclamation. Offload/fragment/PM controls remain

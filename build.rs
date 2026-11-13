@@ -121,7 +121,6 @@ fn main() {
         .include("linux/include")
         .include("linux/include/uapi")
         .include("linux/arch/x86/include/uapi")
-        .file("compat/driver_packet.c")
         .file("compat/driver_optional.c")
         .file("compat/bridge.c")
         .file(driver.join("e1000_main.c"))

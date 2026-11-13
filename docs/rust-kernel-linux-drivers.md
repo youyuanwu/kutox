@@ -623,7 +623,7 @@ an enforced feature/configuration boundary and observable rejection.
 ### Executable storage provider closure
 
 The audit additionally compiles all eleven original e1000/VirtIO units with
-their runtime headers, seven C adapter units and
+their runtime headers, six C adapter units and
 [the real Rust providers](../src/linux_compat/). This second
 relocatable closure has no compile-only marker, no garbage collection and no
 missing source-facing APIs. Its exact **67 backend/libc entry points** are
@@ -635,7 +635,7 @@ Rejected optional paths have explicit failure providers, not fake successful
 hardware services. The original 203/57/146 baseline counts are preserved as
 dependency evidence rather than misrepresented as the executable closure.
 
-`runtime_closure` records all eighteen C objects and the actual Rust provider
+`runtime_closure` records all seventeen C objects and the actual Rust provider
 object, exact commands, source/header/object hashes and the full external set.
 It also compares real Rust and boot/e1000/storage C layout probes, including
 shared device/PCI fields and actual Linux GFP values.
@@ -836,6 +836,13 @@ allowlist; missing, stale or changed providers fail verification. Baseline
 source-only objects retain their separate compile-only barrier. All four unchanged
 source units, callbacks and default 256-ring layouts remain audited; resolving
 providers alone is not execution of original lifecycle or packets.
+
+[Network packet services](../src/linux_compat/packet.rs) now implement the
+network-device lifecycle, sk_buffs, fragment ownership, TX tracking and ingress
+in Rust rather than a C kernel-service layer. Existing C ABI names and original
+Linux callbacks remain unchanged. Actual C/Rust probes compare all packet
+contract field offsets, alignments, callback slots and selected constants
+(122 values); the executable audit verifies Rust owns packet-service exports.
 
 ### Original lifecycle execution
 

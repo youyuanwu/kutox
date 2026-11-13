@@ -4,6 +4,7 @@
 mod abi;
 mod execution;
 mod memory;
+mod packet;
 mod pci;
 mod storage;
 use abi::*;

@@ -102,7 +102,7 @@ The current route is single-CPU, single-source, and not a Linux `request_irq` AP
 
 Owned coherent DMA buffers now reuse Moss contiguous frame guards, with checked
 32/64-bit masks, size/alignment, distinct CPU/device addresses, zero initialization,
-and explicit CPU/device ownership. A bounded C adapter supplies coherent allocation,
+and explicit CPU/device ownership. Bounded Rust C-ABI services supply coherent allocation,
 free, mask selection and ordering barriers. The allocation-only tests keep
 bus mastering disabled; the original Linux TX case performs real device DMA.
 
@@ -132,12 +132,15 @@ C ABI functions from Rust. Both drivers share checked
 [device/PCI/execution contracts](src/linux_abi.rs), synchronization, allocation
 adapters, PCI registration/access and DMA dispatch. Storage device references,
 work tracking and lifecycle/recovery orchestration also live in Rust.
+[Network packet services](src/linux_compat/packet.rs) now own network-device
+lifecycle/queues, skb allocation, RX fragments, TX completion tracking and ingress.
 C remains for original Linux implementations, header-dependent accessors,
-variadic formatting, and the separate network/sk_buff/NAPI and block-class
+variadic formatting, and the separate NAPI-registry and block-class
 adapters. The storage C bridge is now 124 lines rather than 644; it contains no
 registration, reference-count, queue-work or request-lifecycle state machine.
 Both audit tools compile the real Rust providers and compare all three C
-profiles with Rust layouts and GFP flags. See the
+profiles with Rust layouts and GFP flags, plus 122 network-contract values.
+See the
 [shared boundary](docs/kernel-implementation.md#shared-linux-compatibility-boundary)
 for the remaining per-device policies and resource limits.
 

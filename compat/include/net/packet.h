@@ -169,7 +169,7 @@ void tcp_v6_gso_csum_prep(struct sk_buff *);
 void skb_tx_timestamp(struct sk_buff *);
 void skb_checksum_none_assert(const struct sk_buff *);
 bool netdev_xmit_more(void);
-struct netdev_queue;
+struct netdev_queue { struct net_device *device; };
 struct netdev_queue *netdev_get_tx_queue(const struct net_device *, unsigned int);
 bool netif_xmit_stopped(const struct netdev_queue *);
 void *__pskb_pull_tail(struct sk_buff *, int);

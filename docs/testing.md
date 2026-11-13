@@ -45,10 +45,13 @@ and exactly 67 backend/libc entry points in one shared allowlist. Both inventori
 and their source/header/command/object provenance are independently verified.
 
 Both driver audits use [linux_compat_check.py](../scripts/linux_compat_check.py)
-for the same executable provider proof: eighteen C objects plus the real
+for the same executable provider proof: seventeen C objects plus the real
 freestanding Rust provider object, not declaration-only Rust symbols or mocks.
 Real Rust and boot/e1000/storage C probes must agree on all 37 shared
-device/PCI/execution-layout and GFP values. Independent `--verify` checks
+device/PCI/execution-layout and GFP values. Rust and the network C profile also
+compare 122 network-device, skb, fragment, NAPI, callback-slot and constant
+values. Packet-service entry points must be defined by the actual Rust object.
+Independent `--verify` checks
 stored objects and provenance without compiling. Source-only dependency
 inventories remain 209/203 and retain actual kernel-link exclusion.
 
