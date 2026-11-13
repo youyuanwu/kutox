@@ -75,7 +75,6 @@ fn main() {
         .include("compat/include")
         .include("linux/include")
         .include(&driver)
-        .file("compat/deferred.c")
         .file("compat/diagnostics.c")
         .define("KUTOX_GUEST_TESTS", guest_define)
         .warnings_into_errors(true);
@@ -136,21 +135,6 @@ fn main() {
     }
     source.flag("-Wno-pointer-sign").flag("-Wno-sign-compare");
     source.compile("linux_e1000");
-    let storage_include = forwarding_headers("block", "storage", "block/services.h");
-    let mut storage = cc::Build::new();
-    storage
-        .compiler("clang")
-        .include(&storage_include)
-        .include("compat/include")
-        .include("linux/include")
-        .include("linux/include/uapi")
-        .file("compat/block_services.c")
-        .include("linux/arch/x86/include/uapi")
-        .warnings_into_errors(true);
-    for flag in flags.lines() {
-        storage.flag(flag);
-    }
-    storage.compile("kutox_block_services");
     let runtime_include = forwarding_headers("storage", "storage", "block/runtime.h");
     let mut storage_runtime = cc::Build::new();
     storage_runtime
@@ -186,6 +170,7 @@ fn main() {
         .flag("-Wno-missing-field-initializers");
     storage_runtime.compile("linux_storage");
     if guest_tests {
+        let storage_include = forwarding_headers("block", "storage", "block/services.h");
         let mut tests = cc::Build::new();
         tests
             .compiler("clang")

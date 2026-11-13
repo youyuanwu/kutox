@@ -20,6 +20,13 @@ def elf(symbols, marked=False):
 
 
 class SharedCompatibilityTests(unittest.TestCase):
+    def test_rust_services_cannot_be_replaced_by_c_local_data_or_declarations(self):
+        with patch.object(compat, "RUST_PROVIDERS", {"open"}):
+            self.assertEqual(compat.rust_providers([symbol("open", 1, 2)]), ["open"])
+            for wrong in ([], [symbol("open")], [symbol("open", 1, 2, binding=0)],
+                          [symbol("open", 1, 1)]):
+                with self.subTest(wrong=wrong), self.assertRaises(ValueError):
+                    compat.rust_providers(wrong)
     def test_runtime_headers_reject_audit_coupling_and_foreign_driver_classes(self):
         include = compat.ROOT / "compat/include"
         for profile in ("net", "storage", "boot"):
@@ -59,18 +66,20 @@ class SharedCompatibilityTests(unittest.TestCase):
             with patch.object(driver, "Elf", side_effect=[layout(raw), layout(wrong)]), self.assertRaises(ValueError):
                 compat.layout(["rust", "changed"])
 
-    def test_packet_layout_rejects_offset_changes_and_missing_or_truncated_evidence(self):
-        count = compat.PACKET_LAYOUT_VALUES
-        raw = struct.pack("<" + "Q" * count, *range(count))
-        def packet_layout(data):
-            return SimpleNamespace(by_name={".kutox.packet_layouts": {"data": data}})
-        with patch.object(driver, "Elf", side_effect=[packet_layout(raw)] * 2):
-            self.assertEqual(compat.layout(["rust", "net"], ".kutox.packet_layouts", count), list(range(count)))
-        for wrong in (raw[:-8], raw[:16] + struct.pack("<Q", 999) + raw[24:], b""):
-            with self.subTest(wrong=wrong[:24]), patch.object(driver, "Elf", side_effect=[
-                packet_layout(raw), packet_layout(wrong),
-            ]), self.assertRaises(ValueError):
-                compat.layout(["rust", "net"], ".kutox.packet_layouts", count)
+    def test_class_layouts_reject_offset_changes_and_missing_or_truncated_evidence(self):
+        for section, count in ((".kutox.packet_layouts", compat.PACKET_LAYOUT_VALUES),
+                               (".kutox.block_layouts", compat.BLOCK_LAYOUT_VALUES),
+                               (".kutox.accessor_layouts", compat.ACCESSOR_LAYOUT_VALUES)):
+            raw = struct.pack("<" + "Q" * count, *range(count))
+            def class_layout(data):
+                return SimpleNamespace(by_name={section: {"data": data}})
+            with patch.object(driver, "Elf", side_effect=[class_layout(raw)] * 2):
+                self.assertEqual(compat.layout(["rust", "c"], section, count), list(range(count)))
+            for wrong in (raw[:-8], raw[:16] + struct.pack("<Q", 999) + raw[24:], b""):
+                with self.subTest(section=section, wrong=wrong[:24]), patch.object(driver, "Elf", side_effect=[
+                    class_layout(raw), class_layout(wrong),
+                ]), self.assertRaises(ValueError):
+                    compat.layout(["rust", "c"], section, count)
 
 
 if __name__ == "__main__":

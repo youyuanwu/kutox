@@ -2,8 +2,16 @@
 #![allow(dead_code)]
 #[path = "../linux_abi.rs"]
 mod abi;
+mod block;
+#[path = "../block_abi.rs"]
+mod block_abi;
+mod diagnostics;
 mod execution;
+mod lifecycle;
 mod memory;
+mod mmio;
+mod napi;
+mod optional;
 mod packet;
 mod pci;
 mod storage;
@@ -34,6 +42,12 @@ fn require(valid: bool, message: &'static core::ffi::CStr) {
 fn checked(value: i32, message: &'static core::ffi::CStr) -> i32 {
     require(value >= 0, message);
     value
+}
+fn callback<T>(function: Option<T>, operation: &'static core::ffi::CStr) -> T {
+    match function {
+        Some(function) => function,
+        None => unsafe { kutox_platform_fail(operation.as_ptr()) },
+    }
 }
 fn context() {
     checked(unsafe { kutox_linux_context() }, c"compat_context");

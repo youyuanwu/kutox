@@ -587,7 +587,8 @@ retains the compile-only marker, and the actual kernel linker must reject it.
 Independent `--verify` rejects native/stale/tampered evidence without compiling.
 A failed build removes the previous success report.
 
-The audit now also compiles [block_services.c](../compat/block_services.c) and
+The audit also compiles the actual [Rust block services](../src/linux_compat/block.rs)
+through a minimal [compile-only Rust entry point](../compat/audit/storage/block_services.rs) and
 links it with the unchanged source objects. This resolves 57 API names and
 leaves exactly 146 source-facing APIs plus the five Rust functions listed in
 [service-ffi.txt](../compat/audit/storage/service-ffi.txt). The report records
@@ -623,10 +624,10 @@ an enforced feature/configuration boundary and observable rejection.
 ### Executable storage provider closure
 
 The audit additionally compiles all eleven original e1000/VirtIO units with
-their runtime headers, six C adapter units and
+their runtime headers, five C header/variadic adapter units and
 [the real Rust providers](../src/linux_compat/). This second
 relocatable closure has no compile-only marker, no garbage collection and no
-missing source-facing APIs. Its exact **67 backend/libc entry points** are
+missing source-facing APIs. Its exact **68 backend/libc entry points** are
 listed in [service-ffi.txt](../compat/audit/common/service-ffi.txt).
 This boundary includes the existing device-specific Rust allocation/DMA/PCI
 backends and shared native execution/IRQ services. Both source audits use the
@@ -635,7 +636,7 @@ Rejected optional paths have explicit failure providers, not fake successful
 hardware services. The original 203/57/146 baseline counts are preserved as
 dependency evidence rather than misrepresented as the executable closure.
 
-`runtime_closure` records all seventeen C objects and the actual Rust provider
+`runtime_closure` records all sixteen C objects and the actual Rust provider
 object, exact commands, source/header/object hashes and the full external set.
 It also compares real Rust and boot/e1000/storage C layout probes, including
 shared device/PCI fields and actual Linux GFP values.
@@ -831,7 +832,7 @@ free; unchanged source need not call kutox destruction extensions.
 
 The independent source-plus-services proof now links both original drivers,
 the C class/header/varargs adapters and actual common Rust providers without
-garbage collection. Its 67 remaining backend/libc symbols have one exact
+garbage collection. Its 68 remaining backend/libc symbols have one exact
 allowlist; missing, stale or changed providers fail verification. Baseline
 source-only objects retain their separate compile-only barrier. All four unchanged
 source units, callbacks and default 256-ring layouts remain audited; resolving
@@ -846,7 +847,7 @@ contract field offsets, alignments, callback slots and selected constants
 
 ### Original lifecycle execution
 
-[The lifecycle C adapter](../compat/driver_lifecycle.c) invokes retained module
+[The Rust lifecycle adapter](../src/linux_compat/lifecycle.rs) invokes retained module
 metadata explicitly, then original PCI probe/remove and registered open/stop
 callbacks. Its source structs match all four runtime units, including the boot
 MAC bridge. Generation-checked control handles reject use after unbind; no
@@ -1099,7 +1100,7 @@ Synchronization and ownership requirements:
 - Worker and interrupt paths must agree on buffer lifetimes and ordering.
 
 Embassy's executor alone does not provide these Linux execution semantics.
-The C adapter distinguishes boot, sleepable thread/worker, deferred-atomic
+The Rust C-ABI services distinguish boot, sleepable thread/worker, deferred-atomic
 poll/BH and hardware-IRQ semantics. Synthetic work/NAPI/C-IRQ tests do not
 authorize arbitrary C MMIO access and allocation in those contexts or establish
 execution of the original full driver.

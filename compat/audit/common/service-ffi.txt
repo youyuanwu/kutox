@@ -48,6 +48,7 @@ kutox_linux_ratelimit
 kutox_linux_request_irq
 kutox_linux_sleep_range
 kutox_linux_spin_owner
+kutox_linux_static_objects_retire
 kutox_linux_wait_completion
 kutox_linux_work
 kutox_linux_work_init

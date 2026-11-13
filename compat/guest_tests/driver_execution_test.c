@@ -20,9 +20,38 @@ static void check(bool value, const char *operation)
 {
     if (!value) kutox_platform_fail(operation);
 }
+extern int kutox_vformat(char *, size_t, const char *, va_list);
+static int format_buffer(char *out, size_t capacity, const char *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    int n = kutox_vformat(out, capacity, format, args);
+    va_end(args);
+    return n;
+}
+static void check_formatting(void)
+{
+    char text[96];
+    const char expected[] = "-9223372036854775808/-17/18446744073709551615/4294967296/x  /%";
+    int n = format_buffer(text, sizeof(text), "%lld/%ld/%zu/%lu/%-3s/%%",
+                         -9223372036854775807LL - 1, -17L, SIZE_MAX, 4294967296UL, "x");
+    check(n == sizeof(expected) - 1, "c_rust_format_mixed_length");
+    for (size_t i = 0; i < sizeof(expected); i++)
+        check(text[i] == expected[i], "c_rust_format_mixed_bytes");
+    struct { char text[5]; char guard; } short_output = {.guard='Q'};
+    check(format_buffer(short_output.text, sizeof(short_output.text), "%s", "abcdef") == 6 &&
+          short_output.text[0] == 'a' && short_output.text[3] == 'd' &&
+          short_output.text[4] == 0 && short_output.guard == 'Q', "c_rust_format_truncation");
+    char untouched = 'Q';
+    check(format_buffer(&untouched, 0, "%llu", UINT64_MAX) == 20 && untouched == 'Q',
+          "c_rust_format_zero_capacity");
+    check(format_buffer(&untouched, 1, "%d", -1) == 2 && untouched == 0,
+          "c_rust_format_nul_capacity");
+}
 
 void kutox_c_driver_atomics(void)
 {
+    check_formatting();
     atomic_t counter;
     atomic_set(&counter, -7);
     check(atomic_read(&counter) == -7, "driver_atomic_signed");

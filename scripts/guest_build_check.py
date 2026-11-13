@@ -44,6 +44,7 @@ GUEST_SYMBOLS = {
     "kutox_guest_async_hardening",
     "kutox_c_block_services",
     "kutox_guest_storage_config",
+    "kutox_e1000_rx_resident",
 } | NATIVE_INIT_SYMBOLS | USER_PROGRAM_SYMBOLS
 RUNTIME_SYMBOLS = {
     "e1000_probe", "e1000_open", "e1000_close", "e1000_xmit_frame",
@@ -62,8 +63,7 @@ RUNTIME_SYMBOLS = {
     "kutox_user_bringup", "kutox_user_enter", "kutox_user_resume", "kutox_user_dispatch",
     "kutox_user_load_elf",
     "kutox_boot_filesystem",
-    "kutox_block_quiescent",
-    "kutox_storage_start", "kutox_storage_stop", "virtblk_probe",
+    "kutox_storage_start", "virtblk_probe",
     "virtio_queue_rq", "virtblk_request_done", "vp_interrupt",
     "virtblk_done", "virtqueue_add_sgs", "virtqueue_get_buf", "vp_modern_probe",
     "pci_register_driver", "dma_map_page_attrs", "kmalloc", "mutex_lock",

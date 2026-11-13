@@ -236,7 +236,7 @@ general VFS/file syscalls, dynamic ELF loading and init supervision are deferred
 
 ## Bounded block services
 
-The [C block provider](../compat/block_services.c) implements the first storage
+The [Rust block provider](../src/linux_compat/block.rs) implements the first storage
 source-facing service boundary, not a Linux block layer or a hardware driver.
 Its [runtime header](../compat/include/block/services.h) uses the same block-class
 declarations as the audit, without including audit headers or markers.
@@ -392,6 +392,17 @@ Linux-facing C ABI using `#[unsafe(no_mangle)] extern "C"` exports:
   read tickets, admission checks and reset/remove/reprobe sequencing.
 - `packet.rs`: network-device lifecycle/queues, linear sk_buffs, fragment
   provenance, TX ownership/completion and native Ethernet ingress.
+- `lifecycle.rs`: module bind/open/close/remove orchestration and generation
+  tickets, using small C accessors for original private e1000 structures.
+- `napi.rs`: generation-bearing NAPI registrations, queue associations and
+  retirement, forwarding to the existing native executor.
+- `mmio.rs`: checked MMIO, barriers, port forwarding and boot-MAC ownership/
+  EEPROM fault policy; original e1000 initialization remains a C header bridge.
+- `block.rs`: owned request/PDU/payload, queue/scatterlist services, cancellation
+  and deferred completion, with separate [block ABI types](../src/block_abi.rs).
+- `optional.rs`: explicit unsupported operations and bounded network helpers.
+- `diagnostics.rs`: bounded formatting, output sinks, warning state and logging
+  policy; C alone extracts variadic arguments using `va_copy`/`va_arg`.
 
 [Shared base/device headers](../compat/include/common/device_types.h) and
 [Rust `repr(C)` contracts](../src/linux_abi.rs) replace the former incompatible
@@ -399,7 +410,10 @@ minimal/e1000/storage device and PCI declarations. A freestanding Rust probe
 and actual C probes in all three profiles compare 37 layout/offset/GFP values.
 The network profile additionally compares 122 packet/device/NAPI layout and
 constant values with the actual Rust contracts, including every field offset
-and callback-table slot. The whole-object audit requires packet-service exports
+and callback-table slot. An additional 135 block values cover all owned block
+types, callback slots, statuses and selected VirtIO feature masks; 41 values
+cover the original-header accessor snapshot, MAC result and selected constants.
+The whole-object audit requires migrated service exports
 to come from the Rust object, not a C replacement or declaration-only mock.
 The early synthetic `GFP_KERNEL=0` declaration is gone: boot fixtures and both
 driver paths now use the pinned Linux header's actual GFP values.
@@ -431,22 +445,32 @@ just as e1000 frees do. The threaded scheduler and BSP inline-flush policies
 remain distinct; this is not a general Linux workqueue implementation.
 
 The small [storage C bridge](../compat/storage_runtime.c) handles original
-header-only accessors/module parameters and C varargs. It shares one bounded
-formatter with e1000 in [diagnostics.c](../compat/diagnostics.c). The old C
-allocation, PCI and execution service files have been removed rather than kept
-as parallel implementations. Original Linux hardware/packet/ring algorithms
-remain unchanged C. Network packet services have moved entirely from
-`compat/driver_packet.c` to Rust, retaining their existing exported ABI names.
-The NAPI registry, block-class adapters and header-dependent bridges remain
-separate C boundaries, not one monolithic common C implementation.
+header access/module parameters and C varargs. Both drivers share the bounded
+[Rust formatter](../src/linux_compat/diagnostics.rs) through
+[C variadic extraction](../compat/diagnostics.c); Rust does not reproduce the
+platform's `va_list` layout. The five remaining production C files total 264 lines.
+They retain original private-structure access and TCP bitfield extraction, not
+lifecycle/NAPI/block/MMIO/formatter ownership state. The old C packet, deferred
+and block-service implementations are removed rather than left as parallel
+providers. Existing C ABI names remain, including the historical `kutox_c_`
+prefix. Original Linux hardware/packet/ring algorithms remain unchanged C.
+
+Lifecycle/NAPI/block owners use raw BSP-owned state across original callbacks.
+No Rust registry borrow spans an original callback or native reentry. Completion
+still only marks the existing request pending in IRQ context; cancellation
+retains request/PDU/payload until off-IRQ completion or the proven reset boundary.
 
 Shared declarations do not merge allocation/DMA domains or add simultaneous
 NIC/storage ownership: the existing single IRQ/MMIO owner limits still apply.
 Independent source-only audits retain their compile-only linker barrier; an
-additional whole-object link includes all eleven original driver units, seven
+additional whole-object link includes all eleven original driver units, five
 C adapter units and the actual Rust provider object without garbage collection.
-It checks an exact 67-entry backend/libc FFI boundary and both drivers' callbacks,
+It checks an exact 68-entry backend/libc FFI boundary and both drivers' callbacks,
 with source/header/object/command and C/Rust layout provenance.
+The extra backend entry retires static Linux objects during Rust-owned e1000
+unbind. Native Rust-only stop/quiescence helpers may inline in the production
+ELF; their exports are checked in the actual freestanding provider object,
+while guest guards still verify complete resource retirement.
 
 ## Timer-bounded ring-3 runs
 
@@ -901,10 +925,10 @@ both builds, with all images and acceptance code ON-only.
   A bounded unsafe `device_read_u32()` permits an aligned, in-range coherent
   descriptor-status observation while device-owned, without exposing a slice or
   transferring ownership.
-- [The coherent C adapter](../src/linux_dma.rs) explicitly binds one static opaque
+- [The coherent Rust backend](../src/linux_dma.rs) explicitly binds one static opaque
   C device and at most eight buffers. It supplies `dma_set_mask_and_coherent`,
   `dma_alloc_coherent`, `dma_free_coherent`, `dma_wmb` and `dma_rmb`.
-  Only `GFP_KERNEL` (the adapter's zero-valued tag) is accepted. Exhaustion/capacity
+  Only the admitted Linux `GFP_KERNEL` flags are accepted. Exhaustion/capacity
   failures return null with a diagnostic and unchanged DMA handle; invalid void
   API operations are fatal. Free validates device, CPU address, size, DMA address
   and ownership. Native publish/reclaim extensions retain the same caller
@@ -916,7 +940,8 @@ both builds, with all images and acceptance code ON-only.
   preservation, invalid free/lifecycle/context requests and full cleanup.
   They never enable bus mastering or a DMA engine.
 - [The original Linux TX fixture](../src/linux_driver.rs) calls registered source
-  callbacks through [the C adapter](../compat/driver_lifecycle.c). Only Linux
+  callbacks through [the Rust lifecycle adapter](../src/linux_compat/lifecycle.rs).
+  Only Linux
   constructs and reclaims descriptors. Rust supplies source-facing allocation,
   streaming DMA and execution services; there is no native Rust TX fallback.
 - The four timer registry cases cover repeated hardware delivery/EOI, ordinary
@@ -1210,7 +1235,7 @@ probe/open/IRQ/NAPI/packet callback executes in these cases.
 
 ### Original Linux lifecycle acceptance
 
-[The lifecycle adapter](../compat/driver_lifecycle.c) calls the captured original
+[The Rust lifecycle adapter](../src/linux_compat/lifecycle.rs) calls the captured original
 module initializer and registered PCI/net-device callbacks explicitly. It uses
 generation-checked handles, original EEPROM/options/PHY/reset behavior, default
 256-entry TX/RX rings and legitimate zero-offload feature negotiation. Metadata

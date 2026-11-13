@@ -14,8 +14,8 @@ UNITS = (
     *((NET + name, "net") for name in ("e1000_main.c", "e1000_hw.c", "e1000_ethtool.c", "e1000_param.c")),
     *(("linux/" + name, "storage") for name in STORAGE),
     ("compat/driver_optional.c", "net"),
-    ("compat/bridge.c", "net"), ("compat/deferred.c", "boot"), ("compat/diagnostics.c", "boot"),
-    ("compat/storage_runtime.c", "storage"), ("compat/block_services.c", "storage"),
+    ("compat/driver_lifecycle.c", "net"), ("compat/bridge.c", "net"), ("compat/diagnostics.c", "boot"),
+    ("compat/storage_runtime.c", "storage"),
 )
 ENTRY_POINTS = {
     "e1000_probe", "e1000_open", "e1000_intr", "e1000_clean", "e1000_xmit_frame",
@@ -23,6 +23,8 @@ ENTRY_POINTS = {
     "virtqueue_add_sgs", "virtqueue_get_buf", "vp_interrupt", "vp_modern_probe",
 }
 PACKET_LAYOUT_VALUES = 122
+BLOCK_LAYOUT_VALUES = 135
+ACCESSOR_LAYOUT_VALUES = 41
 PACKET_PROVIDERS = {
     "alloc_etherdev", "register_netdev", "unregister_netdev", "free_netdev",
     "alloc_skb", "skb_put", "dev_kfree_skb", "netdev_alloc_frag", "skb_free_frag",
@@ -35,6 +37,39 @@ PACKET_PROVIDERS = {
     "kutox_c_rx_start", "kutox_c_rx_stop", "kutox_c_rx_path",
     "kutox_c_rx_dma", "kutox_c_rx_mmio",
 }
+RUST_PROVIDERS = PACKET_PROVIDERS | {
+    "kutox_c_linux_bind_irq", "kutox_c_linux_bind", "kutox_c_linux_open",
+    "kutox_c_linux_ready", "kutox_c_linux_close", "kutox_c_linux_unbind",
+    "kutox_c_linux_info", "kutox_c_linux_statistics", "kutox_c_linux_empty",
+    "kutox_c_linux_tx_begin", "kutox_c_linux_tx", "kutox_c_linux_tx_release",
+    "kutox_c_linux_rx_start", "kutox_c_linux_rx_stop", "kutox_c_linux_rx_path",
+    "netif_napi_add", "netif_napi_set_irq", "netif_queue_set_napi",
+    "napi_schedule_prep", "__napi_schedule", "napi_complete_done",
+    "napi_enable", "napi_disable", "netif_napi_del",
+    "kutox_c_retire_napi_device", "kutox_c_deferred_empty",
+    "pcix_get_mmrbc", "pci_set_power_state", "dma_map_page",
+    "skb_frag_size", "skb_tcp_all_headers", "ethtool_convert_link_mode_to_legacy_u32",
+    "readl", "writel", "udelay", "outl", "kutox_read_mac",
+    "kutox_format", "kutox_log_prefix", "warn_on", "net_ratelimit",
+    "print_hex_dump", "kutox_storage_log", "kutox_storage_trace_callback",
+    "blk_mq_alloc_tag_set", "blk_mq_free_tag_set", "blk_mq_alloc_disk",
+    "register_blkdev", "unregister_blkdev", "device_add_disk", "put_disk",
+    "blk_mq_alloc_request", "blk_mq_free_request", "blk_mq_start_request",
+    "blk_mq_complete_request", "blk_mq_end_request", "blk_rq_map_sg",
+    "sg_init_one", "sg_page", "sg_next", "bvec_set_virt", "bvec_virt",
+    "blk_mq_quiesce_queue_nowait", "blk_mq_freeze_queue", "blk_mq_unfreeze_queue",
+    "kutox_block_prepare", "kutox_block_submit", "kutox_block_result",
+    "kutox_block_cancel", "kutox_block_release", "kutox_block_pump",
+    "kutox_block_reset_complete", "kutox_block_quiescent", "kutox_storage_stop",
+}
+
+
+def rust_providers(symbols):
+    functions = {s["name"] for s in symbols if s["owner"] and s["binding"] in (1, 2) and s["type"] == 2}
+    if not RUST_PROVIDERS <= functions:
+        raise ValueError("compatibility services are not provided by actual Rust functions: " +
+                         ", ".join(sorted(RUST_PROVIDERS - functions)))
+    return sorted(s["name"] for s in symbols if s["owner"] and s["binding"] in (1, 2))
 
 
 def inputs():
@@ -43,7 +78,7 @@ def inputs():
         Path(__file__).resolve(), ROOT / "rust-toolchain.toml",
         ROOT / "compat/audit/common/rust_services.rs", ROOT / "compat/audit/common/abi_probe.rs", ROOT / "compat/audit/common/common_layout.c",
         ROOT / "compat/include/common/base_types.h", ROOT / "compat/include/common/device_types.h",
-        ROOT / "src/linux_abi.rs", ROOT / "compat/audit/common/service-ffi.txt",
+        ROOT / "src/linux_abi.rs", ROOT / "src/block_abi.rs", ROOT / "compat/audit/common/service-ffi.txt",
     ]
     files.extend((ROOT / "src/linux_compat").glob("*.rs"))
     files.extend(path for path in (ROOT / "compat/include").rglob("*") if path.is_file())
@@ -141,10 +176,7 @@ def evidence(args, output):
     rust = output / "rust-services.o"
     paths.append(rust)
     shared = inventory(paths, output / "shared-runtime.o", set(lines(ROOT / "compat/audit/common/service-ffi.txt")))
-    rust_defined = sorted(s["name"] for s in Elf(rust).symbols()
-                          if s["owner"] and s["binding"] in (1, 2))
-    if not PACKET_PROVIDERS <= set(rust_defined):
-        raise ValueError("network packet services are not provided by the actual Rust object")
+    rust_defined = rust_providers(Elf(rust).symbols())
     abi_paths = [output / "abi-rust.o", *(output / f"abi-{p}.o" for p in ("boot", "net", "storage"))]
     return {
         **shared, "units": units, "build_inputs": inputs(),
@@ -153,6 +185,10 @@ def evidence(args, output):
         "abi": {"values": layout(abi_paths),
                 "packet_values": layout([output / "abi-rust.o", output / "abi-net.o"],
                                        ".kutox.packet_layouts", PACKET_LAYOUT_VALUES),
+                "block_values": layout([output / "abi-rust.o", output / "abi-storage.o"],
+                                      ".kutox.block_layouts", BLOCK_LAYOUT_VALUES),
+                "accessor_values": layout([output / "abi-rust.o", output / "abi-net.o"],
+                                         ".kutox.accessor_layouts", ACCESSOR_LAYOUT_VALUES),
                 "objects": {path.name: digest(path) for path in abi_paths},
                 "commands": [rust_command(output, True), *(c_command(args, output, "compat/audit/common/common_layout.c", p, probe=True)
                                                          for p in ("boot", "net", "storage"))]},

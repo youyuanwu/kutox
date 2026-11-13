@@ -122,7 +122,7 @@ hardware, parameter and ethtool units. It records original registration/callback
 parameter arrays, layouts, headers and **209 unresolved runtime dependencies**.
 These objects are explicitly rejected by the runtime linker. A second
 combined relocatable closure now checks both drivers against actual Rust and
-C providers; its remaining 67 kernel/backend symbols are recorded, not hidden
+C providers; its remaining 68 kernel/backend symbols are recorded, not hidden
 by success stubs.
 The marked check objects remain excluded from the runtime image. Runtime
 objects are compiled separately against the same selected source profile.
@@ -132,14 +132,17 @@ C ABI functions from Rust. Both drivers share checked
 [device/PCI/execution contracts](src/linux_abi.rs), synchronization, allocation
 adapters, PCI registration/access and DMA dispatch. Storage device references,
 work tracking and lifecycle/recovery orchestration also live in Rust.
-[Network packet services](src/linux_compat/packet.rs) now own network-device
-lifecycle/queues, skb allocation, RX fragments, TX completion tracking and ingress.
-C remains for original Linux implementations, header-dependent accessors,
-variadic formatting, and the separate NAPI-registry and block-class
-adapters. The storage C bridge is now 124 lines rather than 644; it contains no
-registration, reference-count, queue-work or request-lifecycle state machine.
+[Network packet services](src/linux_compat/packet.rs) own network-device
+queues, skb allocation, RX fragments, TX completion tracking and ingress.
+[Lifecycle](src/linux_compat/lifecycle.rs), [NAPI](src/linux_compat/napi.rs),
+[MMIO](src/linux_compat/mmio.rs), [block services](src/linux_compat/block.rs),
+optional-operation policy and bounded diagnostic formatting also live in Rust.
+The five remaining production C bridges total 264 lines: original-header
+accessors/operations and variadic extraction/wrappers, not parallel kernel-service
+state machines. C acceptance fixtures and independent compiler probes remain.
 Both audit tools compile the real Rust providers and compare all three C
-profiles with Rust layouts and GFP flags, plus 122 network-contract values.
+profiles with Rust layouts and GFP flags, plus 122 packet, 135 block and
+41 header-accessor/MAC contract values.
 See the
 [shared boundary](docs/kernel-implementation.md#shared-linux-compatibility-boundary)
 for the remaining per-device policies and resource limits.

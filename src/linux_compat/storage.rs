@@ -31,12 +31,6 @@ impl State {
 }
 static STATE: Bsp<State> = Bsp(UnsafeCell::new(State::EMPTY));
 static DEVICE_NAME: Bsp<[u8; 32]> = Bsp(UnsafeCell::new([0; 32]));
-#[repr(C)]
-struct FeatureProfile {
-    values: [u64; 4],
-    required: u64,
-    forbidden: u64,
-}
 unsafe extern "C" {
     static kutox_storage_init_virtio_init: unsafe extern "C" fn() -> i32;
     static kutox_storage_exit_virtio_exit: unsafe extern "C" fn();
@@ -44,8 +38,8 @@ unsafe extern "C" {
     static kutox_storage_exit_virtio_blk_fini: unsafe extern "C" fn();
     static kutox_storage_init_virtio_pci_driver_init: unsafe extern "C" fn() -> i32;
     static kutox_storage_exit_virtio_pci_driver_exit: unsafe extern "C" fn();
-    fn kutox_storage_parameters();
-    fn kutox_storage_feature_profile(device: *mut Device, profile: *mut FeatureProfile);
+    fn kutox_storage_set_parameters(depth: u32, queues: u32, poll: u32);
+    fn kutox_storage_get_features(device: *mut Device, values: *mut u64);
     fn kutox_storage_reset_device(device: *mut Device);
     fn kutox_storage_device_status(device: *mut Device) -> u8;
     fn kutox_storage_detach(device: *mut Device) -> *mut c_void;
@@ -187,18 +181,14 @@ pub unsafe extern "C" fn device_add(d: *mut Device) -> i32 {
     if unsafe { matches(d, driver) } == 0 {
         return diagnostic(c"device_add_match", -19);
     }
-    let mut features = FeatureProfile {
-        values: [0; 4],
-        required: 0,
-        forbidden: 0,
-    };
-    unsafe { kutox_storage_feature_profile(d, &mut features) };
-    if features.values[0] & features.required != features.required
-        || features.values[0] & features.forbidden != 0
+    let mut features = [0; 4];
+    unsafe { kutox_storage_get_features(d, features.as_mut_ptr()) };
+    if features[0] & block_abi::STORAGE_REQUIRED != block_abi::STORAGE_REQUIRED
+        || features[0] & block_abi::STORAGE_FORBIDDEN != 0
     {
         return rejected(c"storage_device_features");
     }
-    if features.values[1..].iter().any(|value| *value != 0) {
+    if features[1..].iter().any(|value| *value != 0) {
         return rejected(c"storage_extended_features");
     }
     unsafe {
@@ -427,7 +417,7 @@ pub extern "C" fn kutox_storage_start(irq: u32) -> i32 {
         return code;
     }
     unsafe {
-        kutox_storage_parameters();
+        kutox_storage_set_parameters(1, 1, 0);
     }
     let result = unsafe { kutox_storage_init_virtio_init() };
     if result != 0 {

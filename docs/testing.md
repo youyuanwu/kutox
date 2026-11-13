@@ -41,16 +41,20 @@ layouts and actual runtime-link rejection pass. No fake service providers or
 garbage collection hide dependencies. Failed builds invalidate an earlier
 success report. The separate `runtime/` subdirectory now contains the complete
 unmarked combined e1000/VirtIO/Rust-provider closure, with all sections retained
-and exactly 67 backend/libc entry points in one shared allowlist. Both inventories
+and exactly 68 backend/libc entry points in one shared allowlist. Both inventories
 and their source/header/command/object provenance are independently verified.
 
 Both driver audits use [linux_compat_check.py](../scripts/linux_compat_check.py)
-for the same executable provider proof: seventeen C objects plus the real
+for the same executable provider proof: sixteen C objects plus the real
 freestanding Rust provider object, not declaration-only Rust symbols or mocks.
 Real Rust and boot/e1000/storage C probes must agree on all 37 shared
 device/PCI/execution-layout and GFP values. Rust and the network C profile also
 compare 122 network-device, skb, fragment, NAPI, callback-slot and constant
-values. Packet-service entry points must be defined by the actual Rust object.
+values. Another 135 block and 41 original-header-accessor/MAC values check the
+migrated block services and retained C bridge. Migrated lifecycle, NAPI, optional,
+MMIO, diagnostic and block entry points must be functions in the actual Rust
+object, not C/local/data definitions. Existing native Rust-only stop/quiescence
+helpers may inline in the optimized kernel ELF without losing provider proof.
 Independent `--verify` checks
 stored objects and provenance without compiling. Source-only dependency
 inventories remain 209/203 and retain actual kernel-link exclusion.
@@ -75,13 +79,19 @@ Native Kbuild reports, stale/tampered evidence, unsupported profile definitions,
 omitted dependencies and unexpectedly supplied providers are rejected.
 Declaration-only compatibility layouts are not an implemented runtime ABI.
 
-The audit also compiles the real [block provider](../compat/block_services.c)
-against those same layouts and partially links it with the original units.
+The audit also compiles the real [Rust block provider](../src/linux_compat/block.rs)
+with a minimal marked Rust wrapper and partially links it with the original units.
 The report separately records 57 supplied API names, 146 remaining APIs, five
-Rust platform entry points, provider/header/object hashes and exact commands.
+Rust platform entry points, provider/input/object hashes and exact commands.
 Unexpected external functions or hidden dependencies fail verification. The
 combined audit object remains compile-only; the production provider is compiled
 separately without that marker in both profiles.
+
+The existing C atomic/diagnostic fixture additionally checks mixed promoted
+variadic arguments, signed 64-bit minimum, unsigned widths, string padding,
+truncation/canaries and zero/one-byte destination capacities through the actual
+C `va_list` bridge and Rust formatter. NAPI/lifecycle/ring, synchronous callback
+reentry, cancellation/IRQ completion and real storage reset tests remain enabled.
 
 [Bounded block acceptance](kernel-implementation.md#bounded-block-services)
 adds `storage.block_services` to the existing kernel suites, bringing their

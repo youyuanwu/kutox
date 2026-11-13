@@ -112,12 +112,6 @@ unsafe extern "C" {
 fn state() -> *mut Packets {
     PACKETS.0.get()
 }
-fn callback<T>(function: Option<T>, operation: &'static core::ffi::CStr) -> T {
-    match function {
-        Some(function) => function,
-        None => unsafe { kutox_platform_fail(operation.as_ptr()) },
-    }
-}
 fn tx_event(event: u32, result: i32) {
     unsafe { kutox_driver_trace(event, 0, (*state()).tx.identity, result) }
 }

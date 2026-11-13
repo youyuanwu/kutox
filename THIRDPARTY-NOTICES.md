@@ -449,7 +449,7 @@ The port is not an unchanged async mutex:
 
 The adapted mutex file retains MIT licensing. The separate kutox ownership
 policy, general thread/wait runtime, and tests retain their own repository
-licensing. The separate native C adapter uses this Rust primitive for its
+licensing. The separate native Rust C-ABI adapter uses this Rust primitive for its
 bounded sleeping-mutex API; the adapted file itself is not Linux C code.
 
 ## Linux
@@ -483,7 +483,7 @@ dependency inventories and layout/provenance probes under
 under [compat/include/](compat/include/), with network/block extensions and
 independent e1000/storage feature profiles.
 
-The [bounded block provider](compat/block_services.c), its
+The [bounded Rust block provider](src/linux_compat/block.rs), its
 [Rust allocation/context adapter](src/block_services.rs) and
 [guest fixture](compat/guest_tests/block_services_test.c) are kutox implementations
 of a restricted source-facing service API. They implement request ownership,
@@ -519,10 +519,13 @@ policy; they do not replace original Linux device algorithms. Network-device,
 skb, RX-fragment and TX/ingress services now live in the kutox
 [Rust packet adapter](src/linux_compat/packet.rs), replacing the former
 `compat/driver_packet.c` without changing the original e1000 implementation.
-Their native
+The remaining lifecycle, NAPI registration, optional-operation, MMIO ownership,
+block-state and diagnostic-formatting services have likewise moved to Rust
+without copying or replacing original Linux device algorithms. Their native
 backends reuse the previously attributed Moss allocators, synchronization and
-task services. The remaining C NAPI/block class adapters, original-header
-accessors and common variadic formatter retain their existing attribution.
+task services. The retained C original-header accessors, variadic extraction/
+wrappers, independent layout probes and C-call acceptance fixtures retain their
+existing attribution.
 
 ## Native driver infrastructure and persistent integration
 

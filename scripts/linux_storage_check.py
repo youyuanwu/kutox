@@ -11,7 +11,7 @@ from linux_driver_check import (
     Elf, REVISION, ROOT, check_runtime_exclusion, dependency_paths, digest, lines,
     make_headers, run, source_identity,
 )
-from linux_compat_check import audit as audit_runtime, inputs as shared_inputs, verify as verify_runtime
+from linux_compat_check import audit as audit_runtime, inputs as shared_inputs, verify as verify_runtime, rust_flags
 
 DECLARATIONS = ROOT / "compat/audit/storage"
 SOURCES = (
@@ -55,7 +55,7 @@ def build_inputs():
         ROOT / "compat/cflags.txt", ROOT / "compat/include/profiles/common.headers",
         ROOT / "compat/include/profiles/e1000.headers", ROOT / "compat/include/profiles/uapi-forwarders.json",
         ROOT / "linker.ld",
-        ROOT / "compat/block_services.c", ROOT / "compat/include/block/services.h",
+        ROOT / "compat/audit/storage/block_services.rs", ROOT / "compat/include/block/services.h",
         ROOT / "src/block_services.rs", ROOT / "build.rs",
         ROOT / "compat/storage_runtime.c", ROOT / "compat/include/block/runtime.h",
         ROOT / "src/storage.rs",
@@ -176,7 +176,7 @@ def symbol_inventory(paths, linked):
 
 
 def service_evidence(output, baseline):
-    source = ROOT / "compat/block_services.c"
+    source = ROOT / "src/linux_compat/block.rs"
     obj = output / "block-services.o"
     combined = output / "block-services-closure.o"
     service = Elf(obj)
@@ -206,6 +206,11 @@ def service_evidence(output, baseline):
         "provided_apis": sorted(provided), "remaining_apis": sorted(set(baseline) - provided),
         "platform_ffi": sorted(ffi), "undefined": sorted(undefined),
     }
+
+
+def service_command(output):
+    return ["rustc", *rust_flags(), str(ROOT / "compat/audit/storage/block_services.rs"),
+            "-o", str(output / "block-services.o")]
 
 
 def audit(args):
@@ -242,16 +247,13 @@ def audit(args):
         raise ValueError("unclassified or unexpectedly provided storage APIs: "
                          + ", ".join(sorted(set(undefined) ^ inventory.keys())))
     service = output / "block-services.o"
-    command = [args.clang, *flags, "-MD", "-MF", str(service.with_suffix(".d")),
-               "-c", str(ROOT / "compat/block_services.c"), "-o", str(service)]
+    command = service_command(output)
     run(command, output / "block-services.log")
     services = output / "block-services-closure.o"
     run([args.ld, "-r", "-o", str(services), str(linked), str(service)],
         output / "block-services-link.log")
     service_report = {
         **service_evidence(output, undefined), "command": command,
-        "headers": [{"path": header, "sha256": digest(Path(header))}
-                    for header in dependency_paths(service.with_suffix(".d").read_text())],
     }
     references = Elf(linked).references()
     apis = []
@@ -359,16 +361,8 @@ def verify(args, report=None):
     actual = service_evidence(output, undefined)
     if any(services.get(key) != value for key, value in actual.items()):
         raise ValueError("storage provider evidence changed")
-    obj = output / "block-services.o"
-    expected = [*compiler_flags(output), "-MD", "-MF", str(obj.with_suffix(".d")),
-                "-c", str(ROOT / "compat/block_services.c"), "-o", str(obj)]
-    if services.get("command", [])[1:] != expected:
+    if services.get("command") != service_command(output):
         raise ValueError("storage provider compiler arguments changed")
-    headers = services.get("headers")
-    if (not isinstance(headers, list)
-            or [header.get("path") for header in headers] != dependency_paths(obj.with_suffix(".d").read_text())
-            or any(header.get("sha256") != digest(Path(header["path"])) for header in headers)):
-        raise ValueError("storage provider header provenance changed")
     if (report.get("layout_sha256") != digest(output / "layout.o")
             or report.get("layouts") != read_layout(output / "layout.o")):
         raise ValueError("storage compiler layouts changed")

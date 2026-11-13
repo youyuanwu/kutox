@@ -364,7 +364,7 @@ def execution_layouts(args, flags, output):
 
 
 SERVICE_SOURCES = ("driver_optional.c",)
-BOOT_SERVICE_SOURCES = ("deferred.c", "diagnostics.c")
+BOOT_SERVICE_SOURCES = ("diagnostics.c",)
 
 
 def service_closure(args, output):
