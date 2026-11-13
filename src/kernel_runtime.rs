@@ -593,7 +593,7 @@ impl<'a> Resources<'a> {
                 owner.report_path(&self._topology)?;
             }
             let binding = linux_irq::BoundIrq::bind(&self._controller, gsi)?;
-            unsafe { linux_driver::kutox_c_linux_bind_irq(gsi) };
+            crate::linux_compat::lifecycle::bind_irq(gsi);
             Some(binding)
         } else {
             None

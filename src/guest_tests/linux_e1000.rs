@@ -5,12 +5,14 @@ use crate::{
     boot::BootInfo,
     driver_memory, driver_platform,
     irq::{self, LocalApic, external::IoApic},
+    linux_compat::lifecycle::Handle as LifecycleHandle,
     linux_deferred,
     linux_driver::{self, DriverHandle, control},
     linux_irq::BoundIrq,
     linux_runtime, memory, pci, platform, serial, threads,
 };
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use moss_libkernel::CpuOps;
 static FAULT: AtomicU32 = AtomicU32::new(0);
 static FAULT_SEEN: AtomicBool = AtomicBool::new(false);
 unsafe extern "C" {
@@ -21,7 +23,11 @@ unsafe extern "C" {
     fn kutox_c_linux_tx(ticket: u64, retry: bool) -> i32;
     fn kutox_c_linux_tx_release(ticket: u64) -> i32;
     fn kutox_c_linux_rx_stop(ticket: u64) -> i32;
+    fn kutox_c_linux_rx_path(ticket: u64) -> i32;
     fn kutox_c_linux_rx_failure_seen(ticket: u64) -> bool;
+    fn kutox_c_linux_bind(ticket: *mut u64) -> i32;
+    fn kutox_c_linux_info(ticket: u64, mac: *mut u8, mtu: *mut u32, link: *mut u32) -> i32;
+    fn kutox_c_linux_statistics(ticket: u64, out: *mut u64) -> i32;
     fn kutox_c_linux_rx_state(
         ticket: u64,
         packets: u32,
@@ -132,10 +138,64 @@ impl DriverHandle {
         assert_eq!(unsafe { kutox_c_linux_tx(ticket, false) }, -116);
         assert_eq!(unsafe { kutox_c_linux_tx_release(ticket) }, -116);
         assert_eq!(unsafe { kutox_c_linux_rx_stop(ticket) }, -116);
+        let typed = LifecycleHandle::from_ticket(ticket).unwrap();
+        assert_eq!(typed.ready(), Err(-116));
+        let mut statistics = [u64::MAX; 7];
+        assert_eq!(
+            unsafe { kutox_c_linux_statistics(ticket, statistics.as_mut_ptr()) },
+            -19
+        );
+        assert_eq!(statistics, [u64::MAX; 7]);
         assert_eq!(
             unsafe { kutox_c_linux_rx_state(ticket, 0, 0, 0, 0, true) },
             -116
         );
+    }
+
+    fn lifecycle_boundary(handle: &DriverHandle) {
+        let typed = LifecycleHandle::from_ticket(handle.0).unwrap();
+        typed.test_reentry();
+        assert_eq!(typed.rx_path(), Err(-22));
+        assert_eq!(unsafe { kutox_c_linux_rx_path(handle.0) }, -22);
+        let expected = typed.info().unwrap();
+        crate::cpu::X86Cpu::enable_interrupts();
+        let rejected = typed.info();
+        crate::cpu::X86Cpu::disable_interrupts();
+        assert_eq!(
+            rejected,
+            Err(threads::SwitchError::InterruptsEnabled as i32)
+        );
+        assert_eq!(typed.info(), Ok(expected));
+        let mut mac = [0; 6];
+        let mut mtu = 0;
+        let mut link = 0;
+        assert_eq!(
+            unsafe { kutox_c_linux_info(handle.0, mac.as_mut_ptr(), &mut mtu, &mut link) },
+            0
+        );
+        assert_eq!(
+            (mac, mtu, link != 0),
+            (expected.mac, expected.mtu, expected.link)
+        );
+        let mut statistics = [u64::MAX; 7];
+        assert_eq!(
+            unsafe { kutox_c_linux_statistics(handle.0, statistics.as_mut_ptr()) },
+            0
+        );
+        assert_eq!(statistics, typed.statistics().unwrap());
+        mac.fill(0xa5);
+        link = u32::MAX;
+        assert_eq!(
+            unsafe {
+                kutox_c_linux_info(handle.0, mac.as_mut_ptr(), core::ptr::null_mut(), &mut link)
+            },
+            -22
+        );
+        assert_eq!((mac, link), ([0xa5; 6], u32::MAX));
+        let mut ticket = u64::MAX;
+        assert_eq!(unsafe { kutox_c_linux_bind(&mut ticket) }, -16);
+        assert_eq!(ticket, u64::MAX);
+        assert_eq!(LifecycleHandle::from_ticket(0), Err(-116));
     }
 }
 fn worker(which: usize) {
@@ -164,13 +224,20 @@ fn worker(which: usize) {
         unsafe { kutox_linux_workers_stop() };
         return;
     }
+    let mut retired: Option<LifecycleHandle> = None;
     for _ in 0..2 {
         let handle = DriverHandle::bind().expect("original Linux probe failed");
+        if let Some(retired) = retired {
+            assert_eq!(retired.info(), Err(-116));
+            assert_eq!(retired.unbind(), Err(-116));
+        }
         for _ in 0..2 {
             assert_eq!(handle.open(), 0, "original Linux open failed");
             handle.wait_ready();
+            DriverHandle::lifecycle_boundary(&handle);
             assert_eq!(handle.close(), 0, "original Linux close failed");
         }
+        retired = Some(LifecycleHandle::from_ticket(handle.0).unwrap());
         handle.unbind_checked();
     }
     linux_driver::set_tracing(false);
@@ -190,7 +257,7 @@ fn run(
     let apic = LocalApic::start(boot, frames)?;
     let controller = IoApic::start(boot, frames, &apic, &topology)?;
     let binding = BoundIrq::bind(&controller, gsi)?;
-    unsafe { kutox_c_linux_bind_irq(gsi) };
+    crate::linux_compat::lifecycle::bind_irq(gsi);
     let timer = irq::Timer::attach(&apic)?;
     let space = memory::StackSpace::new(boot, frames)?;
     let mut scheduler = threads::Scheduler::new(&space);
@@ -495,7 +562,4 @@ fn rx_worker() {
         assert_eq!(handle.close(), 0);
         handle.unbind_checked();
     }
-}
-unsafe extern "C" {
-    fn kutox_c_linux_bind_irq(irq: u32);
 }

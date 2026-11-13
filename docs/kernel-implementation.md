@@ -392,8 +392,10 @@ Linux-facing C ABI using `#[unsafe(no_mangle)] extern "C"` exports:
   read tickets, admission checks and reset/remove/reprobe sequencing.
 - `packet.rs`: network-device lifecycle/queues, linear sk_buffs, fragment
   provenance, TX ownership/completion and native Ethernet ingress.
-- `lifecycle.rs`: module bind/open/close/remove orchestration and generation
-  tickets, using small C accessors for original private e1000 structures.
+- `lifecycle.rs`: safe module bind/open/close/remove services, generation-bearing
+  handles, owned information/statistics snapshots and borrowed packet input.
+  `lifecycle_ffi.rs` preserves the C exports and their output-pointer contracts;
+  `lifecycle_raw.rs` confines driver pointers, private-header access and callbacks.
 - `napi.rs`: generation-bearing NAPI registrations, queue associations and
   retirement, forwarding to the existing native executor.
 - `mmio.rs`: checked MMIO, barriers, port forwarding and boot-MAC ownership/
@@ -462,6 +464,22 @@ The old C packet, deferred
 and block-service implementations are removed rather than left as parallel
 providers. Existing C ABI names remain, including the historical `kutox_c_`
 prefix. Original Linux hardware/packet/ring algorithms remain unchanged C.
+
+The lifecycle service is compiled with `forbid(unsafe_code)`. Native Rust
+callers use it directly rather than round-tripping through C exports. Every
+operation checks boot/thread context and admits one lifecycle operation on the
+BSP; nested lifecycle admission returns `-EBUSY`. This admission flag is not an
+IRQ lock and does not prevent scheduling or reentrant packet/work callbacks.
+No reference to Linux device memory or mutable registry borrow spans a callback.
+Private device access borrows the admission token, so removal requires exclusive
+token access and cannot occur while a device accessor exists. Each operation
+revalidates its handle generation, and only owned snapshots escape admission.
+C pointer validity, lifetime, capacity and alignment remain caller obligations;
+null checks do not establish those properties. Packet/DMA internals and other
+compatibility providers are not yet converted to this safe-service structure.
+Native Rust-only helpers such as `kutox_net_wake` may inline out of the optimized
+kernel; guest acceptance checks their wake behavior rather than requiring a
+standalone helper symbol. Original driver callback and fixture gates remain.
 
 Lifecycle/NAPI/block owners use raw BSP-owned state across original callbacks.
 No Rust registry borrow spans an original callback or native reentry. Completion

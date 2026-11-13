@@ -51,7 +51,7 @@ RUNTIME_SYMBOLS = {
     "e1000_intr", "e1000_clean", "kutox_driver_alloc", "kutox_driver_free",
     "kutox_driver_dma_map", "kutox_driver_dma_operation",
     "kutox_linux_request_irq", "kutox_linux_work_init", "kutox_linux_napi_init",
-    "kutox_e1000_init", "kutox_net_wake",
+    "kutox_e1000_init",
     "kutox_async_executor",
     "kutox_packet_broker",
     "kutox_ipv4_service",

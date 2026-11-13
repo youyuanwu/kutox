@@ -97,9 +97,7 @@ fn exchange(device: net_device::Handle, sequence: usize) {
     ));
     let received = device.wait_receive(3_000_000).unwrap();
     assert_eq!(received, packet(epoch, sequence, length, true));
-    let path = control("rx-path", || unsafe {
-        kutox_c_linux_rx_path(MANAGED_TICKET.load(Ordering::Acquire))
-    });
+    let path = DriverHandle(MANAGED_TICKET.load(Ordering::Acquire)).rx_path();
     assert_eq!(path, if length <= 252 { 1 } else { 2 });
     serial::print(format_args!(
         "# NETWORK_RX epoch={epoch} seq={sequence} bytes={length} path={} data=",

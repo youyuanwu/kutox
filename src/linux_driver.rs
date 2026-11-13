@@ -1,6 +1,9 @@
 //! Runtime control and packet tickets for unchanged Linux e1000, not guest fixtures.
 
-use crate::{linux_deferred, serial, threads};
+use crate::{
+    linux_compat::lifecycle::{self, Handle as LifecycleHandle},
+    linux_deferred, serial, threads,
+};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 static TRACING: AtomicBool = AtomicBool::new(false);
@@ -50,18 +53,22 @@ impl CallbackProof {
 }
 
 pub(crate) fn control(operation: &str, call: impl FnOnce() -> i32) -> i32 {
+    control_result(operation, || Ok(call())).unwrap_or_else(|error| error)
+}
+
+fn control_result<T>(operation: &str, call: impl FnOnce() -> Result<T, i32>) -> Result<T, i32> {
     if let Err(error) = threads::check_thread_context() {
         serial::print(format_args!(
             "# LINUX_CONTROL_REJECT op={operation} errno={}\n",
             error as i32
         ));
-        return error as i32;
+        return Err(error as i32);
     }
     if linux_deferred::control_reentry() {
         serial::print(format_args!(
             "# LINUX_CONTROL_REJECT op={operation} errno=-58\n"
         ));
-        return -58;
+        return Err(-58);
     }
     let attempt = CONTROL.try_lock();
     let guard = match attempt {
@@ -78,12 +85,12 @@ pub(crate) fn control(operation: &str, call: impl FnOnce() -> i32) -> i32 {
             serial::print(format_args!(
                 "# driver control={operation} error={error:?}\n"
             ));
-            return match error {
+            return Err(match error {
                 crate::mutex::Error::Context(error) => error as i32,
                 crate::mutex::Error::State(_) => -16,
                 crate::mutex::Error::TimedOut => -110,
                 crate::mutex::Error::Cancelled => -125,
-            };
+            });
         }
     };
     call()
@@ -139,22 +146,7 @@ pub extern "C" fn kutox_driver_trace(event: u32, function: usize, object: usize,
     }
 }
 unsafe extern "C" {
-    fn kutox_c_linux_bind(ticket: *mut u64) -> i32;
-    fn kutox_c_linux_open(ticket: u64) -> i32;
-    fn kutox_c_linux_ready(ticket: u64) -> i32;
-    fn kutox_c_linux_close(ticket: u64) -> i32;
-    fn kutox_c_linux_unbind(ticket: u64) -> i32;
-    fn kutox_c_linux_tx_begin(ticket: u64, bytes: *const u8, size: u32) -> i32;
-    fn kutox_c_linux_tx(ticket: u64, retry: bool) -> i32;
-    fn kutox_c_linux_tx_release(ticket: u64) -> i32;
-    fn kutox_c_linux_rx_start(ticket: u64) -> i32;
-    fn kutox_c_linux_rx_stop(ticket: u64) -> i32;
-    fn kutox_c_linux_rx_path(ticket: u64) -> i32;
-    fn kutox_c_linux_info(ticket: u64, mac: *mut u8, mtu: *mut u32, link: *mut u32) -> i32;
-    fn kutox_c_linux_statistics(ticket: u64, statistics: *mut u64) -> i32;
-    fn kutox_c_linux_empty() -> bool;
     pub(crate) fn kutox_c_driver_device() -> usize;
-    pub(crate) fn kutox_c_linux_bind_irq(irq: u32);
 }
 
 use alloc::sync::Arc;
@@ -254,7 +246,7 @@ pub fn managed_quiescent() -> bool {
     MANAGED_TICKET.load(Ordering::Acquire) == 0
         && MANAGED.snapshot() == kutox::mutex_state::MutexState::new()
         && quiescent()
-        && unsafe { kutox_c_linux_empty() }
+        && lifecycle::empty()
 }
 
 fn managed_lock() -> Result<crate::mutex::MutexGuard<Option<ManagedState>>, i32> {
@@ -288,18 +280,16 @@ fn bind_managed(address: PciAddress) -> Result<ManagedDevice, i32> {
     }
     let driver = DriverHandle::bind()?;
     if let Err(error) = checked(driver.open()) {
-        checked(control("probe-rollback", || unsafe {
-            kutox_c_linux_unbind(driver.0)
-        }))
-        .expect("failed original probe rollback; backing retained");
+        driver
+            .call("probe-rollback", LifecycleHandle::unbind)
+            .expect("failed original probe rollback; backing retained");
         return Err(error);
     }
     if let Err(error) = checked(driver.rx_start()) {
         checked(driver.close()).expect("failed original open rollback; backing retained");
-        checked(control("probe-rollback", || unsafe {
-            kutox_c_linux_unbind(driver.0)
-        }))
-        .expect("failed original probe rollback; backing retained");
+        driver
+            .call("probe-rollback", LifecycleHandle::unbind)
+            .expect("failed original probe rollback; backing retained");
         return Err(error);
     }
     let ticket = driver.0;
@@ -388,12 +378,7 @@ impl NativeDevice for ManagedDevice {
         if state.driver.0 != self.ticket {
             return Err(-116);
         }
-        let result = control("ready", || unsafe { kutox_c_linux_ready(self.ticket) });
-        match result {
-            0 => Ok(false),
-            1 => Ok(true),
-            code => Err(code),
-        }
+        state.driver.call("ready", LifecycleHandle::ready)
     }
 
     fn network(&self) -> Option<&dyn NetworkDevice> {
@@ -416,14 +401,12 @@ impl NativeDevice for ManagedDevice {
             state.opened = false;
         }
         if state.receipt.is_some() {
-            checked(control("tx-release", || unsafe {
-                kutox_c_linux_tx_release(self.ticket)
-            }))?;
+            state
+                .driver
+                .call("tx-release", LifecycleHandle::release_packet)?;
             state.receipt = None;
         }
-        checked(control("unbind", || unsafe {
-            kutox_c_linux_unbind(self.ticket)
-        }))?;
+        state.driver.call("unbind", LifecycleHandle::unbind)?;
         crate::driver_memory::discard_ingress();
         *owner = None;
         MANAGED_TICKET.store(0, Ordering::Release);
@@ -434,34 +417,27 @@ impl NativeDevice for ManagedDevice {
 
 impl NetworkDevice for ManagedDevice {
     fn info(&self) -> Result<Info, Error> {
-        self.call("info", |_| {
-            let mut info = Info {
+        self.call("info", |state| {
+            let snapshot = state
+                .driver
+                .call("info", LifecycleHandle::info)
+                .map_err(Error::from_code)?;
+            let statistics = state
+                .driver
+                .call("statistics", LifecycleHandle::statistics)
+                .map_err(Error::from_code)?;
+            let ready = state
+                .driver
+                .call("ready", LifecycleHandle::ready)
+                .map_err(Error::from_code)?;
+            Ok(Info {
                 address: self.address,
-                mac: [0; 6],
-                mtu: 0,
-                link: false,
-                ready: false,
-                statistics: [0; 7].into(),
-            };
-            let mut link = 0;
-            checked(control("info", || unsafe {
-                kutox_c_linux_info(self.ticket, info.mac.as_mut_ptr(), &mut info.mtu, &mut link)
-            }))
-            .map_err(Error::from_code)?;
-            info.link = link != 0;
-            let mut statistics = [0; 7];
-            checked(control("statistics", || unsafe {
-                kutox_c_linux_statistics(self.ticket, statistics.as_mut_ptr())
-            }))
-            .map_err(Error::from_code)?;
-            info.statistics = statistics.into();
-            let ready = control("ready", || unsafe { kutox_c_linux_ready(self.ticket) });
-            match ready {
-                0 => {}
-                1 => info.ready = true,
-                code => return Err(Error::from_code(code)),
-            }
-            Ok(info)
+                mac: snapshot.mac,
+                mtu: snapshot.mtu,
+                link: snapshot.link,
+                ready,
+                statistics: statistics.into(),
+            })
         })
     }
 
@@ -475,23 +451,20 @@ impl NetworkDevice for ManagedDevice {
             if state.receipt.is_some() {
                 return Err(Error::Busy);
             }
-            let ready = control("ready", || unsafe { kutox_c_linux_ready(self.ticket) });
-            if ready == 0 {
-                let mut mac = [0; 6];
-                let mut mtu = 0;
-                let mut link = 0;
-                checked(control("info", || unsafe {
-                    kutox_c_linux_info(self.ticket, mac.as_mut_ptr(), &mut mtu, &mut link)
-                }))
+            let ready = state
+                .driver
+                .call("ready", LifecycleHandle::ready)
                 .map_err(Error::from_code)?;
-                return Err(if link == 0 {
+            if !ready {
+                let info = state
+                    .driver
+                    .call("info", LifecycleHandle::info)
+                    .map_err(Error::from_code)?;
+                return Err(if !info.link {
                     Error::NotReady
                 } else {
                     Error::Busy
                 });
-            }
-            if ready != 1 {
-                return Err(Error::from_code(ready));
             }
             let sequence = NEXT_TX
                 .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
@@ -534,10 +507,10 @@ impl NetworkDevice for ManagedDevice {
                 0 | 1 => return Err(Error::Busy),
                 code => return Err(Error::from_code(code)),
             }
-            checked(control("tx-release", || unsafe {
-                kutox_c_linux_tx_release(self.ticket)
-            }))
-            .map_err(Error::from_code)?;
+            state
+                .driver
+                .call("tx-release", LifecycleHandle::release_packet)
+                .map_err(Error::from_code)?;
             state.receipt = None;
             Ok(())
         })
@@ -578,63 +551,56 @@ pub mod hardening;
 
 pub(crate) struct DriverHandle(pub(crate) u64);
 impl DriverHandle {
-    pub(crate) fn bind() -> Result<Self, i32> {
-        threads::check_thread_context().map_err(|error| error as i32)?;
-        let mut ticket = 0;
-        let result = control("bind", || unsafe { kutox_c_linux_bind(&mut ticket) });
-        if result < 0 {
-            return Err(result);
-        }
+    fn call<T>(
+        &self,
+        operation: &str,
+        call: impl FnOnce(LifecycleHandle) -> Result<T, i32>,
+    ) -> Result<T, i32> {
+        control_result(operation, || call(LifecycleHandle::from_ticket(self.0)?))
+    }
 
-        assert_ne!(ticket, 0, "module bind returned no handle");
-        Ok(Self(ticket))
+    pub(crate) fn bind() -> Result<Self, i32> {
+        control_result("bind", LifecycleHandle::bind).map(|handle| Self(handle.ticket()))
     }
     pub(crate) fn open(&self) -> i32 {
-        control("open", || unsafe { kutox_c_linux_open(self.0) })
+        lifecycle::status(self.call("open", LifecycleHandle::open))
     }
     pub(crate) fn ready(&self) -> bool {
-        let result = control("ready", || unsafe { kutox_c_linux_ready(self.0) });
-        assert!(
-            (0..=1).contains(&result),
-            "invalid Linux link handle or result"
-        );
-        result == 1
+        self.call("ready", LifecycleHandle::ready)
+            .expect("invalid Linux link handle or result")
     }
     pub(crate) fn close(&self) -> i32 {
-        control("close", || unsafe { kutox_c_linux_close(self.0) })
+        lifecycle::status(self.call("close", LifecycleHandle::close))
     }
     pub(crate) fn packet(&self, bytes: &[u8]) -> i32 {
-        let size = u32::try_from(bytes.len()).expect("packet exceeds C size range");
-        control("packet", || unsafe {
-            kutox_c_linux_tx_begin(self.0, bytes.as_ptr(), size)
-        })
+        lifecycle::status(self.call("packet", |handle| handle.packet(bytes)))
     }
     pub(crate) fn transmit(&self) -> i32 {
-        control("transmit", || unsafe { kutox_c_linux_tx(self.0, true) })
+        self.call("transmit", |handle| handle.transmit(true))
+            .unwrap_or_else(|error| error)
     }
     pub(crate) fn tx_status(&self) -> i32 {
-        control("tx-state", || unsafe { kutox_c_linux_tx(self.0, false) })
+        self.call("tx-state", |handle| handle.transmit(false))
+            .unwrap_or_else(|error| error)
     }
     pub(crate) fn release_packet(&self) {
         assert_eq!(
-            control("tx-release", || unsafe { kutox_c_linux_tx_release(self.0) }),
-            0
+            self.call("tx-release", LifecycleHandle::release_packet),
+            Ok(())
         );
     }
 
     pub(crate) fn rx_start(&self) -> i32 {
-        control("rx-start", || unsafe { kutox_c_linux_rx_start(self.0) })
+        lifecycle::status(self.call("rx-start", LifecycleHandle::rx_start))
     }
     pub(crate) fn rx_stop(&self) -> i32 {
-        control("rx-stop", || unsafe { kutox_c_linux_rx_stop(self.0) })
+        lifecycle::status(self.call("rx-stop", LifecycleHandle::rx_stop))
     }
     pub(crate) fn rx_path(&self) -> i32 {
-        control("rx-path", || unsafe { kutox_c_linux_rx_path(self.0) })
+        self.call("rx-path", LifecycleHandle::rx_path)
+            .unwrap_or_else(|error| error)
     }
     pub(crate) fn unbind(self) {
-        assert_eq!(
-            control("unbind", || unsafe { kutox_c_linux_unbind(self.0) }),
-            0
-        );
+        assert_eq!(self.call("unbind", LifecycleHandle::unbind), Ok(()));
     }
 }
