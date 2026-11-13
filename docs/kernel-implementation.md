@@ -378,6 +378,11 @@ and `/bin/init` loader continue to use the immutable Limine RAM module.
 
 ## Shared Linux compatibility boundary
 
+The proposed [native ABI cleanup](linux-compat-abi-cleanup.md) documents which
+internal C-ABI round trips can become ordinary Rust calls while preserving
+real Linux, fixture, callback and audit contracts. That cleanup is not yet
+implemented.
+
 [The common Rust modules](../src/linux_compat/) implement the selected
 Linux-facing C ABI using `#[unsafe(no_mangle)] extern "C"` exports:
 
