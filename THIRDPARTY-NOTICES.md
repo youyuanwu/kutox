@@ -250,8 +250,30 @@ RAM and snapshot images are RAM-backed ext2. The
 [bounded sector reader](third_party/moss-libkernel/src/fs/disk.rs) and owned
 native disk lifetime integration are kutox code; they add on-demand read-only
 boot access without changing or vendoring ext4plus. There is no FAT32,
-persistent mounted root or write interface; see the
+indefinitely persistent root or write interface; see the
 [scope and bounds](docs/kernel-implementation.md#on-demand-read-only-disk-boot).
+
+### Bounded filesystem descriptors
+
+[The inode/file/descriptor port](third_party/moss-libkernel/src/fs/files.rs)
+adapts `Ext4Inode::read_at` from pinned Moss's
+`libkernel/src/fs/filesystems/ext4/mod.rs`, cursor sequencing from
+`src/fs/open_file.rs`/`src/fs/fops.rs`, and insert/get/remove ownership from
+`src/process/fd_table.rs`. The shared license and crate provenance retain the
+original MIT attribution. The port uses four fixed, non-cloneable regular-file
+owners and strongly retains the read-only ext4plus filesystem, rather than
+async trait objects, weak filesystem upgrades, dynamic descriptor growth,
+dup/fork flags, caches or write paths.
+
+[The native file service](src/user/files.rs) follows pinned
+`src/fs/syscalls/at/open.rs`, `src/fs/syscalls/rw.rs`, `src/fs/syscalls/close.rs`
+and regular-file read sequencing in `src/fs/reg.rs`. Native user-copy, scheduler
+requests, error mapping and shared Linux disk/timer ownership are kutox
+adaptations. It imports no Moss async executor, task/credential machinery,
+notifications, mount manager or user-pointer copying. The original MIT notice
+is retained in the adaptation. The [file init](userspace/file-init.S),
+[linker](userspace/file-init.ld), [message](userspace/message.txt) and acceptance
+are kutox integration code, not embedded upstream programs.
 
 ### Bootstrap memory allocator
 

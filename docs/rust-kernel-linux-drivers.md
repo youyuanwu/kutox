@@ -670,6 +670,9 @@ The runtime implementation should proceed in separately validated stages:
    bounds. The disk closes before mounting/ELF execution. An explicit
    `disk-demand-run` also reads filesystem metadata and `/bin/init` on demand
    through an owned bounded reader, retiring the disk before CPL3.
+   A separate `file-run` retains that reader for bounded native file syscalls,
+   using Moss-derived inode/cursor/descriptor ownership and the disk's shared
+   timer, then retires all files and storage on task completion.
 4. `disk-boot*` now proves `/bin/init` execution with no rootfs Limine module,
    using only a project-owned read-only QEMU disk. Both image profiles cover
    absent/unsupported devices, wrong capacity, malformed media/ELF, actual I/O

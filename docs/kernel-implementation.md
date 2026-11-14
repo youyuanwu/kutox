@@ -337,6 +337,70 @@ reads, and successful boot with an EIO trap on the unused final disk sector.
 RAM `user-run`, snapshot `disk-run` and networking remain available.
 This is on-demand boot loading, not a persistent mounted root: writes,
 partitions, a general VFS and post-boot file I/O remain deferred.
+For task-bound file I/O, see [the separate file mode](#bounded-moss-derived-file-syscalls).
+
+## Bounded Moss-derived file syscalls
+
+Explicit `file-run` keeps one read-only disk filesystem mounted while its
+`/bin/init` task runs. The
+[inode/file/descriptor adaptation](../third_party/moss-libkernel/src/fs/files.rs)
+follows pinned Moss's `Ext4Inode::read_at`, `OpenFile`/`FileCtx`, `FileOps::read`
+and descriptor-table insertion/removal. Inodes expose stateless offset reads;
+each open file has an independent cursor, advanced only after successful reads.
+Four fixed slots allocate the lowest available descriptor in 3..6. Dropping
+the table releases every file on exit, cancellation or terminal failure.
+Inodes retain the actual filesystem reader instead of assuming a weak
+filesystem reference can always be upgraded.
+
+This is a reduced single-root lookup layer, not Moss's complete VFS. The existing
+ext2 geometry/features, bounded absolute ASCII paths (up to 128 bytes), no
+symlink/dot traversal and 64-KiB regular-file limit remain. Empty files can be
+opened and return EOF; boot ELF loading still rejects an empty file.
+There are no writes, directory descriptors, mounts, credentials, notifications,
+dup/fork sharing or general Linux userspace ABI. Only `O_RDONLY` with no extra
+flags is supported: write access returns `-EROFS`, other flags `-EINVAL`.
+Absolute paths ignore `openat`'s directory descriptor, as in Moss; relative
+paths are explicitly rejected. Descriptors 0..2 retain native input/output
+behavior and are not file-table entries.
+
+[The syscall adapter](../src/user/files.rs) follows Moss's `openat/read/close`
+ordering but reuses kutox's saved-context dispatcher and checked user-copy
+planner, not Moss's async mutex, `Send + Sync` traits, scheduler or user pointers.
+Numbers 257/0/3 select openat/read/close only for tasks explicitly attached to
+a filesystem. File requests leave CPL3 and restore kernel CR3 before lookup,
+allocation or Linux I/O. The task blocks under a separate wait key; completion
+updates its saved return register and wakes only that task. Reads validate the
+whole writable destination before I/O or cursor movement, copy at most 256
+bytes, and never expose partial data on backend failure. Missing files, invalid
+descriptors/pointers, path/flag limits, EOF and EIO return explicit syscall
+results. Internal context/ownership failures remain kernel failures.
+
+The disk remains BSP-owned/non-`Send`. Its single timer serves both block
+completion and user quanta; the temporary disk borrow used for a user slice is
+released before completing a file syscall. No second timer, unsafe thread-safety
+claim, lifetime cast or replacement Linux driver is introduced. The 256-KiB/
+512-request reader budget covers the entire mount, ELF load and bounded task,
+including repeated metadata reads and failed requests; it is not replenished
+per syscall. Existing 32-syscall, 100-ms active-user budget, 128-dispatch-step and
+100-ms per-block-request limits bound this service lifetime.
+
+[The separately linked file init](../userspace/file-init.S) is installed as
+`/bin/init` in a separate read-only disk image, with
+[`/etc/message`](../userspace/message.txt). RAM and snapshot images retain their
+original program. Both profiles share the same ISO. `file-boot*` proves actual
+message reads, cursor isolation, cross-page writable copies, rejected invalid/
+read-only destinations without cursor advancement, EOF, lowest-fd reuse,
+capacity and explicit errors. A real EIO trap on the message data returns `-5`
+to init; an infinite loop after opening a file proves timed-out task retirement.
+Admission failures cover absent/unsupported disks, wrong capacity, malformed
+ext2/ELF and unexpected modules.
+
+Successful execution emits file read/API counts after init output, then closes
+all filesystem/disk/timer/IRQ ownership and reports exact frame/heap balance
+before final user exit. Ordinary failures also require balanced teardown.
+This is a mounted root for one bounded task, not an indefinitely persistent root
+or simultaneous storage/network runtime. Existing `user-run`, `disk-run`,
+`disk-demand-run` and default networking remain unchanged.
 
 ## Bounded block services
 

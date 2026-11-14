@@ -52,6 +52,30 @@ add_custom_command(
     DEPENDS "${CMAKE_BINARY_DIR}/init.elf" scripts/make_rootfs.py
     VERBATIM
 )
+foreach(FILE_INIT IN ITEMS file-init file-init-timeout)
+    set(FILE_INIT_FLAGS)
+    if(FILE_INIT STREQUAL "file-init-timeout")
+        set(FILE_INIT_FLAGS -DKUTOX_FILE_TIMEOUT=1)
+    endif()
+    add_custom_command(
+        OUTPUT "${CMAKE_BINARY_DIR}/${FILE_INIT}.elf"
+        COMMAND ${CLANG} --target=x86_64-unknown-none ${FILE_INIT_FLAGS} -c
+            "${CMAKE_SOURCE_DIR}/userspace/file-init.S" -o "${CMAKE_BINARY_DIR}/${FILE_INIT}.o"
+        COMMAND ${LLD} --build-id=none --fatal-warnings --script
+            "${CMAKE_SOURCE_DIR}/userspace/file-init.ld" -o "${CMAKE_BINARY_DIR}/${FILE_INIT}.elf"
+            "${CMAKE_BINARY_DIR}/${FILE_INIT}.o"
+        DEPENDS userspace/file-init.S userspace/file-init.ld
+        VERBATIM
+    )
+endforeach()
+add_custom_command(
+    OUTPUT "${CMAKE_BINARY_DIR}/file-rootfs.img"
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/make_rootfs.py"
+        --program "${CMAKE_BINARY_DIR}/file-init.elf" --output "${CMAKE_BINARY_DIR}/file-rootfs.img"
+        --message "${CMAKE_SOURCE_DIR}/userspace/message.txt" --mke2fs "${MKE2FS}"
+    DEPENDS "${CMAKE_BINARY_DIR}/file-init.elf" userspace/message.txt scripts/make_rootfs.py
+    VERBATIM
+)
 add_custom_command(
     OUTPUT "${CMAKE_BINARY_DIR}/kutox.iso"
     BYPRODUCTS "${CMAKE_BINARY_DIR}/kutox.iso.manifest.json"
@@ -63,7 +87,8 @@ add_custom_command(
     DEPENDS kernel "${KERNEL}" "${CMAKE_BINARY_DIR}/rootfs.img" "${CMAKE_SOURCE_DIR}/scripts/make_iso.py"
     VERBATIM
 )
-add_custom_target(images DEPENDS "${CMAKE_BINARY_DIR}/kutox.iso")
+add_custom_target(images DEPENDS "${CMAKE_BINARY_DIR}/kutox.iso" "${CMAKE_BINARY_DIR}/file-rootfs.img"
+    "${CMAKE_BINARY_DIR}/file-init-timeout.elf")
 
 add_custom_target(linux-driver-check
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/linux_driver_check.py"

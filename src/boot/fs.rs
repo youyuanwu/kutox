@@ -3,7 +3,9 @@ use crate::{
     Failure, arch::x86_64::irq::Timer, arch::x86_64::serial, boot::limine::BootInfo, memory::heap,
     memory::paging as memory, user::execute as user, user::tasks as user_tasks,
 };
+use alloc::rc::Rc;
 use alloc::vec::Vec;
+use core::cell::RefCell;
 use memory::user::AddressSpace;
 use moss_libkernel::fs::disk::{ReadSectors, Reader};
 use moss_libkernel::fs::{Error, Filesystem};
@@ -157,6 +159,14 @@ fn load<'a, 'storage>(
     frames: &'a memory::PhysicalFrames<'storage>,
     filesystem: Filesystem,
 ) -> Result<Loaded<AddressSpace<'a, 'storage>>, Failure> {
+    load_from(boot, frames, &filesystem)
+}
+
+fn load_from<'a, 'storage>(
+    boot: &BootInfo,
+    frames: &'a memory::PhysicalFrames<'storage>,
+    filesystem: &Filesystem,
+) -> Result<Loaded<AddressSpace<'a, 'storage>>, Failure> {
     let bytes = filesystem
         .read_file("/bin/init")
         .map_err(filesystem_error)?;
@@ -167,8 +177,127 @@ fn load<'a, 'storage>(
         bytes.len()
     ));
     drop(bytes);
-    drop(filesystem);
     Ok(loaded)
+}
+
+struct SharedDisk(Rc<RefCell<storage::Disk<'static, 'static>>>);
+
+impl ReadSectors for SharedDisk {
+    type Error = Failure;
+
+    fn read_sectors(&mut self, sector: u64, output: &mut [u8]) -> Result<(), Failure> {
+        self.0
+            .try_borrow_mut()
+            .map_err(|_| Failure::new("boot_file_disk_busy", -16))?
+            .read(sector, output)
+    }
+}
+
+pub fn run_files(
+    boot: &BootInfo,
+    frames: &'static memory::PhysicalFrames<'static>,
+) -> Result<u64, Failure> {
+    let before = memory::allocation_snapshot(frames);
+    let heap_before = heap::global().stats();
+    let result = (|| {
+        if boot.rootfs.is_some() {
+            return Err(Failure::new("boot_disk_module", -22));
+        }
+        let disk = storage::Disk::open(boot, frames)?;
+        if disk.capacity()? != (moss_libkernel::fs::IMAGE_BYTES / 512) as u64 {
+            return Err(Failure::new("boot_disk_size", -22));
+        }
+        let disk = Rc::new(RefCell::new(disk));
+        let reader = Reader::new(SharedDisk(Rc::clone(&disk)));
+        let reads = reader.statistics();
+        let filesystem = Filesystem::mount_reader(reader).map_err(filesystem_error)?;
+        let loaded = load_from(boot, frames, &filesystem)?;
+        let mut users = user_tasks::Dispatcher::new();
+        let task = users.admit(loaded, 100_000)?;
+        users.enable_files(task, filesystem)?;
+        users.close_input(task)?;
+        let mut stopped = None;
+        let mut files = crate::user::files::Statistics::default();
+        for _ in 0..128 {
+            let event = {
+                let owner = disk
+                    .try_borrow()
+                    .map_err(|_| Failure::new("boot_file_timer_busy", -16))?;
+                user_tasks::kutox_user_dispatch_next(&mut users, owner.timer(), 5_000)?
+            };
+            match event {
+                Some(event) if matches!(event.report.stop, user::Stop::File(_)) => {
+                    files = users.complete_file(event.task)?;
+                }
+                Some(event) if !event.report.stop.resumable() => {
+                    if !matches!(event.report.stop, user::Stop::Exit(_)) {
+                        serial::print(format_args!(
+                            "# BOOT_FS_STOP stop={:?}\n",
+                            event.report.stop
+                        ));
+                        return Err(Failure::new("boot_user_stop", -1));
+                    }
+                    stopped = Some(event.report);
+                    break;
+                }
+                Some(_) => (),
+                None if users.is_empty() => break,
+                None => {
+                    let wake = users
+                        .work()
+                        .deadline
+                        .ok_or(Failure::new("boot_user_wait", -1))?;
+                    let owner = disk
+                        .try_borrow()
+                        .map_err(|_| Failure::new("boot_file_timer_busy", -16))?;
+                    while owner.timer().arm_until(wake)? {
+                        owner.timer().idle_until_tick()?;
+                    }
+                }
+            }
+        }
+        let report = stopped.ok_or(Failure::new("boot_user_dispatch_limit", -1))?;
+        drop(users);
+        if Rc::strong_count(&disk) != 1 {
+            return Err(Failure::new("boot_file_handles", -16));
+        }
+        let stats = reads.get();
+        serial::print(format_args!(
+            "BOOT_FILE_READ_OK driver=linux-virtio-blk image_bytes={} read_bytes={} requests={} max_request={} buffer_bytes=512 module=absent\n",
+            moss_libkernel::fs::IMAGE_BYTES,
+            stats.bytes,
+            stats.requests,
+            stats.max_request
+        ));
+        serial::print(format_args!(
+            "BOOT_FILE_API_OK opens={} reads={} closes={} errors={} bytes={} peak_files={} closed_on_exit={}\n",
+            files.opens,
+            files.reads,
+            files.closes,
+            files.errors,
+            files.bytes,
+            files.peak,
+            files.live
+        ));
+        drop(reads);
+        drop(disk);
+        if !storage::quiescent() || !crate::arch::x86_64::irq::is_quiescent() {
+            return Err(Failure::new("boot_disk_shutdown", -16));
+        }
+        serial::print(format_args!("BOOT_DISK_CLOSED_OK dma=retired irq=joined\n"));
+        Ok(report)
+    })();
+    if !storage::quiescent()
+        || !crate::arch::x86_64::irq::is_quiescent()
+        || memory::allocation_snapshot(frames) != before
+        || heap::global().stats() != heap_before
+    {
+        return Err(Failure::new("boot_disk_reclamation", -16));
+    }
+    serial::print(format_args!(
+        "BOOT_FILE_SHUTDOWN_OK frames=balanced heap=balanced\n"
+    ));
+    result.map(exited)
 }
 
 fn dispatch(

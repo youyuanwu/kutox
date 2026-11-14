@@ -75,6 +75,11 @@ instead reads just the requested metadata/file blocks, with bounded requests
 and an owned reader, then closes storage before entering userspace.
 Normal boot still starts networking without running userspace.
 General file/socket I/O and a full process runtime remain absent.
+An explicit [Moss-derived file run](docs/kernel-implementation.md#bounded-moss-derived-file-syscalls)
+now keeps the read-only root mounted for one bounded init task, supporting
+absolute-path `openat`, 256-byte reads and close with four file descriptors.
+It reuses the Linux disk's timer and existing user dispatcher; writes and a
+general VFS remain outside this subset.
 
 The scoped [kernel runtime](src/runtime/kernel_runtime.rs) now retains the dispatcher,
 native manager, APIC/timer/controllers and shared Linux workers through client
@@ -332,6 +337,19 @@ Missing/unsupported devices, wrong image size, malformed filesystem/ELF, real
 EIO, unexpected modules and 32-MiB cleanup are checked in both profiles.
 On-demand cases also trap init-data reads and prove the unused final sector
 is never read. Neither mode provides a persistent mounted root or write access.
+
+`file-run` instead retains the root while init reads `/etc/message`, then
+retires all files and disk resources on task exit or timeout. Its separately
+linked program and read-only `file-rootfs.img` do not replace the original init.
+The whole mount/load/task shares the 256-KiB/512-request I/O budget.
+
+```sh
+python3 scripts/check.py full --profiles both --scope guest --select 'file-boot*'
+```
+
+Acceptance covers cursor/EOF behavior, descriptor reuse/capacity, checked
+cross-page user copies, readonly/flag/path rejection, real file-data EIO,
+live-file timeout and admission/cleanup errors.
 
 ### Test code and build profiles
 

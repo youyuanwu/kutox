@@ -11,6 +11,8 @@ from qemu_scenarios import HEAP_RESULT, MOSS_REVISION, REVISION, qemu_command
 from qemu_validation import validate_result
 from disk_boot_acceptance import validate_disk_boot, READ, CLOSED, SHUTDOWN, EXIT, FAILURES, DEMAND_FAILURES
 from test_storage_acceptance import callbacks, SYMBOLS
+import file_boot_acceptance as file_boot
+from qemu_scenarios import FILE_BOOT_CASES
 
 
 def boot_log():
@@ -32,6 +34,69 @@ def boot_log():
 
 
 class BootFilesystemTests(unittest.TestCase):
+    def test_file_boot_runs_its_production_mode_with_the_shared_module_free_iso(self):
+        args = SimpleNamespace(qemu="qemu", build_dir=Path("build"))
+        for case in FILE_BOOT_CASES:
+            command = qemu_command(args, case)
+            self.assertIn("name=opt/kutox/test-mode,string=file-run", command)
+            self.assertEqual(command[command.index("-cdrom") + 1], "build/kutox.iso")
+            self.assertNotIn("-netdev", command)
+            if not case.endswith("-module"):
+                self.assertNotIn("module_path", command[command.index("-smbios") + 1])
+
+    def test_file_boot_requires_exact_descriptor_copy_eof_and_retirement_proofs(self):
+        foundation = boot_log().split("BOOT_FS_OK")[0].splitlines()[2:]
+        foundation[2] = "BOOT_MODE mode=file-run source=fw_cfg"
+        fs = "BOOT_FS_OK source=moss-ext4plus format=ext2 image_bytes=2097152 path=/bin/init file_bytes=6000"
+        reads = ("BOOT_FILE_READ_OK driver=linux-virtio-blk image_bytes=2097152 "
+                 "read_bytes=32768 requests=40 max_request=1024 buffer_bytes=512 module=absent")
+        for case in ("file-boot", "file-boot-low-memory", "file-boot-io-error"):
+            io = case.endswith("-io-error")
+            proofs = [fs, *(
+                ["FILE_API: EIO retained"] if io else
+                ["FILE: hello from Moss filesystem", "FILE_API: checks passed"]
+            ), reads, file_boot.IO_API if io else file_boot.API, CLOSED, file_boot.SHUTDOWN,
+                file_boot.IO_EXIT if io else file_boot.EXIT, "USER_BOOT_OK exit=0"]
+            errors = "# BLOCK_ERROR operation=result_io code=-5\n# USER_FILE_IO stage=storage_read code=-5\n" if io else ""
+            output = "\n".join(foundation) + "\n" + callbacks() + fs + "\n" + errors + "\n".join(proofs[1:]) + "\n"
+            file_boot.validate_file_boot(case, 1, output, SYMBOLS)
+            for marker in proofs:
+                for changed in (output.replace(marker + "\n", ""),
+                                output.replace(marker, marker + "\n" + marker)):
+                    with self.subTest(case=case, marker=marker), self.assertRaises(AssertionError):
+                        file_boot.validate_file_boot(case, 1, changed, SYMBOLS)
+            for before, after in [
+                ("read_bytes=32768", "read_bytes=2097152"), ("requests=40", "requests=513"),
+                ("peak_files=4", "peak_files=5"), ("closed_on_exit=4", "closed_on_exit=0"),
+                ("closed_on_exit=1", "closed_on_exit=0"), ("address=100", "address=999"),
+                ("frames=balanced", "frames=leaked"),
+                (CLOSED + "\n", ""),
+            ]:
+                if before not in output:
+                    continue
+                with self.subTest(before=before), self.assertRaises(AssertionError):
+                    file_boot.validate_file_boot(case, 1, output.replace(before, after), SYMBOLS)
+            with self.assertRaises(AssertionError):
+                file_boot.validate_file_boot(case, 1, output.replace(CLOSED + "\n", "").replace(fs, CLOSED + "\n" + fs), SYMBOLS)
+
+    def test_file_boot_failures_and_live_descriptor_timeout_must_balance(self):
+        foundation = boot_log().split("BOOT_FS_OK")[0].splitlines()[2:]
+        foundation[2] = "BOOT_MODE mode=file-run source=fw_cfg"
+        fs = "BOOT_FS_OK source=moss-ext4plus format=ext2 image_bytes=2097152 path=/bin/init file_bytes=6000"
+        for case, error in file_boot.FILE_FAILURES.items():
+            evidence = "" if case.endswith(("-missing", "-module", "-unsupported")) else callbacks()
+            if case.endswith("-unsupported"):
+                evidence += "# BLOCK_ERROR operation=storage_device_features code=-95\n"
+            if case.endswith("-invalid-fs"):
+                evidence += "# BOOT_FS_ERROR error=Image\n"
+            if case.endswith("-timeout"):
+                evidence += fs + "\n# BOOT_FS_STOP stop=TimedOut\n"
+            output = "\n".join(foundation) + "\n" + evidence + file_boot.SHUTDOWN + "\nE1000_MAC_FAIL stage=" + error + "\n"
+            file_boot.validate_file_boot(case, 3, output, SYMBOLS)
+            for changed in (output.replace(file_boot.SHUTDOWN + "\n", ""), output + "USER_BOOT_OK exit=0\n"):
+                with self.subTest(case=case), self.assertRaises(AssertionError):
+                    file_boot.validate_file_boot(case, 3, changed, SYMBOLS)
+
     def test_on_demand_boot_uses_same_iso_and_its_explicit_production_mode(self):
         args = SimpleNamespace(qemu="qemu", build_dir=Path("build"))
         for case in ("disk-demand-boot", "disk-demand-boot-low-memory", "disk-demand-boot-file-io-error"):
@@ -173,6 +238,18 @@ class BootFilesystemTests(unittest.TestCase):
                 check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
             self.assertEqual(result.stdout, content)
+
+    def test_file_image_packages_message_without_replacing_init(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            program, message, image = root / "init", root / "message", root / "root.img"
+            program.write_bytes(b"program")
+            message.write_bytes(b"file data\n")
+            make_rootfs.build_image(program, image, "mke2fs", message=message)
+            for path, content in [("/bin/init", b"program"), ("/etc/message", b"file data\n")]:
+                result = subprocess.run(["debugfs", "-R", f"cat {path}", str(image)], check=True,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                self.assertEqual(result.stdout, content)
 
     def test_bad_program_bounds_and_missing_formatter_are_errors(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -11,7 +11,7 @@ IMAGE_BYTES = 2 * 1024 * 1024
 MAX_FILE_BYTES = 64 * 1024
 
 
-def build_image(program, output, mke2fs):
+def build_image(program, output, mke2fs, *, message=None):
     program, output = Path(program), Path(output)
     if not 0 < program.stat().st_size <= MAX_FILE_BYTES:
         raise ValueError("boot ELF must contain 1..65536 bytes")
@@ -22,6 +22,12 @@ def build_image(program, output, mke2fs):
         (root / "bin").mkdir()
         shutil.copyfile(program, root / "bin" / "init")
         (root / "bin" / "init").chmod(0o755)
+        if message is not None:
+            message = Path(message)
+            if message.stat().st_size > MAX_FILE_BYTES:
+                raise ValueError("rootfs message must contain at most 65536 bytes")
+            (root / "etc").mkdir()
+            shutil.copyfile(message, root / "etc" / "message")
         image = Path(temp) / "root.img"
         with image.open("wb") as stream:
             stream.truncate(IMAGE_BYTES)
@@ -39,8 +45,9 @@ def main():
     parser.add_argument("--program", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--mke2fs", default="mke2fs")
+    parser.add_argument("--message", type=Path)
     args = parser.parse_args()
-    build_image(args.program, args.output, args.mke2fs)
+    build_image(args.program, args.output, args.mke2fs, message=args.message)
 
 
 if __name__ == "__main__":

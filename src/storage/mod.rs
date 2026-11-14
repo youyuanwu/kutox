@@ -221,7 +221,11 @@ pub struct Disk<'a, 'storage> {
     _irq: BoundIrq<'a, 'storage>,
     _platform: PlatformOwner,
 }
-impl Disk<'_, '_> {
+impl<'a, 'storage> Disk<'a, 'storage> {
+    pub(crate) fn timer(&self) -> &irq::Timer<'a, 'storage> {
+        &self.timer
+    }
+
     fn session(&self) -> Result<&Session, Failure> {
         self.session
             .as_ref()
