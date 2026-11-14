@@ -19,6 +19,7 @@ pub(crate) mod mmio;
 pub(crate) mod napi;
 mod optional;
 pub(crate) mod packet;
+pub(crate) mod packet_tx;
 pub(crate) mod pci;
 pub(crate) mod storage;
 #[cfg(feature = "guest-tests")]

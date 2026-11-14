@@ -300,7 +300,9 @@ impl Disk<'_, '_> {
                     return Err(Failure::new("storage_deadline", -110));
                 }
                 let wake = time::deadline_after_us(1000)?.min(deadline);
-                self.timer.arm_until(wake)?;
+                if !self.timer.arm_until(wake)? {
+                    continue;
+                }
                 self.timer.idle_until_tick()?;
             }
         })();

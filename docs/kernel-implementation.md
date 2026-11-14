@@ -285,6 +285,9 @@ freeing memory still reachable from C or DMA.
 The C/Linux raw pointer APIs remain lifetime-bound interfaces; stale pointers
 are not supported native handles. Destinations are kernel slices, not user
 pointers, and no borrowed view into the payload/PDU is exposed.
+The native read loop repolls if its one-shot wake deadline expires before
+`arm_until` arms the timer. It never idles an unarmed timer or extends the
+request deadline; timeout/reset still retains backing until quiescence is proven.
 
 On the single BSP, lifecycle/admission/pump calls require IF clear in an
 off-lock boot/thread context. Completion signaling may run in IRQ/locked
@@ -447,8 +450,11 @@ from the selected Linux-facing C ABI providers. Genuine C providers use
   The existing `block.rs` retains raw state, callbacks and genuine Linux C APIs.
 - `packet.rs`: network-device lifecycle/queues, linear sk_buffs, fragment
   provenance, TX ownership/completion and native Ethernet ingress.
+- `packet_tx.rs`: unsafe-free native TX/completion owners, per-packet generations,
+  typed submission/state results, unpublished abort and retained failures.
 - `lifecycle.rs`: safe module bind/open/close/remove services, generation-bearing
-  handles, owned information/statistics snapshots and borrowed packet input.
+  handles and owned information/statistics snapshots. Packet ownership belongs
+  to the separate TX service rather than numeric lifecycle packet controls.
   `lifecycle_raw.rs` confines driver pointers, private-header access and callbacks.
   The redundant C facade is removed; Rust fixtures call the service/test APIs.
 - `napi.rs`: generation-bearing NAPI registrations, queue associations and
@@ -1357,7 +1363,7 @@ Freeing private backing retires idle embedded synchronization/work registrations
 pending/running users prevent reclamation. Offload/fragment/PM controls remain
 explicitly outside the initial profile.
 
-Five synthetic C cases validate real exhaustion/recovery and fault injection,
+Five Rust service scenarios with genuine C boundary fixtures validate exhaustion/recovery and fault injection,
 probe ordering, exact map/sync/unmap/free checks, coherent free exclusion,
 padding/BUSY ownership, copybreak/build-skb ingress, failed-open gating and
 256 RX plus 256 TX mappings together at 32 MiB. No original Linux
@@ -1396,7 +1402,25 @@ acceptance; the separate original TX case below does.
 
 ### Original Linux TX acceptance
 
-The checked C/native boundary copies one owned linear skb and calls the
+The [safe native TX service](../src/linux_compat/packet_tx.rs) returns a
+non-cloneable owner after copying borrowed input into retained linear skb
+backing. It exposes typed prepared/in-flight/complete/drop/cancelled states,
+not retry flags, raw pointers or borrowed views into C/DMA memory. Opaque
+ownership can move between serialized BSP tasks through the existing managed
+mutex, but is not `Sync`; every operation revalidates device and packet
+generations under borrow-free lifecycle admission. Stale owners are rejected
+before invoking original callbacks or inspecting a replacement packet.
+
+Finishing consumes a terminal packet into a completion owner; release and
+unpublished abort consume ownership, returning retained owners on failure.
+In-flight finish/abort remains busy. No owner has an automatic freeing `Drop`,
+and native unbind rejects outstanding packet ownership. Successful original
+driver stop establishes cancellation only after the callback returns and
+streaming mappings/backing users have drained; bus-master disable or a numeric
+device identity alone is not proof. RX still returns owned frames or copies
+into caller slices through the bounded ingress FIFO, never an skb/DMA view.
+
+The checked raw boundary calls the
 registered original `e1000_xmit_frame`. Linux performs streaming mapping,
 descriptor construction and the TDT doorbell. `NETDEV_TX_BUSY` retains the skb;
 `NETDEV_TX_OK` transfers ownership but is not itself proof of transmission.

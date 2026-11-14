@@ -5,7 +5,10 @@ use crate::{
     boot::BootInfo,
     driver_memory, driver_platform,
     irq::{self, LocalApic, external::IoApic},
-    linux_compat::lifecycle::Handle as LifecycleHandle,
+    linux_compat::{
+        lifecycle::Handle as LifecycleHandle,
+        packet_tx::{self, State as PacketState, Submission, Tx},
+    },
     linux_deferred,
     linux_driver::{self, DriverHandle, control},
     linux_irq::BoundIrq,
@@ -70,16 +73,21 @@ impl DriverHandle {
         panic!("link IRQ/NAPI did not drain before TX acceptance fixture");
     }
 
-    pub(crate) fn wait_transmitted(&self) -> Result<(), Failure> {
+    pub(crate) fn wait_transmitted(&self, packet: &mut Tx) -> Result<(), Failure> {
         for _ in 0..300 {
-            match self.tx_status() {
-                0 => match self.transmit() {
-                    0 | 16 => {}
-                    error => return Err(Failure::new("linux_tx_submit", error)),
-                },
-                1 => {}
-                2 => return Ok(()),
-                error => return Err(Failure::new("linux_tx_completion", error)),
+            match packet
+                .state()
+                .map_err(|code| Failure::new("linux_tx_completion", code))?
+            {
+                PacketState::Prepared => {
+                    packet
+                        .submit()
+                        .map_err(|code| Failure::new("linux_tx_submit", code))?;
+                }
+                PacketState::InFlight => {}
+                PacketState::Complete => return Ok(()),
+                PacketState::Dropped => return Err(Failure::new("linux_tx_completion", -5)),
+                PacketState::Cancelled => return Err(Failure::new("linux_tx_completion", -125)),
             }
             assert_eq!(threads::sleep_us(10_000), Ok(threads::WakeReason::TimedOut));
         }
@@ -119,8 +127,7 @@ impl DriverHandle {
         DriverHandle::unbind(self);
         let typed = LifecycleHandle::from_ticket(ticket).unwrap();
         assert_eq!(typed.ready(), Err(-116));
-        assert_eq!(typed.transmit(false), Err(-116));
-        assert_eq!(typed.release_packet(), Err(-116));
+        assert_eq!(Tx::prepare(typed, &[0; 60]).unwrap_err(), -116);
         assert_eq!(typed.rx_stop(), Err(-116));
         assert_eq!(typed.statistics(), Err(-19));
         assert_eq!(
@@ -338,10 +345,18 @@ fn tx_worker() {
     for session in 0..2 {
         let handle = DriverHandle::bind().expect("original TX probe failed");
         let before = driver_memory::snapshot();
-        assert_eq!(handle.packet(&tx_packet(0, 60)[..60]), 0);
-        assert_eq!(handle.transmit(), 16, "down queue did not retain BUSY skb");
-        assert_eq!(handle.tx_status(), 0);
-        handle.release_packet();
+        let packet = handle.packet(&tx_packet(0, 60)[..60]).unwrap();
+        let retired = packet_tx::tests::snapshot(&packet);
+        assert_eq!(
+            LifecycleHandle::from_ticket(handle.0).unwrap().unbind(),
+            Err(-16)
+        );
+        let failure = packet.finish().unwrap_err();
+        assert_eq!(failure.code, -16);
+        let mut packet = failure.retained;
+        assert_eq!(packet.submit(), Ok(Submission::Busy));
+        assert_eq!(packet.state(), Ok(PacketState::Prepared));
+        packet.abort().unwrap();
         assert_eq!(
             driver_memory::snapshot(),
             before,
@@ -352,20 +367,31 @@ fn tx_worker() {
         let baseline = driver_memory::snapshot();
         for (index, &size) in LENGTHS.iter().enumerate().skip(session * 2).take(2) {
             handle.wait_irq_poll_idle();
-            assert_eq!(handle.packet(&tx_packet(index as u8 + 1, size)[..size]), 0);
-            assert_eq!(handle.tx_status(), 0);
-            assert_eq!(handle.transmit(), 0, "original xmit did not accept skb");
-            assert_eq!(handle.tx_status(), 1, "completed before IRQ/NAPI ran");
+            let mut packet = handle
+                .packet(&tx_packet(index as u8 + 1, size)[..size])
+                .unwrap();
+            retired.reject();
+            assert_eq!(packet.state(), Ok(PacketState::Prepared));
+            assert_eq!(packet.submit(), Ok(Submission::Accepted));
+            assert_eq!(packet.state(), Ok(PacketState::InFlight));
+            let failure = packet.abort().unwrap_err();
+            assert_eq!(failure.code, -16);
+            let packet = failure.retained;
+            let failure = packet.finish().unwrap_err();
+            assert_eq!(failure.code, -16);
+            let mut packet = failure.retained;
             let in_flight = driver_memory::snapshot();
             assert_eq!(in_flight.0, baseline.0 + 2);
             assert_eq!(in_flight.2, baseline.2 + 1);
-            if let Err(error) = handle.wait_transmitted() {
+            if let Err(error) = handle.wait_transmitted(&mut packet) {
                 assert_eq!(handle.close(), 0);
-                handle.release_packet();
+                packet.finish().unwrap().release().unwrap();
                 handle.unbind_checked();
                 panic!("Linux TX failed: {} {}", error.stage, error.code);
             }
-            handle.release_packet();
+            let completed = packet.finish().unwrap();
+            assert_eq!(completed.outcome(), PacketState::Complete);
+            completed.release().unwrap();
             assert_eq!(
                 driver_memory::snapshot(),
                 baseline,

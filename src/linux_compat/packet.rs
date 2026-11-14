@@ -1,13 +1,14 @@
 //! Network-class services; descriptor programming and completion stay in Linux.
 use super::memory_ffi as memory;
 use super::*;
-use core::{mem::size_of, ptr};
+use core::{mem::size_of, num::NonZeroU64, ptr};
 
 const ETH_HLEN: u32 = 14;
 const TX_OK: i32 = 0;
 const TX_BUSY: i32 = 0x10;
 
 struct Tx {
+    generation: u64,
     skb: *mut SkBuff,
     identity: usize,
     data: usize,
@@ -27,9 +28,11 @@ struct Tx {
     completed: bool,
     aborting: bool,
     closing: bool,
+    stopped: bool,
 }
 impl Tx {
     const EMPTY: Self = Self {
+        generation: 0,
         skb: ptr::null_mut(),
         identity: 0,
         data: 0,
@@ -49,6 +52,7 @@ impl Tx {
         completed: false,
         aborting: false,
         closing: false,
+        stopped: false,
     };
 }
 struct Many {
@@ -80,6 +84,7 @@ impl Rx {
     };
 }
 struct Packets {
+    generation: u64,
     netdev: *mut NetDevice,
     queue: NetdevQueue,
     fragments: [*mut c_void; 512],
@@ -88,6 +93,7 @@ struct Packets {
     rx: Rx,
 }
 static PACKETS: Bsp<Packets> = Bsp(UnsafeCell::new(Packets {
+    generation: 0,
     netdev: ptr::null_mut(),
     queue: NetdevQueue {
         device: ptr::null_mut(),
@@ -805,22 +811,28 @@ unsafe fn copy_tx_skb(device: *mut NetDevice, bytes: *const u8, size: u32) -> *m
 pub(super) unsafe fn tx_begin(
     device: *mut NetDevice,
     mmio: usize,
-    bytes: *const c_void,
-    size: u32,
-) -> i32 {
+    bytes: &[u8],
+) -> Result<NonZeroU64, i32> {
     netdev_check(device);
     unsafe {
         if (*state()).tx.live || (*state()).many.live {
-            return -16;
+            return Err(-16);
         }
-        if bytes.is_null() || mmio == 0 || !(ETH_HLEN..=1514).contains(&size) {
-            return diagnostic(c"tx_packet_profile", -22);
+        if mmio == 0 || !(ETH_HLEN as usize..=1514).contains(&bytes.len()) {
+            return Err(diagnostic(c"tx_packet_profile", -22));
         }
-        let skb = copy_tx_skb(device, bytes.cast(), size);
+        let generation = (*state())
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| diagnostic(c"tx_generation", -75))?;
+        let size = bytes.len() as u32;
+        let skb = copy_tx_skb(device, bytes.as_ptr(), size);
         if skb.is_null() {
-            return -12;
+            return Err(-12);
         }
+        (*state()).generation = generation;
         (*state()).tx = Tx {
+            generation,
             skb,
             identity: skb as usize,
             data: (*skb).data as usize,
@@ -834,18 +846,28 @@ pub(super) unsafe fn tx_begin(
             ..Tx::EMPTY
         };
         tx_event(31, size as i32);
-        0
+        Ok(NonZeroU64::new(generation).expect("live TX generation"))
     }
 }
-pub(super) unsafe fn tx_retry(device: *mut NetDevice) -> i32 {
+fn tx_generation(generation: u64) -> Result<(), i32> {
+    if unsafe { !(*state()).tx.live || (*state()).tx.generation != generation } {
+        Err(-116)
+    } else {
+        Ok(())
+    }
+}
+pub(super) fn tx_live() -> bool {
+    unsafe { (*state()).tx.live }
+}
+pub(super) unsafe fn tx_retry(
+    device: *mut NetDevice,
+    generation: u64,
+) -> Result<packet_tx::Submission, i32> {
     netdev_check(device);
+    tx_generation(generation)?;
     unsafe {
-        if !(*state()).tx.live
-            || (*state()).tx.accepted
-            || (*state()).tx.freed
-            || (*state()).tx.aborting
-        {
-            return -22;
+        if (*state()).tx.accepted || (*state()).tx.freed || (*state()).tx.closing {
+            return Err(-22);
         }
         let result = netdev_transmit(device, (*state()).tx.skb);
         if result == TX_OK {
@@ -865,17 +887,32 @@ pub(super) unsafe fn tx_retry(device: *mut NetDevice) -> i32 {
         if result == TX_BUSY {
             tx_event(32, result);
         }
-        result
+        match result {
+            TX_OK => Ok(packet_tx::Submission::Accepted),
+            TX_BUSY => Ok(packet_tx::Submission::Busy),
+            code => Err(code),
+        }
     }
 }
-pub(super) unsafe fn tx_status(device: *mut NetDevice) -> i32 {
+pub(super) unsafe fn tx_status(
+    device: *mut NetDevice,
+    generation: u64,
+) -> Result<packet_tx::State, i32> {
     netdev_check(device);
+    tx_generation(generation)?;
     unsafe {
-        if !(*state()).tx.live || (*state()).tx.aborting {
-            return -22;
+        if (*state()).tx.stopped {
+            return Ok(if (*state()).tx.completed && !(*state()).tx.aborting {
+                packet_tx::State::Complete
+            } else {
+                packet_tx::State::Cancelled
+            });
+        }
+        if (*state()).tx.aborting {
+            return Err(-16);
         }
         if !(*state()).tx.accepted {
-            return 0;
+            return Ok(packet_tx::State::Prepared);
         }
         if (*state()).tx.completed {
             require(
@@ -893,13 +930,36 @@ pub(super) unsafe fn tx_status(device: *mut NetDevice) -> i32 {
                             .wrapping_add((*state()).tx.bytes as usize),
                 c"tx_source_stats",
             );
-            return 2;
+            return Ok(packet_tx::State::Complete);
         }
-        if (*state()).tx.freed { -5 } else { 1 }
+        Ok(if (*state()).tx.freed {
+            packet_tx::State::Dropped
+        } else {
+            packet_tx::State::InFlight
+        })
     }
 }
-pub(super) unsafe fn tx_release(device: *mut NetDevice) {
+pub(super) unsafe fn tx_finished(
+    device: *mut NetDevice,
+    generation: u64,
+) -> Result<packet_tx::State, i32> {
+    match unsafe { tx_status(device, generation) }? {
+        packet_tx::State::Prepared | packet_tx::State::InFlight => Err(-16),
+        terminal => Ok(terminal),
+    }
+}
+pub(super) unsafe fn tx_release(
+    device: *mut NetDevice,
+    generation: u64,
+    completed: bool,
+) -> Result<(), i32> {
     netdev_check(device);
+    tx_generation(generation)?;
+    if completed {
+        unsafe { tx_finished(device, generation) }?;
+    } else if unsafe { (*state()).tx.accepted } {
+        return Err(-16);
+    }
     unsafe {
         require(
             (*state()).tx.live && !(*state()).tx.mapped,
@@ -919,6 +979,23 @@ pub(super) unsafe fn tx_release(device: *mut NetDevice) {
             }
         }
         (*state()).tx = Tx::EMPTY;
+    }
+    Ok(())
+}
+/// # Safety
+/// The original driver's successful stop has stopped/drained all accesses to
+/// this device's TX backing. IF remains clear and lifecycle admission is held.
+pub(super) unsafe fn tx_stopped(device: *mut NetDevice) {
+    netdev_check(device);
+    unsafe {
+        require(!(*device).running, c"tx_stop_running");
+        if (*state()).tx.live {
+            require(
+                !(*state()).tx.mapped && (!(*state()).tx.accepted || (*state()).tx.freed),
+                c"tx_stop_backing",
+            );
+            (*state()).tx.stopped = true;
+        }
     }
 }
 pub(super) fn tx_abort(device: *mut NetDevice) {

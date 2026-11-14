@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 use super::lifecycle::{Handle, Info};
 use super::*;
-use core::{marker::PhantomData, mem::MaybeUninit, ptr};
+use core::{marker::PhantomData, mem::MaybeUninit, num::NonZeroU64, ptr};
 
 // Original callbacks can reenter packet/work services; keep owner access raw.
 struct Lifecycle {
@@ -132,6 +132,9 @@ impl Access {
             if !(*state()).loaded || !valid(handle.ticket()) {
                 return Err(-116);
             }
+            if packet::tx_live() {
+                return Err(-16);
+            }
             let exit = callback(kutox_module_exit, c"linux_module_exit");
             crate::linux_driver::trace(2, exit as usize, 0, 0);
             exit();
@@ -235,36 +238,32 @@ impl Device<'_> {
         unsafe {
             let stop = callback((*(*self.pointer).netdev_ops).stop, c"linux_stop_callback");
             crate::linux_driver::trace(7, stop as usize, self.pointer as usize, 0);
-            packet::netdev_close(self.pointer)
-        }
-    }
-
-    pub(super) fn packet(&self, bytes: &[u8]) -> i32 {
-        let Ok(size) = u32::try_from(bytes.len()) else {
-            return diagnostic(c"tx_packet_profile", -22);
-        };
-        // The packet service copies the slice before returning; DMA never owns it.
-        unsafe { self.packet_raw(bytes.as_ptr().cast(), size) }
-    }
-
-    /// # Safety
-    /// For an admitted packet length, bytes must be readable for size bytes.
-    pub(super) unsafe fn packet_raw(&self, bytes: *const c_void, size: u32) -> i32 {
-        unsafe { packet::tx_begin(self.pointer, view().mmio, bytes, size) }
-    }
-
-    pub(super) fn transmit(&self, retry: bool) -> i32 {
-        unsafe {
-            if retry {
-                packet::tx_retry(self.pointer)
-            } else {
-                packet::tx_status(self.pointer)
+            let result = packet::netdev_close(self.pointer);
+            if result == 0 {
+                packet::tx_stopped(self.pointer);
             }
+            result
         }
     }
 
-    pub(super) fn release_packet(&self) {
-        unsafe { packet::tx_release(self.pointer) }
+    pub(super) fn prepare_tx(&self, bytes: &[u8]) -> Result<NonZeroU64, i32> {
+        unsafe { packet::tx_begin(self.pointer, view().mmio, bytes) }
+    }
+
+    pub(super) fn submit_tx(&self, generation: u64) -> Result<packet_tx::Submission, i32> {
+        unsafe { packet::tx_retry(self.pointer, generation) }
+    }
+
+    pub(super) fn tx_state(&self, generation: u64) -> Result<packet_tx::State, i32> {
+        unsafe { packet::tx_status(self.pointer, generation) }
+    }
+
+    pub(super) fn finish_tx(&self, generation: u64) -> Result<packet_tx::State, i32> {
+        unsafe { packet::tx_finished(self.pointer, generation) }
+    }
+
+    pub(super) fn release_tx(&self, generation: u64, completed: bool) -> Result<(), i32> {
+        unsafe { packet::tx_release(self.pointer, generation, completed) }
     }
 
     pub(super) fn rx_start(&self) {

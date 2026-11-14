@@ -79,6 +79,13 @@ The sixteen lifecycle C facades are removed. Rust fixtures use the
 inspectors, preserving admission and generation checks without redundant raw
 output-pointer APIs.
 
+Native TX now uses [owned packet/completion services](../src/linux_compat/packet_tx.rs)
+instead of lifecycle retry flags and numeric packet statuses. Device and
+per-packet generations are checked before original callback invocation; BUSY
+retains ownership, terminal completion consumes it, and failed finish/abort
+returns the owner. Raw skb/fragment/DMA callbacks remain in the existing
+packet backend, without a second registry or replacement Linux packet path.
+
 Native storage reads now use the
 [owned block-request service](../src/linux_compat/block_request.rs), not numeric
 tickets. Finishing a terminal request consumes it into a completion owner for
