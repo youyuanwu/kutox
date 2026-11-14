@@ -1,4 +1,6 @@
-"""Whole-object proof for the shared Rust services and unchanged Linux drivers."""
+"""Check unchanged Linux drivers against the actual kernel's Rust providers."""
+import argparse
+import json
 import struct
 import subprocess
 from pathlib import Path
@@ -25,99 +27,11 @@ ENTRY_POINTS = {
 PACKET_LAYOUT_VALUES = 122
 BLOCK_LAYOUT_VALUES = 135
 ACCESSOR_LAYOUT_VALUES = 41
-NATIVE_BACKEND = "compat/audit/common/native_backend.rs"
-NATIVE_BINDINGS = {
-    "kutox_block_allocate": "crate::block_services::allocate",
-    "kutox_block_context": "crate::block_services::context",
-    "kutox_block_deallocate": "crate::block_services::deallocate",
-    "kutox_block_diag": "crate::block_services::diag",
-    "kutox_block_fail": "crate::block_services::fail",
-    "kutox_check_boot_context": "crate::check_boot_context",
-    "kutox_delay_us": "crate::time::delay_us",
-    "kutox_driver_alloc": "crate::driver_memory::allocate",
-    "kutox_driver_device": "crate::driver_platform::device_key",
-    "kutox_driver_diag": "crate::driver_memory::diag",
-    "kutox_driver_dma_map": "crate::driver_memory::dma_map",
-    "kutox_driver_dma_operation": "crate::driver_memory::dma_operation",
-    "kutox_driver_free": "crate::driver_memory::free",
-    "kutox_driver_gate": "crate::driver_platform::gate",
-    "kutox_driver_ingress": "crate::driver_memory::ingress",
-    "kutox_driver_mmio": "crate::driver_platform::check_mmio",
-    "kutox_driver_outl": "crate::driver_platform::outl",
-    "kutox_driver_pci": "crate::driver_platform::pci_operation",
-    "kutox_driver_pci_value": "crate::driver_platform::pci_value",
-    "kutox_driver_range": "crate::driver_memory::range",
-    "kutox_driver_size": "crate::driver_memory::size",
-    "kutox_driver_trace": "crate::linux_driver::trace",
-    "kutox_driver_tracing": "crate::linux_driver::tracing",
-    "kutox_linux_bh": "crate::linux_deferred::bh",
-    "kutox_linux_completion": "crate::linux_runtime::completion",
-    "kutox_linux_cond_resched": "crate::linux_runtime::cond_resched",
-    "kutox_linux_context": "crate::linux_runtime::context_code",
-    "kutox_linux_dma_alloc": "crate::linux_dma::allocate",
-    "kutox_linux_dma_free": "crate::linux_dma::free",
-    "kutox_linux_dma_mask": "crate::linux_dma::set_mask",
-    "kutox_linux_dma_publish": "crate::linux_dma::publish",
-    "kutox_linux_dma_reclaim": "crate::linux_dma::reclaim",
-    "kutox_linux_dma_rmb": "crate::dma::read_barrier",
-    "kutox_linux_dma_unregister": "crate::linux_dma::unregister",
-    "kutox_linux_dma_wmb": "crate::dma::write_barrier",
-    "kutox_linux_irq": "crate::linux_irq::operation",
-    "kutox_linux_irq_acquired": "crate::linux_runtime::irq_acquired",
-    "kutox_linux_irq_released": "crate::linux_runtime::irq_released",
-    "kutox_linux_irq_save": "crate::linux_runtime::irq_save",
-    "kutox_linux_local_work": "crate::linux_deferred::local_work",
-    "kutox_linux_msleep": "crate::linux_runtime::msleep",
-    "kutox_linux_mutex": "crate::linux_runtime::mutex",
-    "kutox_linux_napi": "crate::linux_deferred::napi_operation",
-    "kutox_linux_napi_init": "crate::linux_deferred::register_napi",
-    "kutox_linux_object_generation": "crate::linux_runtime::object_generation",
-    "kutox_linux_ratelimit": "crate::linux_runtime::ratelimit",
-    "kutox_linux_request_irq": "crate::linux_irq::request_irq",
-    "kutox_linux_sleep_range": "crate::linux_runtime::sleep_range",
-    "kutox_linux_spin_owner": "crate::linux_runtime::spin_owner",
-    "kutox_linux_static_objects_retire": "crate::linux_runtime::retire_static_objects",
-    "kutox_linux_wait_completion": "crate::linux_runtime::wait_completion",
-    "kutox_linux_work": "crate::linux_deferred::work_operation",
-    "kutox_linux_work_init": "crate::linux_deferred::register_work",
-    "kutox_net_wake": "crate::net_device::wake",
-    "kutox_platform_fail": "crate::platform_fail",
-    "kutox_serial_byte": "crate::serial::byte",
-    "kutox_storage_alloc": "crate::storage::allocate",
-    "kutox_storage_begin_reset": "crate::storage::begin_reset",
-    "kutox_storage_clock": "crate::storage::clock",
-    "kutox_storage_dma": "crate::storage::dma",
-    "kutox_storage_free": "crate::storage::free",
-    "kutox_storage_mmio": "crate::storage::mmio",
-    "kutox_storage_pci": "crate::storage::pci",
+KERNEL_ELF_LIMITS = {
+    "max_bytes": 64 * 1024 * 1024, "max_sections": 65535,
+    "allowed_duplicate_sections": (".requests",),
 }
-NATIVE_C_BINDINGS = {
-    "kutox_jiffies": "crate::linux_runtime::jiffies",
-}
-PRIVATE_CONTROL_BACKENDS = {
-    "kutox_check_boot_context": "Only the private Rust boot-MAC path calls this backend.",
-    "kutox_linux_static_objects_retire": "Only private Rust lifecycle bind/unbind paths retire static objects.",
-    "kutox_storage_begin_reset": "Only private Rust storage start/reset controls establish the reset deadline.",
-    "kutox_linux_dma_publish": "Coherent ownership publication is a Rust service; its fixture-only C extension was removed.",
-    "kutox_linux_dma_reclaim": "Coherent ownership reclaim and its quiescence proof are Rust services, not Linux C APIs.",
-    "kutox_linux_dma_unregister": "Rust fixture/device teardown owns this operation; no production C consumer requires it.",
-}
-
-
-def native_dispositions():
-    from linux_driver_check import lines
-    expected = set(lines(ROOT / "compat/audit/common/service-ffi.txt")) - {
-        "memcpy", "memmove", "memset", "strlen",
-    }
-    private = PRIVATE_CONTROL_BACKENDS
-    if (NATIVE_BINDINGS.keys() & NATIVE_C_BINDINGS.keys()
-            or private.keys() & expected
-            or not private.keys() <= NATIVE_BINDINGS.keys()
-            or any(not isinstance(reason, str) or not reason.strip() for reason in private.values())
-            or NATIVE_BINDINGS.keys() | NATIVE_C_BINDINGS.keys() != expected | private.keys()):
-        raise ValueError("native backend dispositions do not match the explicit dependency ledger")
-    return {"rust": dict(NATIVE_BINDINGS), "c": dict(NATIVE_C_BINDINGS), "private": dict(private)}
-
+RUNTIME_PRIMITIVES = {"memcpy", "memmove", "memset", "strlen"}
 
 PACKET_PROVIDERS = {
     "alloc_etherdev", "register_netdev", "unregister_netdev", "free_netdev",
@@ -170,7 +84,6 @@ def inputs():
     from linux_driver_check import digest
     files = [
         Path(__file__).resolve(), ROOT / "rust-toolchain.toml",
-        ROOT / "compat/audit/common/rust_services.rs", ROOT / NATIVE_BACKEND,
         ROOT / "compat/audit/common/abi_probe.rs", ROOT / "compat/audit/common/common_layout.c",
         ROOT / "compat/include/common/base_types.h", ROOT / "compat/include/common/device_types.h",
         ROOT / "src/linux_abi.rs", ROOT / "src/block_abi.rs", ROOT / "src/driver_memory.rs",
@@ -180,7 +93,6 @@ def inputs():
         ROOT / "src/linux_driver.rs", ROOT / "src/driver_platform.rs", ROOT / "src/main.rs",
         ROOT / "src/net_device.rs", ROOT / "src/serial.rs", ROOT / "src/time.rs",
         ROOT / "src/threads.rs",
-        ROOT / "compat/audit/common/service-ffi.txt",
     ]
     files.extend((ROOT / "src/linux_compat").glob("*.rs"))
     files.extend(path for path in (ROOT / "compat/include").rglob("*") if path.is_file())
@@ -209,11 +121,10 @@ def c_flags(output, profile):
     return result
 
 
-def rust_command(output, probe=False):
-    artifact = "abi-rust" if probe else "rust-services"
-    return ["rustc", *rust_flags(), str(ROOT / ("compat/audit/common/abi_probe.rs" if probe else "compat/audit/common/rust_services.rs")),
-            "--emit", f"obj,dep-info={output / (artifact + '.d')}",
-            "-o", str(output / (artifact + ".o"))]
+def rust_command(output):
+    return ["rustc", *rust_flags(), str(ROOT / "compat/audit/common/abi_probe.rs"),
+            "--emit", f"obj,dep-info={output / 'abi-rust.d'}",
+            "-o", str(output / "abi-rust.o")]
 
 
 def rust_dependencies(path):
@@ -223,26 +134,51 @@ def rust_dependencies(path):
     return dependency_paths(first[0] if first else "")
 
 
-def rust_source_provenance(dependency, root):
-    from linux_driver_check import digest
-    sources = {Path(path).resolve() for path in rust_dependencies(dependency)}
-    if not {ROOT / root, ROOT / NATIVE_BACKEND} <= sources:
-        raise ValueError("Rust provider did not compile the audit backend bindings")
-    return [{"path": str(path.relative_to(ROOT)), "sha256": digest(path)}
-            for path in sorted(sources)]
+def kernel_object(kernel):
+    objects = [
+        path for path in (kernel.parent / "deps").glob(f"{kernel.name}-*.o")
+        if path.with_suffix("").is_file() and path.with_suffix("").samefile(kernel)
+    ]
+    if len(objects) != 1:
+        raise ValueError("missing or ambiguous active kernel object; build the CMake kernel target")
+    return objects[0]
 
 
-def rust_provenance(output):
+def kernel_build_evidence(kernel):
     from linux_driver_check import digest
-    bindings = native_dispositions()
+    object_path = kernel_object(kernel)
+    dependency = kernel.with_suffix(".d")
+    dependencies = rust_dependencies(dependency)
+    runtime_rust_sources(dependencies)
+    sources = {Path(path).resolve() for path in dependencies if Path(path).is_file()}
+    sources.update(ROOT / name for name in (
+        "Cargo.toml", "Cargo.lock", ".cargo/config.toml", "rust-toolchain.toml",
+        "build.rs", "linker.ld", "CMakeLists.txt",
+    ))
+    sources.update(path for path in (ROOT / "compat").rglob("*")
+                   if path.is_file() and not path.is_relative_to(ROOT / "compat/audit"))
+    sources.update(ROOT / source for source, _ in UNITS)
     return {
-        "command": rust_command(output),
-        "object_sha256": digest(output / "rust-services.o"),
-        "sources": rust_source_provenance(output / "rust-services.d", "compat/audit/common/rust_services.rs"),
-        "native_bindings": bindings["rust"],
-        "native_c_bindings": bindings["c"],
-        "private_backends": bindings["private"],
+        "schema": 2, "kernel": str(kernel.resolve()), "kernel_sha256": digest(kernel),
+        "object": str(object_path.resolve()), "object_sha256": digest(object_path),
+        "dependencies_sha256": digest(dependency),
+        "sources": [{"path": str(path), "sha256": digest(path)} for path in sorted(sources)],
     }
+
+
+def record_kernel(kernel):
+    evidence = kernel_build_evidence(kernel)
+    kernel.with_suffix(".build.json").write_text(json.dumps(evidence, indent=2) + "\n")
+
+
+def kernel_provenance(kernel):
+    path = kernel.with_suffix(".build.json")
+    if not path.is_file():
+        raise ValueError("missing kernel build evidence; build the CMake kernel target first")
+    saved = json.loads(path.read_text())
+    if saved != kernel_build_evidence(kernel):
+        raise ValueError("stale kernel build evidence; rebuild the CMake kernel target")
+    return saved
 
 
 def runtime_rust_sources(dependencies):
@@ -264,7 +200,7 @@ def c_command(args, output, source, profile, *, probe=False):
             "-c", str(ROOT / source), "-o", str(obj)]
 
 
-def inventory(paths, linked, expected):
+def inventory(paths, linked, kernel):
     from linux_driver_check import Elf
     defined, undefined, functions = set(), set(), set()
     for path in paths:
@@ -279,13 +215,30 @@ def inventory(paths, linked, expected):
                     functions.add(symbol["name"])
             elif symbol["name"]:
                 undefined.add(symbol["name"])
-    obj = Elf(linked)
+    rust = Elf(kernel_object(kernel), **KERNEL_ELF_LIMITS)
+    if ".kutox.compile_only" in rust.by_name:
+        raise ValueError("compile-only Rust provider in kernel build")
+    symbols = rust.symbols()
+    providers = rust_providers(symbols)
+    rust_defined = {s["name"] for s in symbols if s["owner"] and s["binding"] in (1, 2)}
+    missing = undefined - defined - rust_defined - RUNTIME_PRIMITIVES
+    if missing:
+        raise ValueError("kernel Rust object is missing Linux providers: " + ", ".join(sorted(missing)))
+    defined.update(rust_defined)
+    undefined.update(s["name"] for s in symbols if not s["owner"] and s["name"])
+    obj = Elf(linked, **KERNEL_ELF_LIMITS)
     external = {s["name"] for s in obj.symbols() if not s["owner"] and s["name"]}
+    runtime = Elf(kernel, expected_kind=2, **KERNEL_ELF_LIMITS)
+    runtime_symbols = runtime.symbols()
+    runtime_defined = {s["name"] for s in runtime_symbols if s["owner"]}
+    foreign = {name for name in external if not name.startswith(("_R", "_ZN"))}
     if (".kutox.compile_only" in obj.by_name or external != undefined - defined
-            or external != expected or not ENTRY_POINTS <= functions):
+            or ".kutox.compile_only" in runtime.by_name
+            or any(s["name"] and not s["owner"] for s in runtime_symbols)
+            or not foreign <= runtime_defined or not ENTRY_POINTS <= functions):
         raise ValueError("shared closure lost callbacks, hid dependencies or changed FFI: " +
-                         ", ".join(sorted(external ^ expected)))
-    return {"undefined": sorted(external), "defined": sorted(defined)}
+                         ", ".join(sorted(foreign - runtime_defined)))
+    return {"undefined": sorted(external), "defined": sorted(defined), "rust_providers": providers}
 
 
 def layout(paths, section_name=".kutox.common_layouts", count=37):
@@ -301,8 +254,8 @@ def layout(paths, section_name=".kutox.common_layouts", count=37):
     return list(struct.unpack("<" + "Q" * count, values[0]))
 
 
-def evidence(args, output):
-    from linux_driver_check import Elf, dependency_paths, digest, lines
+def evidence(args, output, kernel):
+    from linux_driver_check import dependency_paths, digest
     units, paths = [], []
     for source, profile in UNITS:
         command = c_command(args, output, source, profile)
@@ -316,14 +269,12 @@ def evidence(args, output):
                         for header in headers],
         })
         paths.append(obj)
-    rust = output / "rust-services.o"
-    paths.append(rust)
-    shared = inventory(paths, output / "shared-runtime.o", set(lines(ROOT / "compat/audit/common/service-ffi.txt")))
-    rust_defined = rust_providers(Elf(rust).symbols())
+    provenance = kernel_provenance(kernel)
+    shared = inventory(paths, output / "shared-runtime.o", kernel)
     abi_paths = [output / "abi-rust.o", *(output / f"abi-{p}.o" for p in ("boot", "net", "storage"))]
     return {
         **shared, "units": units, "build_inputs": inputs(),
-        "rust": {**rust_provenance(output), "defined": rust_defined},
+        "kernel": provenance,
         "linked_sha256": digest(output / "shared-runtime.o"), "compile_only_marker": False,
         "abi": {"values": layout(abi_paths),
                 "packet_values": layout([output / "abi-rust.o", output / "abi-net.o"],
@@ -333,7 +284,7 @@ def evidence(args, output):
                 "accessor_values": layout([output / "abi-rust.o", output / "abi-net.o"],
                                          ".kutox.accessor_layouts", ACCESSOR_LAYOUT_VALUES),
                 "objects": {path.name: digest(path) for path in abi_paths},
-                "commands": [rust_command(output, True), *(c_command(args, output, "compat/audit/common/common_layout.c", p, probe=True)
+                "commands": [rust_command(output), *(c_command(args, output, "compat/audit/common/common_layout.c", p, probe=True)
                                                          for p in ("boot", "net", "storage"))]},
         "profile_isolation": isolation_evidence(args, output),
     }
@@ -365,8 +316,9 @@ def isolation_evidence(args, output):
     return result
 
 
-def audit(args, output):
+def audit(args, output, kernel):
     from linux_driver_check import make_headers, run
+    kernel_provenance(kernel)
     output.mkdir(parents=True, exist_ok=True)
     for profile, wrapper in (("boot", "common/kutox_compat.h"), ("net", "net/services.h"), ("storage", "block/runtime.h")):
         make_headers(output / profile, wrapper=wrapper, profile="storage" if profile == "storage" else "e1000")
@@ -375,10 +327,9 @@ def audit(args, output):
         command = c_command(args, output, source, profile)
         paths.append(command[-1])
         run(command, Path(command[-1]).with_suffix(".log"))
-    run(rust_command(output), output / "rust-services.log")
-    paths.append(str(output / "rust-services.o"))
+    paths.append(str(kernel_object(kernel)))
     run([args.ld, "-r", "-o", str(output / "shared-runtime.o"), *paths], output / "shared-link.log")
-    run(rust_command(output, True), output / "abi-rust.log")
+    run(rust_command(output), output / "abi-rust.log")
     for profile in ("boot", "net", "storage"):
         run(c_command(args, output, "compat/audit/common/common_layout.c", profile, probe=True), output / f"abi-{profile}.log")
     for first, second in (("e1000", "storage"), ("storage", "e1000")):
@@ -388,9 +339,19 @@ def audit(args, output):
         (output / f"profiles-{first}-{second}.log").write_text(completed.stdout)
         if completed.returncode == 0:
             raise ValueError("mixed driver feature profiles were admitted")
-    return evidence(args, output)
+    return evidence(args, output, kernel)
 
 
-def verify(args, output, saved):
-    if saved != evidence(args, output):
+def verify(args, output, saved, kernel):
+    if saved != evidence(args, output, kernel):
         raise ValueError("stale shared Rust/C provider, layout or provenance evidence")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--record-kernel", type=Path, required=True)
+    arguments = parser.parse_args()
+    try:
+        record_kernel(arguments.record_kernel)
+    except (OSError, ValueError) as error:
+        parser.exit(1, f"Kernel build evidence failed: {error}\n")

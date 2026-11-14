@@ -293,10 +293,10 @@ There is no general blocking Linux freeze or synchronous I/O executor yet.
 `blk_execute_rq` and borrowed `blk_rq_map_kern` return explicit unsupported errors.
 
 The runtime provider archive builds in both profiles; normal boot merely checks
-its cold quiescent state and starts no storage queue. The source-plus-provider audit
-resolves 57 original API names, keeps 146 remaining APIs visible, and records
-five implemented Rust allocation/context/diagnostic entry points. Its combined
-audit object retains runtime exclusion.
+its cold quiescent state and starts no storage queue. Provider checks inspect
+the actual Cargo-produced kernel Rust object; there is no isolated provider
+wrapper or synthetic allocation/context/diagnostic ABI. The independent
+source-only storage audit retains all 203 dependencies and runtime exclusion.
 
 The new `storage.block_services` case makes the kernel registry 76 cases. A
 guest-only Rust transport fixture exercises four allocation rollback points,
@@ -389,9 +389,10 @@ Guest scenarios also use Rust for native controls, fault injection and
 ownership assertions. The small C fixtures call Linux-facing APIs and required
 C macro/formatting bridges only; their former native and packet/PCI/block
 control shims are removed.
-The final accounting distinguishes all 77 baseline native C-ABI definitions
-from the executable audit's 62 dependencies and six separately recorded private
-Rust roles; these are different inventories, not interchangeable export counts.
+The historical cleanup accounts for all 77 baseline native C-ABI definitions.
+Its synthetic audit-native bindings and 62-dependency ledger have since been
+retired. Provider evidence now uses the actual kernel object and linked ELF;
+native calls are type-checked through their real Rust definitions.
 
 [The common Rust modules](../src/linux_compat/) implement the selected
 Linux-facing C ABI using `#[unsafe(no_mangle)] extern "C"` exports:

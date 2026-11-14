@@ -7,7 +7,7 @@ import re
 import struct
 import subprocess
 from linux_driver_check import Elf, digest
-from linux_compat_check import NATIVE_BINDINGS, NATIVE_C_BINDINGS, runtime_rust_sources, rust_dependencies
+from linux_compat_check import kernel_provenance, runtime_rust_sources, rust_dependencies
 from make_iso import validate_image
 
 NATIVE_INIT_SYMBOLS = {f"kutox_guest_native_init_{identity}" for identity in (10, 20, 30, 40)}
@@ -51,6 +51,11 @@ REMOVED_COMPAT_PATTERN = re.compile(
     r"^kutox_(?:storage_(?:start|stop|capacity|prepare|submit|poll|result|release|reset_request|empty)|"
     r"block_(?:registered_(?:disk|queue)|reset_complete|ready)|compat_device_name|read_mac)$"
 )
+REMOVED_NATIVE_PATTERN = re.compile(
+    r"^kutox_(?:driver_|linux_|block_(?:allocate|deallocate|context|diag|fail)$|"
+    r"storage_(?:alloc|free|pci|mmio|dma|begin_reset|clock|fail)$|"
+    r"(?:check_boot_context|delay_us|net_wake|serial_byte|check_spin_lock_irqsave|check_spin_unlock_irqrestore)$)"
+)
 GUEST_C_ARCHIVES = {
     "kutox_guest_tests", "kutox_source_guest_tests",
     "kutox_block_guest_tests", "kutox_storage_config_guest",
@@ -59,7 +64,6 @@ C_BOUNDARY_BRIDGES = {
     "kutox_platform_fail", "kutox_jiffies", "kutox_vformat", "kutox_vprint",
     "kutox_check_read_once", "kutox_check_write_once",
     "kutox_check_load_acquire", "kutox_check_store_release",
-    "kutox_check_spin_lock_irqsave", "kutox_check_spin_unlock_irqrestore",
     "kutox_spin_lock_irqsave", "kutox_spin_unlock_irqrestore",
 }
 
@@ -112,7 +116,8 @@ RUNTIME_SYMBOLS = {
     "pci_register_driver", "dma_map_page_attrs", "kmalloc", "mutex_lock",
     "kutox_user_dispatch_next",
     "kutox_runtime_users",
-} | NATIVE_C_BINDINGS.keys()
+    "kutox_jiffies",
+}
 GUEST_ONLY_PATTERN = re.compile(
     r"::(?:guest_tests|guest_ffi|tests|wait_tests|irq_tests|test_cleanup)::|"
     r"::(?:FAIL_AFTER|FAIL_KIND|MAP_FAIL_AFTER|MAP_FAIL_DIRECTION|FAIL_OPERATION|FAIL_REQUEST)$|"
@@ -187,13 +192,12 @@ def validate_native_elf(kernel, enabled):
 
 
 def validate_symbols(symbols, enabled):
-    obsolete = ((NATIVE_BINDINGS.keys() - FIXTURE_BACKEND_SYMBOLS)
-                | {"kutox_driver_known", "kutox_storage_fail"}) & symbols
-    if obsolete:
-        raise AssertionError(f"obsolete native backend C facades in kernel runtime: {sorted(obsolete)}")
     obsolete = sorted(name for name in symbols if name in REMOVED_FIXTURE_SYMBOLS or REMOVED_COMPAT_PATTERN.search(name))
     if obsolete:
         raise AssertionError(f"obsolete compatibility C facades in kernel runtime: {obsolete}")
+    obsolete = {name for name in symbols if REMOVED_NATIVE_PATTERN.search(name)}
+    if obsolete:
+        raise AssertionError(f"obsolete native backend C facades in kernel runtime: {sorted(obsolete)}")
     missing = RUNTIME_SYMBOLS - symbols
     if missing:
         raise AssertionError(f"runtime driver/services missing: {sorted(missing)}")
@@ -248,6 +252,7 @@ def main():
     parser.add_argument("--image", type=Path)
     args = parser.parse_args()
     sources = validate_runtime_dependencies(args.kernel)
+    kernel_provenance(args.kernel)
     if args.image is not None:
         validate_image(args.image, args.kernel, "ON" if args.guest_tests == "enabled" else "OFF")
     output = subprocess.check_output(

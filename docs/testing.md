@@ -39,14 +39,27 @@ object caller evidence. The report is written only after source/header/object
 provenance, exact flags/profile, original registration/callbacks, wire/shared
 layouts and actual runtime-link rejection pass. No fake service providers or
 garbage collection hide dependencies. Failed builds invalidate an earlier
-success report. The separate `runtime/` subdirectory now contains the complete
-unmarked combined e1000/VirtIO/Rust-provider closure, with all sections retained
-and exactly 62 backend/libc entry points in one shared allowlist. Both inventories
-and their source/header/command/object provenance are independently verified.
+success report. This host check needs no kernel build and does not compile an
+alternate Rust provider root.
 
-Both driver audits use [linux_compat_check.py](../scripts/linux_compat_check.py)
-for the same executable provider proof: fifteen C objects plus the real
-freestanding Rust provider object, not declaration-only Rust symbols or mocks.
+The profile-level `linux-driver-compile-check` uses
+[linux_compat_check.py](../scripts/linux_compat_check.py) for the provider proof:
+fifteen unchanged-driver/header-access C objects plus the **actual kernel Rust
+object emitted by Cargo**, not a separately compiled substitute. CMake's kernel
+target uses `cargo rustc -- --emit=obj,link` and records adjacent
+`kutox.build.json` evidence. The object is the hashed sibling of Cargo's active
+executable, identified by file identity rather than timestamps or an arbitrary
+directory scan. Separate ON/OFF objects prevent cached profile switches from
+reusing a shared, overwritten object filename.
+The hashes bind the ELF, object, Cargo dependency
+file, native/compatibility sources and build inputs; missing, changed or mixed
+artifacts require a real kernel rebuild. Direct audit invocation therefore
+requires `cmake --build build --target kernel --parallel 1` first.
+All sections are retained in the partial link. C references must be supplied by
+real definitions in the C inputs or kernel Rust object, apart from the explicit
+compiler/libc primitives. Remaining foreign references must exist in the linked
+kernel; Rust crate dependencies are resolved by the actual kernel link, which
+must have no undefined symbols.
 Real Rust and boot/e1000/storage C probes must agree on all 37 shared
 device/PCI/execution-layout and GFP values. Rust and the network C profile also
 compare 122 network-device, skb, fragment, NAPI, callback-slot and constant
@@ -60,16 +73,10 @@ Independent `--verify` checks
 stored objects and provenance without compiling. Source-only dependency
 inventories remain 209/203 and retain actual kernel-link exclusion.
 
-The shared and isolated block Rust roots use
-[audit-only native bindings](../compat/audit/common/native_backend.rs) for
-memory/DMA, execution/platform, block backing and native storage APIs.
-Reports hash their actual compiler dependencies and record every native role's
-Rust API or retained C-provider disposition against the exact dependency ledger.
-Boot-context, lifecycle-retirement, storage-reset setup and Rust-only coherent
-DMA publication/reclaim/device teardown are explicitly
-recorded private Rust control roles, not unexplained removals from the provider
-closure. Missing, live, unknown or reasonless exclusions are rejected.
-Kernel profile checks require
+The synthetic native bindings, shared/isolated alternate provider roots,
+native-role mappings and platform-FFI ledgers have been retired. Native Rust
+calls are checked by the kernel compiler, not mirrored declarations.
+Kernel profile checks require the recorded kernel build evidence and
 the adjacent Cargo `.d` file, reject audit sources and compile-only ELF markers,
 and reject obsolete Rust-only native exports. Required C boundary fixtures,
 failure reporting and the assembly thread probe must be present in ON and
@@ -91,6 +98,7 @@ independently verified provider audits:
 
 ```sh
 python3 scripts/check.py fast --scope host --select rustfmt --select harness-unit
+cmake --build build --target kernel --parallel 1
 python3 scripts/linux_driver_check.py --build-dir build
 python3 scripts/linux_driver_check.py --build-dir build --verify
 python3 scripts/linux_storage_check.py --build-dir build
@@ -105,7 +113,7 @@ prose or mistake historical baseline counts for current acceptance limits.
 
 Runtime declarations and header-forwarding manifests live under
 [compat/include/](../compat/include/), not audit directories. Audit-only
-inventories, wrappers, probes and FFI allowlists live under
+inventories, wrappers and layout probes live under
 [compat/audit/](../compat/audit/). Production compiler dependency evidence must
 contain neither audit headers nor foreign class extensions. Both e1000/storage
 profile include orders must fail explicitly, while every standalone runtime
@@ -123,13 +131,11 @@ Native Kbuild reports, stale/tampered evidence, unsupported profile definitions,
 omitted dependencies and unexpectedly supplied providers are rejected.
 Declaration-only compatibility layouts are not an implemented runtime ABI.
 
-The audit also compiles the real [Rust block provider](../src/linux_compat/block.rs)
-with a minimal marked Rust wrapper and partially links it with the original units.
-The report separately records 57 supplied API names, 146 remaining APIs, five
-Rust platform entry points, provider/input/object hashes and exact commands.
-Unexpected external functions or hidden dependencies fail verification. The
-combined audit object remains compile-only; the production provider is compiled
-separately without that marker in both profiles.
+The [Rust block provider](../src/linux_compat/block.rs) is compiled only as part
+of the kernel. Its former isolated 57-provider/146-remaining audit and five
+synthetic native declarations are retired; those historical counts are not
+acceptance targets. Real block providers are checked in the kernel object and
+exercised by the existing guest tests.
 
 The existing C atomic/diagnostic fixture additionally checks mixed promoted
 variadic arguments, signed 64-bit minimum, unsigned widths, string padding,

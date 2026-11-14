@@ -176,9 +176,9 @@ class GuestBuildTests(unittest.TestCase):
             dependencies.write_text("kutox: " + " ".join(map(str, native)) + "\n")
             self.assertEqual(validate_runtime_dependencies(kernel), sorted(map(str, native)))
             alias = Path(directory) / "backend.rs"
-            alias.symlink_to(ROOT / "compat/audit/common/native_backend.rs")
-            for path in (ROOT / "compat/audit/common/native_backend.rs",
-                         ROOT / "src/../compat/audit/common/rust_services.rs", alias):
+            alias.symlink_to(ROOT / "compat/audit/common/abi_probe.rs")
+            for path in (ROOT / "compat/audit/common/abi_probe.rs",
+                         ROOT / "src/../compat/audit/common/abi_probe.rs", alias):
                 dependencies.write_text("kutox: " + " ".join(map(str, [*native, path])) + "\n")
                 with self.subTest(path=path), self.assertRaisesRegex(ValueError, "audit source"):
                     validate_runtime_dependencies(kernel)

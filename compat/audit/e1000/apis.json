@@ -28,7 +28,7 @@
       "name": "irq-spinlocks", "phase": 2, "contexts": ["thread", "worker", "napi", "irq"],
       "contract": "Stable lock identity, owner checks, exact saved IF/guard accounting and no sleep or switch while held.",
       "policy": "required", "test": "linux.driver_atomics and linux.driver_irq",
-      "symbols": ["spin_lock_init", "kutox_check_spin_lock_irqsave", "kutox_check_spin_unlock_irqrestore"]
+      "symbols": ["spin_lock_init", "kutox_spin_lock_irqsave", "kutox_spin_unlock_irqrestore"]
     },
     {
       "name": "sleeping-lifecycle-locks", "phase": 2, "contexts": ["thread", "worker"],
@@ -205,8 +205,8 @@
     "kutox_check_read_once": ["READ_ONCE"],
     "kutox_check_write_once": ["WRITE_ONCE"],
     "kutox_check_store_release": ["smp_store_release"],
-    "kutox_check_spin_lock_irqsave": ["spin_lock_irqsave"],
-    "kutox_check_spin_unlock_irqrestore": ["spin_unlock_irqrestore"],
+    "kutox_spin_lock_irqsave": ["spin_lock_irqsave"],
+    "kutox_spin_unlock_irqrestore": ["spin_unlock_irqrestore"],
     "init_work": ["INIT_WORK"],
     "init_delayed_work": ["INIT_DELAYED_WORK"],
     "find_first_bit": ["find_first_bit", "for_each_set_bit"],

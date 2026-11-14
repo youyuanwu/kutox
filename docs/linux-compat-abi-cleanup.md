@@ -2,6 +2,9 @@
 
 Status: implemented, including the Rust guest-fixture migration and final
 documentation/accounting. Guest-fixture implementation checkpoint: `62f4a1e`.
+The subsequent audit retirement removes synthetic native-service bindings,
+alternate provider roots and their dependency ledgers. Current provider checks
+use the actual Cargo-produced kernel object and linked ELF.
 
 Audit baseline: `829ec3217f9cccf6415737a27bc995b86ae4146e`.
 Baseline inventory counts below describe that revision. Final dispositions
@@ -30,13 +33,12 @@ The runtime `kutox_driver_alloc` C export and header declaration are removed.
 GFP checks, allocation kinds, failure injection, diagnostics and backing
 ownership are unchanged; genuine Linux allocation exports remain C ABI.
 
-The standalone [provider root](../compat/audit/common/rust_services.rs) supplies
-the same Rust module path through an
-[audit-only binding](../compat/audit/common/native_backend.rs). Its unresolved
-`kutox_driver_alloc` label is an audit dependency, not a shipping kernel export.
-Both audit reports record this mapping, compiler dependencies and source hashes.
-Kernel profile checks reject audit-source dependencies, compile-only markers
-and obsolete native exports. No runtime backend selector was introduced.
+The former standalone provider roots and audit-native binding adapter have
+also been removed. There is no remaining `kutox_driver_alloc` declaration or
+substitute allocation API for audits. Provider checks inspect the kernel's
+actual compiled Rust object; native calls are checked against real Rust
+definitions. Kernel profile checks reject audit-source dependencies,
+compile-only markers and obsolete native exports.
 
 The remaining network allocation/range/ingress and streaming-DMA calls,
 coherent-DMA hooks, barriers, block backing/context/diagnostics and native
@@ -59,20 +61,11 @@ Native receive, worker-stop and IRQ pending/depth no longer have C facades;
 the assembly thread probe retains its guest-only C ABI. Boot/assembly entries
 and stable Rust metadata labels are unchanged.
 
-The retained failure shim forwards to the same Rust implementation. Both the
-shared and
-[isolated block audit root](../compat/audit/storage/block_services.rs) use the
-common audit bindings and record their actual source dependencies and native
-API mappings, including the retained C provider. The shared executable closure
-now has 62 explicit backend/compiler dependencies. Six private Rust control
-roles remain accounted for in the report but no longer enter that C-provider
-object: boot-context checking, lifecycle static retirement and storage reset
-deadline setup, plus coherent DMA publication, reclaim and device teardown.
-The latter three stopped entering this object when their fixture-only C
-extensions were removed. Each exclusion has a reviewed reason; the isolated
-block dependency allowlist is unchanged. The live ledger comprises 57 native
-Rust backend labels, C jiffies and four compiler/libc dependencies. Together
-with the six private roles, this accounts for all 64 baseline backend roles.
+The retained failure shim forwards to the same Rust implementation. Historical
+audit accounting had 62 backend/compiler dependencies and six private Rust
+roles. Those ledgers and role mappings are retired, not APIs to preserve.
+Boot-context checking, lifecycle retirement, storage reset and coherent DMA
+ownership operations remain ordinary kernel Rust services.
 
 The guest-fixture follow-up removes 48 Rust C-ABI definitions, not the underlying
 service behavior. Linux-facing exports and actual callback conventions remain;
@@ -111,9 +104,8 @@ C archives and the independently verified standalone driver-audit objects.
 These are source-definition counts, not counts of functions retained in every
 optimized kernel.
 
-The 64 baseline native backend roles are accounted for by the
-[explicit API mappings](../scripts/linux_compat_check.py) and the
-[live dependency ledger](../compat/audit/common/service-ffi.txt):
+The cleanup classified the 64 baseline native backend roles as follows.
+The synthetic audit mappings and dependency ledger were later retired:
 
 | Consumers at the baseline | Count | Current disposition |
 | --- | ---: | --- |
@@ -121,9 +113,9 @@ The 64 baseline native backend roles are accounted for by the
 | Guest-only or guest-conditional C | 20 | 19 Rust-only APIs; one guest C failure-reporting shim over its Rust core |
 | Feature-OFF production C | 1 | Retain C ABI: `kutox_jiffies` |
 
-The live ledger contains 58 native/C dependencies plus `memcpy`, `memmove`,
-`memset` and `strlen`. The six private Rust roles are recorded separately, not
-silently dropped from baseline accounting.
+The historical ledger contained 58 native/C dependencies plus `memcpy`,
+`memmove`, `memset` and `strlen`, with six private Rust roles outside it.
+These are historical accounting figures, not current interface requirements.
 
 Production classification uses the selected C objects built with
 `KUTOX_GUEST_TESTS=0`, not all objects found in a build directory. Cargo archive
@@ -272,42 +264,39 @@ fixture archives. An unreviewed `kutox_` dependency fails the build/profile
 check; stale sibling archives cannot satisfy it. Removed service and control
 exports are forbidden in both profiles. All Rust/C fixtures remain absent in OFF.
 
-### Standalone audit path
+### Actual-kernel provider checks
 
-The standalone [Rust provider root](../compat/audit/common/rust_services.rs)
-includes the actual compatibility code without the native kernel modules.
-That separation is useful; it does not require the runtime to call itself
-through C ABI.
+CMake's kernel target emits both the linked ELF and its hashed Rust object from
+the same `cargo rustc` invocation. The object must be the sibling of Cargo's
+active executable, identified by file identity. A shared explicit object
+filename is not safe across cached ON/OFF profile switches.
+Adjacent `kutox.build.json` evidence binds their
+hashes to Cargo's dependency file, Rust/native/C sources and build inputs.
+Provider verification rejects missing, stale or mixed evidence.
 
-One [audit-only binding adapter](../compat/audit/common/native_backend.rs)
-provides the native-module namespaces consumed by both audit roots; the real
-kernel root provides its actual native modules. The same compatibility source
-uses ordinary Rust paths in both compilations. Shared signatures use the actual
-ABI types, including NAPI callback types, rather than duplicate layouts or
-unchecked casts.
+[The provider check](../scripts/linux_compat_check.py) links all fifteen
+unchanged-driver/header-access C objects with this real kernel Rust object,
+without garbage collection. It requires genuine global Rust definitions for
+reviewed Linux providers and checks that every C dependency is supplied by
+the inputs or an explicit compiler/libc primitive. Remaining foreign references
+must exist in the linked kernel, which must have no undefined symbols.
+Rust crate dependencies are handled by the actual kernel linker, not a
+synthetic native-service allowlist.
 
-The adapter:
-
-- Matches the Rust interfaces consumed by compatibility services.
-- Only translates calls to explicitly declared, unresolved audit dependencies.
-- Retains legacy backend symbol names as audit-only dependency labels, with a
-  recorded mapping to their real Rust API paths.
-- Contains no allocator, scheduler, DMA or device policy.
-- Defines no success stubs and does not satisfy its own dependency ledger.
-- Is selected only by the standalone audit root: no runtime feature, runtime
-  switch, new kernel crate, or custom shipping configuration is required.
-
-The [isolated block-provider root](../compat/audit/storage/block_services.rs)
-also compiles the actual block implementation against the same adapter. It
-intentionally carries the compile-only marker; the shared executable provider
-root and production kernel do not.
+The 63 audit-only native declarations, both alternate provider roots, the
+shared/isolated platform ledgers and native-role maps have been removed.
+The independent source-only audits and C/Rust layout probes remain.
+Two forwarding-only spinlock C exports were also removed: Linux macros call
+the canonical kernel providers directly. Rust IRQ tracing calls the diagnostics
+definition directly instead of redeclaring it through an external C block.
 
 ### Alternatives considered
 
 | Approach | Assessment |
 | --- | --- |
 | Keep native C exports for all Rust callers | Smallest edit, but preserves the issue |
-| Direct runtime Rust calls plus audit-root bindings | Implemented; keeps runtime simple and preserves standalone evidence |
+| Direct runtime Rust calls plus audit-root bindings | Used during migration; synthetic audit interfaces subsequently retired |
+| Actual kernel object and linked ELF | Current implementation; no duplicate native API surface |
 | New backend trait/crate or selectable runtime backend | Unnecessary abstraction/configuration for this bounded cleanup |
 
 ## Proof obligations
@@ -365,19 +354,15 @@ name gates. Update those requirements to the real boundary, backed by typed
 runtime compilation and guest behavior checks. Do not force private helpers
 out of line merely to keep old symbol names.
 
-As unreferenced internal control roots disappear from the standalone C-provider
-object, its external dependency set may legitimately shrink. Every ledger
-change needs a reviewed API mapping and explanation; never replace the exact
-allowlist with whatever the current object happens to contain. Rust-only
-control paths remain covered by real kernel type-checks and guest execution.
+Do not recreate synthetic native C declarations or role ledgers for Rust-only
+services. Internal calls are checked by the kernel compiler; actual Linux-facing
+providers are checked in the kernel object and guest execution.
 
-The executable provider closure must remain unmarked. Do not add a
-`.kutox.compile_only` marker to that object: the current audit rejects it.
-Keep existing compile-only object exclusion, and prove that runtime Rust
-dependencies and linked objects do not include the audit-only binding adapter.
-The adapter's source and commands must participate in independent audit hashes.
+The real kernel object and executable provider closure must remain unmarked.
+Keep existing compile-only source-object exclusion and audit-source dependency
+rejection. Preserve kernel build/source/object hashes and independent verification.
 
-## Implementation sequence
+## Original implementation sequence
 
 1. Established audit-root bindings and completed the native allocation pilot.
 2. Converted allocation, coherent/streaming DMA, block backing and native

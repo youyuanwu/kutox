@@ -269,14 +269,17 @@ Linux kernel configuration or additional toolchain. Rerun
 The generated `build/linux-storage-check/report.json` records the profile,
 source/header/object hashes, original callbacks and classified unresolved APIs.
 Compilation and independent `--verify` run through the coordinator; the existing
-kernel linker rejects declaration-only objects. A separate complete runtime
-provider closure retains all sections and checks its exact shared/platform FFI.
+kernel linker rejects declaration-only objects. The profile-level
+`linux-driver-compile-check` separately links unchanged driver objects against
+the actual Cargo-produced kernel Rust object, retaining all sections and checking
+real providers, layouts and kernel build provenance. There is no synthetic
+native-service ABI or alternate Rust provider root.
 
 The [bounded block services](docs/kernel-implementation.md#bounded-block-services)
 now provide one owned read request, tag/PDU/payload storage, read-only limits,
-backpressure, deferred completion and joined cancellation. The audit separately
-links these real providers and records the remaining APIs and Rust platform
-boundary. Its synthetic transport tests remain separate from the new
+backpressure, deferred completion and joined cancellation. Their real kernel
+providers participate in the profile-level check. Synthetic transport tests
+remain separate from the new
 [real disk acceptance](docs/kernel-implementation.md#linux-virtio-blk-runtime):
 
 ```sh
