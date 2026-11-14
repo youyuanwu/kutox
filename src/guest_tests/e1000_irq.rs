@@ -76,12 +76,12 @@ impl<'a, 'storage> E1000IrqFixture<'a, 'storage> {
         self.mapping.address()
     }
 
-    pub fn claim<'nic, 'controller>(
+    pub fn claim<'nic>(
         &'nic self,
-        controller: &'controller IoApic<'a, 'storage>,
+        controller: &IoApic<'a, 'storage>,
         cause: u32,
         handler: crate::arch::x86_64::irq::Handler,
-    ) -> Result<E1000IrqClaim<'nic, 'controller, 'a, 'storage>, Failure> {
+    ) -> Result<E1000IrqClaim<'nic, 'a, 'storage>, Failure> {
         let claim = controller.claim(self.gsi, handler)?;
         let _ = read(self.address(), ICR);
         write(self.address(), IMS, cause);
@@ -115,13 +115,13 @@ impl Drop for E1000IrqFixture<'_, '_> {
     }
 }
 
-pub struct E1000IrqClaim<'nic, 'controller, 'a, 'storage> {
+pub struct E1000IrqClaim<'nic, 'a, 'storage> {
     nic: &'nic E1000IrqFixture<'a, 'storage>,
-    pub claim: ClaimedIrq<'controller, 'a, 'storage>,
+    pub claim: ClaimedIrq<'a, 'storage>,
     live: bool,
 }
 
-impl E1000IrqClaim<'_, '_, '_, '_> {
+impl E1000IrqClaim<'_, '_, '_> {
     pub fn close(&mut self) -> Result<(), Failure> {
         if !self.live {
             return Err(Failure::new("e1000_irq_stale", -1));
@@ -134,7 +134,7 @@ impl E1000IrqClaim<'_, '_, '_, '_> {
     }
 }
 
-impl Drop for E1000IrqClaim<'_, '_, '_, '_> {
+impl Drop for E1000IrqClaim<'_, '_, '_> {
     fn drop(&mut self) {
         if self.live {
             self.close().unwrap_or_else(|error| {

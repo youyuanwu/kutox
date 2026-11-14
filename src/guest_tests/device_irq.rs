@@ -122,6 +122,9 @@ pub fn discovery(boot: &BootInfo, frames: &memory::PhysicalFrames<'static>) -> R
     );
     let mut fresh = controller.claim(gsi, handle)?;
     assert_ne!(fresh.token(), stale);
+    drop(controller);
+    fresh.unmask()?;
+    fresh.mask()?;
     fresh.close()?;
     let timer = irq::Timer::attach(&apic)?;
     drop(apic);

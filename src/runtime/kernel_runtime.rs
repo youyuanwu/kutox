@@ -368,11 +368,12 @@ pub const METADATA_BYTES: usize = core::mem::size_of::<Resources<'static>>()
     + core::mem::size_of::<threads::RunStats>()
     + core::mem::size_of::<linux_deferred::WorkerTasks>()
     + irq::APIC_METADATA_BYTES
+    + irq::external::METADATA_BYTES
     + linux_driver::METADATA_BYTES
     + crate::net::device::METADATA_BYTES
     + crate::net::device::SESSION_METADATA_BYTES
     + core::mem::size_of::<crate::drivers::platform::Owner>()
-    + core::mem::size_of::<linux_irq::BoundIrq<'static, 'static, 'static>>();
+    + core::mem::size_of::<linux_irq::BoundIrq<'static, 'static>>();
 const _: () =
     assert!(crate::drivers::pci_state::INFRASTRUCTURE_METADATA_BYTES + METADATA_BYTES <= 64 * 1024);
 

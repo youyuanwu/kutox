@@ -9,6 +9,9 @@ static ROUTE: SpinLockIrq<Option<Registration>, X86Cpu> = SpinLockIrq::new(None)
 static NEXT_TICKET: AtomicU64 = AtomicU64::new(1);
 static DELIVERIES: AtomicU64 = AtomicU64::new(0);
 
+pub const METADATA_BYTES: usize =
+    core::mem::size_of::<memory::MmioMapping<'static, 'static>>() + 16;
+
 fn io_read(address: usize, register: u32) -> u32 {
     let _guard = REGISTERS.lock_save_irq();
     unsafe {
@@ -40,8 +43,9 @@ struct Registration {
     enabled: bool,
 }
 
+#[derive(Clone)]
 pub struct IoApic<'a, 'storage> {
-    mapping: memory::MmioMapping<'a, 'storage>,
+    mapping: Rc<memory::MmioMapping<'a, 'storage>>,
     apic: Rc<ApicState<'a, 'storage>>,
     gsi_base: u32,
     count: u32,
@@ -75,18 +79,14 @@ impl<'a, 'storage> IoApic<'a, 'storage> {
             }
         }
         Ok(Self {
-            mapping,
+            mapping: Rc::new(mapping),
             apic: Rc::clone(&apic.inner),
             gsi_base: topology.ioapic.gsi_base,
             count,
         })
     }
 
-    pub fn claim(
-        &self,
-        gsi: u32,
-        callback: Handler,
-    ) -> Result<ClaimedIrq<'_, 'a, 'storage>, Failure> {
+    pub fn claim(&self, gsi: u32, callback: Handler) -> Result<ClaimedIrq<'a, 'storage>, Failure> {
         context()?;
         let pin = gsi
             .checked_sub(self.gsi_base)
@@ -127,7 +127,7 @@ impl<'a, 'storage> IoApic<'a, 'storage> {
             enabled: false,
         });
         Ok(ClaimedIrq {
-            controller: self,
+            controller: self.clone(),
             token,
             saved_low,
             saved_high,
@@ -216,15 +216,15 @@ pub fn pending_bound(token: Token) -> Result<bool, Failure> {
     ))
 }
 
-pub struct ClaimedIrq<'controller, 'a, 'storage> {
-    controller: &'controller IoApic<'a, 'storage>,
+pub struct ClaimedIrq<'a, 'storage> {
+    controller: IoApic<'a, 'storage>,
     token: Token,
     saved_low: u32,
     saved_high: u32,
     live: bool,
 }
 
-impl ClaimedIrq<'_, '_, '_> {
+impl ClaimedIrq<'_, '_> {
     pub fn token(&self) -> Token {
         self.token
     }
@@ -276,7 +276,7 @@ impl ClaimedIrq<'_, '_, '_> {
     }
 }
 
-impl Drop for ClaimedIrq<'_, '_, '_> {
+impl Drop for ClaimedIrq<'_, '_> {
     fn drop(&mut self) {
         if self.live {
             self.close().unwrap_or_else(|error| {

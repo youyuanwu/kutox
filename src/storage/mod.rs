@@ -215,9 +215,11 @@ impl Drop for PlatformOwner {
     }
 }
 pub struct Disk<'a, 'storage> {
-    timer: &'a irq::Timer<'a, 'storage>,
+    timer: irq::Timer<'a, 'storage>,
     session: Option<Session>,
     gsi: u32,
+    _irq: BoundIrq<'a, 'storage>,
+    _platform: PlatformOwner,
 }
 impl Disk<'_, '_> {
     fn session(&self) -> Result<&Session, Failure> {
@@ -320,41 +322,58 @@ impl Disk<'_, '_> {
     }
 }
 
+impl Drop for Disk<'_, '_> {
+    fn drop(&mut self) {
+        self.close()
+            .expect("storage scope shutdown failed; device ownership retained");
+    }
+}
+
+impl Disk<'static, 'static> {
+    pub(crate) fn open(
+        boot: &BootInfo,
+        frames: &'static memory::PhysicalFrames<'static>,
+    ) -> Result<Self, Failure> {
+        let inventory = pci::enumerate()?;
+        let mut selected = None;
+        for entry in inventory.functions() {
+            if entry.vendor == 0x1af4 && entry.device == 0x1042 {
+                if selected.is_some() {
+                    return Err(Failure::new("storage_ambiguous", -16));
+                }
+                selected = Some(entry.address);
+            }
+        }
+        let device = pci::selected(
+            &inventory,
+            selected.ok_or(Failure::new("storage_missing", -19))?,
+        )?;
+        let topology = platform::discover(boot, frames)?;
+        let gsi = device.interrupt_route(&topology)?;
+        let platform = PlatformOwner::bind(boot, frames, device)?;
+        let apic = LocalApic::start(boot, frames)?;
+        let controller = IoApic::start(boot, frames, &apic, &topology)?;
+        let binding = BoundIrq::bind(&controller, gsi)?;
+        let timer = irq::Timer::attach(&apic)?;
+        let session = Session::start(gsi).map_err(|code| Failure::new("storage_probe", code))?;
+        Ok(Self {
+            timer,
+            session: Some(session),
+            gsi,
+            _irq: binding,
+            _platform: platform,
+        })
+    }
+}
+
 pub fn with_disk<T>(
     boot: &BootInfo,
     frames: &'static memory::PhysicalFrames<'static>,
     client: impl FnOnce(&mut Disk<'_, '_>) -> Result<T, Failure>,
 ) -> Result<T, Failure> {
-    let inventory = pci::enumerate()?;
-    let mut selected = None;
-    for entry in inventory.functions() {
-        if entry.vendor == 0x1af4 && entry.device == 0x1042 {
-            if selected.is_some() {
-                return Err(Failure::new("storage_ambiguous", -16));
-            }
-            selected = Some(entry.address);
-        }
-    }
-    let device = pci::selected(
-        &inventory,
-        selected.ok_or(Failure::new("storage_missing", -19))?,
-    )?;
-    let topology = platform::discover(boot, frames)?;
-    let gsi = device.interrupt_route(&topology)?;
-    let _platform = PlatformOwner::bind(boot, frames, device)?;
-    let apic = LocalApic::start(boot, frames)?;
-    let controller = IoApic::start(boot, frames, &apic, &topology)?;
-    let _irq = BoundIrq::bind(&controller, gsi)?;
-    let timer = irq::Timer::attach(&apic)?;
-    let session = Session::start(gsi).map_err(|code| Failure::new("storage_probe", code))?;
-    let mut disk = Disk {
-        timer: &timer,
-        session: Some(session),
-        gsi,
-    };
+    let mut disk = Disk::open(boot, frames)?;
     let result = client(&mut disk);
-    disk.close()
-        .expect("storage scope shutdown failed; device ownership retained");
+    drop(disk);
     result
 }
 

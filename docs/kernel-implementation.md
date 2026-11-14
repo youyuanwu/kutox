@@ -305,6 +305,39 @@ unexpected rootfs modules. Exact proofs and error ledgers are checked by
 [disk_boot_acceptance.py](../scripts/disk_boot_acceptance.py).
 Normal networking, RAM-rootfs boot and raw `storage-run` remain unchanged.
 
+## On-demand read-only disk boot
+
+Explicit `disk-demand-run` retains the same exact 2-MiB ext2 admission and
+`/bin/init`/ELF bounds, but does not allocate or copy a full disk image.
+[The sector reader](../third_party/moss-libkernel/src/fs/disk.rs) validates the
+whole byte range before I/O, handles unaligned reads with a 512-byte scratch
+buffer, and sends at most 4096 bytes per unchanged Linux VirtIO request.
+The entire mount/file load is limited to 256 KiB of requested disk bytes and
+512 requests, including repeated metadata reads and failed attempts.
+The existing 100-ms per-request deadline/reset behavior is retained.
+
+The reader owns the native disk, which owns its timer, Linux IRQ binding and
+platform scope. IRQ claims retain reference-counted controller mappings and
+local-APIC ownership. Only the actual static frame allocator is borrowed;
+the filesystem's owned `'static` reader contains no escaped stack references,
+lifetime casts or borrowed parent pointers. The upstream ext4plus crate is
+unchanged. Superblock admission reads only 1024 bytes before upstream mounting.
+
+The loader reads `/bin/init` on demand and populates owned user pages, then
+drops the file, filesystem and disk before CPL3. Success reports `BOOT_FS_OK`,
+`BOOT_DISK_DEMAND_OK` with actual request counts/bytes/maximum size, and
+`BOOT_DISK_CLOSED_OK` before the init program runs. Final frame/heap accounting
+must balance on success and ordinary errors. Native I/O errors retain their
+original stage/code rather than becoming a generic mount failure.
+
+`disk-demand-boot*` acceptance uses the same ISO/module-free configuration and
+temporary read-only disks in ON and OFF. It covers 128/32-MiB success, the same
+admission failures as snapshot boot, real EIO during superblock and init-data
+reads, and successful boot with an EIO trap on the unused final disk sector.
+RAM `user-run`, snapshot `disk-run` and networking remain available.
+This is on-demand boot loading, not a persistent mounted root: writes,
+partitions, a general VFS and post-boot file I/O remain deferred.
+
 ## Bounded block services
 
 The [Rust block provider](../src/linux_compat/block.rs) implements the first storage
