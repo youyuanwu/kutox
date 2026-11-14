@@ -11,6 +11,7 @@ from test_runner import FOUNDATION
 SYMBOLS = dict(zip(("vp_interrupt", "virtblk_probe", "virtio_queue_rq",
                    "virtblk_request_done", "virtblk_done"), range(256, 261)))
 PROOF = "# STORAGE_PROOF reads=4 exact=1 range=1 dma_rollback=3 work_flush=1 deadline=1 reset=1 recovery=1"
+SESSION = "# STORAGE_SESSION admission=checked close=retained stale=isolated context=rejected requests=retained"
 IO = "# STORAGE_IO_ERROR device=EIO unchanged=1 recovery=1"
 
 
@@ -28,7 +29,7 @@ def journal():
             callbacks() +
             "# BLOCK_ERROR operation=read_range code=-22\n" +
             "# BLOCK_ERROR operation=transport_backpressure code=-11\n" * 3 +
-            callbacks() + PROOF + "\nok 1 storage.linux_disk\n" +
+            callbacks() + SESSION + "\n" + PROOF + "\nok 1 storage.linux_disk\n" +
             callbacks() + "# BLOCK_ERROR operation=result_io code=-5\n" + IO +
             "\nok 2 storage.io_error\n# Totals: pass:2 fail:0 skip:0 total:2\n")
 
@@ -40,6 +41,11 @@ class StorageAcceptanceTests(unittest.TestCase):
         for changed in (
             output.replace(PROOF, ""),
             output.replace(PROOF, PROOF + "\n" + PROOF),
+            output.replace(SESSION + "\n", ""),
+            output.replace(SESSION, SESSION + "\n" + SESSION),
+            output.replace("close=retained", "close=discarded"),
+            output.replace("stale=isolated", "stale=accepted"),
+            output.replace(SESSION + "\n", "").replace(IO, SESSION + "\n" + IO),
             output.replace("exact=1", "exact=0"),
             output.replace(IO, ""),
             output.replace(PROOF + "\n", "").replace("ok 2 storage.io_error", PROOF + "\nok 2 storage.io_error"),

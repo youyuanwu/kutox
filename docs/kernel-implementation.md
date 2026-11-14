@@ -380,6 +380,20 @@ All read results remain in the owned block payload until successful native
 result copying; errors never expose a prefix. Identity-DMA, indirect and
 premapped DMA paths fail explicitly rather than bypassing ownership.
 
+The unsafe-free [storage session](../src/linux_compat/storage_session.rs)
+owns a monotonic lifecycle generation, not a boolean loaded flag or raw device
+pointer. Start requires a live native platform scope; capacity, prepare, reset
+and consuming close revalidate the generation under borrow-free BSP admission.
+Nested session operations return busy without entering Linux callbacks.
+An outstanding request or running config callback prevents close and returns
+the retained session; a stale reset retains its request without touching the
+replacement transport. Dropping a session never stops or reclaims a live device.
+The native disk scope explicitly closes its session before releasing IRQ/MMIO/
+platform parents; failed restart/close retains ownership rather than pretending
+teardown succeeded. Capacity errors are returned, not defaulted to a stale size.
+Unprovable hardware-reset/removal failures retain the existing fail-fast policy;
+they never report successful teardown or reclaim backing still reachable by DMA.
+
 Native reads have a 100-ms TSC deadline and use returning timer/INTx interrupts
 with off-IRQ completion pumping. On deadline, the adapter invokes upstream's
 `virtio_reset_device`, requires acknowledged status zero and joined IRQs, then
@@ -442,9 +456,11 @@ from the selected Linux-facing C ABI providers. Genuine C providers use
   raw-pointer adoption and completion witnesses. Backing allocators, masks,
   pins and reset proofs stay with each device's existing Rust owner.
 - `storage.rs`: bus/driver/device references, local config-work queue, owned
-  native reads, admission checks and reset/remove/reprobe sequencing. Rust
-  controls return owned requests and consume exact reset witnesses; the
-  completion owner copies into borrowed slices and releases backing.
+  raw provider state and reset/remove/reprobe sequencing. Its borrow-free
+  admission token protects the original callbacks and native lifecycle.
+- `storage_session.rs`: unsafe-free lifecycle owners, generation-checked
+  capacity/prepare/reset/close operations and retained shutdown failures.
+  Requests and exact reset witnesses use the shared owned block frontend.
 - `block_request.rs`: unsafe-free non-cloneable request/completion owners,
   retained failures, unpublished abort and generation-bound reset witnesses.
   The existing `block.rs` retains raw state, callbacks and genuine Linux C APIs.

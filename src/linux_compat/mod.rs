@@ -22,6 +22,7 @@ pub(crate) mod packet;
 pub(crate) mod packet_tx;
 pub(crate) mod pci;
 pub(crate) mod storage;
+pub(crate) mod storage_session;
 #[cfg(feature = "guest-tests")]
 #[path = "../guest_tests/compat_services.rs"]
 pub(crate) mod tests;

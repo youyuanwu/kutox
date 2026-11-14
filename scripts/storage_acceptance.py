@@ -10,6 +10,7 @@ from qemu_scenarios import qemu_command
 
 
 PROOF = "# STORAGE_PROOF reads=4 exact=1 range=1 dma_rollback=3 work_flush=1 deadline=1 reset=1 recovery=1"
+SESSION = "# STORAGE_SESSION admission=checked close=retained stale=isolated context=rejected requests=retained"
 CALLBACKS = {
     "irq": "vp_interrupt", "probe": "virtblk_probe",
     "queue": "virtio_queue_rq", "complete": "virtblk_request_done",
@@ -93,6 +94,9 @@ def validate_storage(case, returncode, output, symbols):
         if ([line for line in lines if line.startswith("# STORAGE_PROOF")] != [PROOF]
                 or not start < lines.index(PROOF) < first):
             raise AssertionError("missing or misplaced exact disk recovery proof")
+        if ([line for line in lines if line.startswith("# STORAGE_SESSION")] != [SESSION]
+                or not start < lines.index(SESSION) < lines.index(PROOF)):
+            raise AssertionError("missing or misplaced storage session ownership proof")
         io_proof = "# STORAGE_IO_ERROR device=EIO unchanged=1 recovery=1"
         if ([line for line in lines if line.startswith("# STORAGE_IO_ERROR")] != [io_proof]
                 or not first < lines.index(io_proof) < last):

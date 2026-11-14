@@ -286,6 +286,9 @@ backpressure, deferred completion and joined cancellation. Their real kernel
 providers participate in the profile-level check. Native reads use
 [owned Rust requests and completions](src/linux_compat/block_request.rs), with
 retained failures and exact reset witnesses instead of raw tickets/pointers.
+The [typed storage session](src/linux_compat/storage_session.rs) owns driver
+lifecycle admission and generation checks, with fallible capacity queries and
+ownership retained when shutdown is busy.
 Synthetic transport tests
 remain separate from the new
 [real disk acceptance](docs/kernel-implementation.md#linux-virtio-blk-runtime):

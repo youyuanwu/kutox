@@ -187,6 +187,11 @@ cases independently of the 76-case kernel registry:
   then a successful read. It also queues the original VirtIO configuration
   callback, requires one real shared-registry inline work flush during removal,
   and proves its work/mutex registrations retire before the owner is freed.
+  Its exact `STORAGE_SESSION` proof additionally requires missing-platform and
+  context/reentry rejection, busy close with retained request/session backing,
+  and stale capacity/prepare/reset/close isolation after reprobe. These cases
+  must not add block rejections or original callback registrations to the
+  existing read/reset ledger.
 - `storage.io_error`: actual QEMU `blkdebug` EIO on sector 64, unchanged caller
   output and a subsequent exact successful read of sector 65.
 

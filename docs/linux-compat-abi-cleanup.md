@@ -91,6 +91,12 @@ Native storage reads now use the
 tickets. Finishing a terminal request consumes it into a completion owner for
 slice-based result copying and release; reset completion additionally consumes
 an exact-generation witness. Failed transitions retain their owner.
+The [owned storage session](../src/linux_compat/storage_session.rs) replaces
+the native loaded boolean and unkeyed lifecycle calls. Capacity, preparation,
+reset and close validate the session generation under borrow-free admission.
+Busy shutdown returns the retained session; stale reset returns the retained
+request before any transport side effect. Scope shutdown is explicit, not an
+automatic freeing `Drop`.
 Raw block code uses the actual shared request/queue/disk
 types rather than opaque-pointer Rust-to-Rust extern declarations. Packet, NAPI,
 PCI, block inspectors and private device-name forwarding use ordinary Rust
