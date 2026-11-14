@@ -30,5 +30,15 @@ impl Failure {
     }
 }
 
+#[cfg(target_os = "none")]
+impl core::fmt::Display for Failure {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(formatter, "{} code={}", self.stage, self.code)
+    }
+}
+
+#[cfg(target_os = "none")]
+impl core::error::Error for Failure {}
+
 #[cfg(test)]
 extern crate std;

@@ -70,6 +70,9 @@ baseline, then executes it with the existing ELF loader. The separately linked
 kernel. Explicit [disk boot](docs/kernel-implementation.md#read-only-disk-rootfs-boot)
 can instead read the bounded image through unchanged Linux VirtIO, close the disk,
 then mount the snapshot and execute `/bin/init` without a Limine rootfs module.
+Explicit [on-demand disk boot](docs/kernel-implementation.md#on-demand-read-only-disk-boot)
+instead reads just the requested metadata/file blocks, with bounded requests
+and an owned reader, then closes storage before entering userspace.
 Normal boot still starts networking without running userspace.
 General file/socket I/O and a full process runtime remain absent.
 
@@ -314,16 +317,21 @@ teardown. Both run at 128/32 MiB. Default network boot remains unchanged.
 2-MiB ext2 read-only disk and no rootfs module; it takes a fallibly allocated
 snapshot in 4-KiB reads, retires the disk, then uses the same filesystem/ELF loader.
 This is bounded snapshot boot, not on-demand disk filesystem I/O.
+`disk-demand-run` keeps the same admitted image/file bounds but reads blocks on
+demand: no full-image allocation, at most 256 KiB/512 requests and 4096 bytes per
+request. The filesystem owns the disk resources and retires them before CPL3.
 
 ```sh
 python3 scripts/check.py full --profiles both --scope guest \
-  --select 'disk-boot*'
+  --select 'disk-boot*' --select 'disk-demand-boot*'
 ```
 
 The runner reuses the same ISO with a Limine SMBIOS configuration override that
 loads only `odd(1:):/boot/kernel`, and attaches a temporary read-only root disk.
 Missing/unsupported devices, wrong image size, malformed filesystem/ELF, real
 EIO, unexpected modules and 32-MiB cleanup are checked in both profiles.
+On-demand cases also trap init-data reads and prove the unused final sector
+is never read. Neither mode provides a persistent mounted root or write access.
 
 ### Test code and build profiles
 

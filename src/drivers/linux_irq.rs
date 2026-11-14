@@ -34,8 +34,8 @@ pub fn fail_request(fail: bool) {
     FAIL_REQUEST.store(fail, Ordering::Release);
 }
 
-pub struct BoundIrq<'controller, 'a, 'storage> {
-    claim: ClaimedIrq<'controller, 'a, 'storage>,
+pub struct BoundIrq<'a, 'storage> {
+    claim: ClaimedIrq<'a, 'storage>,
 }
 
 pub fn callbacks_drained() -> bool {
@@ -45,8 +45,8 @@ pub fn callbacks_drained() -> bool {
         .is_none_or(|binding| binding.handler.is_none() && !binding.running)
 }
 
-impl<'controller, 'a, 'storage> BoundIrq<'controller, 'a, 'storage> {
-    pub fn bind(controller: &'controller IoApic<'a, 'storage>, gsi: u32) -> Result<Self, Failure> {
+impl<'a, 'storage> BoundIrq<'a, 'storage> {
+    pub fn bind(controller: &IoApic<'a, 'storage>, gsi: u32) -> Result<Self, Failure> {
         if BINDING.lock_save_irq().is_some() {
             return Err(Failure::new("linux_irq_bound", -16));
         }
@@ -63,7 +63,7 @@ impl<'controller, 'a, 'storage> BoundIrq<'controller, 'a, 'storage> {
     }
 }
 
-impl Drop for BoundIrq<'_, '_, '_> {
+impl Drop for BoundIrq<'_, '_> {
     fn drop(&mut self) {
         {
             let binding = BINDING.lock_save_irq();

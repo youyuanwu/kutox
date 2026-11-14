@@ -146,6 +146,9 @@ fn probe() -> Result<BootOutcome, Failure> {
     if boot.mode == BootMode::DiskRun {
         return boot_fs::run_disk(&boot, allocator).map(BootOutcome::UserExited);
     }
+    if boot.mode == BootMode::DiskDemandRun {
+        return boot_fs::run_disk_demand(&boot, allocator).map(BootOutcome::UserExited);
+    }
     if boot.mode == BootMode::StorageRun {
         storage::run(&boot, allocator)?;
         return Ok(BootOutcome::StorageRead);

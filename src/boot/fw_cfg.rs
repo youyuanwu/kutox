@@ -14,6 +14,7 @@ pub enum BootMode {
     NetworkRun,
     UserRun,
     DiskRun,
+    DiskDemandRun,
     StorageRun,
     StorageTests,
     Probe,
@@ -72,6 +73,7 @@ impl BootMode {
             Self::NetworkRun => "network-run",
             Self::UserRun => "user-run",
             Self::DiskRun => "disk-run",
+            Self::DiskDemandRun => "disk-demand-run",
             Self::StorageRun => "storage-run",
             Self::StorageTests => "storage-tests",
             Self::Probe => "probe",
@@ -192,6 +194,7 @@ pub fn read_mode(
         b"network-run" => Ok(Some(BootMode::NetworkRun)),
         b"user-run" => Ok(Some(BootMode::UserRun)),
         b"disk-run" => Ok(Some(BootMode::DiskRun)),
+        b"disk-demand-run" => Ok(Some(BootMode::DiskDemandRun)),
         b"storage-run" => Ok(Some(BootMode::StorageRun)),
         b"storage-tests" => Ok(Some(BootMode::StorageTests)),
         b"probe" => Ok(Some(BootMode::Probe)),
@@ -371,6 +374,7 @@ mod tests {
             BootMode::DriverRun,
             BootMode::NetworkRun,
             BootMode::DiskRun,
+            BootMode::DiskDemandRun,
             BootMode::Probe,
             BootMode::EepromTimeout,
             BootMode::PageFault,
@@ -423,7 +427,11 @@ mod tests {
 
     #[test]
     fn user_boot_is_explicit_and_available_without_guest_fixtures() {
-        for mode in [BootMode::UserRun, BootMode::DiskRun] {
+        for mode in [
+            BootMode::UserRun,
+            BootMode::DiskRun,
+            BootMode::DiskDemandRun,
+        ] {
             assert_eq!(
                 run(&fixture(&[("opt/kutox/test-mode", mode.name().as_bytes())])),
                 Ok(Some(mode))

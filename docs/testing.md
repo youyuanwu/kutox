@@ -397,6 +397,17 @@ unsupported-feature, wrong-capacity, malformed-ext2/ELF, actual EIO and unexpect
 module errors, with balanced frame/heap teardown and no success-shaped fallback.
 These are production `disk-run` boots, not additional guest registry cases.
 
+`disk-demand-boot*` adds production `disk-demand-run` acceptance in both
+profiles, using the same ISO and read-only ext2 fixtures. Exact proofs require
+filesystem loading, bounded on-demand read counts (at most 256 KiB/512 requests,
+4096 bytes per request, a 512-byte scratch buffer), storage close before init
+output, and balanced final teardown. Superblock and init-data EIO traps test
+both reader phases; a trap on the unused final sector must not prevent boot.
+Missing/unsupported disks, capacity, malformed ext2/ELF and unexpected modules
+retain exact rejection ledgers. Portable tests cover unaligned/chunked reads,
+range rejection without I/O, byte/request budget exhaustion and device errors.
+The kernel IRQ test also drops the original controller before using its claim.
+
 ## Validation tiers
 
 ```sh

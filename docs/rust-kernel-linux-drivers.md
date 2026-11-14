@@ -667,8 +667,9 @@ The runtime implementation should proceed in separately validated stages:
    error/timeout handling and reset/IRQ/DMA teardown before recycling memory.
 3. The owned block-read interface now supplies a bounded 2-MiB snapshot to the
    existing filesystem adaptation, retaining RAM-backed boot and its current
-   bounds. The disk closes before mounting/ELF execution; on-demand filesystem
-   reads remain deferred.
+   bounds. The disk closes before mounting/ELF execution. An explicit
+   `disk-demand-run` also reads filesystem metadata and `/bin/init` on demand
+   through an owned bounded reader, retiring the disk before CPL3.
 4. `disk-boot*` now proves `/bin/init` execution with no rootfs Limine module,
    using only a project-owned read-only QEMU disk. Both image profiles cover
    absent/unsupported devices, wrong capacity, malformed media/ELF, actual I/O

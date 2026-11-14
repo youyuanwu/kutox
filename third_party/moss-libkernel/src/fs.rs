@@ -6,7 +6,10 @@ extern crate alloc;
 
 use alloc::{boxed::Box, vec::Vec};
 use core::{error::Error as CoreError, fmt};
-use ext4plus::prelude::{Dir, DirEntryName, Ext4, Ext4Error, Ext4Read, File, FileType};
+pub use ext4plus::prelude::Ext4Read;
+use ext4plus::prelude::{Dir, DirEntryName, Ext4, Ext4Error, File, FileType};
+
+pub mod disk;
 
 pub const IMAGE_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_FILE_BYTES: usize = 64 * 1024;
@@ -20,6 +23,8 @@ pub enum Error {
     FileType,
     Allocation,
     ShortRead,
+    ReadLimit,
+    ReaderBusy,
     Filesystem(Ext4Error),
 }
 
@@ -33,7 +38,16 @@ impl Error {
             Self::FileType => -407,
             Self::Allocation => -404,
             Self::ShortRead => -405,
+            Self::ReadLimit => -408,
+            Self::ReaderBusy => -409,
             Self::Filesystem(_) => -406,
+        }
+    }
+
+    pub fn io_error(&self) -> Option<&(dyn CoreError + Send + Sync + 'static)> {
+        match self {
+            Self::Filesystem(Ext4Error::Io(error)) => Some(error.as_ref()),
+            _ => None,
         }
     }
 }
@@ -79,7 +93,10 @@ pub fn validate_image(bytes: &[u8]) -> Result<(), Error> {
     if bytes.len() != IMAGE_BYTES {
         return Err(Error::Image);
     }
-    let sb = &bytes[1024..2048];
+    validate_superblock(bytes[1024..2048].try_into().unwrap())
+}
+
+fn validate_superblock(sb: &[u8; 1024]) -> Result<(), Error> {
     let inodes = u32_at(sb, 0);
     // One small ext2 group bounds upstream descriptor/inode allocations.
     if sb[56..58] != [0x53, 0xef]
@@ -109,6 +126,17 @@ impl Filesystem {
     pub fn mount<B: AsRef<[u8]> + 'static>(bytes: B) -> Result<Self, Error> {
         validate_image(bytes.as_ref())?;
         Ext4::load(Box::new(Ramdisk::new(bytes)))
+            .map(|inner| Self { inner })
+            .map_err(Error::Filesystem)
+    }
+
+    pub fn mount_reader(reader: impl Ext4Read + 'static) -> Result<Self, Error> {
+        let mut superblock = [0; 1024];
+        reader
+            .read(1024, &mut superblock)
+            .map_err(|error| Error::Filesystem(Ext4Error::Io(error)))?;
+        validate_superblock(&superblock)?;
+        Ext4::load(Box::new(reader))
             .map(|inner| Self { inner })
             .map_err(Error::Filesystem)
     }
@@ -238,6 +266,7 @@ mod tests {
         let content: Vec<_> = (0..8193).map(|index| (index % 251) as u8).collect();
         fs::write(root.join("bin/init"), &content).unwrap();
         fs::write(root.join("empty"), []).unwrap();
+        fs::write(root.join("maximum"), vec![0xa5; MAX_FILE_BYTES]).unwrap();
         fs::write(root.join("large"), vec![0; MAX_FILE_BYTES + 1]).unwrap();
         std::os::unix::fs::symlink("bin/init", root.join("link")).unwrap();
         std::os::unix::fs::symlink("bin", root.join("linkdir")).unwrap();
@@ -274,7 +303,27 @@ mod tests {
             "{}",
             std::string::String::from_utf8_lossy(&result.stderr)
         );
-        let filesystem = Filesystem::mount(fs::read(image).unwrap()).unwrap();
+        let data = fs::read(image).unwrap();
+        struct Device(Vec<u8>);
+        impl disk::ReadSectors for Device {
+            type Error = Error;
+
+            fn read_sectors(&mut self, sector: u64, output: &mut [u8]) -> Result<(), Error> {
+                Ramdisk::new(&self.0).read_at(sector * 512, output)
+            }
+        }
+        let reader = disk::Reader::new(Device(data.clone()));
+        let statistics = reader.statistics();
+        let demand = Filesystem::mount_reader(reader).unwrap();
+        assert_eq!(demand.read_file("/bin/init").unwrap(), content);
+        assert_eq!(
+            demand.read_file("/maximum").unwrap(),
+            vec![0xa5; MAX_FILE_BYTES]
+        );
+        assert!(matches!(demand.read_file("/large"), Err(Error::FileSize)));
+        assert!(statistics.get().bytes < disk::MAX_READ_BYTES);
+        drop(demand);
+        let filesystem = Filesystem::mount(data).unwrap();
         assert_eq!(filesystem.read_file("/bin/init").unwrap(), content);
         for path in ["/missing", "/linkdir/init"] {
             assert!(matches!(

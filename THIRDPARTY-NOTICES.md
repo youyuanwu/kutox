@@ -246,8 +246,12 @@ The Limine module admission, [native boot service](src/boot/fs.rs),
 and acceptance are kutox integration code. Their boot-image -> filesystem ->
 ELF ordering follows Moss's
 [launch_init](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/main.rs#L79).
-The image is RAM-backed ext2, not FAT32 or persistent disk storage; see the
-[scope and bounds](docs/kernel-implementation.md#read-only-boot-filesystem).
+RAM and snapshot images are RAM-backed ext2. The
+[bounded sector reader](third_party/moss-libkernel/src/fs/disk.rs) and owned
+native disk lifetime integration are kutox code; they add on-demand read-only
+boot access without changing or vendoring ext4plus. There is no FAT32,
+persistent mounted root or write interface; see the
+[scope and bounds](docs/kernel-implementation.md#on-demand-read-only-disk-boot).
 
 ### Bootstrap memory allocator
 
