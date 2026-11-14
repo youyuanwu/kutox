@@ -450,7 +450,8 @@ def validate_kernel_suite(case, returncode, output):
 def validate_block_services(lines, names):
     marker = (
         "# BLOCK_SERVICES epochs=16 queues=1 tags=1 read_max=4096 rollback=4 "
-        "ranges=checked pressure=retained cancel=joined stale=isolated irq=deferred"
+        "ranges=checked pressure=retained cancel=joined stale=isolated irq=deferred "
+        "owners=retained completion=owned reset=bound"
     )
     number = names.index("storage.block_services") + 1
     end = next(index for index, line in enumerate(lines) if line in (
@@ -463,16 +464,16 @@ def validate_block_services(lines, names):
         raise AssertionError("missing, duplicate or misplaced bounded block-service proof")
     expected = Counter({
         ("allocate_injected", -12): 4, ("tag_profile", -95): 1,
-        ("read_only_operation", -95): 32, ("request_capacity", -11): 16,
+        ("read_only_operation", -95): 32, ("request_capacity", -11): 17,
         ("read_range", -22): 96, ("synchronous_execute_not_admitted", -95): 16,
         ("submit_metadata", -22): 16,
-        ("borrowed_payload_not_admitted", -95): 16, ("result_cancelled", -125): 32,
+        ("borrowed_payload_not_admitted", -95): 16, ("result_cancelled", -125): 34,
         ("stale_ticket", -116): 16, ("transport_backpressure", -11): 16,
         ("submit_backpressure", -11): 16, ("result_pending", -11): 16,
-        ("release_inflight", -16): 32, ("cancel_inflight", -16): 16,
+        ("release_inflight", -16): 33, ("cancel_inflight", -16): 16,
         ("queue_quiesced", -16): 32, ("result_capacity", -105): 16,
         ("result_io", -5): 16, ("queue_limits", -95): 16,
-        ("queue_closed", -19): 1,
+        ("queue_closed", -19): 1, ("reset_proof", -22): 1,
     })
     errors = Counter()
     for _, line in evidence[:-1]:

@@ -30,7 +30,7 @@ pub fn ownership(
         return Err(Failure::new("block_services_live", -1));
     }
     serial::print(format_args!(
-        "# BLOCK_SERVICES epochs=16 queues=1 tags=1 read_max=4096 rollback=4 ranges=checked pressure=retained cancel=joined stale=isolated irq=deferred\n"
+        "# BLOCK_SERVICES epochs=16 queues=1 tags=1 read_max=4096 rollback=4 ranges=checked pressure=retained cancel=joined stale=isolated irq=deferred owners=retained completion=owned reset=bound\n"
     ));
     Ok(())
 }

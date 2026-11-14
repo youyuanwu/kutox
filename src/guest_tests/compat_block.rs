@@ -1,12 +1,12 @@
-use super::{Bsp, block::*, block_abi::*};
+use super::{Bsp, block::*, block_abi::*, block_request::Request as OwnedRequest};
 use crate::block_services;
-use core::{cell::UnsafeCell, ffi::c_void, ptr};
+use core::{cell::UnsafeCell, ptr};
 
 struct Fixture {
     tags: TagSet,
     disk: *mut Disk,
     active: *mut Request,
-    ticket: u64,
+    request: Option<OwnedRequest>,
     submitted: usize,
     completed: usize,
     pressure: usize,
@@ -59,6 +59,7 @@ const OPERATIONS: Ops = Ops {
 };
 fn reset_tags() {
     unsafe {
+        assert!((*state()).request.is_none());
         let mut tags: TagSet = core::mem::zeroed();
         tags.ops = &OPERATIONS;
         tags.nr_hw_queues = 1;
@@ -101,17 +102,11 @@ fn end() {
         assert!(quiescent());
     }
 }
-fn request(sector: u64, bytes: usize) -> *mut Request {
-    unsafe {
-        let req = blk_mq_alloc_request((*(*state()).disk).queue, 0, 0);
-        assert!((req as usize) < usize::MAX - 4095);
-        assert_eq!(
-            prepare(req, sector, bytes, ptr::addr_of_mut!((*state()).ticket)),
-            0
-        );
-        assert_eq!(blk_mq_rq_from_pdu(blk_mq_rq_to_pdu(req)), req);
-        req
-    }
+fn request(sector: u64, bytes: usize) -> OwnedRequest {
+    let request = OwnedRequest::read(sector, bytes).unwrap();
+    let req = request_pointer(&request).unwrap();
+    assert_eq!(blk_mq_rq_from_pdu(blk_mq_rq_to_pdu(req)), req);
+    request
 }
 fn signal() {
     unsafe {
@@ -121,10 +116,6 @@ fn signal() {
         assert_eq!((*state()).completed, 0);
     }
 }
-fn copy_result(value: u64, output: &mut [u8]) -> i32 {
-    unsafe { result(value, output.as_mut_ptr().cast::<c_void>(), output.len()) }
-}
-
 pub(crate) fn ownership() {
     unsafe {
         for after in 0..3 {
@@ -165,22 +156,17 @@ pub(crate) fn ownership() {
             for operation in [1, 2] {
                 assert_eq!(blk_mq_alloc_request(queue, operation, 0) as isize, -95);
             }
-            let req = blk_mq_alloc_request(queue, 0, 0);
-            assert!((req as usize) < usize::MAX - 4095);
-            assert_eq!(blk_mq_alloc_request(queue, 0, 0) as isize, -11);
-            let mut unchanged = 0xdead;
+            let mut owned = OwnedRequest::allocate().unwrap();
+            let req = request_pointer(&owned).unwrap();
+            assert_eq!(OwnedRequest::allocate().unwrap_err(), -11);
             for (sector, bytes) in [(0, 0), (0, 511), (0, 4608), (15, 1024), (u64::MAX, 512)] {
-                assert_eq!(prepare(req, sector, bytes, &mut unchanged), -22);
-                assert_eq!(unchanged, 0xdead);
+                assert_eq!(owned.prepare(sector, bytes), Err(-22));
             }
-            assert_eq!(
-                prepare(req, 15, 512, ptr::addr_of_mut!((*state()).ticket)),
-                0
-            );
+            owned.prepare(15, 512).unwrap();
             assert_eq!(blk_rq_pos(req), 15);
             assert_eq!(blk_rq_sectors(req), 1);
             (*req).sector = u64::MAX;
-            assert_eq!(submit((*state()).ticket), -22);
+            assert_eq!(owned.submit(), Err(-22));
             assert_eq!((*state()).submitted, 0);
             (*req).sector = 15;
             let mut output = [0xa5; 4096];
@@ -189,55 +175,67 @@ pub(crate) fn ownership() {
                 blk_rq_map_kern(req, output.as_mut_ptr().cast(), 512, super::abi::GFP_KERNEL),
                 -95
             );
-            assert_eq!(cancel((*state()).ticket), 0);
-            assert_eq!(copy_result((*state()).ticket, &mut output), -125);
+            owned.cancel().unwrap();
+            let stale = owned.generation.get();
+            let completed = owned.finish().unwrap();
+            assert_eq!(completed.copy_into(&mut output), Err(-125));
             assert_eq!(output[0], 0xa5);
-            assert_eq!(release((*state()).ticket), 0);
-            let stale = (*state()).ticket;
-            request(0, 4096);
-            assert_eq!(cancel(stale), -116);
+            completed.release().unwrap();
+            let mut owned = request(0, 4096);
             (*state()).pressure = 1;
-            assert_eq!(submit((*state()).ticket), -11);
+            assert_eq!(owned.submit(), Err(-11));
             assert_eq!((*state()).submitted, 1);
-            assert_eq!(submit((*state()).ticket), -11);
+            assert_eq!(owned.submit(), Err(-11));
             assert_eq!((*state()).submitted, 1);
             blk_mq_start_stopped_hw_queues(queue, true);
-            assert_eq!(submit((*state()).ticket), 0);
+            owned.submit().unwrap();
             assert_eq!((*state()).submitted, 2);
-            assert_eq!(copy_result((*state()).ticket, &mut output), -11);
-            assert_eq!(release((*state()).ticket), -16);
-            assert_eq!(cancel((*state()).ticket), -16);
+            let failure = owned.finish().unwrap_err();
+            assert_eq!(failure.code, -11);
+            let failure = failure.retained.abort().unwrap_err();
+            assert_eq!(failure.code, -16);
+            let mut owned = failure.retained;
+            assert_eq!(owned.cancel(), Err(-16));
             blk_mq_quiesce_queue_nowait(queue);
             assert_eq!(blk_mq_alloc_request(queue, 0, 0) as isize, -16);
             signal();
-            assert_eq!(release((*state()).ticket), -16);
-            assert_eq!(pump(), 1);
+            // A stale raw generation must not pump the replacement's callback.
+            assert_eq!(poll(stale), -116);
+            assert_eq!((*state()).completed, 0);
+            let failure = owned.abort().unwrap_err();
+            assert_eq!(failure.code, -16);
+            let mut owned = failure.retained;
+            assert!(owned.poll().unwrap());
             assert_eq!((*state()).completed, 1);
-            assert_eq!(copy_result((*state()).ticket, &mut output), -125);
-            assert_eq!(release((*state()).ticket), 0);
+            let completed = owned.finish().unwrap();
+            assert_eq!(completed.copy_into(&mut output), Err(-125));
+            completed.release().unwrap();
             blk_mq_unquiesce_queue(queue);
             (*state()).completed = 0;
-            request(2, 1024);
-            assert_eq!(submit((*state()).ticket), 0);
+            let mut owned = request(2, 1024);
+            owned.submit().unwrap();
             signal();
-            assert_eq!(pump(), 1);
-            assert_eq!(pump(), 0);
-            assert_eq!(copy_result((*state()).ticket, &mut output[..511]), -105);
+            assert!(owned.poll().unwrap());
+            assert!(owned.poll().unwrap());
+            assert_eq!((*state()).completed, 1);
+            let completed = owned.finish().unwrap();
+            assert_eq!(completed.copy_into(&mut output[..511]), Err(-105));
             assert_eq!((output[0], output[4095]), (0xa5, 0xa5));
-            assert_eq!(copy_result((*state()).ticket, &mut output), 1024);
+            assert_eq!(completed.copy_into(&mut output), Ok(1024));
             for (i, &byte) in output[..1024].iter().enumerate() {
                 assert_eq!(byte, (i + 2) as u8);
             }
-            assert_eq!(release((*state()).ticket), 0);
+            completed.release().unwrap();
             (*state()).completed = 0;
-            request(0, 512);
+            let mut owned = request(0, 512);
             (*state()).status = 10;
-            assert_eq!(submit((*state()).ticket), 0);
+            owned.submit().unwrap();
             signal();
-            assert_eq!(pump(), 1);
-            assert_eq!(copy_result((*state()).ticket, &mut output), -5);
+            assert!(owned.poll().unwrap());
+            let completed = owned.finish().unwrap();
+            assert_eq!(completed.copy_into(&mut output), Err(-5));
             assert_eq!((output[0], output[1023], output[4095]), (2, 1, 0xa5));
-            assert_eq!(release((*state()).ticket), 0);
+            completed.release().unwrap();
             let cookie = blk_mq_freeze_queue(queue);
             assert_eq!(blk_mq_alloc_request(queue, 0, 0) as isize, -16);
             let mut update = queue_limits_start_update(queue);
@@ -256,20 +254,52 @@ pub(crate) fn ownership() {
             update.max_hw_sectors = 1;
             assert_eq!(queue_limits_commit_update_frozen(queue, &mut update), 0);
             blk_mq_unfreeze_queue(queue, cookie);
-            let req = blk_mq_alloc_request(queue, 0, 0);
-            assert!((req as usize) < usize::MAX - 4095);
-            assert_eq!(prepare(req, 0, 1024, &mut unchanged), -22);
-            blk_mq_free_request(req);
+            let mut owned = OwnedRequest::allocate().unwrap();
+            assert_eq!(owned.prepare(0, 1024), Err(-22));
+            owned.abort().unwrap();
             end();
         }
     }
+    reset_ownership();
+}
+
+fn reset_ownership() {
+    begin();
+    let mut first = request(0, 512);
+    first.submit().unwrap();
+    // This synthetic transport has no DMA or asynchronous buffer access.
+    let stale = unsafe { reset_proof(&first).unwrap() };
+    let proof = unsafe { reset_proof(&first).unwrap() };
+    unsafe { (*state()).active = ptr::null_mut() };
+    let completed = first.after_reset(proof).unwrap();
+    let mut output = [0xa5; 512];
+    assert_eq!(completed.copy_into(&mut output), Err(-125));
+    completed.release().unwrap();
+    unsafe { blk_mq_unquiesce_queue((*(*state()).disk).queue) };
+    let mut next = request(1, 512);
+    next.submit().unwrap();
+    let failure = next.after_reset(stale).unwrap_err();
+    assert_eq!(failure.code, -22);
+    let next = failure.retained;
+    assert_eq!(OwnedRequest::allocate().unwrap_err(), -11);
+    let failure = next.abort().unwrap_err();
+    assert_eq!(failure.code, -16);
+    let next = failure.retained;
+    let proof = unsafe { reset_proof(&next).unwrap() };
+    unsafe { (*state()).active = ptr::null_mut() };
+    let completed = next.after_reset(proof).unwrap();
+    assert_eq!(completed.copy_into(&mut output), Err(-125));
+    assert_eq!(output, [0xa5; 512]);
+    completed.release().unwrap();
+    end();
 }
 
 pub(crate) fn irq_begin() {
     begin();
-    request(1, 512);
+    let mut owned = request(1, 512);
+    owned.submit().unwrap();
     unsafe {
-        assert_eq!(submit((*state()).ticket), 0);
+        (*state()).request = Some(owned);
         del_gendisk((*state()).disk);
         assert_eq!(
             blk_mq_alloc_request((*(*state()).disk).queue, 0, 0) as isize,
@@ -284,13 +314,17 @@ pub(crate) fn irq_deliver() {
 }
 pub(crate) fn irq_finish() {
     let mut bytes = [0; 512];
+    let mut owned = unsafe { (*state()).request.take().expect("IRQ request owner") };
     unsafe {
         assert_eq!((*state()).completed, 0);
-        assert_eq!(pump(), 1);
-        assert_eq!((*state()).completed, 1);
-        assert_eq!(copy_result((*state()).ticket, &mut bytes), 512);
-        assert_eq!(release((*state()).ticket), 0);
     }
+    assert!(owned.poll().unwrap());
+    unsafe {
+        assert_eq!((*state()).completed, 1);
+    }
+    let completed = owned.finish().unwrap();
+    assert_eq!(completed.copy_into(&mut bytes), Ok(512));
+    completed.release().unwrap();
     for (i, &byte) in bytes.iter().enumerate() {
         assert_eq!(byte, (i + 1) as u8);
     }

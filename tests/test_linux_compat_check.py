@@ -21,29 +21,6 @@ def elf(symbols, marked=False):
 
 
 class SharedCompatibilityTests(unittest.TestCase):
-    def test_native_dispositions_reject_missing_extra_and_overlapping_roles(self):
-        bindings = compat.native_dispositions()
-        self.assertIn("kutox_jiffies", bindings["c"])
-        self.assertNotIn("kutox_jiffies", bindings["rust"])
-        for changed in (
-            {name: api for name, api in compat.NATIVE_BINDINGS.items() if name != "kutox_linux_work"},
-            {**compat.NATIVE_BINDINGS, "hidden_backend": "crate::hidden"},
-            {**compat.NATIVE_BINDINGS, "kutox_jiffies": "crate::linux_runtime::jiffies"},
-        ):
-            with patch.object(compat, "NATIVE_BINDINGS", changed), self.assertRaisesRegex(ValueError, "dispositions"):
-                compat.native_dispositions()
-
-    def test_private_control_exclusions_cannot_hide_live_unknown_or_unexplained_dependencies(self):
-        private = compat.PRIVATE_CONTROL_BACKENDS
-        for changed in (
-            {name: reason for name, reason in private.items() if name != "kutox_check_boot_context"},
-            {**private, "kutox_check_boot_context": ""},
-            {**private, "hidden_backend": "unreviewed native role"},
-            {**private, "kutox_linux_work": "attempt to waive a live dependency"},
-        ):
-            with patch.object(compat, "PRIVATE_CONTROL_BACKENDS", changed), self.assertRaisesRegex(ValueError, "dispositions"):
-                compat.native_dispositions()
-
     def test_rust_services_cannot_be_replaced_by_c_local_data_or_declarations(self):
         with patch.object(compat, "RUST_PROVIDERS", {"open"}):
             self.assertEqual(compat.rust_providers([symbol("open", 1, 2)]), ["open"])
@@ -63,60 +40,80 @@ class SharedCompatibilityTests(unittest.TestCase):
                 with self.subTest(profile=profile, path=path), self.assertRaises(ValueError):
                     compat.runtime_headers([str(path)], profile)
 
-    def test_verify_rechecks_adapter_source_commands_and_compiled_dependencies(self):
+    def test_kernel_provenance_rejects_missing_stale_and_mixed_build_artifacts(self):
         with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory)
-            root = compat.ROOT / "compat/audit/common/rust_services.rs"
-            adapter = compat.ROOT / compat.NATIVE_BACKEND
-            dependencies = output / "rust-services.d"
-            dependencies.write_text(f"rust-services.o: {root} \\\n {adapter}\n\n{root}:\n")
-            for name in ("rust-services", "abi-rust", "abi-boot", "abi-net", "abi-storage",
-                         "shared-runtime"):
-                (output / f"{name}.o").write_bytes(b"object")
-            providers = [symbol(name, 1, 2) for name in compat.RUST_PROVIDERS]
-            args = SimpleNamespace(clang="clang")
-            with (
-                patch.object(compat, "UNITS", ()),
-                patch.object(compat, "inventory", return_value={}),
-                patch.object(compat, "layout", return_value=[]),
-                patch.object(compat, "isolation_evidence", return_value=[]),
-                patch.object(driver, "Elf", return_value=elf(providers)),
-            ):
-                saved = compat.evidence(args, output)
-                self.assertIn(compat.NATIVE_BACKEND, saved["build_inputs"])
-                self.assertIn(str(adapter.relative_to(compat.ROOT)),
-                              [source["path"] for source in saved["rust"]["sources"]])
-                compat.verify(args, output, saved)
-                original_digest = driver.digest
-                with patch.object(driver, "digest", side_effect=lambda path:
-                                  "changed" if path == adapter else original_digest(path)):
-                    with self.assertRaisesRegex(ValueError, "stale"):
-                        compat.verify(args, output, saved)
-                command = compat.rust_command
-                with patch.object(compat, "rust_command", side_effect=lambda *args:
-                                  [*command(*args), "-C", "opt-level=0"]):
-                    with self.assertRaisesRegex(ValueError, "stale"):
-                        compat.verify(args, output, saved)
-                dependencies.write_text(f"rust-services.o: {root}\n")
-                with self.assertRaisesRegex(ValueError, "did not compile"):
-                    compat.verify(args, output, saved)
+            root = Path(directory)
+            kernel = root / "release/kutox"
+            files = ("Cargo.toml", "Cargo.lock", ".cargo/config.toml", "rust-toolchain.toml",
+                     "build.rs", "linker.ld", "CMakeLists.txt", "compat/include/runtime.h",
+                     "src/main.rs", "src/driver_memory.rs", "release/kutox",
+                     "release/deps/kutox-active.o", "release/deps/kutox-stale.o",
+                     "release/deps/kutox-stale")
+            for name in files:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"compiled input")
+            active = root / "release/deps/kutox-active"
+            active.hardlink_to(kernel)
+            kernel.with_suffix(".d").write_text(
+                f"kutox: {root / 'src/main.rs'} {root / 'src/driver_memory.rs'}\n")
+            with patch.object(compat, "ROOT", root), patch.object(compat, "UNITS", ()):
+                with self.assertRaisesRegex(ValueError, "missing kernel build"):
+                    compat.kernel_provenance(kernel)
+                compat.record_kernel(kernel)
+                self.assertEqual(compat.kernel_provenance(kernel)["schema"], 2)
+                self.assertEqual(compat.kernel_object(kernel), active.with_suffix(".o"))
+                (root / "release/deps/kutox-stale.o").write_bytes(b"another profile")
+                compat.kernel_provenance(kernel)
+                ambiguous = root / "release/deps/kutox-ambiguous"
+                ambiguous.hardlink_to(kernel)
+                ambiguous.with_suffix(".o").write_bytes(b"ambiguous object")
+                with self.assertRaisesRegex(ValueError, "ambiguous active"):
+                    compat.kernel_object(kernel)
+                ambiguous.unlink()
+                ambiguous.with_suffix(".o").unlink()
+                for name in ("release/kutox", "release/deps/kutox-active.o", "release/kutox.d", "src/driver_memory.rs",
+                             "compat/include/runtime.h", ".cargo/config.toml"):
+                    path = root / name
+                    original = path.read_bytes()
+                    path.write_bytes(original + b"\nchanged")
+                    with self.subTest(name=name), self.assertRaisesRegex(ValueError, "stale"):
+                        compat.kernel_provenance(kernel)
+                    path.write_bytes(original)
+                active.with_suffix(".o").unlink()
+                with self.assertRaisesRegex(ValueError, "active kernel object"):
+                    compat.kernel_provenance(kernel)
 
-    def test_complete_real_provider_closure_cannot_hide_dependencies_or_use_local_definitions(self):
-        source = [symbol("queue", 1, 2), symbol("provider"), symbol("shared"),
-                  symbol("shared", 1, 2, binding=0)]
-        provider = [symbol("provider", 1, 2)]
-        for external, marked in ((["shared"], False), ([], False),
-                                 (["shared", "hidden"], False), (["shared"], True)):
-            with patch.object(compat, "ENTRY_POINTS", {"queue"}), patch.object(driver, "Elf", side_effect=[
-                elf(source, marked), elf(provider), elf([symbol(name) for name in external]),
-            ]):
-                if external == ["shared"] and not marked:
-                    result = compat.inventory([Path("driver"), Path("rust")], Path("linked"), {"shared"})
-                    self.assertEqual(result["undefined"], ["shared"])
-                    self.assertNotIn("shared", result["defined"])
+    def test_actual_kernel_closure_rejects_missing_providers_and_hidden_foreign_calls(self):
+        source = [symbol("queue", 1, 2), symbol("provider"), symbol("memcpy"),
+                  symbol("memcpy", 1, 2, binding=0)]
+        rust = [symbol("provider", 1, 2), symbol("memcpy"), symbol("_RNreal_dependency")]
+        linked = [symbol("memcpy"), symbol("_RNreal_dependency")]
+        runtime = [symbol("memcpy", 1, 2, binding=0)]
+        cases = (
+            (source, rust, linked, runtime, False),
+            (source, [], linked, runtime, False),
+            (source, [symbol("provider", 1, 1)], linked, runtime, False),
+            (source, rust, [], runtime, False),
+            (source, rust, linked + [symbol("hidden")], runtime, False),
+            (source, rust, linked, [], False),
+            (source, rust, linked, runtime, True),
+            (source, rust, linked, runtime + [symbol("unresolved")], False),
+        )
+        for index, (c_symbols, r_symbols, closure, executable, marked) in enumerate(cases):
+            with self.subTest(case=index), patch.object(compat, "ENTRY_POINTS", {"queue"}), \
+                    patch.object(compat, "RUST_PROVIDERS", {"provider"}), \
+                    patch.object(compat, "kernel_object", return_value=Path("actual-kernel.o")), \
+                    patch.object(driver, "Elf", side_effect=[
+                        elf(c_symbols, marked), elf(r_symbols), elf(closure), elf(executable),
+                    ]):
+                if index == 0:
+                    result = compat.inventory([Path("driver")], Path("linked"), Path("kernel"))
+                    self.assertEqual(result["undefined"], ["_RNreal_dependency", "memcpy"])
+                    self.assertNotIn("memcpy", result["defined"])
                 else:
                     with self.assertRaises(ValueError):
-                        compat.inventory([Path("driver"), Path("rust")], Path("linked"), {"shared"})
+                        compat.inventory([Path("driver")], Path("linked"), Path("kernel"))
 
     def test_every_c_profile_must_match_the_actual_rust_layout_and_flags(self):
         raw = struct.pack("<" + "Q" * 37, *range(37))

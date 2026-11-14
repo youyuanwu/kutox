@@ -78,7 +78,7 @@
       "symbols": [
         "alloc_workqueue", "complete", "cpu_relax", "destroy_workqueue", "dma_rmb", "dma_wmb",
         "flush_work", "init_completion", "init_work", "kutox_check_read_once",
-        "kutox_check_spin_lock_irqsave", "kutox_check_spin_unlock_irqrestore", "kutox_check_write_once",
+        "kutox_spin_lock_irqsave", "kutox_spin_unlock_irqrestore", "kutox_check_write_once",
         "mb", "might_sleep", "msleep", "mutex_destroy", "mutex_init", "mutex_lock", "mutex_unlock",
         "queue_work", "spin_lock", "spin_lock_init", "spin_lock_irq", "spin_unlock", "spin_unlock_irq",
         "synchronize_rcu", "virt_mb", "virt_rmb", "virt_wmb", "wait_for_completion"

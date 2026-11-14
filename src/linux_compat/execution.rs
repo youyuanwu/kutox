@@ -3,9 +3,6 @@ use core::{
     ptr,
     sync::atomic::{self, AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering},
 };
-unsafe extern "C" {
-    fn kutox_storage_trace_callback(kind: u32, address: usize);
-}
 fn address(p: *const c_void, width: usize) {
     require(
         !p.is_null() && matches!(width, 1 | 2 | 4 | 8) && (p as usize).is_multiple_of(width),
@@ -397,14 +394,6 @@ pub unsafe extern "C" fn kutox_spin_unlock_irqrestore(p: *mut Spinlock, flags: u
     }
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn kutox_check_spin_lock_irqsave(p: *mut Spinlock) -> usize {
-    unsafe { kutox_spin_lock_irqsave(p) }
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kutox_check_spin_unlock_irqrestore(p: *mut Spinlock, flags: usize) {
-    unsafe { kutox_spin_unlock_irqrestore(p, flags) }
-}
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn spin_lock(p: *mut Spinlock) {
     require(
         unsafe { kutox_spin_lock_irqsave(p) } == 0,
@@ -515,7 +504,7 @@ pub extern "C" fn request_irq(
         && pci::storage_bound()
         && let Some(f) = handler
     {
-        unsafe { kutox_storage_trace_callback(0, f as usize) }
+        diagnostics::kutox_storage_trace_callback(0, f as usize)
     }
     result
 }

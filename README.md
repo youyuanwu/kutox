@@ -120,10 +120,11 @@ execution. See the
 An isolated compile-only target now compiles unchanged `e1000_main.c` with its
 hardware, parameter and ethtool units. It records original registration/callbacks,
 parameter arrays, layouts, headers and **209 unresolved runtime dependencies**.
-These objects are explicitly rejected by the runtime linker. A second
-combined relocatable closure now checks both drivers against actual Rust and
-C providers; its remaining 68 kernel/backend symbols are recorded, not hidden
-by success stubs.
+These objects are explicitly rejected by the runtime linker. A separate
+combined relocatable closure checks both drivers against fifteen C objects and
+the actual Cargo-produced kernel Rust object. It records unresolved dependencies
+and verifies real providers without synthetic native-service declarations,
+success stubs or a fixed backend-symbol ledger.
 The marked check objects remain excluded from the runtime image. Runtime
 objects are compiled separately against the same selected source profile.
 
@@ -147,9 +148,11 @@ Each file explains why that boundary remains C.
 Variadic definitions and argument extraction also live in Rust, using stable
 `core::ffi::VaList` (Rust 1.99+) for the actual C ABI, including copied cursors;
 there is no C variadic bridge or handwritten `va_list` layout.
-Both audit tools compile the real Rust providers and compare all three C
-profiles with Rust layouts and GFP flags, plus 122 packet, 135 block and
-41 header-accessor/MAC contract values.
+The profile-level driver check uses that real kernel Rust object and compares
+all three C profiles with Rust layouts and GFP flags, plus 122 packet, 135 block
+and 41 header-accessor/MAC contract values. The independent storage host audit
+checks unchanged C sources and their dependency contracts; it does not compile
+an alternate Rust provider.
 See the
 [shared boundary](docs/kernel-implementation.md#shared-linux-compatibility-boundary)
 for the remaining per-device policies and resource limits.
@@ -269,14 +272,20 @@ Linux kernel configuration or additional toolchain. Rerun
 The generated `build/linux-storage-check/report.json` records the profile,
 source/header/object hashes, original callbacks and classified unresolved APIs.
 Compilation and independent `--verify` run through the coordinator; the existing
-kernel linker rejects declaration-only objects. A separate complete runtime
-provider closure retains all sections and checks its exact shared/platform FFI.
+kernel linker rejects declaration-only objects. The profile-level
+`linux-driver-compile-check` separately links unchanged driver objects against
+the actual Cargo-produced kernel Rust object, retaining all sections and checking
+real providers, layouts and kernel build provenance. There is no synthetic
+native-service ABI or alternate Rust provider root.
 
 The [bounded block services](docs/kernel-implementation.md#bounded-block-services)
 now provide one owned read request, tag/PDU/payload storage, read-only limits,
-backpressure, deferred completion and joined cancellation. The audit separately
-links these real providers and records the remaining APIs and Rust platform
-boundary. Its synthetic transport tests remain separate from the new
+backpressure, deferred completion and joined cancellation. Their real kernel
+providers participate in the profile-level check. Native reads use
+[owned Rust requests and completions](src/linux_compat/block_request.rs), with
+retained failures and exact reset witnesses instead of raw tickets/pointers.
+Synthetic transport tests
+remain separate from the new
 [real disk acceptance](docs/kernel-implementation.md#linux-virtio-blk-runtime):
 
 ```sh

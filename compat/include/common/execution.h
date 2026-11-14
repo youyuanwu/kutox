@@ -27,10 +27,8 @@ void mutex_init(struct mutex *);
 void spin_lock_init(spinlock_t *);
 void spin_lock(spinlock_t *);
 void spin_unlock(spinlock_t *);
-unsigned long kutox_check_spin_lock_irqsave(spinlock_t *);
-void kutox_check_spin_unlock_irqrestore(spinlock_t *, unsigned long);
-#define spin_lock_irqsave(l,f) ((f) = kutox_check_spin_lock_irqsave(l))
-#define spin_unlock_irqrestore(l,f) kutox_check_spin_unlock_irqrestore(l,f)
+#define spin_lock_irqsave(l,f) ((f) = kutox_spin_lock_irqsave(l))
+#define spin_unlock_irqrestore(l,f) kutox_spin_unlock_irqrestore(l,f)
 void local_bh_disable(void);
 void local_bh_enable(void);
 void smp_mb(void);

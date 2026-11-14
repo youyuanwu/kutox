@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
-use super::{Bsp, abi::Device, block_abi};
+use super::{Bsp, abi::Device, block_abi, block_request};
 use crate::block_services;
 use block_abi::*;
 use core::{
     cell::UnsafeCell,
     ffi::{c_char, c_void},
     mem::size_of,
+    num::NonZeroU64,
     ptr,
 };
 
@@ -505,13 +506,28 @@ pub extern "C" fn blk_mq_rq_from_pdu(pdu: *mut c_void) -> *mut Request {
         ptr::addr_of_mut!((*live()).request)
     }
 }
-pub(super) unsafe fn prepare(req: *mut Request, sector: u64, bytes: usize, out: *mut u64) -> i32 {
+pub(super) fn allocate_request() -> Result<NonZeroU64, i32> {
     context(0);
-    request(req);
+    if unsafe { live().is_null() || !(*live()).published } {
+        return Err(error(c"queue_closed", -19));
+    }
+    let req = blk_mq_alloc_request(registered_queue(), 0, 0);
+    if req as usize >= usize::MAX - 4094 {
+        return Err(req as isize as i32);
+    }
+    Ok(NonZeroU64::new(unsafe { (*live()).generation }).expect("live request generation"))
+}
+
+pub(super) fn prepare(value: u64, sector: u64, bytes: usize) -> i32 {
+    context(0);
+    let result = ticket(value);
+    if result != 0 {
+        return result;
+    }
     unsafe {
         let c = live();
-        if out.is_null()
-            || (*c).state != State::Allocated
+        let req = ptr::addr_of_mut!((*c).request);
+        if (*c).state != State::Allocated
             || (*c).dispatching
             || (*req).flags != 0
             || bytes == 0
@@ -531,7 +547,6 @@ pub(super) unsafe fn prepare(req: *mut Request, sector: u64, bytes: usize, out: 
         (*req).bio = ptr::addr_of_mut!((*c).bio);
         (*req).sector = sector;
         (*c).prepared = true;
-        out.write((*c).generation);
         0
     }
 }
@@ -614,7 +629,7 @@ pub extern "C" fn blk_mq_complete_request(req: *mut Request) {
         (*live()).state = State::Pending;
     }
 }
-pub(super) fn pump() -> i32 {
+fn pump() -> i32 {
     context(0);
     unsafe {
         let c = live();
@@ -646,7 +661,19 @@ pub extern "C" fn blk_mq_end_request(req: *mut Request, status: u8) {
         (*live()).state = State::Done;
     }
 }
-pub(super) unsafe fn result(value: u64, out: *mut c_void, capacity: usize) -> i32 {
+pub(super) fn finished(value: u64) -> i32 {
+    context(0);
+    let result = ticket(value);
+    if result != 0 {
+        return result;
+    }
+    if unsafe { (*live()).state != State::Done || (*live()).dispatching } {
+        return error(c"result_pending", -11);
+    }
+    0
+}
+
+pub(super) fn result(value: u64, output: &mut [u8]) -> i32 {
     context(0);
     let result = ticket(value);
     if result != 0 {
@@ -664,10 +691,10 @@ pub(super) unsafe fn result(value: u64, out: *mut c_void, capacity: usize) -> i3
         if result != 0 {
             return error(c"result_io", result);
         }
-        if out.is_null() || capacity < (*c).bytes {
+        if output.len() < (*c).bytes {
             return error(c"result_capacity", -105);
         }
-        ptr::copy_nonoverlapping((*c).payload.cast::<u8>(), out.cast(), (*c).bytes);
+        ptr::copy_nonoverlapping((*c).payload.cast::<u8>(), output.as_mut_ptr(), (*c).bytes);
         (*c).bytes as i32
     }
 }
@@ -693,14 +720,19 @@ pub(super) fn cancel(value: u64) -> i32 {
         0
     }
 }
-pub(super) fn release(value: u64) -> i32 {
+pub(super) fn release(value: u64, completed: bool) -> i32 {
     context(0);
     let result = ticket(value);
     if result != 0 {
         return result;
     }
     unsafe {
-        if (*live()).dispatching || !matches!((*live()).state, State::Done | State::Allocated) {
+        let expected = if completed {
+            State::Done
+        } else {
+            State::Allocated
+        };
+        if (*live()).dispatching || (*live()).state != expected {
             return error(c"release_inflight", -16);
         }
         blk_mq_free_request(ptr::addr_of_mut!((*live()).request));
@@ -1104,23 +1136,56 @@ pub(super) fn registered_disk() -> *mut Disk {
         (*live()).disk
     }
 }
-pub(super) fn registered_queue() -> *mut Queue {
+fn registered_queue() -> *mut Queue {
     unsafe { (*registered_disk()).queue }
 }
-/// # Safety
-/// Transport reset is acknowledged and all request DMA is stopped and drained.
-pub(super) unsafe fn reset_complete(req: *mut Request, status: u8) {
+pub(super) fn idle() -> bool {
     context(0);
-    request(req);
+    unsafe { !live().is_null() && (*live()).state == State::Free && !(*live()).dispatching }
+}
+pub(super) fn request_pointer(owner: &block_request::Request) -> Result<*mut Request, i32> {
+    context(0);
+    let result = ticket(owner.generation.get());
+    if result != 0 {
+        return Err(result);
+    }
+    Ok(unsafe { ptr::addr_of_mut!((*live()).request) })
+}
+/// # Safety
+/// The transport has acknowledged reset and stopped/drained all DMA and callback
+/// access for this exact request, retaining its backing until reset completion.
+pub(super) unsafe fn reset_proof(
+    owner: &block_request::Request,
+) -> Result<block_request::Reset, i32> {
+    context(0);
+    request_pointer(owner)?;
+    if unsafe { (*live()).state != State::Active || (*live()).dispatching } {
+        return Err(error(c"reset_state", -22));
+    }
+    Ok(block_request::Reset {
+        generation: owner.generation,
+        local: core::marker::PhantomData,
+    })
+}
+pub(super) fn reset_complete(value: u64, proof: block_request::Reset) -> i32 {
+    context(0);
+    let result = ticket(value);
+    if result != 0 {
+        return result;
+    }
+    if proof.generation.get() != value {
+        return error(c"reset_proof", -22);
+    }
     unsafe {
-        require(
-            (*live()).state == State::Active && !(*live()).dispatching && status == 2,
-            c"block_reset_completion",
-        );
+        if (*live()).state != State::Active || (*live()).dispatching {
+            return error(c"reset_state", -22);
+        }
         (*live()).quiesced = true;
-        (*live()).status = status;
+        (*live()).status = 2;
+        (*live()).cancelled = true;
         (*live()).state = State::Done;
     }
+    0
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn kutox_block_operations() -> *const Ops {
@@ -1133,7 +1198,7 @@ pub extern "C" fn kutox_block_operations() -> *const Ops {
         (*(*live()).set).ops
     }
 }
-pub(super) fn ready(value: u64) -> i32 {
+fn ready(value: u64) -> i32 {
     context(0);
     let result = ticket(value);
     if result != 0 {
@@ -1141,4 +1206,12 @@ pub(super) fn ready(value: u64) -> i32 {
     } else {
         unsafe { i32::from((*live()).state == State::Done) }
     }
+}
+pub(super) fn poll(value: u64) -> i32 {
+    let result = ready(value);
+    if result < 0 {
+        return result;
+    }
+    pump();
+    ready(value)
 }

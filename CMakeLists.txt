@@ -29,9 +29,12 @@ else()
     set(IMAGE_PROFILE OFF)
 endif()
 add_custom_target(kernel
-    COMMAND ${CARGO} build --locked --release --jobs 1 ${KERNEL_FEATURES}
+    COMMAND ${CARGO} rustc --locked --release --jobs 1 --bin kutox ${KERNEL_FEATURES}
+        -- --emit=obj,link
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/linux_compat_check.py"
+        --record-kernel "${KERNEL}"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    BYPRODUCTS "${KERNEL}"
+    BYPRODUCTS "${KERNEL}" "${KERNEL}.build.json"
     USES_TERMINAL
 )
 
@@ -70,6 +73,7 @@ add_custom_target(linux-driver-check
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/linux_driver_check.py"
         --build-dir "${CMAKE_BINARY_DIR}"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    DEPENDS kernel
     USES_TERMINAL
     VERBATIM
 )

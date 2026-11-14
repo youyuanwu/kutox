@@ -2,6 +2,7 @@
 """Compile/audit unchanged e1000 sources; never produce a runnable driver."""
 
 import argparse
+from collections import Counter
 import hashlib
 import json
 from pathlib import Path
@@ -59,8 +60,9 @@ def lines(path):
 class Elf:
     """Bounded ELF64 inspection, defaulting to relocatable driver objects."""
 
-    def __init__(self, path, *, expected_kind=1):
-        if path.stat().st_size > 16 * 1024 * 1024:
+    def __init__(self, path, *, expected_kind=1, max_bytes=16 * 1024 * 1024, max_sections=4096,
+                 allowed_duplicate_sections=()):
+        if path.stat().st_size > max_bytes:
             raise ValueError(f"oversized driver object: {path}")
         self.data = path.read_bytes()
         if len(self.data) < 64 or self.data[:7] != b"\x7fELF\x02\x01\x01":
@@ -68,7 +70,7 @@ class Elf:
         kind, machine = struct.unpack_from("<HH", self.data, 16)
         offset = struct.unpack_from("<Q", self.data, 40)[0]
         entry, count, names = struct.unpack_from("<HHH", self.data, 58)
-        if (kind, machine, entry) != (expected_kind, 62, 64) or not 0 < count <= 4096 or names >= count:
+        if (kind, machine, entry) != (expected_kind, 62, 64) or not 0 < count <= max_sections or names >= count:
             raise ValueError(f"unsupported ELF shape: {path}")
         table = self.slice(offset, count * entry)
         raw = [struct.unpack_from("<IIQQQQIIQQ", table, i * entry) for i in range(count)]
@@ -81,7 +83,8 @@ class Elf:
                                   "flags": record[2], "address": record[3], "alignment": record[8],
                                   "link": record[6], "info": record[7], "entry": record[9]})
         self.by_name = {section["name"]: section for section in self.sections}
-        if len(self.by_name) != len(self.sections):
+        counts = Counter(section["name"] for section in self.sections)
+        if {name for name, count in counts.items() if count > 1} - set(allowed_duplicate_sections):
             raise ValueError("duplicate ELF section names")
         if any(section["link"] >= len(self.sections) for section in self.sections):
             raise ValueError("invalid ELF section link")
@@ -369,7 +372,7 @@ BOOT_SERVICE_SOURCES = ()
 
 def service_closure(args, output):
     from linux_compat_check import audit
-    shared = audit(args, output / "shared-runtime")
+    shared = audit(args, output / "shared-runtime", ROOT / "target/x86_64-unknown-none/release/kutox")
     remaining = sorted(contracts().keys() - set(shared["defined"]) - {"memcpy", "memset", "kutox_jiffies"})
     if remaining:
         raise ValueError("driver services missing providers: " + ", ".join(remaining))
@@ -380,7 +383,8 @@ def verify_service_closure(args, output, evidence):
     if (not isinstance(evidence, dict) or evidence.get("missing_providers") != 0
             or not isinstance(evidence.get("shared"), dict)):
         raise ValueError("missing service provider evidence")
-    verify(args, output / "shared-runtime", evidence.get("shared"))
+    verify(args, output / "shared-runtime", evidence.get("shared"),
+           ROOT / "target/x86_64-unknown-none/release/kutox")
     if contracts().keys() - set(evidence["shared"]["defined"]) - {"memcpy", "memset", "kutox_jiffies"}:
         raise ValueError("missing shared Rust/C providers for original e1000 APIs")
 

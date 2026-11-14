@@ -6,8 +6,8 @@ unsigned long kutox_jiffies(void);
 #define jiffies kutox_jiffies()
 void spin_lock(spinlock_t *);
 void spin_unlock(spinlock_t *);
-unsigned long kutox_check_spin_lock_irqsave(spinlock_t *);
-void kutox_check_spin_unlock_irqrestore(spinlock_t *, unsigned long);
+unsigned long kutox_spin_lock_irqsave(spinlock_t *);
+void kutox_spin_unlock_irqrestore(spinlock_t *, unsigned long);
 void local_bh_disable(void);
 void local_bh_enable(void);
 void smp_mb(void);
