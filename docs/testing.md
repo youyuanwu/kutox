@@ -42,14 +42,16 @@ garbage collection hide dependencies. Failed builds invalidate an earlier
 success report. This host check needs no kernel build and does not compile an
 alternate Rust provider root.
 
+### Actual-kernel provider checks
+
 The profile-level `linux-driver-compile-check` uses
 [linux_compat_check.py](../scripts/linux_compat_check.py) for the provider proof:
 fifteen unchanged-driver/header-access C objects plus the **actual kernel Rust
 object emitted by Cargo**, not a separately compiled substitute. CMake's kernel
 target uses `cargo rustc -- --emit=obj,link` and records adjacent
 `kutox.build.json` evidence. The object is the hashed sibling of Cargo's active
-executable, identified by file identity rather than timestamps or an arbitrary
-directory scan. Separate ON/OFF objects prevent cached profile switches from
+executable, identified by file identity rather than timestamps or guessed
+cached siblings. Separate ON/OFF objects prevent cached profile switches from
 reusing a shared, overwritten object filename.
 The hashes bind the ELF, object, Cargo dependency
 file, native/compatibility sources and build inputs; missing, changed or mixed
@@ -58,8 +60,10 @@ requires `cmake --build build --target kernel --parallel 1` first.
 All sections are retained in the partial link. C references must be supplied by
 real definitions in the C inputs or kernel Rust object, apart from the explicit
 compiler/libc primitives. Remaining foreign references must exist in the linked
-kernel; Rust crate dependencies are resolved by the actual kernel link, which
-must have no undefined symbols.
+kernel, which must have no undefined symbols. Rust-mangled dependencies remain
+in the partial-link inventory; the actual kernel link resolves reachable ones
+and may discard unreachable Rust sections. This is not a separate whole-object
+proof for every Rust crate dependency or a fixed native-service ABI ledger.
 Real Rust and boot/e1000/storage C probes must agree on all 37 shared
 device/PCI/execution-layout and GFP values. Rust and the network C profile also
 compare 122 network-device, skb, fragment, NAPI, callback-slot and constant
@@ -93,8 +97,8 @@ archives selected by the current kernel's Cargo dependencies/build output,
 rejecting native backend/control calls and unreviewed project C bridges.
 Host regressions cover forbidden calls and stale/missing archive evidence.
 
-For changes to these boundaries, use the existing coordinator and both
-independently verified provider audits:
+For changes to these boundaries, use the existing coordinator, profile-level
+provider check and independently verified source audits:
 
 ```sh
 python3 scripts/check.py fast --scope host --select rustfmt --select harness-unit

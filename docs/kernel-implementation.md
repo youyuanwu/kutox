@@ -255,9 +255,9 @@ segment/sector ceilings. Native capacity, registration and read-only state are
 real bounded registry state, not a VFS or general Linux device model.
 
 Request allocation reserves the only tag. Preparation validates operation,
-length and the whole sector range without changing the caller's ticket on
-failure. Submission revalidates the visible request metadata against owned
-sector/length state before calling the registered queue callback. Unsupported
+length and the whole sector range, retaining the request owner and existing
+metadata on failure. Submission revalidates the visible request metadata against
+owned sector/length state before calling the registered queue callback. Unsupported
 operations are rejected before publication. Resource backpressure retains the
 same request/PDU/payload and generation; stop/restart controls retry admission.
 Requeue is permitted only during the dispatch callback, before it returns an
@@ -266,16 +266,20 @@ accepted publication. Released requests zero private/payload bytes before reuse.
 Native clients use the unsafe-free [owned request API](../src/linux_compat/block_request.rs),
 not numeric tickets or request pointers. A non-cloneable, BSP-local `Request`
 owns one generation; allocation and preparation failures cannot publish it.
-`read` rolls back a failed preparation, while `submit` and backpressure retain
-the same owner for retry. `poll` validates its generation before pumping any
-completion, so stale requests cannot affect a replacement or recreated queue.
+`read` rolls back a failed preparation. `submit` retains ownership on errors;
+backpressure permits retry on the same owner, while a terminal transport
+rejection must be finished and released. `poll` validates its generation before
+pumping any completion, so stale requests cannot affect a replacement or
+recreated queue.
 
-`finish` consumes a request only after off-IRQ completion and produces a
-non-cloneable `Completed` owner. Only this owner permits slice-based result
-copying and consuming release. Copying validates destination capacity first
-and never copies cancelled or failed I/O. `abort` consumes only an unpublished
-request. Failed finish/abort/release operations return `Failure<T>` with the
-original owner retained. Neither request nor completion owners automatically
+`finish` consumes a terminal request and produces a non-cloneable `Completed`
+owner. Terminal paths include acknowledged off-IRQ completion, unpublished
+cancellation and transport rejection; a proven reset has its own consuming
+transition. Only a completion owner permits slice-based result copying and
+completed-request release. Copying checks status and destination capacity
+before copying and never copies cancelled or failed I/O. `abort` consumes only
+an unpublished request. Failed finish/abort/release operations return
+`Failure<T>` with the original owner retained. Neither request nor completion owners automatically
 free backing on `Drop`; losing a token retains registered backing rather than
 freeing memory still reachable from C or DMA.
 The C/Linux raw pointer APIs remain lifetime-bound interfaces; stale pointers
@@ -286,9 +290,11 @@ On the single BSP, lifecycle/admission/pump calls require IF clear in an
 off-lock boot/thread context. Completion signaling may run in IRQ/locked
 context but only marks the existing request pending: it neither allocates,
 invokes the completion callback nor releases memory. The native owner calls
-`Request::poll` off IRQ, which invokes the registered completion callback.
-Only that callback may end the request. Batched/polling completion and remote
-CPU completion are not admitted; the batch helper declines the optional
+`Request::poll` off IRQ, which dispatches a pending completion callback.
+Normal IRQ completion ends the request only through that callback; local
+cancellation/rejection and proven reset are separate terminal paths.
+Linux batched/I/O-poll completion and remote CPU completion are not admitted;
+the batch helper declines the optional
 optimization rather than manufacturing completion.
 
 Cancellation before publication completes locally. After publication it records
@@ -416,8 +422,9 @@ Its synthetic audit-native bindings and 62-dependency ledger have since been
 retired. Provider evidence now uses the actual kernel object and linked ELF;
 native calls are type-checked through their real Rust definitions.
 
-[The common Rust modules](../src/linux_compat/) implement the selected
-Linux-facing C ABI using `#[unsafe(no_mangle)] extern "C"` exports:
+[The common Rust modules](../src/linux_compat/) separate safe native services
+from the selected Linux-facing C ABI providers. Genuine C providers use
+`#[unsafe(no_mangle)] extern "C"` exports:
 
 - `execution.rs`: scalar atomics/barriers, mutex/spinlock/completion wrappers,
   sleep/IRQ/work entry points, reusing existing native registries and waiters.
@@ -428,8 +435,8 @@ Linux-facing C ABI using `#[unsafe(no_mangle)] extern "C"` exports:
   raw strings/lists and rejected APIs; `memory_raw.rs` supplies native calls,
   raw-pointer adoption and completion witnesses. Backing allocators, masks,
   pins and reset proofs stay with each device's existing Rust owner.
-- `storage.rs`: bus/driver/device references, local config-work queue, native
-  read tickets, admission checks and reset/remove/reprobe sequencing. Rust
+- `storage.rs`: bus/driver/device references, local config-work queue, owned
+  native reads, admission checks and reset/remove/reprobe sequencing. Rust
   controls return owned requests and consume exact reset witnesses; the
   completion owner copies into borrowed slices and releases backing.
 - `block_request.rs`: unsafe-free non-cloneable request/completion owners,
@@ -448,7 +455,7 @@ Linux-facing C ABI using `#[unsafe(no_mangle)] extern "C"` exports:
   EEPROM fault policy; original e1000 initialization remains a C header bridge.
   The raw-address Rust probe is unsafe; its caller must retain the identified
   device's owned mapping for the complete C probe.
-- `block.rs`: owned request/PDU/payload, queue/scatterlist services, cancellation
+- `block.rs`: raw request/PDU/payload state, queue/scatterlist services, cancellation
   and deferred completion, with separate [block ABI types](../src/block_abi.rs).
 - `optional.rs`: explicit unsupported operations and bounded network helpers.
 - `diagnostics.rs`: bounded formatting, output sinks, warning state and logging
@@ -482,9 +489,10 @@ header shims or borrow the e1000 forwarding list.
 
 [compat/audit/](../compat/audit/) contains only audit assets: `e1000/` and
 `storage/` hold dependency inventories, original-source layout probes and
-thin wrappers; `common/` holds cross-language probes, the compile-only marker
-and shared backend FFI evidence. Audit wrappers include the runtime declarations
-and add the marker, never the reverse. Runtime compiler dependency manifests
+thin wrappers; `common/` holds cross-language layout probes and the compile-only
+marker, not an alternate Rust provider or native-service ABI. Audit wrappers
+include the runtime declarations and add the marker, never the reverse.
+Runtime compiler dependency manifests
 reject audit headers and foreign-class extensions; no compatibility forwarding
 headers remain in the old `driver-check` or `storage-check` directories.
 
@@ -510,8 +518,10 @@ They retain original private-structure access and TCP bitfield extraction, not
 lifecycle/NAPI/block/MMIO/formatter ownership state or variadic wrappers.
 The old C packet, deferred
 and block-service implementations are removed rather than left as parallel
-providers. Existing C ABI names remain, including the historical `kutox_c_`
-prefix. Original Linux hardware/packet/ring algorithms remain unchanged C.
+providers. Genuine Linux C ABI providers and callbacks remain; redundant native
+and control facades are removed. The retained `kutox_c_` names are C guest-fixture
+entries, not production Rust-to-Rust interfaces.
+Original Linux hardware/packet/ring algorithms remain unchanged C.
 
 The lifecycle service is compiled with `forbid(unsafe_code)`. Native Rust
 callers use it directly rather than round-tripping through C exports. Every
@@ -523,11 +533,13 @@ Private device access borrows the admission token, so removal requires exclusive
 token access and cannot occur while a device accessor exists. Each operation
 revalidates its handle generation, and only owned snapshots escape admission.
 C pointer validity, lifetime, capacity and alignment remain caller obligations;
-null checks do not establish those properties. Packet/block internals and the
-remaining compatibility providers are not yet converted to this structure.
-Native Rust-only helpers such as `kutox_net_wake` may inline out of the optimized
-kernel; guest acceptance checks their wake behavior rather than requiring a
-standalone helper symbol. Original driver callback and fixture gates remain.
+null checks do not establish those properties. The safe block-request service
+separately owns request/completion transitions; raw packet/block callbacks and
+other compatibility providers still contain unsafe code.
+Native Rust-only helpers such as [net_device::wake](../src/net_device.rs) may
+inline out of the optimized kernel; guest acceptance checks their wake behavior
+rather than requiring a standalone helper symbol. Original driver callback and
+fixture gates remain.
 
 The memory service also uses `forbid(unsafe_code)`. Its allocation tokens are
 non-cloneable and BSP-local; explicit transfer to C consumes the token. Safe CPU

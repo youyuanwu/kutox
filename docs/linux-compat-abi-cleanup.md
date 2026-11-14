@@ -7,9 +7,10 @@ alternate provider roots and their dependency ledgers. Current provider checks
 use the actual Cargo-produced kernel object and linked ELF.
 
 Audit baseline: `829ec3217f9cccf6415737a27bc995b86ae4146e`.
-Baseline inventory counts below describe that revision. Final dispositions
-and executable dependency counts describe the implemented result; neither is
-a permanent numeric target for future driver work.
+Baseline inventory counts below describe that revision. Native-definition
+dispositions describe the cleanup result; executable dependency counts describe
+the historical audit before retirement. None is a permanent numeric target
+for future driver work.
 
 ## Goal
 
@@ -78,9 +79,13 @@ The sixteen lifecycle C facades are removed. Rust fixtures use the
 inspectors, preserving admission and generation checks without redundant raw
 output-pointer APIs.
 
-Native storage control now returns owned tickets and accepts borrowed output
-slices. Its block calls use the actual shared request/queue/disk types rather
-than redeclaring Rust functions with opaque-pointer C signatures. Packet, NAPI,
+Native storage reads now use the
+[owned block-request service](../src/linux_compat/block_request.rs), not numeric
+tickets. Finishing a terminal request consumes it into a completion owner for
+slice-based result copying and release; reset completion additionally consumes
+an exact-generation witness. Failed transitions retain their owner.
+Raw block code uses the actual shared request/queue/disk
+types rather than opaque-pointer Rust-to-Rust extern declarations. Packet, NAPI,
 PCI, block inspectors and private device-name forwarding use ordinary Rust
 methods. The fifteen packet/PCI/block C control shims were subsequently removed
 when their callers migrated to Rust guest scenarios. Coherent ownership
@@ -280,8 +285,10 @@ without garbage collection. It requires genuine global Rust definitions for
 reviewed Linux providers and checks that every C dependency is supplied by
 the inputs or an explicit compiler/libc primitive. Remaining foreign references
 must exist in the linked kernel, which must have no undefined symbols.
-Rust crate dependencies are handled by the actual kernel linker, not a
-synthetic native-service allowlist.
+Rust-mangled dependencies remain in the partial-link inventory. The actual
+kernel linker resolves reachable dependencies and may discard unreachable Rust
+sections; this is not a separate whole-object proof for every Rust crate
+dependency or a synthetic native-service allowlist.
 
 The 63 audit-only native declarations, both alternate provider roots, the
 shared/isolated platform ledgers and native-role maps have been removed.
@@ -415,5 +422,6 @@ EEPROM-denial timeout, and regenerated/independently verified provider audits.
 
 This work does not add drivers, disk-backed program boot, general Linux ABI,
 SMP, new DMA capabilities, concurrent NIC/storage scopes or a new test manager.
-Removing redundant C ABI does not make all remaining raw compatibility code
-safe; further typed block/packet service work is separate from this cleanup.
+The follow-up owned block-request API provides a safe native frontend without
+replacing the raw block backend. Removing redundant C ABI and adding owned
+services do not make all remaining raw block/packet code safe.

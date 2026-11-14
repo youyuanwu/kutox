@@ -120,10 +120,11 @@ execution. See the
 An isolated compile-only target now compiles unchanged `e1000_main.c` with its
 hardware, parameter and ethtool units. It records original registration/callbacks,
 parameter arrays, layouts, headers and **209 unresolved runtime dependencies**.
-These objects are explicitly rejected by the runtime linker. A second
-combined relocatable closure now checks both drivers against actual Rust and
-C providers; its remaining 68 kernel/backend symbols are recorded, not hidden
-by success stubs.
+These objects are explicitly rejected by the runtime linker. A separate
+combined relocatable closure checks both drivers against fifteen C objects and
+the actual Cargo-produced kernel Rust object. It records unresolved dependencies
+and verifies real providers without synthetic native-service declarations,
+success stubs or a fixed backend-symbol ledger.
 The marked check objects remain excluded from the runtime image. Runtime
 objects are compiled separately against the same selected source profile.
 
@@ -147,9 +148,11 @@ Each file explains why that boundary remains C.
 Variadic definitions and argument extraction also live in Rust, using stable
 `core::ffi::VaList` (Rust 1.99+) for the actual C ABI, including copied cursors;
 there is no C variadic bridge or handwritten `va_list` layout.
-Both audit tools compile the real Rust providers and compare all three C
-profiles with Rust layouts and GFP flags, plus 122 packet, 135 block and
-41 header-accessor/MAC contract values.
+The profile-level driver check uses that real kernel Rust object and compares
+all three C profiles with Rust layouts and GFP flags, plus 122 packet, 135 block
+and 41 header-accessor/MAC contract values. The independent storage host audit
+checks unchanged C sources and their dependency contracts; it does not compile
+an alternate Rust provider.
 See the
 [shared boundary](docs/kernel-implementation.md#shared-linux-compatibility-boundary)
 for the remaining per-device policies and resource limits.

@@ -641,9 +641,13 @@ The audit additionally compiles both feature-profile include orders as negative
 checks; missing profile-isolation failure evidence invalidates verification.
 Independent verification checks that set against the complete inputs minus
 actual global/weak definitions, so section loss or same-named local symbols
-cannot hide a dependency. Production objects are separately built and linked
-into both kernel profiles; remaining foreign dependencies must exist in the
-linked kernel, whose symbol table must contain no unresolved references.
+cannot hide a dependency. For each profile, the running kernel uses Cargo's
+production C archives and the Rust compilation that supplied the audited
+object. Remaining foreign dependencies must exist in the linked kernel, whose
+symbol table must contain no unresolved references.
+Rust-mangled dependencies from unreachable sections may remain in the partial
+link inventory: the actual kernel link proves resolution of reachable Rust
+dependencies, not a separate whole-object closure for all Rust crates.
 ELF gates and real guest callbacks establish runtime
 execution, not merely matching symbol names.
 
