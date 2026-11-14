@@ -2,16 +2,16 @@
 
 use super::support::assert_eq;
 use crate::{
-    Failure,
-    boot::BootInfo,
-    cpu, exceptions,
-    irq::Timer,
-    memory::{self, user::AddressSpace},
-    serial,
-    user::{self, Report, Stop},
+    Failure, arch::x86_64::cpu, arch::x86_64::exceptions, arch::x86_64::irq::Timer,
+    arch::x86_64::serial, boot::limine::BootInfo, memory::paging as memory,
+    memory::paging::user::AddressSpace, user::execute as user, user::execute::Report,
+    user::execute::Stop,
+};
+use crate::{
+    user::state::MAX_SYSCALLS, user::state::PAGE_SIZE, user::state::USER_BASE,
+    user::state::USER_END,
 };
 use core::{arch::global_asm, ptr::addr_of};
-use kutox::user_state::{MAX_SYSCALLS, PAGE_SIZE, USER_BASE, USER_END};
 use moss_libkernel::memory::{address_space::UserAddressSpace, permissions::PtePermissions};
 use x86_64::registers::{
     control::{Cr0, Cr3},

@@ -1,5 +1,5 @@
 use super::{Bsp, abi::*, execution::*};
-use crate::{cpu::X86Cpu, linux_runtime as native, time};
+use crate::{arch::x86_64::cpu::X86Cpu, drivers::linux_runtime as native, runtime::time};
 use core::{cell::UnsafeCell, ptr};
 use moss_libkernel::CpuOps;
 
@@ -91,11 +91,11 @@ fn spin_test() {
         X86Cpu::enable_interrupts();
         let first = kutox_spin_lock_irqsave(outer);
         assert_eq!(first, 1 << 9);
-        assert!(!crate::cpu::interrupts_enabled());
+        assert!(!crate::arch::x86_64::cpu::interrupts_enabled());
         assert_eq!(X86Cpu::irq_lock_depth(), 1);
         let second = kutox_spin_lock_irqsave(inner);
         assert_eq!(second, 0);
-        assert!(!crate::cpu::interrupts_enabled());
+        assert!(!crate::arch::x86_64::cpu::interrupts_enabled());
         assert_eq!(X86Cpu::irq_lock_depth(), 2);
         assert_eq!(native::context_code(), -50);
         assert_eq!(
@@ -103,15 +103,15 @@ fn spin_test() {
             -50
         );
         kutox_spin_unlock_irqrestore(inner, second);
-        assert!(!crate::cpu::interrupts_enabled());
+        assert!(!crate::arch::x86_64::cpu::interrupts_enabled());
         assert_eq!(X86Cpu::irq_lock_depth(), 1);
         kutox_spin_unlock_irqrestore(outer, first);
-        assert!(crate::cpu::interrupts_enabled());
+        assert!(crate::arch::x86_64::cpu::interrupts_enabled());
         assert_eq!(X86Cpu::irq_lock_depth(), 0);
         X86Cpu::disable_interrupts();
         let first = kutox_spin_lock_irqsave(outer);
         kutox_spin_unlock_irqrestore(outer, first);
-        assert!(!crate::cpu::interrupts_enabled());
+        assert!(!crate::arch::x86_64::cpu::interrupts_enabled());
         assert_eq!(first, 0);
         (*state()).spin = true;
     }
@@ -120,7 +120,7 @@ fn spin_test() {
 pub(crate) fn worker(role: usize) {
     unsafe {
         assert_eq!(native::context_code(), 1);
-        assert!(!crate::cpu::interrupts_enabled());
+        assert!(!crate::arch::x86_64::cpu::interrupts_enabled());
         let mut local = [0u64; 8];
         for (i, value) in local.iter_mut().enumerate() {
             ptr::write_volatile(value, (role ^ i ^ 0x5eed) as u64);
@@ -210,7 +210,7 @@ pub(crate) fn worker(role: usize) {
         for (i, value) in local.iter().enumerate() {
             assert_eq!(ptr::read_volatile(value), (role ^ i ^ 0x5eed) as u64);
         }
-        assert!(!crate::cpu::interrupts_enabled());
+        assert!(!crate::arch::x86_64::cpu::interrupts_enabled());
         assert_eq!(X86Cpu::irq_lock_depth(), 0);
     }
 }
@@ -244,7 +244,7 @@ pub(crate) fn irq_init() {
 pub(crate) fn irq_signal(broadcast: bool) {
     unsafe {
         assert_eq!(native::context_code(), -57);
-        assert!(!crate::cpu::interrupts_enabled());
+        assert!(!crate::arch::x86_64::cpu::interrupts_enabled());
         assert_eq!(X86Cpu::irq_lock_depth(), 0);
         assert_eq!(
             native::mutex(ptr::addr_of_mut!((*state()).mutex) as usize, 1),
@@ -275,7 +275,7 @@ pub(crate) fn irq_signal(broadcast: bool) {
             ptr::read_volatile(ptr::addr_of!((*state()).irq_finished)),
             0
         );
-        assert!(!crate::cpu::interrupts_enabled());
+        assert!(!crate::arch::x86_64::cpu::interrupts_enabled());
         assert_eq!(X86Cpu::irq_lock_depth(), 0);
     }
 }
@@ -295,7 +295,7 @@ pub(crate) fn irq_worker(role: usize) {
         for (i, value) in local.iter().enumerate() {
             assert_eq!(ptr::read_volatile(value), (role ^ i ^ 0x5eed) as u64);
         }
-        assert!(!crate::cpu::interrupts_enabled());
+        assert!(!crate::arch::x86_64::cpu::interrupts_enabled());
         assert_eq!(X86Cpu::irq_lock_depth(), 0);
         (*state()).irq_finished += 1;
         if (*state()).irq_finished == 2 {

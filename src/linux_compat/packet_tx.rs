@@ -138,16 +138,16 @@ pub(crate) mod tests {
         }
 
         pub(crate) fn reject(&self) {
-            let before = crate::linux_driver::callback_proof();
-            let backing = crate::driver_memory::snapshot();
+            let before = crate::drivers::linux_driver::callback_proof();
+            let backing = crate::drivers::memory::snapshot();
             assert_eq!(self.token().state(), Err(-116));
             assert_eq!(self.token().submit(), Err(-116));
             assert_eq!(self.token().finish().unwrap_err().code, -116);
             assert_eq!(self.token().abort().unwrap_err().code, -116);
-            let after = crate::linux_driver::callback_proof();
+            let after = crate::drivers::linux_driver::callback_proof();
             assert!(after.delta(&before, 17).is_none());
             assert!(after.delta(&before, 18).is_none());
-            assert_eq!(crate::driver_memory::snapshot(), backing);
+            assert_eq!(crate::drivers::memory::snapshot(), backing);
         }
     }
 }

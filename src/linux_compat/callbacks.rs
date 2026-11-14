@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 
 use super::{callbacks_raw as raw, memory::Failure};
-use crate::{linux_deferred, linux_irq};
+use crate::{drivers::linux_deferred, drivers::linux_irq};
 use core::{marker::PhantomData, num::NonZeroU64};
 
 #[derive(Debug)]

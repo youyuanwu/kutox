@@ -1,7 +1,7 @@
 //! Guest-only acceptance fixtures; not production driver code.
 
 use super::*;
-use crate::{boot::BootInfo, memory, platform};
+use crate::{arch::x86_64::platform, boot::limine::BootInfo, memory::paging as memory};
 
 pub fn test_hierarchy(
     boot: &BootInfo,
@@ -75,21 +75,21 @@ pub fn reject_bad_runtime_topology(
     let address = bridge.address;
     let saved = read(address, 0x18);
     let before = memory::allocation_snapshot(frames);
-    let heap_before = crate::heap::global().stats();
+    let heap_before = crate::memory::heap::global().stats();
     write(
         address,
         0x18,
         (saved & !0xff00) | (u32::from(address.bus) << 8),
     );
-    let result = crate::kernel_runtime::Resources::start(boot, frames);
+    let result = crate::runtime::kernel_runtime::Resources::start(boot, frames);
     write(address, 0x18, saved);
     assert_eq!(read(address, 0x18), saved);
     assert!(
         matches!(result, Err(error) if error.stage == "pci_hierarchy" && error.code == pci_state::Error::Topology as i32)
     );
-    assert!(crate::driver_platform::quiescent() && crate::linux_irq::quiescent());
+    assert!(crate::drivers::platform::quiescent() && crate::drivers::linux_irq::quiescent());
     assert_eq!(memory::allocation_snapshot(frames), before);
-    assert_eq!(crate::heap::global().stats(), heap_before);
+    assert_eq!(crate::memory::heap::global().stats(), heap_before);
     serial::print(format_args!(
         "# NETWORK_TOPOLOGY_REJECT code=-183 probes=0 backing=0 balanced=1\n"
     ));

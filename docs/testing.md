@@ -46,19 +46,19 @@ alternate Rust provider root.
 
 The profile-level `linux-driver-compile-check` uses
 [linux_compat_check.py](../scripts/linux_compat_check.py) for the provider proof:
-fifteen unchanged-driver/header-access C objects plus the **actual kernel Rust
-object emitted by Cargo**, not a separately compiled substitute. CMake's kernel
-target uses `cargo rustc -- --emit=obj,link` and records adjacent
-`kutox.build.json` evidence. The object is the hashed sibling of Cargo's active
-executable, identified by file identity rather than timestamps or guessed
-cached siblings. Separate ON/OFF objects prevent cached profile switches from
-reusing a shared, overwritten object filename.
-The hashes bind the ELF, object, Cargo dependency
+fifteen unchanged-driver/header-access C objects plus the **actual Cargo Rust
+objects**, not a separately compiled substitute. CMake's kernel target invokes
+`cargo rustc -- --emit=obj,link` through the evidence recorder. Cargo's JSON
+artifact messages identify the exact library archive used by that build; its
+Rust codegen members are extracted and compared byte-for-byte for the audit.
+The binary object is the hashed sibling of Cargo's active executable, identified
+by file identity rather than timestamps or guessed cached siblings.
+Adjacent schema-3 `kutox.build.json` hashes bind the ELF, binary object, library archive, Cargo dependency
 file, native/compatibility sources and build inputs; missing, changed or mixed
 artifacts require a real kernel rebuild. Direct audit invocation therefore
 requires `cmake --build build --target kernel --parallel 1` first.
 All sections are retained in the partial link. C references must be supplied by
-real definitions in the C inputs or kernel Rust object, apart from the explicit
+real definitions in the C inputs or Rust objects, apart from the explicit
 compiler/libc primitives. Remaining foreign references must exist in the linked
 kernel, which must have no undefined symbols. Rust-mangled dependencies remain
 in the partial-link inventory; the actual kernel link resolves reachable ones
@@ -531,7 +531,7 @@ The deliberately failing acceptance case exercises this diagnostic path.
 
 The per-case fixture always checks frame/heap invariants, exact resource
 snapshots and shared quiescence after ordinary success or failure. Corruption
-still aborts the boot. [Bounded cleanup actions](../src/test_cleanup.rs) run in
+still aborts the boot. [Bounded cleanup actions](../src/testing/cleanup.rs) run in
 reverse order, including ordinary early returns; capacity rejection runs the
 unregistered action immediately and reports cleanup errors. These actions are
 for synchronous, owned fixture state only. Accepted DMA and async services must

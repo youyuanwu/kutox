@@ -58,7 +58,7 @@ pub(super) struct Access(PhantomData<*mut ()>);
 
 impl Access {
     pub(super) fn enter() -> Result<Self, i32> {
-        let result = { crate::linux_runtime::context_code() };
+        let result = { crate::drivers::linux_runtime::context_code() };
         if result < 0 {
             return Err(diagnostic(c"linux_lifecycle_context", result));
         }
@@ -85,10 +85,10 @@ impl Access {
             }
             pci::driver_endpoint((*state()).irq);
             let init = callback(kutox_module_init, c"linux_module_init");
-            crate::linux_driver::trace(1, init as usize, 0, 0);
+            crate::drivers::linux_driver::trace(1, init as usize, 0, 0);
             let result = init();
             if result < 0 {
-                crate::linux_runtime::retire_static_objects();
+                crate::drivers::linux_runtime::retire_static_objects();
                 pci::release_driver_endpoint();
                 return Err(result);
             }
@@ -101,7 +101,7 @@ impl Access {
                 c"linux_registered_device",
             );
             let xmit = callback((*(*device()).netdev_ops).start_xmit, c"linux_xmit_callback");
-            crate::linux_driver::trace(33, xmit as usize, device() as usize, 0);
+            crate::drivers::linux_driver::trace(33, xmit as usize, device() as usize, 0);
             (*state()).generation += 1;
             Handle::from_ticket((*state()).generation)
         }
@@ -136,11 +136,11 @@ impl Access {
                 return Err(-16);
             }
             let exit = callback(kutox_module_exit, c"linux_module_exit");
-            crate::linux_driver::trace(2, exit as usize, 0, 0);
+            crate::drivers::linux_driver::trace(2, exit as usize, 0, 0);
             exit();
             (*state()).device = ptr::null_mut();
             (*state()).loaded = false;
-            crate::linux_runtime::retire_static_objects();
+            crate::drivers::linux_runtime::retire_static_objects();
             pci::release_driver_endpoint();
             Ok(())
         }
@@ -228,7 +228,7 @@ impl Device<'_> {
     pub(super) fn open(&self) -> i32 {
         unsafe {
             let open = callback((*(*self.pointer).netdev_ops).open, c"linux_open_callback");
-            crate::linux_driver::trace(6, open as usize, self.pointer as usize, 0);
+            crate::drivers::linux_driver::trace(6, open as usize, self.pointer as usize, 0);
             packet::netdev_open(self.pointer)
         }
     }
@@ -237,7 +237,7 @@ impl Device<'_> {
         packet::tx_abort(self.pointer);
         unsafe {
             let stop = callback((*(*self.pointer).netdev_ops).stop, c"linux_stop_callback");
-            crate::linux_driver::trace(7, stop as usize, self.pointer as usize, 0);
+            crate::drivers::linux_driver::trace(7, stop as usize, self.pointer as usize, 0);
             let result = packet::netdev_close(self.pointer);
             if result == 0 {
                 packet::tx_stopped(self.pointer);
@@ -270,8 +270,8 @@ impl Device<'_> {
         unsafe {
             let v = view();
             packet::rx_start(self.pointer, v.mmio);
-            crate::linux_driver::trace(34, v.clean_rx, self.pointer as usize, 0);
-            crate::linux_driver::trace(35, v.alloc_rx, self.pointer as usize, 0);
+            crate::drivers::linux_driver::trace(34, v.clean_rx, self.pointer as usize, 0);
+            crate::drivers::linux_driver::trace(35, v.alloc_rx, self.pointer as usize, 0);
         }
     }
 
@@ -309,7 +309,7 @@ pub(crate) mod tests {
         })();
         match snapshot {
             Ok(seen) => seen,
-            Err(_) => crate::platform_fail(c"linux_rx_snapshot_handle"),
+            Err(_) => crate::boot::entry::platform_fail(c"linux_rx_snapshot_handle"),
         }
     }
 
@@ -470,7 +470,7 @@ pub(crate) mod tests {
             {
                 return -22;
             }
-            crate::linux_dma::free(
+            crate::drivers::linux_dma::free(
                 v.pci_device as usize,
                 v.tx_size as usize,
                 v.tx_desc as usize,

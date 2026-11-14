@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //! Audited native calls and ownership adoption. No additional allocator or DMA registry.
 use super::{memory::*, *};
-use crate::{driver_memory, linux_dma, storage as native_storage};
+use crate::{drivers::linux_dma, drivers::memory as driver_memory, storage as native_storage};
 use core::{marker::PhantomData, ptr};
 
 unsafe extern "C" {
@@ -231,7 +231,7 @@ pub(super) unsafe fn completed_network(
 ) -> (DmaDevice, DmaRegion, Completed) {
     let direction = match Direction::try_from(direction) {
         Ok(direction) => direction,
-        Err(_) => crate::platform_fail(c"dma_direction"),
+        Err(_) => crate::boot::entry::platform_fail(c"dma_direction"),
     };
     let device = DmaDevice::network(key);
     let region = DmaRegion::new(DmaAddress::from_abi(address), length, direction);

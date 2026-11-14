@@ -1,5 +1,7 @@
 use super::{abi::*, callbacks, callbacks_raw, execution::*, napi::*};
-use crate::{linux_deferred as deferred, linux_irq, linux_runtime as native};
+use crate::{
+    drivers::linux_deferred as deferred, drivers::linux_irq, drivers::linux_runtime as native,
+};
 use core::{
     ffi::c_void,
     ptr,
@@ -70,12 +72,12 @@ pub(crate) fn work() {
         for item in &mut capacity {
             init_work(item, Some(never_callback));
         }
-        let before = crate::heap::global().stats();
+        let before = crate::memory::heap::global().stats();
         assert_eq!(
             callbacks::Work::new(|| panic!("unregistered work executed")).unwrap_err(),
             -101
         );
-        assert_eq!(crate::heap::global().stats(), before);
+        assert_eq!(crate::memory::heap::global().stats(), before);
         for item in &mut capacity {
             destroy_work(item);
         }
@@ -374,7 +376,7 @@ pub(crate) fn irq() {
             if linux_irq::pending().expect("pending IRQ") {
                 break;
             }
-            crate::time::delay_us(1);
+            crate::runtime::time::delay_us(1);
         }
         assert!(linux_irq::pending().expect("pending IRQ"));
         nic_write(0xd8, u32::MAX);

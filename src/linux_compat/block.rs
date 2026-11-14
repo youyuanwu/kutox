@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 use super::{Bsp, abi::Device, block_abi, block_request};
-use crate::block_services;
+use crate::storage::block_services;
 use block_abi::*;
 use core::{
     cell::UnsafeCell,

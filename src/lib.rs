@@ -2,29 +2,33 @@
 
 extern crate alloc;
 
-pub mod async_state;
-pub mod completion_state;
-pub mod deferred_state;
-pub mod dma_state;
-pub mod dns_state;
-pub mod driver_registry;
+pub mod arch;
+pub mod boot;
 pub mod drivers;
-pub mod fw_cfg;
-pub mod irq_platform;
-pub mod linux_abi;
-pub mod mutex_state;
-pub mod net_async_state;
-pub mod net_stack_state;
-pub mod net_state;
-pub mod network_config;
-pub mod pci_state;
-pub mod run_queue;
-pub mod tcp_state;
-#[cfg(feature = "guest-tests")]
-pub mod test_cleanup;
-pub mod test_selection;
-pub mod udp_state;
-pub mod user_state;
+#[cfg(all(target_os = "none", feature = "guest-tests"))]
+pub(crate) mod guest_tests;
+pub mod linux_compat;
+pub mod memory;
+pub mod net;
+pub mod runtime;
+#[cfg(target_os = "none")]
+pub(crate) mod storage;
+pub mod testing;
+pub mod user;
+
+#[cfg(target_os = "none")]
+#[derive(Debug)]
+pub(crate) struct Failure {
+    stage: &'static str,
+    code: i32,
+}
+
+#[cfg(target_os = "none")]
+impl Failure {
+    const fn new(stage: &'static str, code: i32) -> Self {
+        Self { stage, code }
+    }
+}
 
 #[cfg(test)]
 extern crate std;

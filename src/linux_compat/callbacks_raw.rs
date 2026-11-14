@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //! Linux-owned callback attachment and native work backing.
 use super::{abi, callbacks, memory::Failure};
-use crate::{linux_deferred, linux_irq};
+use crate::{drivers::linux_deferred, drivers::linux_irq};
 use alloc::boxed::Box;
 use core::{ffi::c_void, marker::PhantomData, num::NonZeroU64};
 
@@ -22,7 +22,7 @@ fn generation(code: i64) -> Result<NonZeroU64, i32> {
 }
 
 pub(super) fn allocate_work(callback: fn()) -> Result<callbacks::Work, i32> {
-    crate::threads::check_boot_or_thread_context().map_err(|_| -106)?;
+    crate::runtime::threads::check_boot_or_thread_context().map_err(|_| -106)?;
     let pointer = Box::into_raw(Box::new(NativeWork { callback }));
     match unsafe { attach_work(pointer as usize, Some(native_work)) } {
         Ok(mut owner) => {

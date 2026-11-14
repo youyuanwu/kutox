@@ -4,7 +4,7 @@ Status: implemented, including the Rust guest-fixture migration and final
 documentation/accounting. Guest-fixture implementation checkpoint: `62f4a1e`.
 The subsequent audit retirement removes synthetic native-service bindings,
 alternate provider roots and their dependency ledgers. Current provider checks
-use the actual Cargo-produced kernel object and linked ELF.
+use actual Cargo-produced Rust objects and the linked ELF.
 
 Audit baseline: `829ec3217f9cccf6415737a27bc995b86ae4146e`.
 Baseline inventory counts below describe that revision. Native-definition
@@ -29,7 +29,7 @@ need C ABI even when no C object references its name.
 ## Implemented native backend boundary
 
 The owned memory service, packet-fragment provider and native coherent allocator
-now call ordinary Rust [driver_memory::allocate](../src/driver_memory.rs).
+now call ordinary Rust [driver_memory::allocate](../src/drivers/memory.rs).
 The runtime `kutox_driver_alloc` C export and header declaration are removed.
 GFP checks, allocation kinds, failure injection, diagnostics and backing
 ownership are unchanged; genuine Linux allocation exports remain C ABI.
@@ -37,7 +37,7 @@ ownership are unchanged; genuine Linux allocation exports remain C ABI.
 The former standalone provider roots and audit-native binding adapter have
 also been removed. There is no remaining `kutox_driver_alloc` declaration or
 substitute allocation API for audits. Provider checks inspect the kernel's
-actual compiled Rust object; native calls are checked against real Rust
+actual compiled Rust objects; native calls are checked against real Rust
 definitions. Kernel profile checks reject audit-source dependencies,
 compile-only markers and obsolete native exports.
 
@@ -51,7 +51,7 @@ authoritative; no allocation or DMA policy was moved into an adapter.
 Execution, work/NAPI, IRQ registration, PCI/MMIO/ports, tracing, diagnostics,
 delays and network wake now call native Rust APIs directly too. Work and IRQ
 callback backing remains an unsafe registration contract. Native NAPI callbacks
-use the actual [ABI NAPI type](../src/linux_abi.rs), not a cast or trampoline,
+use the actual [ABI NAPI type](../src/linux_compat/abi.rs), not a cast or trampoline,
 so original callback identities remain unchanged. Static-object retirement is
 now a module-level Rust function with the same live-object and context guards.
 
@@ -150,21 +150,21 @@ baseline consumer categories; callback and raw-pointer contracts remain.
 
 | Native owner | R | G | P | Examples / responsibilities |
 | --- | ---: | ---: | ---: | --- |
-| [block_services.rs](../src/block_services.rs) | 3 | 2 | 0 | Allocation, context and diagnostics |
-| [driver_memory.rs](../src/driver_memory.rs) | 4 | 4 | 0 | Allocation, ranges, ingress and streaming DMA |
-| [driver_platform.rs](../src/driver_platform.rs) | 5 | 1 | 0 | Device identity, PCI, MMIO, ports and gating |
-| [linux_deferred.rs](../src/linux_deferred.rs) | 2 | 4 | 0 | Work, NAPI and local-work registration |
-| [linux_dma.rs](../src/linux_dma.rs) | 5 | 3 | 0 | Coherent allocation, publication and reclamation |
-| [linux_driver.rs](../src/linux_driver.rs) | 2 | 0 | 0 | Callback tracing and tracing state |
-| [linux_irq.rs](../src/linux_irq.rs) | 1 | 1 | 0 | IRQ registration, drain and release |
-| [linux_runtime.rs](../src/linux_runtime.rs) | 10 | 4 | 1 | Synchronization, context, time and retirement |
+| [block_services.rs](../src/storage/block_services.rs) | 3 | 2 | 0 | Allocation, context and diagnostics |
+| [driver_memory.rs](../src/drivers/memory.rs) | 4 | 4 | 0 | Allocation, ranges, ingress and streaming DMA |
+| [driver_platform.rs](../src/drivers/platform.rs) | 5 | 1 | 0 | Device identity, PCI, MMIO, ports and gating |
+| [linux_deferred.rs](../src/drivers/linux_deferred.rs) | 2 | 4 | 0 | Work, NAPI and local-work registration |
+| [linux_dma.rs](../src/drivers/linux_dma.rs) | 5 | 3 | 0 | Coherent allocation, publication and reclamation |
+| [linux_driver.rs](../src/drivers/linux_driver.rs) | 2 | 0 | 0 | Callback tracing and tracing state |
+| [linux_irq.rs](../src/drivers/linux_irq.rs) | 1 | 1 | 0 | IRQ registration, drain and release |
+| [linux_runtime.rs](../src/drivers/linux_runtime.rs) | 10 | 4 | 1 | Synchronization, context, time and retirement |
 | [main.rs](../src/main.rs) | 3 | 1 | 0 | Serial output, delay, boot context and failure |
-| [net_device.rs](../src/net_device.rs) | 1 | 0 | 0 | Network wake notification |
-| [storage.rs](../src/storage.rs) | 7 | 0 | 0 | Storage allocation, PCI, MMIO, DMA and reset clock |
+| [net_device.rs](../src/net/device.rs) | 1 | 0 | 0 | Network wake notification |
+| [storage.rs](../src/storage/mod.rs) | 7 | 0 | 0 | Storage allocation, PCI, MMIO, DMA and reset clock |
 | Total | 43 | 20 | 1 | |
 
 The baseline native allocation example was `kutox_driver_alloc`, now
-[driver_memory::allocate](../src/driver_memory.rs). Its users are Rust:
+[driver_memory::allocate](../src/drivers/memory.rs). Its users are Rust:
 the memory service, fragment allocation and coherent allocation. The declaration
 in a C header is not a C call.
 
@@ -284,16 +284,18 @@ exports are forbidden in both profiles. All Rust/C fixtures remain absent in OFF
 
 ### Actual-kernel provider checks
 
-CMake's kernel target emits both the linked ELF and its hashed Rust object from
-the same `cargo rustc` invocation. The object must be the sibling of Cargo's
-active executable, identified by file identity. A shared explicit object
-filename is not safe across cached ON/OFF profile switches.
-Adjacent `kutox.build.json` evidence binds their
-hashes to Cargo's dependency file, Rust/native/C sources and build inputs.
-Provider verification rejects missing, stale or mixed evidence.
+CMake's kernel target captures Cargo's JSON build artifacts while producing the
+linked ELF and binary object. The object must be the sibling of Cargo's active
+executable, identified by file identity. The library archive is selected from
+that build's artifact messages, not guessed from cached filenames. Its actual
+Rust codegen members supply the kernel implementation to the provider check.
+Adjacent schema-3 `kutox.build.json` evidence binds the ELF, entry object and
+library archive hashes to Cargo's dependency file, Rust/native/C sources and
+build inputs. Verification also compares extracted members with the archive
+and rejects missing, stale or mixed evidence.
 
 [The provider check](../scripts/linux_compat_check.py) links all fifteen
-unchanged-driver/header-access C objects with this real kernel Rust object,
+unchanged-driver/header-access C objects with these real Cargo Rust objects,
 without garbage collection. It requires genuine global Rust definitions for
 reviewed Linux providers and checks that every C dependency is supplied by
 the inputs or an explicit compiler/libc primitive. Remaining foreign references
@@ -316,7 +318,7 @@ definition directly instead of redeclaring it through an external C block.
 | --- | --- |
 | Keep native C exports for all Rust callers | Smallest edit, but preserves the issue |
 | Direct runtime Rust calls plus audit-root bindings | Used during migration; synthetic audit interfaces subsequently retired |
-| Actual kernel object and linked ELF | Current implementation; no duplicate native API surface |
+| Actual Cargo Rust objects and linked ELF | Current implementation; no duplicate native API surface |
 | New backend trait/crate or selectable runtime backend | Unnecessary abstraction/configuration for this bounded cleanup |
 
 ## Proof obligations
@@ -338,8 +340,8 @@ not preserved solely for a name check.
 
 Keep the boot entry in [linker.ld](../linker.ld), exception and thread assembly
 calls, and the guest thread-probe calling convention. Stable Rust-only labels
-such as the [packet broker](../src/net_async.rs),
-[async executor](../src/async_runtime.rs), native initializer and user-runtime
+such as the [packet broker](../src/net/async_service.rs),
+[async executor](../src/runtime/async_runtime.rs), native initializer and user-runtime
 entry are already Rust ABI. Their `no_mangle`/`export_name` attributes serve
 metadata or ELF proof and must not be confused with unnecessary C ABI.
 

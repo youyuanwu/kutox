@@ -10,7 +10,7 @@ pub fn test_alignment_reservations(
     let second = allocator.alloc_frames(1).map_err(frame_failure)?;
     let first_region = first.region();
     let second_region = second.region();
-    let mut cleanup = kutox::test_cleanup::Cleanup::<_, Failure, 2>::new(
+    let mut cleanup = crate::testing::cleanup::Cleanup::<_, Failure, 2>::new(
         (Some(first), Some(second)),
         crate::guest_tests::support::cleanup_error,
     );

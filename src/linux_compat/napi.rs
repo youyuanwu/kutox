@@ -46,11 +46,11 @@ pub unsafe extern "C" fn netif_napi_add(
         let slot = (0..4).find(|&slot| (*state()).napi[slot].is_null());
         let slot = match slot {
             Some(slot) => slot,
-            None => crate::platform_fail(c"napi_capacity"),
+            None => crate::boot::entry::platform_fail(c"napi_capacity"),
         };
         let generation = match callbacks_raw::attach_napi(napi as usize, poll) {
             Ok(registration) => registration.into_abi(),
-            Err(_) => crate::platform_fail(c"napi_init"),
+            Err(_) => crate::boot::entry::platform_fail(c"napi_init"),
         };
         napi.write(Napi {
             poll,
@@ -59,7 +59,7 @@ pub unsafe extern "C" fn netif_napi_add(
             irq: 0,
         });
         (*state()).napi[slot] = napi;
-        crate::linux_driver::trace(12, poll.map_or(0, |f| f as usize), napi as usize, 0);
+        crate::drivers::linux_driver::trace(12, poll.map_or(0, |f| f as usize), napi as usize, 0);
     }
 }
 #[unsafe(no_mangle)]

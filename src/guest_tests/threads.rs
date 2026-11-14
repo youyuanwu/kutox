@@ -1,7 +1,7 @@
 //! Guest-only acceptance fixtures; not production driver code.
 
 use super::*;
-use crate::boot::BootInfo;
+use crate::boot::limine::BootInfo;
 use core::arch::asm;
 
 pub type IdleHook = fn(&irq::Timer<'_, '_>) -> Result<(), Failure>;
@@ -78,7 +78,7 @@ pub fn run_guard_test(
         |_| {
             let active = active().expect("guard probe inactive");
             let guard = active.bottom as u64 - moss_libkernel::memory::PAGE_SIZE as u64;
-            crate::exceptions::tests::expect_thread_guard(
+            crate::arch::x86_64::exceptions::tests::expect_thread_guard(
                 guard,
                 active.bottom as u64,
                 active.top as u64,

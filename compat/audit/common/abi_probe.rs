@@ -1,8 +1,8 @@
 #![no_std]
 #![allow(dead_code)]
-#[path = "../../../src/linux_abi.rs"]
+#[path = "../../../src/linux_compat/abi.rs"]
 mod abi;
-#[path = "../../../src/block_abi.rs"]
+#[path = "../../../src/linux_compat/block_abi.rs"]
 mod block_abi;
 #[used]
 #[unsafe(link_section = ".kutox.common_layouts")]

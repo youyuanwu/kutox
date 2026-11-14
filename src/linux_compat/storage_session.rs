@@ -87,13 +87,13 @@ pub(crate) mod tests {
         }
 
         pub(crate) fn reject(&self, request: block_request::Request) -> block_request::Request {
-            let irq = crate::linux_irq::counts();
+            let irq = crate::drivers::linux_irq::counts();
             assert_eq!(self.token().capacity(), Err(-116));
             assert_eq!(self.token().prepare(0, 512).unwrap_err(), -116);
             assert_eq!(self.token().close().unwrap_err().code, -116);
             let failure = self.token().reset(request).unwrap_err();
             assert_eq!(failure.code, -116);
-            assert_eq!(crate::linux_irq::counts(), irq);
+            assert_eq!(crate::drivers::linux_irq::counts(), irq);
             failure.retained
         }
     }

@@ -1,9 +1,9 @@
 //! Bounded tests of the production service scope, not a replacement NIC driver.
 
 use super::*;
-use crate::{cpu::X86Cpu, guest_tests::TestCase, time};
+use crate::drivers::registry::ServiceId;
+use crate::{arch::x86_64::cpu::X86Cpu, guest_tests::TestCase, runtime::time};
 use core::sync::atomic::AtomicUsize;
-use kutox::driver_registry::ServiceId;
 use moss_libkernel::CpuOps;
 
 pub(crate) static TESTS: &[TestCase] = &[
@@ -41,7 +41,7 @@ pub(crate) fn suite() -> Result<&'static [TestCase], Failure> {
         .map_err(|error| Failure::new("runtime_suite_inventory", error as i32))?
         .is_some();
     if matching {
-        Ok(crate::linux_driver::tests::TESTS)
+        Ok(crate::drivers::linux_driver::tests::TESTS)
     } else if inventory
         .functions()
         .iter()
@@ -58,7 +58,7 @@ fn unclaimed(
     frames: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
     let before = memory::allocation_snapshot(frames);
-    let heap_before = crate::heap::global().stats();
+    let heap_before = crate::memory::heap::global().stats();
     let resources = Resources::start(boot, frames)?;
     EPOCH.store(resources.handle().epoch, Ordering::Release);
     RETURNED.store(0, Ordering::Release);
@@ -70,7 +70,7 @@ fn unclaimed(
         let handle = current();
         let snapshot = handle.manager().unwrap().snapshot().unwrap();
         assert_eq!((snapshot.drivers, snapshot.bound, snapshot.discovered), (1, 0, 6));
-        assert!(crate::net_device::enumerate(handle).unwrap().is_empty());
+        assert!(crate::net::device::enumerate(handle).unwrap().is_empty());
         assert_eq!(linux_deferred::worker_count(), 2);
         serial::print(format_args!("# DRIVER_UNCLAIMED functions=6 drivers=1 bound=0 unclaimed=6 network=0 workers=2 client_returned=1\n"));
         handle.request_shutdown().unwrap();
@@ -82,7 +82,7 @@ fn unclaimed(
     assert_eq!(stats.finished, 5);
     assert_eq!(stats.peak_tasks, 5);
     assert_eq!(memory::allocation_snapshot(frames), before);
-    assert_eq!(crate::heap::global().stats(), heap_before);
+    assert_eq!(crate::memory::heap::global().stats(), heap_before);
     serial::print(format_args!(
         "# DRIVER_UNCLAIMED_JOIN finished=5 peak=5 workers=0 balanced=1 stale=1\n"
     ));
@@ -138,7 +138,7 @@ fn startup_rollback(
 ) -> Result<(), Failure> {
     for stage in 1..=11 {
         let before = memory::allocation_snapshot(frames);
-        let heap_before = crate::heap::global().stats();
+        let heap_before = crate::memory::heap::global().stats();
         JOBS.store(0, Ordering::Relaxed);
         FAIL_STAGE.store(stage, Ordering::Release);
         let result = match Resources::start(boot, frames) {
@@ -163,7 +163,7 @@ fn startup_rollback(
             || !irq::is_quiescent()
             || !threads::is_quiescent()
             || before != memory::allocation_snapshot(frames)
-            || heap_before != crate::heap::global().stats()
+            || heap_before != crate::memory::heap::global().stats()
         {
             return Err(Failure::new("runtime_rollback", -1));
         }
@@ -282,7 +282,7 @@ fn client(_: usize) {
         token.wait(None).unwrap();
     }
     let manager = handle.manager().unwrap();
-    assert!(crate::net_device::enumerate(handle).unwrap().is_empty());
+    assert!(crate::net::device::enumerate(handle).unwrap().is_empty());
     let snapshot = manager.snapshot().unwrap();
     assert_eq!(
         (snapshot.drivers, snapshot.bound, snapshot.discovered),
@@ -377,7 +377,7 @@ fn exercise(
         stats.finished,
         stats.peak_tasks,
         stats.persistent_idles,
-        kutox::pci_state::INFRASTRUCTURE_METADATA_BYTES + METADATA_BYTES,
+        crate::drivers::pci_state::INFRASTRUCTURE_METADATA_BYTES + METADATA_BYTES,
     ));
     Ok(())
 }

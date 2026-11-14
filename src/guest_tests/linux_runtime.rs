@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::linux_compat::tests::runtime as fixture;
-use crate::{Failure, boot::BootInfo, irq, memory};
+use crate::{Failure, arch::x86_64::irq, boot::limine::BootInfo, memory::paging as memory};
 
 fn c_irq_counted() -> Result<(), Failure> {
     fixture::irq_signal(false);

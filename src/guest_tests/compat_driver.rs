@@ -1,5 +1,8 @@
 use super::{Bsp, abi::*, execution::*, memory_ffi::*, mmio::*, napi::*, packet::*, pci::*};
-use crate::{driver_memory as native, driver_platform, linux_deferred, linux_dma, linux_runtime};
+use crate::{
+    drivers::linux_deferred, drivers::linux_dma, drivers::linux_runtime, drivers::memory as native,
+    drivers::platform as driver_platform,
+};
 use core::{
     cell::UnsafeCell,
     ffi::c_void,

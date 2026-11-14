@@ -1,7 +1,7 @@
 //! Guest-only acceptance fixtures; not production driver code.
 
 use super::*;
-use crate::{Failure, boot::BootInfo, memory, threads};
+use crate::{Failure, boot::limine::BootInfo, memory::paging as memory, runtime::threads};
 
 unsafe extern "C" {
     fn kutox_c_dma_boundary(device: *mut crate::linux_compat::abi::Device, exhausted: bool)
@@ -50,15 +50,15 @@ fn worker(key: usize) {
     assert_eq!(unsafe { free(key, 17, pointer, dma) }, -122);
     assert_eq!(unsafe { free(key, 16, pointer, dma + 1) }, -122);
     unsafe { (pointer as *mut u8).write(0x5a) };
-    crate::dma::write_barrier();
+    crate::memory::dma::write_barrier();
     assert_eq!(unsafe { publish(key, pointer) }, 0);
     assert_eq!(unsafe { free(key, 16, pointer, dma) }, -123);
     assert_eq!(unsafe { publish(key, pointer) }, -123);
-    assert_eq!(crate::linux_runtime::cond_resched(), 1);
+    assert_eq!(crate::drivers::linux_runtime::cond_resched(), 1);
     // This fixture never enables bus mastering or starts a DMA engine.
     assert_eq!(unsafe { reclaim(key, pointer) }, 0);
     assert_eq!(unsafe { reclaim(key, pointer) }, -125);
-    crate::dma::read_barrier();
+    crate::memory::dma::read_barrier();
     assert_eq!(unsafe { (pointer as *const u8).read() }, 0x5a);
     for (i, &(pointer, dma)) in buffers.iter().enumerate() {
         assert_eq!(unsafe { free(key, 16 + i, pointer, dma) }, 0);
@@ -91,7 +91,7 @@ pub fn test(
             worker(key);
             crate::linux_compat::memory::test_coherent(key);
             {
-                use crate::cpu::X86Cpu;
+                use crate::arch::x86_64::cpu::X86Cpu;
                 use moss_libkernel::sync::spinlock::SpinLockIrq;
                 let lock = SpinLockIrq::<_, X86Cpu>::new(());
                 let _guard = lock.lock_save_irq();
@@ -102,12 +102,12 @@ pub fn test(
             }
             {
                 use moss_libkernel::CpuOps;
-                crate::cpu::X86Cpu::enable_interrupts();
+                crate::arch::x86_64::cpu::X86Cpu::enable_interrupts();
                 let result = set_mask(key, u64::MAX);
-                crate::cpu::X86Cpu::disable_interrupts();
+                crate::arch::x86_64::cpu::X86Cpu::disable_interrupts();
                 assert_eq!(result, threads::SwitchError::InterruptsEnabled as i32);
             }
-            crate::exceptions::tests::test_thread_context(|| {
+            crate::arch::x86_64::exceptions::tests::test_thread_context(|| {
                 let key = unsafe {
                     (&*REGISTRY.0.get())
                         .device

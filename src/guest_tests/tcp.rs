@@ -2,14 +2,13 @@
 
 use super::TestCase;
 use crate::{
-    Failure, async_runtime, async_sync,
-    boot::BootInfo,
-    heap,
-    kernel_runtime::{self, Clients, Resources},
-    memory, net_async, net_stack,
-    net_tcp::{self, Endpoint, Error, Socket},
-    serial, threads, time,
+    Failure, arch::x86_64::serial, boot::limine::BootInfo, memory::heap, memory::paging as memory,
+    net::async_service as net_async, net::stack as net_stack, net::tcp as net_tcp,
+    net::tcp::Endpoint, net::tcp::Error, net::tcp::Socket, runtime::async_runtime,
+    runtime::async_sync, runtime::kernel_runtime, runtime::kernel_runtime::Clients,
+    runtime::kernel_runtime::Resources, runtime::threads, runtime::time,
 };
+use crate::{net::config::Mode, runtime::async_state::Outcome};
 use alloc::boxed::Box;
 use core::{
     future::{Future, poll_fn},
@@ -17,7 +16,6 @@ use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     task::Poll,
 };
-use kutox::{async_state::Outcome, network_config::Mode};
 
 pub(crate) static TESTS: &[TestCase] = &[TestCase {
     name: "tcp.lifecycle",
