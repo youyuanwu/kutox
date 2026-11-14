@@ -28,13 +28,25 @@ use self::{
 };
 use crate::{
     Failure,
+    arch::x86_64::cpu::{self, X86Cpu},
+    arch::x86_64::exceptions,
+    arch::x86_64::io,
+    arch::x86_64::irq,
+    arch::x86_64::serial,
     boot::BootInfo,
-    completion,
-    cpu::{self, X86Cpu},
-    dma, exceptions, heap, io, irq, linux_deferred, linux_dma, linux_irq, linux_runtime, memory,
-    mutex, pci, serial, threads,
+    drivers::linux_deferred,
+    drivers::linux_dma,
+    drivers::linux_irq,
+    drivers::linux_runtime,
+    drivers::pci,
+    memory,
+    memory::dma,
+    memory::heap,
+    runtime::completion,
+    runtime::mutex,
+    runtime::threads,
 };
-use crate::{driver_memory, driver_platform};
+use crate::{drivers::memory as driver_memory, drivers::platform as driver_platform};
 use kutox::fw_cfg::BootMode;
 use moss_libkernel::CpuOps;
 
@@ -354,15 +366,15 @@ static TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "user.tasks",
-        run: crate::user_tasks::tests::kutox_guest_user_tasks,
+        run: crate::user::tasks::tests::kutox_guest_user_tasks,
     },
     TestCase {
         name: "user.task_limits",
-        run: crate::user_tasks::tests::limits,
+        run: crate::user::tasks::tests::limits,
     },
     TestCase {
         name: "user.runtime_cleanup",
-        run: crate::user_tasks::tests::runtime_cleanup,
+        run: crate::user::tasks::tests::runtime_cleanup,
     },
 ];
 
@@ -439,7 +451,7 @@ pub fn run(boot: &BootInfo) -> ! {
         }
     };
     let tests = if boot.mode == BootMode::DriverRuntimeTests {
-        match crate::kernel_runtime::tests::suite() {
+        match crate::runtime::kernel_runtime::tests::suite() {
             Ok(tests) => tests,
             Err(error) => {
                 serial::print(format_args!(
@@ -450,9 +462,9 @@ pub fn run(boot: &BootInfo) -> ! {
             }
         }
     } else if boot.mode == BootMode::DriverNetworkTests {
-        crate::linux_driver::tests::TESTS
+        crate::drivers::linux_driver::tests::TESTS
     } else if boot.mode == BootMode::DriverHardeningTests {
-        crate::linux_driver::hardening::TESTS
+        crate::drivers::linux_driver::hardening::TESTS
     } else if boot.mode == BootMode::AsyncCoreTests {
         async_runtime::TESTS
     } else if boot.mode == BootMode::AsyncNetworkTests {

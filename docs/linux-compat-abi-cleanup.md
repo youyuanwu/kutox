@@ -29,7 +29,7 @@ need C ABI even when no C object references its name.
 ## Implemented native backend boundary
 
 The owned memory service, packet-fragment provider and native coherent allocator
-now call ordinary Rust [driver_memory::allocate](../src/driver_memory.rs).
+now call ordinary Rust [driver_memory::allocate](../src/drivers/memory.rs).
 The runtime `kutox_driver_alloc` C export and header declaration are removed.
 GFP checks, allocation kinds, failure injection, diagnostics and backing
 ownership are unchanged; genuine Linux allocation exports remain C ABI.
@@ -51,7 +51,7 @@ authoritative; no allocation or DMA policy was moved into an adapter.
 Execution, work/NAPI, IRQ registration, PCI/MMIO/ports, tracing, diagnostics,
 delays and network wake now call native Rust APIs directly too. Work and IRQ
 callback backing remains an unsafe registration contract. Native NAPI callbacks
-use the actual [ABI NAPI type](../src/linux_abi.rs), not a cast or trampoline,
+use the actual [ABI NAPI type](../src/linux_compat/abi.rs), not a cast or trampoline,
 so original callback identities remain unchanged. Static-object retirement is
 now a module-level Rust function with the same live-object and context guards.
 
@@ -150,21 +150,21 @@ baseline consumer categories; callback and raw-pointer contracts remain.
 
 | Native owner | R | G | P | Examples / responsibilities |
 | --- | ---: | ---: | ---: | --- |
-| [block_services.rs](../src/block_services.rs) | 3 | 2 | 0 | Allocation, context and diagnostics |
-| [driver_memory.rs](../src/driver_memory.rs) | 4 | 4 | 0 | Allocation, ranges, ingress and streaming DMA |
-| [driver_platform.rs](../src/driver_platform.rs) | 5 | 1 | 0 | Device identity, PCI, MMIO, ports and gating |
-| [linux_deferred.rs](../src/linux_deferred.rs) | 2 | 4 | 0 | Work, NAPI and local-work registration |
-| [linux_dma.rs](../src/linux_dma.rs) | 5 | 3 | 0 | Coherent allocation, publication and reclamation |
-| [linux_driver.rs](../src/linux_driver.rs) | 2 | 0 | 0 | Callback tracing and tracing state |
-| [linux_irq.rs](../src/linux_irq.rs) | 1 | 1 | 0 | IRQ registration, drain and release |
-| [linux_runtime.rs](../src/linux_runtime.rs) | 10 | 4 | 1 | Synchronization, context, time and retirement |
+| [block_services.rs](../src/storage/block_services.rs) | 3 | 2 | 0 | Allocation, context and diagnostics |
+| [driver_memory.rs](../src/drivers/memory.rs) | 4 | 4 | 0 | Allocation, ranges, ingress and streaming DMA |
+| [driver_platform.rs](../src/drivers/platform.rs) | 5 | 1 | 0 | Device identity, PCI, MMIO, ports and gating |
+| [linux_deferred.rs](../src/drivers/linux_deferred.rs) | 2 | 4 | 0 | Work, NAPI and local-work registration |
+| [linux_dma.rs](../src/drivers/linux_dma.rs) | 5 | 3 | 0 | Coherent allocation, publication and reclamation |
+| [linux_driver.rs](../src/drivers/linux_driver.rs) | 2 | 0 | 0 | Callback tracing and tracing state |
+| [linux_irq.rs](../src/drivers/linux_irq.rs) | 1 | 1 | 0 | IRQ registration, drain and release |
+| [linux_runtime.rs](../src/drivers/linux_runtime.rs) | 10 | 4 | 1 | Synchronization, context, time and retirement |
 | [main.rs](../src/main.rs) | 3 | 1 | 0 | Serial output, delay, boot context and failure |
-| [net_device.rs](../src/net_device.rs) | 1 | 0 | 0 | Network wake notification |
-| [storage.rs](../src/storage.rs) | 7 | 0 | 0 | Storage allocation, PCI, MMIO, DMA and reset clock |
+| [net_device.rs](../src/net/device.rs) | 1 | 0 | 0 | Network wake notification |
+| [storage.rs](../src/storage/mod.rs) | 7 | 0 | 0 | Storage allocation, PCI, MMIO, DMA and reset clock |
 | Total | 43 | 20 | 1 | |
 
 The baseline native allocation example was `kutox_driver_alloc`, now
-[driver_memory::allocate](../src/driver_memory.rs). Its users are Rust:
+[driver_memory::allocate](../src/drivers/memory.rs). Its users are Rust:
 the memory service, fragment allocation and coherent allocation. The declaration
 in a C header is not a C call.
 
@@ -338,8 +338,8 @@ not preserved solely for a name check.
 
 Keep the boot entry in [linker.ld](../linker.ld), exception and thread assembly
 calls, and the guest thread-probe calling convention. Stable Rust-only labels
-such as the [packet broker](../src/net_async.rs),
-[async executor](../src/async_runtime.rs), native initializer and user-runtime
+such as the [packet broker](../src/net/async_service.rs),
+[async executor](../src/runtime/async_runtime.rs), native initializer and user-runtime
 entry are already Rust ABI. Their `no_mangle`/`export_name` attributes serve
 metadata or ELF proof and must not be confused with unnecessary C ABI.
 

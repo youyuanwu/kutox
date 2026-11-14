@@ -2,7 +2,7 @@
 
 ## Scope and Moss reference
 
-The [native API](../src/net_tcp.rs) provides outbound connections, partial
+The [native API](../src/net/tcp.rs) provides outbound connections, partial
 read/write, graceful close and abort. smoltcp `=0.13.0` owns handshake, sequence
 validation, checksums, retransmission, windows, FIN/RST and TIME-WAIT. The
 existing protocol future owns every socket; unchanged Linux e1000 still owns

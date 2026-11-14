@@ -2,13 +2,19 @@
 
 use super::TestCase;
 use crate::{
-    Failure, async_runtime, async_sync,
+    Failure,
+    arch::x86_64::serial,
     boot::BootInfo,
-    heap,
-    kernel_runtime::{self, Clients, Resources},
-    memory, net_async, net_stack,
-    net_tcp::{self, Endpoint, Error, Socket},
-    serial, threads, time,
+    memory,
+    memory::heap,
+    net::async_service as net_async,
+    net::stack as net_stack,
+    net::tcp::{self as net_tcp, Endpoint, Error, Socket},
+    runtime::async_runtime,
+    runtime::async_sync,
+    runtime::kernel_runtime::{self, Clients, Resources},
+    runtime::threads,
+    runtime::time,
 };
 use alloc::boxed::Box;
 use core::{

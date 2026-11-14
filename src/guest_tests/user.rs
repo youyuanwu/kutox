@@ -3,11 +3,12 @@
 use super::support::assert_eq;
 use crate::{
     Failure,
+    arch::x86_64::cpu,
+    arch::x86_64::exceptions,
+    arch::x86_64::irq::Timer,
+    arch::x86_64::serial,
     boot::BootInfo,
-    cpu, exceptions,
-    irq::Timer,
     memory::{self, user::AddressSpace},
-    serial,
     user::{self, Report, Stop},
 };
 use core::{arch::global_asm, ptr::addr_of};

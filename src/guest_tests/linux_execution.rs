@@ -3,12 +3,15 @@
 use crate::linux_compat::tests::execution_tests as fixture;
 use crate::{
     Failure,
+    arch::x86_64::irq::{self, LocalApic, external::IoApic},
+    arch::x86_64::platform,
     boot::BootInfo,
+    drivers::linux_deferred,
+    drivers::linux_irq::{self, BoundIrq},
+    drivers::linux_runtime,
     guest_tests::e1000_irq,
-    irq::{self, LocalApic, external::IoApic},
-    linux_deferred,
-    linux_irq::{self, BoundIrq},
-    linux_runtime, memory, platform, threads,
+    memory,
+    runtime::threads,
 };
 
 unsafe extern "C" {

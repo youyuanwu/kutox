@@ -110,10 +110,10 @@ fn state() -> *mut Packets {
     PACKETS.0.get()
 }
 fn tx_event(event: u32, result: i32) {
-    unsafe { crate::linux_driver::trace(event, 0, (*state()).tx.identity, result) }
+    unsafe { crate::drivers::linux_driver::trace(event, 0, (*state()).tx.identity, result) }
 }
 fn rx_event(event: u32, result: i32) {
-    unsafe { crate::linux_driver::trace(event, 0, (*state()).rx.identity, result) }
+    unsafe { crate::drivers::linux_driver::trace(event, 0, (*state()).rx.identity, result) }
 }
 fn netdev_check(device: *const NetDevice) {
     require(
@@ -127,7 +127,7 @@ fn data_align(size: usize) -> usize {
 fn skb_check(skb: *const SkBuff) {
     unsafe {
         require(
-            !skb.is_null() && crate::driver_memory::size(skb as usize) == size_of::<SkBuff>(),
+            !skb.is_null() && crate::drivers::memory::size(skb as usize) == size_of::<SkBuff>(),
             c"skb_metadata",
         );
         require(
@@ -139,7 +139,7 @@ fn skb_check(skb: *const SkBuff) {
                 && (*skb).len as usize == (*skb).tail as usize - (*skb).data as usize,
             c"skb_metadata",
         );
-        let backing = crate::driver_memory::size((*skb).head as usize);
+        let backing = crate::drivers::memory::size((*skb).head as usize);
         require(
             backing >= size_of::<SkbSharedInfo>()
                 && (*skb).end as usize - (*skb).head as usize
@@ -227,7 +227,7 @@ pub unsafe extern "C" fn netdev_priv(device: *const NetDevice) -> *mut c_void {
 pub unsafe extern "C" fn set_netdev_dev(device: *mut NetDevice, parent: *mut Device) {
     netdev_check(device);
     require(
-        parent as usize == { crate::driver_platform::device_key() },
+        parent as usize == { crate::drivers::platform::device_key() },
         c"netdev_parent",
     );
     unsafe { (*device).parent = parent }
@@ -278,7 +278,7 @@ pub(super) unsafe fn netdev_open(device: *mut NetDevice) -> i32 {
         let result = callback((*(*device).netdev_ops).open, c"netdev_open_callback")(device);
         if result < 0 {
             (*device).running = false;
-            crate::driver_platform::gate();
+            crate::drivers::platform::gate();
         }
         result
     }
@@ -303,7 +303,7 @@ pub unsafe extern "C" fn netif_carrier_off(device: *mut NetDevice) {
     netdev_check(device);
     unsafe {
         (*device).carrier = false;
-        crate::net_device::wake();
+        crate::net::device::wake();
     }
 }
 #[unsafe(no_mangle)]
@@ -311,8 +311,8 @@ pub unsafe extern "C" fn netif_carrier_on(device: *mut NetDevice) {
     netdev_check(device);
     unsafe {
         (*device).carrier = true;
-        crate::linux_driver::trace(14, 0, device as usize, 0);
-        crate::net_device::wake();
+        crate::drivers::linux_driver::trace(14, 0, device as usize, 0);
+        crate::net::device::wake();
     }
 }
 #[unsafe(no_mangle)]
@@ -354,7 +354,7 @@ pub unsafe extern "C" fn netif_wake_queue(device: *mut NetDevice) {
     unsafe {
         if !(*device).detached && (*device).stopped {
             (*device).stopped = false;
-            crate::net_device::wake();
+            crate::net::device::wake();
         }
     }
 }
@@ -380,7 +380,7 @@ pub unsafe extern "C" fn netdev_sent_queue(device: *mut NetDevice, bytes: u32) {
         (*device).sent_packets += 1;
         (*device).sent_bytes += bytes as usize;
         if (*state()).many.live {
-            crate::linux_driver::trace(48, 0, device as usize, bytes as i32);
+            crate::drivers::linux_driver::trace(48, 0, device as usize, bytes as i32);
         }
         if (*state()).tx.live && !(*state()).tx.aborting {
             require(
@@ -407,7 +407,7 @@ pub unsafe extern "C" fn netdev_completed_queue(device: *mut NetDevice, packets:
         (*device).completed_packets = (*device).completed_packets.wrapping_add(packets as usize);
         (*device).completed_bytes = (*device).completed_bytes.wrapping_add(bytes as usize);
         if (*state()).many.live && packets != 0 {
-            crate::linux_driver::trace(49, 0, device as usize, packets as i32);
+            crate::drivers::linux_driver::trace(49, 0, device as usize, packets as i32);
         }
         if (*state()).tx.live && packets != 0 && !(*state()).tx.aborting {
             require(
@@ -422,7 +422,7 @@ pub unsafe extern "C" fn netdev_completed_queue(device: *mut NetDevice, packets:
             );
             (*state()).tx.completed = true;
             tx_event(24, bytes as i32);
-            crate::net_device::wake();
+            crate::net::device::wake();
         }
     }
 }
@@ -585,7 +585,7 @@ pub unsafe extern "C" fn skb_put(skb: *mut SkBuff, size: u32) -> *mut c_void {
         let tail = (*skb).tail;
         if size != 0 {
             checked(
-                crate::driver_memory::range(tail as usize, size as usize, 0),
+                crate::drivers::memory::range(tail as usize, size as usize, 0),
                 c"skb_put_device_owned",
             );
         }
@@ -661,7 +661,7 @@ unsafe fn free_skb(skb: *mut SkBuff) {
             );
             (*state()).tx.freed = true;
             (*state()).tx.skb = ptr::null_mut();
-            crate::net_device::wake();
+            crate::net::device::wake();
             if !(*state()).tx.sent || (*state()).tx.aborting {
                 tx_event(28, 0);
             }
@@ -721,7 +721,7 @@ pub unsafe extern "C" fn eth_skb_pad(skb: *mut SkBuff) -> i32 {
             return -12;
         }
         checked(
-            crate::driver_memory::range((*skb).data as usize, (*skb).len as usize, 0),
+            crate::drivers::memory::range((*skb).data as usize, (*skb).len as usize, 0),
             c"pad_device_owned",
         );
         ptr::copy_nonoverlapping((*skb).data, head.add(headroom), (*skb).len as usize);
@@ -766,7 +766,7 @@ pub(super) unsafe fn netdev_transmit(device: *mut NetDevice, skb: *mut SkBuff) -
         skb_check(skb);
         let info = skb_shinfo(skb);
         checked(
-            crate::driver_memory::range((*skb).data as usize, (*skb).len as usize, 0),
+            crate::drivers::memory::range((*skb).data as usize, (*skb).len as usize, 0),
             c"transmit_device_owned",
         );
         if (*skb).len < ETH_HLEN
@@ -786,12 +786,12 @@ pub(super) unsafe fn netdev_transmit(device: *mut NetDevice, skb: *mut SkBuff) -
         let callback = callback((*(*device).netdev_ops).start_xmit, c"netdev_xmit_callback");
         let identity = skb as usize;
         if tracked {
-            crate::linux_driver::trace(17, callback as usize, identity, (*skb).len as i32);
+            crate::drivers::linux_driver::trace(17, callback as usize, identity, (*skb).len as i32);
         }
         let result = callback(skb, device);
         require(result == TX_OK || result == TX_BUSY, c"transmit_return");
         if tracked {
-            crate::linux_driver::trace(18, callback as usize, identity, result);
+            crate::drivers::linux_driver::trace(18, callback as usize, identity, result);
         }
         result
     }
@@ -1090,7 +1090,7 @@ pub extern "C" fn netdev_alloc_frag(size: u32) -> *mut c_void {
             diagnostic(c"fragment_capacity", -12);
             return ptr::null_mut();
         };
-        let pointer = crate::driver_memory::allocate(size as usize, GFP_ATOMIC, 1) as *mut c_void;
+        let pointer = crate::drivers::memory::allocate(size as usize, GFP_ATOMIC, 1) as *mut c_void;
         if !pointer.is_null() {
             (*state()).fragments[slot] = pointer;
         } else if (*state()).rx.enabled && (*state()).rx.identity != 0 {
@@ -1105,7 +1105,7 @@ fn fragment_slot(pointer: *const c_void) -> usize {
             let base = (*state()).fragments[slot] as usize;
             if base != 0
                 && pointer as usize >= base
-                && (pointer as usize) - base < crate::driver_memory::size(base)
+                && (pointer as usize) - base < crate::drivers::memory::size(base)
             {
                 return slot;
             }
@@ -1118,7 +1118,7 @@ pub extern "C" fn skb_free_frag(pointer: *mut c_void) {
     let slot = fragment_slot(pointer);
     unsafe {
         checked(
-            crate::driver_memory::free((*state()).fragments[slot] as usize),
+            crate::drivers::memory::free((*state()).fragments[slot] as usize),
             c"fragment_free_pinned",
         );
         (*state()).fragments[slot] = ptr::null_mut();
@@ -1130,7 +1130,7 @@ pub unsafe extern "C" fn napi_build_skb(pointer: *mut c_void, size: u32) -> *mut
     unsafe {
         require(
             (*state()).fragments[slot] == pointer
-                && crate::driver_memory::size(pointer as usize) == size as usize
+                && crate::drivers::memory::size(pointer as usize) == size as usize
                 && size as usize >= data_align(size_of::<SkbSharedInfo>()),
             c"build_skb_provenance",
         );
@@ -1139,7 +1139,7 @@ pub unsafe extern "C" fn napi_build_skb(pointer: *mut c_void, size: u32) -> *mut
             return skb;
         }
         checked(
-            crate::driver_memory::range(pointer as usize, size as usize, 1),
+            crate::drivers::memory::range(pointer as usize, size as usize, 1),
             c"build_skb_claim",
         );
         (*skb).head = pointer.cast();
@@ -1149,7 +1149,7 @@ pub unsafe extern "C" fn napi_build_skb(pointer: *mut c_void, size: u32) -> *mut
             .cast::<u8>()
             .add(size as usize - data_align(size_of::<SkbSharedInfo>()));
         checked(
-            crate::driver_memory::range((*skb).end as usize, size_of::<SkbSharedInfo>(), 0),
+            crate::drivers::memory::range((*skb).end as usize, size_of::<SkbSharedInfo>(), 0),
             c"build_skb_sharedinfo_owned",
         );
         (*skb).end.write_bytes(0, size_of::<SkbSharedInfo>());
@@ -1207,7 +1207,7 @@ pub unsafe extern "C" fn eth_type_trans(skb: *mut SkBuff, device: *mut NetDevice
             return 0;
         }
         checked(
-            crate::driver_memory::range((*skb).data as usize, (*skb).len as usize, 0),
+            crate::drivers::memory::range((*skb).data as usize, (*skb).len as usize, 0),
             c"ethernet_device_owned",
         );
         (*skb).device = device;
@@ -1242,14 +1242,14 @@ pub unsafe extern "C" fn napi_gro_receive(napi: *mut Napi, skb: *mut SkBuff) -> 
             || protocol == 0x88a8;
         if size != 0 {
             checked(
-                crate::driver_memory::range(frame as usize, size, 0),
+                crate::drivers::memory::range(frame as usize, size, 0),
                 c"ingress_device_owned",
             );
         }
         let result = if unsupported {
             diagnostic(c"ingress_profile", -95)
         } else {
-            crate::driver_memory::ingress(frame as usize, size)
+            crate::drivers::memory::ingress(frame as usize, size)
         };
         if result < 0 {
             (*(*state()).netdev).stats.rx_dropped =
@@ -1390,7 +1390,7 @@ pub(super) fn rx_mmio(address: usize, value: u32, writing: bool) {
             return;
         }
         if !writing && address == (*state()).rx.mmio + 0xc0 {
-            crate::linux_driver::trace(47, 0, (*state()).rx.device as usize, value as i32);
+            crate::drivers::linux_driver::trace(47, 0, (*state()).rx.device as usize, value as i32);
         } else if writing && address == (*state()).rx.mmio + 0x2818 && (*state()).rx.identity != 0 {
             rx_event(45, value as i32);
         }

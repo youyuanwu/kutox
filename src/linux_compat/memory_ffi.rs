@@ -215,7 +215,7 @@ pub unsafe extern "C" fn dma_map_single(
 /// Called in the owning device's admitted kernel context.
 pub unsafe extern "C" fn dma_mapping_error(d: *mut Device, address: u64) -> bool {
     require(
-        pci::storage_device(d) || { crate::driver_platform::device_key() } == d as usize,
+        pci::storage_device(d) || { crate::drivers::platform::device_key() } == d as usize,
         c"dma_error_device",
     );
     address == u64::MAX

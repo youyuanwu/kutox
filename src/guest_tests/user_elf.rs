@@ -6,10 +6,11 @@ use super::{
 };
 use crate::{
     Failure,
+    arch::x86_64::irq::Timer,
+    arch::x86_64::serial,
     boot::BootInfo,
-    irq::Timer,
     memory::{self, user::AddressSpace},
-    serial, user,
+    user,
 };
 use kutox::user_state::{PAGE_SIZE, USER_BASE};
 use moss_libkernel::memory::{

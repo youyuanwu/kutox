@@ -1,9 +1,7 @@
 //! C ABI implementations; all policy and ownership here are Rust, not driver code.
 #![allow(dead_code)]
-#[path = "../linux_abi.rs"]
 pub(crate) mod abi;
 pub(crate) mod block;
-#[path = "../block_abi.rs"]
 mod block_abi;
 pub(crate) mod block_request;
 pub(crate) mod callbacks;
@@ -52,14 +50,17 @@ fn callback<T>(function: Option<T>, operation: &'static core::ffi::CStr) -> T {
     }
 }
 fn context() {
-    checked(crate::linux_runtime::context_code(), c"compat_context");
+    checked(
+        crate::drivers::linux_runtime::context_code(),
+        c"compat_context",
+    );
 }
 fn diagnostic(operation: &'static core::ffi::CStr, code: i32) -> i32 {
-    crate::driver_memory::diag(operation, code);
+    crate::drivers::memory::diag(operation, code);
     code
 }
 fn rejected(operation: &'static core::ffi::CStr) -> i32 {
-    crate::block_services::diag(operation, -95);
+    crate::storage::block_services::diag(operation, -95);
     -95
 }
 fn validate<T>(p: *mut T) {

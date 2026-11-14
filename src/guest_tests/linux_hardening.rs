@@ -1,11 +1,13 @@
 //! Guest-only acceptance fixtures; not production driver code.
 
 use crate::{
-    driver_memory,
+    arch::x86_64::serial,
+    drivers::linux_deferred,
+    drivers::linux_driver::{DriverHandle, control},
+    drivers::memory as driver_memory,
     linux_compat::packet_tx::{State as PacketState, Submission},
-    linux_deferred,
-    linux_driver::{DriverHandle, control},
-    serial, threads, time,
+    runtime::threads,
+    runtime::time,
 };
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -368,14 +370,14 @@ fn teardown() {
     let start = time::now_ticks();
     let budget = time::ticks_for_us(100_000)
         .unwrap_or_else(|error| panic!("pending TX IRQ clock: {} {}", error.stage, error.code));
-    while !crate::linux_irq::pending().unwrap() {
+    while !crate::drivers::linux_irq::pending().unwrap() {
         assert!(
             time::now_ticks().wrapping_sub(start) < budget,
             "TX IRQ did not become pending"
         );
         core::hint::spin_loop();
     }
-    assert!(crate::linux_irq::pending().unwrap());
+    assert!(crate::drivers::linux_irq::pending().unwrap());
     serial::print(format_args!(
         "# LINUX_HARD_IRQ pending=1 tx=1 watchdog=queued\n"
     ));

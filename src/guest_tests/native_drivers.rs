@@ -2,10 +2,14 @@
 
 use crate::{
     Failure,
+    arch::x86_64::cpu::X86Cpu,
+    arch::x86_64::irq,
+    arch::x86_64::serial,
     boot::BootInfo,
-    cpu::X86Cpu,
-    driver_init::{self, KernelManager},
-    irq, memory, pci, serial, threads,
+    drivers::init::{self as driver_init, KernelManager},
+    drivers::pci,
+    memory,
+    runtime::threads,
 };
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -424,7 +428,7 @@ pub fn initializers(
     let tests = driver_init::linked(Scope::Test)
         .map_err(|error| Failure::new("native_records", error.code()))?;
     if production.len() != 1
-        || production[0].id() != crate::linux_driver::DRIVER_ID.value()
+        || production[0].id() != crate::drivers::linux_driver::DRIVER_ID.value()
         || tests.len() != 4
     {
         return Err(Failure::new("native_record_counts", -1));

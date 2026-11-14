@@ -2,13 +2,18 @@
 
 use super::TestCase;
 use crate::{
-    Failure, async_runtime, async_sync,
+    Failure,
+    arch::x86_64::serial,
     boot::BootInfo,
-    heap,
-    kernel_runtime::{self, Clients, Resources},
-    memory, net_async, net_stack,
-    net_udp::{self, Endpoint, Error, Socket},
-    serial, time,
+    memory,
+    memory::heap,
+    net::async_service as net_async,
+    net::stack as net_stack,
+    net::udp::{self as net_udp, Endpoint, Error, Socket},
+    runtime::async_runtime,
+    runtime::async_sync,
+    runtime::kernel_runtime::{self, Clients, Resources},
+    runtime::time,
 };
 use core::sync::atomic::{AtomicUsize, Ordering};
 use kutox::{async_state::Outcome, network_config::Mode};
@@ -20,7 +25,7 @@ pub(crate) static TESTS: &[TestCase] = &[TestCase {
     run: lifecycle,
 }];
 static EPOCH: AtomicUsize = AtomicUsize::new(0);
-static OLD: SpinLockIrq<Option<Socket>, crate::cpu::X86Cpu> = SpinLockIrq::new(None);
+static OLD: SpinLockIrq<Option<Socket>, crate::arch::x86_64::cpu::X86Cpu> = SpinLockIrq::new(None);
 const TIMEOUT: u64 = 6_000_000;
 const REMOTE: Endpoint = Endpoint {
     address: [1, 2, 3, 4],

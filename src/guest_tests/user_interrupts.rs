@@ -8,11 +8,14 @@ use super::{
 };
 use crate::{
     Failure,
+    arch::x86_64::cpu::{self, X86Cpu},
+    arch::x86_64::irq::{self, LocalApic, Timer, external::IoApic},
+    arch::x86_64::platform,
+    arch::x86_64::serial,
     boot::BootInfo,
-    cpu::{self, X86Cpu},
-    irq::{self, LocalApic, Timer, external::IoApic},
     memory::{self, user::AddressSpace},
-    platform, serial, time, user,
+    runtime::time,
+    user,
 };
 use core::{
     ptr::addr_of,

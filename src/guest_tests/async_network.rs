@@ -2,12 +2,19 @@
 
 use super::TestCase;
 use crate::{
-    Failure, async_runtime,
+    Failure,
+    arch::x86_64::cpu::X86Cpu,
+    arch::x86_64::serial,
     boot::BootInfo,
-    cpu::X86Cpu,
-    driver_memory,
-    kernel_runtime::{self, Clients, Resources},
-    linux_driver, memory, net_async, net_device, serial, threads, time,
+    drivers::linux_driver,
+    drivers::memory as driver_memory,
+    memory,
+    net::async_service as net_async,
+    net::device as net_device,
+    runtime::async_runtime,
+    runtime::kernel_runtime::{self, Clients, Resources},
+    runtime::threads,
+    runtime::time,
 };
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use kutox::async_state::Outcome;
@@ -347,7 +354,7 @@ fn scope(
     mode: usize,
 ) -> Result<(), Failure> {
     let before = memory::allocation_snapshot(frames);
-    let heap_before = crate::heap::global().stats();
+    let heap_before = crate::memory::heap::global().stats();
     EPOCH.store(epoch, Ordering::Release);
     let resources = Resources::start(boot, frames)?;
     *RUNTIME.lock_save_irq() = Some(resources.handle());
@@ -362,7 +369,7 @@ fn scope(
     assert_eq!((stats.finished, stats.peak_tasks), (6, 6));
     assert_eq!(net_async::counts(), (0, 0, 0));
     assert_eq!(memory::allocation_snapshot(frames), before);
-    assert_eq!(crate::heap::global().stats(), heap_before);
+    assert_eq!(crate::memory::heap::global().stats(), heap_before);
     let service = net_async::METADATA_BYTES
         + async_runtime::METADATA_BYTES
         + net_async::PACKET_STORAGE_BYTES

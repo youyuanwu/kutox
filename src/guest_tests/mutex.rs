@@ -3,10 +3,13 @@
 use super::*;
 use crate::{
     Failure,
+    arch::x86_64::cpu,
+    arch::x86_64::exceptions,
+    arch::x86_64::irq,
     boot::BootInfo,
-    cpu, exceptions, irq, memory,
-    threads::{Scheduler, sleep_us, yield_now},
-    time,
+    memory,
+    runtime::threads::{Scheduler, sleep_us, yield_now},
+    runtime::time,
 };
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicUsize, Ordering};

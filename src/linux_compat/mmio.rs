@@ -33,7 +33,7 @@ fn state() -> *mut Probe {
 }
 fn check(address: usize, value: u32, writing: bool) {
     unsafe {
-        if !(*state()).active && crate::driver_platform::check_mmio(address, value, writing) {
+        if !(*state()).active && crate::drivers::platform::check_mmio(address, value, writing) {
             return;
         }
         require(
@@ -86,11 +86,11 @@ pub unsafe extern "C" fn writel(value: u32, address: *mut u32) {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn udelay(usec: usize) {
-    crate::time::delay_us(usec as u64)
+    crate::runtime::time::delay_us(usec as u64)
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn outl(value: u32, port: usize) {
-    crate::driver_platform::outl(value, port)
+    crate::drivers::platform::outl(value, port)
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn phys_to_virt(_address: usize) -> *mut c_void {

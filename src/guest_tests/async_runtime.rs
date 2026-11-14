@@ -3,11 +3,18 @@
 use super::TestCase;
 use crate::{
     Failure,
-    async_runtime::{self as runtime, TaskFailure},
-    async_sync,
+    arch::x86_64::cpu::X86Cpu,
+    arch::x86_64::exceptions,
+    arch::x86_64::irq,
+    arch::x86_64::serial,
     boot::BootInfo,
-    cpu::X86Cpu,
-    exceptions, heap, irq, kernel_runtime, memory, serial, threads, time,
+    memory,
+    memory::heap,
+    runtime::async_runtime::{self as runtime, TaskFailure},
+    runtime::async_sync,
+    runtime::kernel_runtime,
+    runtime::threads,
+    runtime::time,
 };
 use alloc::vec::Vec;
 use core::{
@@ -88,7 +95,7 @@ impl Future for WakeFuture {
                 Err(threads::SwitchError::AsyncContext)
             );
             assert_eq!(
-                crate::linux_driver::control("async_poll", || {
+                crate::drivers::linux_driver::control("async_poll", || {
                     C_CALLS.fetch_add(1, Ordering::Relaxed);
                     0
                 }),
@@ -179,7 +186,7 @@ fn timer_handler() -> Result<(), Failure> {
     assert_eq!(runtime::counts().1, 1);
     assert_eq!(EVENT.signal(), Ok(1));
     assert_eq!(
-        crate::linux_driver::control("async_irq", || {
+        crate::drivers::linux_driver::control("async_irq", || {
             C_CALLS.fetch_add(1, Ordering::Relaxed);
             0
         }),

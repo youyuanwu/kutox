@@ -3,12 +3,15 @@
 use super::*;
 use crate::{
     Failure,
+    arch::x86_64::cpu::X86Cpu,
     boot::BootInfo,
-    cpu::X86Cpu,
-    driver_memory,
+    drivers::memory as driver_memory,
+    drivers::pci,
     guest_tests::TestCase,
-    kernel_runtime::{Clients, Resources},
-    memory, net_device, pci, threads,
+    memory,
+    net::device as net_device,
+    runtime::kernel_runtime::{Clients, Resources},
+    runtime::threads,
 };
 use core::sync::atomic::AtomicUsize;
 use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
@@ -19,7 +22,8 @@ pub(crate) static TESTS: &[TestCase] = &[TestCase {
 }];
 
 static EPOCH: AtomicUsize = AtomicUsize::new(0);
-static RUNTIME: SpinLockIrq<Option<crate::kernel_runtime::Handle>, X86Cpu> = SpinLockIrq::new(None);
+static RUNTIME: SpinLockIrq<Option<crate::runtime::kernel_runtime::Handle>, X86Cpu> =
+    SpinLockIrq::new(None);
 static DEVICE: SpinLockIrq<Option<net_device::Handle>, X86Cpu> = SpinLockIrq::new(None);
 static FIRST_RETURNED: AtomicBool = AtomicBool::new(false);
 static RETURNED: threads::WaitQueue = threads::WaitQueue::new();
@@ -147,7 +151,10 @@ pub(crate) fn kutox_guest_network_client(_: usize) {
             ));
             break;
         }
-        assert!(crate::time::now_ticks() < deadline, "managed link timeout");
+        assert!(
+            crate::runtime::time::now_ticks() < deadline,
+            "managed link timeout"
+        );
         if !not_ready_checked {
             assert_eq!(
                 device.submit(&packet(1, 1, 60, false)),
@@ -281,12 +288,12 @@ fn integration(
     let inventory = pci::enumerate()?;
     if inventory.e1000() == Err(kutox::pci_state::Error::Ambiguous) {
         let before = memory::allocation_snapshot(frames);
-        let heap_before = crate::heap::global().stats();
+        let heap_before = crate::memory::heap::global().stats();
         let result = Resources::start(boot, frames);
         assert!(matches!(result, Err(error) if error.code == -188));
         assert_eq!(memory::allocation_snapshot(frames), before);
-        assert_eq!(crate::heap::global().stats(), heap_before);
-        assert!(crate::driver_platform::quiescent() && crate::linux_irq::quiescent());
+        assert_eq!(crate::memory::heap::global().stats(), heap_before);
+        assert!(crate::drivers::platform::quiescent() && crate::drivers::linux_irq::quiescent());
         serial::print(format_args!(
             "# NETWORK_REJECT matches=2 code=-188 probes=0 backing=0 balanced=1\n"
         ));
@@ -299,7 +306,7 @@ fn integration(
         WAIT_START.store(false, Ordering::Release);
         WAITING.store(false, Ordering::Release);
         let before = memory::allocation_snapshot(frames);
-        let heap_before = crate::heap::global().stats();
+        let heap_before = crate::memory::heap::global().stats();
         let resources = Resources::start(boot, frames)?;
         *RUNTIME.lock_save_irq() = Some(resources.handle());
         let mut clients = Clients::new();
@@ -314,13 +321,14 @@ fn integration(
         assert_eq!(device.info(), Err(Error::Stale));
         *RUNTIME.lock_save_irq() = None;
         assert_eq!(memory::allocation_snapshot(frames), before);
-        assert_eq!(crate::heap::global().stats(), heap_before);
+        assert_eq!(crate::memory::heap::global().stats(), heap_before);
         assert!(managed_quiescent());
         assert_eq!(stats.finished, 6);
         assert_eq!(stats.peak_tasks, 6);
         serial::print(format_args!(
             "# NETWORK_JOIN epoch={epoch} finished=6 peak=6 workers=0 stale=1 balanced=1 metadata={}\n",
-            kutox::pci_state::INFRASTRUCTURE_METADATA_BYTES + crate::kernel_runtime::METADATA_BYTES
+            kutox::pci_state::INFRASTRUCTURE_METADATA_BYTES
+                + crate::runtime::kernel_runtime::METADATA_BYTES
         ));
     }
     EPOCH.store(0, Ordering::Release);

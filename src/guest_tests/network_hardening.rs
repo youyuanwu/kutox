@@ -1,14 +1,18 @@
 //! Managed ownership/failure stress without a second NIC packet implementation.
 
 use super::*;
-use crate::cpu::X86Cpu;
+use crate::arch::x86_64::cpu::X86Cpu;
 use crate::{
     Failure,
+    arch::x86_64::serial,
     boot::BootInfo,
-    driver_memory, driver_platform,
+    drivers::memory as driver_memory,
+    drivers::platform as driver_platform,
     guest_tests::{TestCase, linux_hardening},
-    kernel_runtime::{Clients, Resources, Stage},
-    memory, net_device, serial, threads,
+    memory,
+    net::device as net_device,
+    runtime::kernel_runtime::{Clients, Resources, Stage},
+    runtime::threads,
 };
 use core::sync::atomic::AtomicUsize;
 use kutox::driver_registry::{DeviceHandle, DeviceState};
@@ -37,7 +41,8 @@ pub(crate) static TESTS: &[TestCase] = &[
     },
 ];
 
-static RUNTIME: SpinLockIrq<Option<crate::kernel_runtime::Handle>, X86Cpu> = SpinLockIrq::new(None);
+static RUNTIME: SpinLockIrq<Option<crate::runtime::kernel_runtime::Handle>, X86Cpu> =
+    SpinLockIrq::new(None);
 static DEVICE: SpinLockIrq<Option<net_device::Handle>, X86Cpu> = SpinLockIrq::new(None);
 static NATIVE: SpinLockIrq<Option<DeviceHandle>, X86Cpu> = SpinLockIrq::new(None);
 static MODE: AtomicUsize = AtomicUsize::new(0);
@@ -45,7 +50,7 @@ static STEP: AtomicUsize = AtomicUsize::new(0);
 static FAULT: AtomicUsize = AtomicUsize::new(0);
 static EVENT: threads::WaitQueue = threads::WaitQueue::new();
 
-fn runtime() -> crate::kernel_runtime::Handle {
+fn runtime() -> crate::runtime::kernel_runtime::Handle {
     (*RUNTIME.lock_save_irq()).unwrap()
 }
 fn device() -> net_device::Handle {
@@ -76,7 +81,7 @@ fn wait(mut check: impl FnMut() -> bool) {
     let deadline = threads::wait_deadline(Some(3_000_000)).unwrap().unwrap();
     while !check() {
         assert!(
-            crate::time::now_ticks() < deadline,
+            crate::runtime::time::now_ticks() < deadline,
             "managed hardening timeout"
         );
         threads::sleep_us(1000).unwrap();
@@ -138,7 +143,10 @@ fn opened() -> net_device::Handle {
     *NATIVE.lock_save_irq() = Some(handle);
     *DEVICE.lock_save_irq() = Some(device);
     wait(|| device.info().unwrap().ready);
-    wait(|| crate::linux_deferred::napi_idle() && !crate::linux_irq::pending().unwrap());
+    wait(|| {
+        crate::drivers::linux_deferred::napi_idle()
+            && !crate::drivers::linux_irq::pending().unwrap()
+    });
     serial::print(format_args!(
         "# MANAGED_HARD_READY mode={} identity={} workers=2\n",
         MODE.load(Ordering::Acquire),
@@ -179,11 +187,11 @@ fn failures(
     boot: &BootInfo,
     frames: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
-    let functions = crate::pci::enumerate()?.functions().len();
+    let functions = crate::drivers::pci::enumerate()?.functions().len();
     for fault in 1..=9 {
         FAULT.store(fault, Ordering::Release);
         let before = memory::allocation_snapshot(frames);
-        let heap_before = crate::heap::global().stats();
+        let heap_before = crate::memory::heap::global().stats();
         let resources = Resources::start(boot, frames)?;
         *RUNTIME.lock_save_irq() = Some(resources.handle());
         match fault {
@@ -193,9 +201,9 @@ fn failures(
             4 => driver_memory::fault(3, 0),
             5 => driver_memory::fault(3, 1),
             6 => driver_memory::map_fault(2, 0),
-            7 => crate::linux_irq::fail_request(true),
-            8 => crate::kernel_runtime::tests::fail_next(Stage::Workers),
-            9 => crate::kernel_runtime::tests::fail_next(Stage::Clients),
+            7 => crate::drivers::linux_irq::fail_request(true),
+            8 => crate::runtime::kernel_runtime::tests::fail_next(Stage::Workers),
+            9 => crate::runtime::kernel_runtime::tests::fail_next(Stage::Clients),
             _ => unreachable!(),
         }
         let mut clients = Clients::new();
@@ -211,16 +219,18 @@ fn failures(
         driver_platform::fail_operation(u32::MAX);
         driver_memory::fault(u32::MAX, usize::MAX);
         driver_memory::map_fault(0, usize::MAX);
-        crate::linux_irq::fail_request(false);
+        crate::drivers::linux_irq::fail_request(false);
         drop(resources);
         *RUNTIME.lock_save_irq() = None;
         *DEVICE.lock_save_irq() = None;
         *NATIVE.lock_save_irq() = None;
         assert!(
-            managed_quiescent() && driver_platform::quiescent() && crate::linux_irq::quiescent()
+            managed_quiescent()
+                && driver_platform::quiescent()
+                && crate::drivers::linux_irq::quiescent()
         );
         assert_eq!(memory::allocation_snapshot(frames), before);
-        assert_eq!(crate::heap::global().stats(), heap_before);
+        assert_eq!(crate::memory::heap::global().stats(), heap_before);
         serial::print(format_args!(
             "# MANAGED_HARD_ROLLBACK kind={fault} balanced=1 workers=0 backing=0\n"
         ));
@@ -337,14 +347,14 @@ fn pending(device: net_device::Handle) {
     let ticket = device.submit(&frame).unwrap();
     assert_eq!(device.progress(ticket), Ok(TxStatus::InFlight));
     let deadline = threads::wait_deadline(Some(100_000)).unwrap().unwrap();
-    while !crate::linux_irq::pending().unwrap() {
+    while !crate::drivers::linux_irq::pending().unwrap() {
         assert!(
-            crate::time::now_ticks() < deadline,
+            crate::runtime::time::now_ticks() < deadline,
             "pending managed TX IRQ missing"
         );
         core::hint::spin_loop();
     }
-    assert!(crate::linux_irq::pending().unwrap());
+    assert!(crate::drivers::linux_irq::pending().unwrap());
     assert_eq!(
         control("hard-kick", || {
             crate::linux_compat::lifecycle::tests::kick(MANAGED_TICKET.load(Ordering::Acquire), 0)
@@ -477,7 +487,7 @@ fn exercise(
     MODE.store(mode, Ordering::Release);
     STEP.store(0, Ordering::Release);
     let before = memory::allocation_snapshot(frames);
-    let heap_before = crate::heap::global().stats();
+    let heap_before = crate::memory::heap::global().stats();
     let resources = Resources::start(boot, frames)?;
     *RUNTIME.lock_save_irq() = Some(resources.handle());
     let mut clients = Clients::new();
@@ -495,14 +505,15 @@ fn exercise(
     *NATIVE.lock_save_irq() = None;
     assert!(managed_quiescent() && driver_platform::quiescent());
     assert_eq!(memory::allocation_snapshot(frames), before);
-    assert_eq!(crate::heap::global().stats(), heap_before);
+    assert_eq!(crate::memory::heap::global().stats(), heap_before);
     assert_eq!(stats.finished, if mode >= 2 { 6 } else { 4 });
     assert!(stats.peak_tasks <= 6);
     serial::print(format_args!(
         "# MANAGED_HARD_JOIN mode={mode} finished={} peak={} balanced=1 workers=0 metadata={}\n",
         stats.finished,
         stats.peak_tasks,
-        kutox::pci_state::INFRASTRUCTURE_METADATA_BYTES + crate::kernel_runtime::METADATA_BYTES
+        kutox::pci_state::INFRASTRUCTURE_METADATA_BYTES
+            + crate::runtime::kernel_runtime::METADATA_BYTES
     ));
     Ok(())
 }

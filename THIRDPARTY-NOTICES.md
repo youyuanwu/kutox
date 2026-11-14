@@ -13,8 +13,8 @@
   DHCPv4, DNS, TCP, owned allocation support, and fixed DNS/interface capacities.
   UDP sockets are instantiated only when an explicit kernel client binds.
 
-The [staged token adapter](src/net_stack_state.rs), [protocol service](src/net_stack.rs)
-and [network configuration](src/network_config.rs) are kutox code. smoltcp owns
+The [staged token adapter](src/net/stack_state.rs), [protocol service](src/net/stack.rs)
+and [network configuration](src/net/config.rs) are kutox code. smoltcp owns
 ARP/IP/ICMP/UDP/DHCP/DNS/TCP processing; unchanged Linux e1000 still owns hardware TX/RX.
 This follows pinned Moss's declared stack baseline, not a copy of its complete
 socket, networking syscall or process-oriented service modules.
@@ -22,7 +22,7 @@ The [stdlib packet peer](scripts/network_packets.py), bounded production
 callback/status records and directed guest acceptance are also kutox code.
 They observe unchanged Linux and smoltcp implementations; no packet algorithm
 or additional upstream networking/syscall source is copied.
-The [native UDP API](src/net_udp.rs), [bounded socket control](src/udp_state.rs)
+The [native UDP API](src/net/udp.rs), [bounded socket control](src/net/udp_state.rs)
 and [guest acceptance](src/guest_tests/udp.rs) are kutox code, with UDP processing supplied
 by smoltcp. Pinned Moss's socket handles, buffers and readiness separation
 informed this boundary; that revision has no IPv4 UDP implementation. No
@@ -76,7 +76,7 @@ Moss component or vendor-driver source is imported.
   and [mutex.rs](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/libkernel/src/sync/mutex.rs).
 - Locations: portable primitives in
   [third_party/moss-libkernel](third_party/moss-libkernel/); the task-bound
-  mutex adaptation in [src/mutex.rs](src/mutex.rs).
+  mutex adaptation in [src/runtime/mutex.rs](src/runtime/mutex.rs).
 
 This single `no_std` crate groups the selected ports under
 `memory`, `sync`, `task`, and optional `fs` modules, with `CpuOps` at the crate root as in upstream
@@ -106,7 +106,7 @@ mappings. `map_initialized` remains a separate native convenience operation.
 Translation accepts byte addresses and reports the containing frame's permissions.
 It omits Send/Sync, ranges, CoW and unsafely persistent activation; the native
 service instead supplies non-transferable ownership and scoped activation.
-The [native implementation](src/user_memory.rs) and guest acceptance are kutox
+The [native implementation](src/memory/user.rs) and guest acceptance are kutox
 integration using the existing `x86_64` mapper. No Moss x86/ARM page-table
 algorithm, userspace entry, process VM, VFS or complete ELF loader is copied.
 See the [implementation scope](docs/kernel-implementation.md#owned-user-address-spaces).
@@ -138,14 +138,14 @@ and process replacement. Its checked System V/x86_64 ELF decoder, hard limits,
 W^X/window/overlap/entry validation and unpublished-space failure ownership are
 kutox adaptations, not an unchanged upstream loader or a copy of `object`.
 It does not import interpreter/PIE loading, VFS, TLS, CoW or process scheduling.
-The [native loader frontend](src/user.rs), separately linked
+The [native loader frontend](src/user/mod.rs), separately linked
 [ELF fixture](src/guest_tests/user_elf.S), [fixture linker](src/guest_tests/user_elf.ld)
 and guest/host acceptance are kutox integration code. The original MIT notice
 is retained in the portable port and shared license file.
 
-The [cooperative user-run service](src/user.rs), its
-[x86_64 entry/return assembly](src/user_entry.S),
-[portable copy planner](src/user_state.rs) and embedded acceptance programs
+The [cooperative user-run service](src/user/mod.rs), its
+[x86_64 entry/return assembly](src/arch/x86_64/user_entry.S),
+[portable copy planner](src/user/state.rs) and embedded acceptance programs
 are kutox implementations. They use the adapted memory boundary and startup
 stack, but import no Moss CPU entry/return, syscall or process-runtime source.
 The native entry is explicitly named `kutox_user_bringup`, not a replacement
@@ -153,7 +153,7 @@ for Moss's scheduled process return path.
 
 ### Interruptible user boundary
 
-The [native trap service](src/user.rs) now adapts the ordering in pinned Moss's
+The [native trap service](src/user/mod.rs) now adapts the ordering in pinned Moss's
 [ARM64 user sync/IRQ entries](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/arch/arm64/exceptions/mod.rs#L179)
 and [common userspace return gateway](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/sched/uspc_ret.rs#L83):
 handle the trap/IRQ, then make one common decision before restoring userspace.
@@ -175,7 +175,7 @@ snapshots; restore returns a value instead of writing to a raw destination.
 Signal/kernel future storage is omitted. The original MIT notice is retained
 in the port and shared license file, with the source in crate provenance.
 
-The [native two-task dispatcher](src/user_tasks.rs), x86_64 saved register layout,
+The [native two-task dispatcher](src/user/tasks.rs), x86_64 saved register layout,
 entry/return assembly, cumulative execution accounting and
 [guest acceptance](src/guest_tests/user_tasks.rs) are kutox integration.
 They reuse the existing FIFO and previously adapted Moss `TaskState`; no second
@@ -185,8 +185,8 @@ switching remain outside this subset.
 
 ### Persistent user dispatch
 
-The [runtime integration](src/kernel_runtime.rs) and
-[kernel dispatcher boundary](src/threads.rs) follow pinned Moss's
+The [runtime integration](src/runtime/kernel_runtime.rs) and
+[kernel dispatcher boundary](src/runtime/threads.rs) follow pinned Moss's
 [userspace gateway](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/sched/uspc_ret.rs):
 select work, process kernel work outside scheduler borrows, then restore owned
 user context. They are native kutox integration, not copied process/future,
@@ -241,7 +241,7 @@ The Moss MIT notice is retained in the adaptation and shared license.
 - Default features are disabled; only `sync` is enabled. No `std` feature or
   multithreaded filesystem runtime is enabled.
 
-The Limine module admission, [native boot service](src/boot_fs.rs),
+The Limine module admission, [native boot service](src/boot/fs.rs),
 [image builder](scripts/make_rootfs.py), separate [init program](userspace/init.S)
 and acceptance are kutox integration code. Their boot-image -> filesystem ->
 ELF ordering follows Moss's
@@ -362,7 +362,7 @@ metadata instead of invoking Waker hooks under an IRQ lock. Registration guards
 borrow the set without retaining a held lock and drop only copyable metadata.
 The upstream `Arc`/`WaitUntil` future implementation is not copied.
 
-[src/async_state.rs](src/async_state.rs) is native kutox policy using these
+[src/runtime/async_state.rs](src/runtime/async_state.rs) is native kutox policy using these
 adaptations: checked epochs, sixteen live/retained task slots, FIFO admission,
 event generations, sixteen registrations/deadlines and explicit cancellation,
 failure and off-lock payload-release acknowledgement. Waker records retain
@@ -370,8 +370,8 @@ metadata slots only, including across epoch reopen. This portable layer is
 separate from the native executor and hardware integration below; its host
 tests alone are not claims of guest execution or source DMA drain.
 
-[src/async_runtime.rs](src/async_runtime.rs) and
-[src/async_sync.rs](src/async_sync.rs) are native kutox code using these ports
+[src/runtime/async_runtime.rs](src/runtime/async_runtime.rs) and
+[src/runtime/async_sync.rs](src/runtime/async_sync.rs) are native kutox code using these ports
 and the existing guarded dispatcher/one-shot timer. Fallible pinned payload
 ownership, permanent bounded RawWaker tags, checked lease accounting, sixteen
 poll batches, event generation snapshots, async deadline registration and
@@ -383,8 +383,8 @@ fixtures remain guest-only. Its frame-owned pinned-future arena is native kutox
 ownership glue using the existing Moss frame guard, not a copied upstream
 executor. No Linux packet algorithm is replaced.
 
-[src/net_async.rs](src/net_async.rs) and
-[src/net_async_state.rs](src/net_async_state.rs) add native kutox owned request,
+[src/net/async_service.rs](src/net/async_service.rs) and
+[src/net/async_state.rs](src/net/async_state.rs) add native kutox owned request,
 packet-arena, session and broker policy. They use the existing Moss-derived
 heap/IRQ primitives and guarded async core, not Moss socket/syscall code.
 The single caller still executes unchanged Linux TX/RX/IRQ/NAPI/close/remove.
@@ -429,7 +429,7 @@ executor and concurrent task-state CAS machinery are not copied.
 
 ### Sleeping mutex adaptation
 
-[src/mutex.rs](src/mutex.rs) adapts the pinned Moss mutex's IRQ-locked metadata,
+[src/runtime/mutex.rs](src/runtime/mutex.rs) adapts the pinned Moss mutex's IRQ-locked metadata,
 `UnsafeCell` payload, exclusive RAII guard, dereference operations, and
 `Send`/`Sync` payload bounds. It carries the original copyright and an MIT SPDX
 identifier; the complete permission and warranty notice is included in
@@ -484,7 +484,7 @@ under [compat/include/](compat/include/), with network/block extensions and
 independent e1000/storage feature profiles.
 
 The [bounded Rust block provider](src/linux_compat/block.rs), its
-[Rust allocation/context adapter](src/block_services.rs) and
+[Rust allocation/context adapter](src/storage/block_services.rs) and
 [guest fixture](compat/guest_tests/block_services_test.c) are kutox implementations
 of a restricted source-facing service API. They implement request ownership,
 metadata and completion lifecycle, not VirtIO ring/PCI/DMA or storage hardware
@@ -494,7 +494,7 @@ and existing execution types. The guest transport fixture is not a storage drive
 The same seven unchanged Linux storage units are now also linked into both
 runtime profiles through [the small VirtIO C header bridge](compat/virtio_bridge.c),
 [shared Rust compatibility services](src/linux_compat/)
-and [Rust PCI/DMA ownership services](src/storage.rs). All original notices and
+and [Rust PCI/DMA ownership services](src/storage/mod.rs). All original notices and
 GPL obligations remain applicable. The original VirtIO core, split ring,
 modern PCI and block implementation performs hardware I/O; no native Rust
 descriptor or storage-driver algorithm replaces it. The bounded device model,
@@ -504,7 +504,7 @@ previously attributed Moss allocators and shared kernel execution/IRQ services;
 no Ginux or additional Moss driver source is imported.
 
 The native [Rust C-ABI execution adapter](src/linux_compat/execution.rs),
-[Rust registry/backend](src/linux_runtime.rs), and
+[Rust registry/backend](src/drivers/linux_runtime.rs), and
 [C acceptance test](compat/guest_tests/execution_test.c) are kutox code. They expose a
 tested static-object subset of Linux-facing mutex, spinlock, sleep, and completion
 APIs without copying a Linux synchronization implementation. The Linux submodule
@@ -512,7 +512,7 @@ and all four selected upstream units remain unchanged. These services now back
 original driver execution for the selected profile, not general Linux
 synchronization or binary ABI compatibility.
 
-The shared compatibility modules and [C/Rust ABI contracts](src/linux_abi.rs)
+The shared compatibility modules and [C/Rust ABI contracts](src/linux_compat/abi.rs)
 are kutox implementations of selected Linux-facing services. They replace the
 former C allocation/PCI/execution adapters and storage device/work/lifecycle
 policy; they do not replace original Linux device algorithms. Network-device,
@@ -531,10 +531,10 @@ existing attribution.
 
 ## Native driver infrastructure and persistent integration
 
-The native [registry policy](src/driver_registry.rs),
-[retained manager](src/drivers.rs), [initializer validation](src/driver_init.rs),
-[PCI hierarchy](src/pci_state.rs), [runtime](src/kernel_runtime.rs) and
-[Ethernet handle/value boundary](src/net_device.rs) are kutox implementations.
+The native [registry policy](src/drivers/registry.rs),
+[retained manager](src/drivers/manager.rs), [initializer validation](src/drivers/init.rs),
+[PCI hierarchy](src/drivers/pci_state.rs), [runtime](src/runtime/kernel_runtime.rs) and
+[Ethernet handle/value boundary](src/net/device.rs) are kutox implementations.
 They follow pinned Moss's
 [built-in initialization](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/init.rs)
 and [retained driver model](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/mod.rs)
@@ -543,7 +543,7 @@ ports. No Moss FDT/VFS driver subsystem, ARM bus/controller code or dynamic modu
 loader is copied. The native x86 PCI inventory, swizzle/window validation and
 unlocked callback/lifecycle policy are not imported Moss implementations.
 
-The managed [e1000 control adapter](src/linux_driver.rs) and
+The managed [e1000 control adapter](src/drivers/linux_driver.rs) and
 [Rust lifecycle boundary](src/linux_compat/lifecycle.rs), with
 [C private-header accessors](compat/e1000_accessors.c), invoke the same four unchanged
 GPL-2.0-only Linux units described above. Linux retains its packet/descriptor,

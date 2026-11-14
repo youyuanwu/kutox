@@ -1,7 +1,10 @@
 //! Guest-only acceptance fixtures; not production driver code.
 
 use super::*;
-use crate::{Failure, boot::BootInfo, cpu, irq, memory, threads::Scheduler, time};
+use crate::{
+    Failure, arch::x86_64::cpu, arch::x86_64::irq, boot::BootInfo, memory,
+    runtime::threads::Scheduler, runtime::time,
+};
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use moss_libkernel::CpuOps;
@@ -58,7 +61,7 @@ fn stored_signals(_: usize) {
     X86Cpu::enable_interrupts();
     context_errors(SwitchError::InterruptsEnabled);
     X86Cpu::disable_interrupts();
-    crate::exceptions::tests::test_thread_context(|| {
+    crate::arch::x86_64::exceptions::tests::test_thread_context(|| {
         context_errors(SwitchError::InterruptContext);
     })
     .unwrap_or_else(|error| {

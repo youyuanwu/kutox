@@ -46,7 +46,7 @@ class SharedCompatibilityTests(unittest.TestCase):
             kernel = root / "release/kutox"
             files = ("Cargo.toml", "Cargo.lock", ".cargo/config.toml", "rust-toolchain.toml",
                      "build.rs", "linker.ld", "CMakeLists.txt", "compat/include/runtime.h",
-                     "src/main.rs", "src/driver_memory.rs", "release/kutox",
+                     "src/main.rs", "src/drivers/memory.rs", "release/kutox",
                      "release/deps/kutox-active.o", "release/deps/kutox-stale.o",
                      "release/deps/kutox-stale")
             for name in files:
@@ -56,7 +56,7 @@ class SharedCompatibilityTests(unittest.TestCase):
             active = root / "release/deps/kutox-active"
             active.hardlink_to(kernel)
             kernel.with_suffix(".d").write_text(
-                f"kutox: {root / 'src/main.rs'} {root / 'src/driver_memory.rs'}\n")
+                f"kutox: {root / 'src/main.rs'} {root / 'src/drivers/memory.rs'}\n")
             with patch.object(compat, "ROOT", root), patch.object(compat, "UNITS", ()):
                 with self.assertRaisesRegex(ValueError, "missing kernel build"):
                     compat.kernel_provenance(kernel)
@@ -72,7 +72,7 @@ class SharedCompatibilityTests(unittest.TestCase):
                     compat.kernel_object(kernel)
                 ambiguous.unlink()
                 ambiguous.with_suffix(".o").unlink()
-                for name in ("release/kutox", "release/deps/kutox-active.o", "release/kutox.d", "src/driver_memory.rs",
+                for name in ("release/kutox", "release/deps/kutox-active.o", "release/kutox.d", "src/drivers/memory.rs",
                              "compat/include/runtime.h", ".cargo/config.toml"):
                     path = root / name
                     original = path.read_bytes()

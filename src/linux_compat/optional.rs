@@ -145,7 +145,7 @@ unsafe fn header(skb: *const SkBuff, offset: u32, size: usize) -> *mut c_void {
         );
         let pointer = (*skb).head.add(offset as usize);
         checked(
-            crate::driver_memory::range(pointer as usize, size, 0),
+            crate::drivers::memory::range(pointer as usize, size, 0),
             c"skb_header_device_owned",
         );
         pointer.cast()

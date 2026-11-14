@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::guest_tests::support::assert_eq;
-use crate::{cpu, memory};
+use crate::{arch::x86_64::cpu, memory};
 use moss_libkernel::memory::{PhysMemoryRegion, allocators::frame::Frame};
 
 fn error<T>(result: Result<T, Failure>, stage: &str) -> Result<(), Failure> {
@@ -47,8 +47,8 @@ pub fn kutox_guest_address_spaces(
         space.with_active(|| -> Result<(), Failure> {
             assert_eq!(cpu::interrupts_enabled(), false);
             assert_eq!(
-                crate::threads::yield_now(),
-                Err(crate::threads::SwitchError::LocksHeld)
+                crate::runtime::threads::yield_now(),
+                Err(crate::runtime::threads::SwitchError::LocksHeld)
             );
             let current = Cr3::read().0.start_address().as_u64();
             assert_eq!(current != original.0.start_address().as_u64(), true);
@@ -86,8 +86,8 @@ pub fn kutox_guest_address_spaces(
         assert_eq!(X86Cpu::irq_lock_depth(), 0);
         assert_eq!(cpu::interrupts_enabled(), false);
         assert_eq!(
-            crate::threads::yield_now(),
-            Err(crate::threads::SwitchError::UserAddressSpaceActive)
+            crate::runtime::threads::yield_now(),
+            Err(crate::runtime::threads::SwitchError::UserAddressSpaceActive)
         );
         error(map_mmio(boot, 0xf000_0000, allocator), "memory_user_active")?;
         error(StackSpace::new(boot, allocator), "memory_user_active")?;

@@ -2,13 +2,17 @@
 
 use super::TestCase;
 use crate::{
-    Failure, async_runtime, async_sync,
+    Failure,
+    arch::x86_64::serial,
     boot::BootInfo,
-    heap,
-    kernel_runtime::{self, Clients, Resources},
-    memory, net_stack,
-    net_udp::{self, Endpoint, Error, Socket},
-    serial, time,
+    memory,
+    memory::heap,
+    net::stack as net_stack,
+    net::udp::{self as net_udp, Endpoint, Error, Socket},
+    runtime::async_runtime,
+    runtime::async_sync,
+    runtime::kernel_runtime::{self, Clients, Resources},
+    runtime::time,
 };
 use alloc::vec::Vec;
 use core::{
@@ -29,7 +33,7 @@ const PEER: Endpoint = Endpoint {
     address: [10, 0, 2, 2],
     port: 9000,
 };
-static OLD: SpinLockIrq<Option<Socket>, crate::cpu::X86Cpu> = SpinLockIrq::new(None);
+static OLD: SpinLockIrq<Option<Socket>, crate::arch::x86_64::cpu::X86Cpu> = SpinLockIrq::new(None);
 static EPOCH: AtomicUsize = AtomicUsize::new(0);
 
 fn offer(epoch: usize, step: usize, kind: &str, length: usize) {
@@ -278,7 +282,7 @@ fn exchange(
     for epoch in 1..=2 {
         let before = frames.stats();
         let heap_before = heap::global().stats();
-        let callbacks = crate::linux_driver::callback_proof();
+        let callbacks = crate::drivers::linux_driver::callback_proof();
         EPOCH.store(epoch, Ordering::Release);
         let resources = Resources::start(boot, frames)?;
         let mut clients = Clients::new();
@@ -287,7 +291,7 @@ fn exchange(
         assert!(stats.peak_tasks <= kernel_runtime::MAX_TASKS);
         drop(resources);
         assert!(net_udp::quiescent());
-        assert!(crate::net_async::quiescent());
+        assert!(crate::net::async_service::quiescent());
         assert!(async_runtime::quiescent());
         assert_eq!(frames.stats(), before);
         assert_eq!(heap::global().stats(), heap_before);
@@ -297,7 +301,7 @@ fn exchange(
         heap::global()
             .check_invariants()
             .map_err(|error| Failure::new("udp_heap", error as i32))?;
-        let after = crate::linux_driver::callback_proof();
+        let after = crate::drivers::linux_driver::callback_proof();
         for event in [1, 2, 3, 5, 6, 7, 17, 34] {
             let entry = after
                 .delta(&callbacks, event)

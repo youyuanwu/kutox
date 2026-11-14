@@ -8,6 +8,11 @@ Normal boot now starts and retains the full unchanged e1000 driver in the
 kernel runtime and answers ARP/static IPv4/ICMP through smoltcp. The finite MAC
 proof remains available as explicit `probe` mode.
 
+Kernel sources are grouped by subsystem: architecture, boot, memory, runtime,
+drivers, networking, storage, userspace and Linux compatibility. See
+[source organization](docs/kernel-implementation.md#source-organization) for the
+layout and the separation between native, portable and guest-only code.
+
 It uses a fixed-capacity port of Moss's `Smalloc` bootstrap allocator to
 reserve frame metadata, then hands physical RAM to an IRQ-locked adaptation
 of Moss's buddy allocator. The buddy allocator owns MMIO page-table frames and
@@ -23,7 +28,7 @@ modes verify interrupt-state restoration and fault diagnostics.
 The portable ports live in one adapted [Moss libkernel crate](third_party/moss-libkernel/),
 with `CpuOps` at the root and separate `memory`, `sync`, `task`, and optional `fs` modules. They share
 one upstream revision and MIT license. The task-bound sleeping-mutex adaptation
-lives beside the kernel runtime in [src/mutex.rs](src/mutex.rs), retaining the
+lives beside the kernel runtime in [src/runtime/mutex.rs](src/runtime/mutex.rs), retaining the
 same pinned source attribution and MIT notice.
 
 The kernel also has bounded, single-CPU cooperative kernel threads: owned
@@ -65,7 +70,7 @@ baseline, then executes it with the existing ELF loader. The separately linked
 kernel. Normal boot still starts networking without running userspace.
 General file/socket I/O and a full process runtime remain absent.
 
-The scoped [kernel runtime](src/kernel_runtime.rs) now retains the dispatcher,
+The scoped [kernel runtime](src/runtime/kernel_runtime.rs) now retains the dispatcher,
 native manager, APIC/timer/controllers and shared Linux workers through client
 return and idle. Its persistent policy sleeps without inventing periodic work;
 finite scheduler calls still diagnose deadlock. Deliberate shutdown retires
@@ -130,7 +135,7 @@ objects are compiled separately against the same selected source profile.
 
 The [shared compatibility implementation](src/linux_compat/) exports Linux-facing
 C ABI functions from Rust. Both drivers share checked
-[device/PCI/execution contracts](src/linux_abi.rs), synchronization, allocation
+[device/PCI/execution contracts](src/linux_compat/abi.rs), synchronization, allocation
 adapters, PCI registration/access and DMA dispatch. Storage device references,
 work tracking and lifecycle/recovery orchestration also live in Rust.
 [Network packet services](src/linux_compat/packet.rs) own network-device
@@ -180,7 +185,7 @@ Moss-style native registration, retained initializer records and kernel-thread
 probe coordination now have portable and real guest tests, including PCI
 hierarchy/routing, persistent service lifetime and managed Linux e1000.
 The production initializer registers one supported e1000 backend, with native
-[network handles](src/net_device.rs) for real MAC/link/MTU/statistics, owned
+[network handles](src/net/device.rs) for real MAC/link/MTU/statistics, owned
 Ethernet frames, checked TX receipts and FIFO RX. Linux remains the only packet
 driver. All eight [Moss-style integration phases](docs/rust-kernel-linux-drivers.md#moss-style-driver-infrastructure)
 are complete for the selected QEMU profile, including persistent boot and managed
@@ -312,7 +317,7 @@ suite. Guest fixtures live in [src/guest_tests/](src/guest_tests/); synthetic C
 tests live in [compat/guest_tests/](compat/guest_tests/) and separate test archives.
 The IRQ-only helper is explicitly named
 [E1000IrqFixture](src/guest_tests/e1000_irq.rs), not a production NIC driver.
-[linux_driver.rs](src/linux_driver.rs) retains the real Linux control boundary;
+[linux_driver.rs](src/drivers/linux_driver.rs) retains the real Linux control boundary;
 packet fixtures, fault controls and stale-handle assertions are separate.
 
 Portable Rust unit tests use `#[cfg(test)]`. Guest tests instead use

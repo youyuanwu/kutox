@@ -86,13 +86,13 @@ def inputs():
         Path(__file__).resolve(), ROOT / "rust-toolchain.toml",
         ROOT / "compat/audit/common/abi_probe.rs", ROOT / "compat/audit/common/common_layout.c",
         ROOT / "compat/include/common/base_types.h", ROOT / "compat/include/common/device_types.h",
-        ROOT / "src/linux_abi.rs", ROOT / "src/block_abi.rs", ROOT / "src/driver_memory.rs",
-        ROOT / "src/linux_dma.rs", ROOT / "src/dma.rs", ROOT / "src/block_services.rs",
-        ROOT / "src/storage.rs",
-        ROOT / "src/linux_runtime.rs", ROOT / "src/linux_deferred.rs", ROOT / "src/linux_irq.rs",
-        ROOT / "src/linux_driver.rs", ROOT / "src/driver_platform.rs", ROOT / "src/main.rs",
-        ROOT / "src/net_device.rs", ROOT / "src/serial.rs", ROOT / "src/time.rs",
-        ROOT / "src/threads.rs",
+        ROOT / "src/linux_compat/abi.rs", ROOT / "src/linux_compat/block_abi.rs", ROOT / "src/drivers/memory.rs",
+        ROOT / "src/drivers/linux_dma.rs", ROOT / "src/memory/dma.rs", ROOT / "src/storage/block_services.rs",
+        ROOT / "src/storage/mod.rs",
+        ROOT / "src/drivers/linux_runtime.rs", ROOT / "src/drivers/linux_deferred.rs", ROOT / "src/drivers/linux_irq.rs",
+        ROOT / "src/drivers/linux_driver.rs", ROOT / "src/drivers/platform.rs", ROOT / "src/main.rs",
+        ROOT / "src/net/device.rs", ROOT / "src/arch/x86_64/serial.rs", ROOT / "src/runtime/time.rs",
+        ROOT / "src/runtime/threads.rs",
     ]
     files.extend((ROOT / "src/linux_compat").glob("*.rs"))
     files.extend(path for path in (ROOT / "compat/include").rglob("*") if path.is_file())
@@ -186,7 +186,7 @@ def runtime_rust_sources(dependencies):
     for path in sources:
         if path.is_relative_to(ROOT / "compat/audit"):
             raise ValueError(f"kernel runtime depends on an audit source: {path}")
-    if not {ROOT / "src/main.rs", ROOT / "src/driver_memory.rs"} <= sources:
+    if not {ROOT / "src/main.rs", ROOT / "src/drivers/memory.rs"} <= sources:
         raise ValueError("missing native kernel Rust dependency evidence")
     return sorted(str(path) for path in sources if path.suffix == ".rs")
 

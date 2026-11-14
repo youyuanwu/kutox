@@ -714,7 +714,7 @@ synthetic-service cases remain isolated from explicit original module startup.
 ### Tested execution-service profile
 
 [Shared C execution types](../compat/include/common/execution_types.h) and
-[native deferred services](../src/linux_deferred.rs) now supply Phase 2's
+[native deferred services](../src/drivers/linux_deferred.rs) now supply Phase 2's
 bounded environment, tested through [synthetic C callbacks](../compat/guest_tests/driver_execution_test.c).
 These are OS services, not replacement implementations of Linux's watchdog,
 IRQ, poll or packet algorithms.
@@ -735,7 +735,7 @@ IRQ, poll or packet algorithms.
 - NAPI has prepare/deduplication/missed-schedule state, budget 64, completion,
   rescheduling, disable/join, deletion and explicit RX/TX queue associations.
   Poll callbacks never execute inline in the IRQ or scheduler.
-- [C IRQ binding](../src/linux_irq.rs) retains the owned I/O APIC claim and
+- [C IRQ binding](../src/drivers/linux_irq.rs) retains the owned I/O APIC claim and
   handler/`dev_id` backing. The one selected source accepts `IRQF_SHARED`;
   another claimant fails with `-EBUSY`, and probe-shared flags are unsupported.
   The C handler reads the cause itself. IRQ_NONE/HANDLED are counted, invalid
@@ -770,7 +770,7 @@ allocation/MMIO/PCI ownership; C owns its structs and original callback tables.
 The normal image now links all four original driver units for lifecycle and
 linear TX and controlled RX acceptance.
 
-[Memory ownership](../src/driver_memory.rs) consists of 2048 registered
+[Memory ownership](../src/drivers/memory.rs) consists of 2048 registered
 buddy-backed allocations and 1024 streaming map slots. Original allocation
 guards are retained; frees never reconstruct ownership from an arbitrary
 pointer. Complete backing blocks are zeroed, cache/page aligned, RAM/mask
@@ -803,7 +803,7 @@ contract is not a runtime completion proof.
 
 Original `e1000_open` enables RX in `e1000_configure` before requesting IRQ.
 Its failed-IRQ path releases RX backing before its later reset. The
-[platform gate](../src/driver_platform.rs) therefore runs before returning a
+[platform gate](../src/drivers/platform.rs) therefore runs before returning a
 failed C IRQ request, not after the original open has already freed memory.
 It also accompanies original source CTRL.RST writes.
 
@@ -1240,8 +1240,8 @@ they do not replace this roadmap's driver-execution gates.
 ### Moss-style driver infrastructure
 
 The integration milestone has **all eight phases complete**. The native
-[registry policy](../src/driver_registry.rs) and
-[owned manager boundary](../src/drivers.rs) have portable and guarded-thread
+[registry policy](../src/drivers/registry.rs) and
+[owned manager boundary](../src/drivers/manager.rs) have portable and guarded-thread
 guest tests, including retained built-in initializers and probe coordination.
 The e1000 backend now works behind retained native network handles in the
 managed runtime, and normal boot now starts and retains this runtime.
@@ -1318,7 +1318,7 @@ hierarchy support; subsequent phases supply the guest proofs below.
 The new registry/manager is kutox code following Moss's model, not a wholesale
 copy of Moss's FDT/VFS driver subsystem.
 
-Phase 2's [portable inventory](../src/pci_state.rs) enumerates present functions
+Phase 2's [portable inventory](../src/drivers/pci_state.rs) enumerates present functions
 and firmware-assigned type-1 bridge buses without touching unrelated command/
 BAR registers or assigning resources. It rejects malformed headers, primary/
 secondary/subordinate conflicts, sibling overlap, stale identity/parent paths
@@ -1327,7 +1327,7 @@ Unconfigured bridges stay recorded without traversing or assigning a child bus.
 Selection remains separate from enumeration; production admits at most one
 matching e1000 before acquiring its backing.
 
-[Native PCI owners](../src/pci.rs) retain an immutable inventory through device/
+[Native PCI owners](../src/drivers/pci.rs) retain an immutable inventory through device/
 BAR/DMA lifetimes and bind the selected full BDF without rediscovery. Source C
 config operations and location strings carry the same bus identity. Before
 MMIO or I/O reset, the selected BAR spans must fit every enabled ancestor window.
@@ -1347,11 +1347,11 @@ Linux TX/RX acceptance runs at root and one/two bridge levels on the same ISO.
 Phase 6 now uses this inventory/routing for persistent default startup; explicit
 `probe` keeps the earlier MAC proof.
 
-Phase 3's [native initializer records](../src/drivers.rs) use a versioned
+Phase 3's [native initializer records](../src/drivers/manager.rs) use a versioned
 24-byte layout, stable priority/ID ordering and a bounded initializer table.
 [The linker](../linker.ld) retains separate production/test tables and a
 16-byte read-only header, with exact bounds and layout assertions.
-[The kernel boundary](../src/driver_init.rs) rejects bad headers, bounds,
+[The kernel boundary](../src/drivers/init.rs) rejects bad headers, bounds,
 duplicate identities, wrong scope and callbacks outside linked kernel text.
 Raw callback addresses are checked before constructing typed Rust records.
 Registration creates immutable descriptors once per manager epoch, separate
@@ -1390,7 +1390,7 @@ infrastructure bound is **57,880 bytes**, including the 6,944-byte PCI
 inventory/scan allowance, below 64 KiB. Synthetic guest-manager storage is
 test-only, not a second production manager.
 
-Phase 4's [kernel runtime](../src/kernel_runtime.rs) keeps the PCI inventory,
+Phase 4's [kernel runtime](../src/runtime/kernel_runtime.rs) keeps the PCI inventory,
 native manager, APIC, I/O APIC, one-shot timer and stack space owned in a scoped
 boot lifetime. Controllers/timer share owned APIC references; the dispatcher
 borrows stack space only during execution. No movable self-referential resource
@@ -1408,7 +1408,7 @@ without preventing ordinary timed sleeping or unlocked metadata reentry.
 The production table now contains the e1000 descriptor; no-NIC startup retains
 real unclaimed inventory and zero bindings rather than fabricating a device.
 
-The [scheduler idle policy](../src/run_queue.rs) is explicit: finite calls retain
+The [scheduler idle policy](../src/runtime/run_queue.rs) is explicit: finite calls retain
 their previous completion/deadlock/deadline/armed-IRQ behavior; persistent calls
 cannot finish until deliberate shutdown has completed and every stack has
 returned. With no deadline or device IRQ, persistent idle uses the BSP's
@@ -1417,7 +1417,7 @@ Real deadlines and IRQ notifications continue to wake suspended tasks.
 
 Shutdown reserves normal native retirement first, then verifies that source
 IRQ/synchronization users have drained before asking
-[the shared Linux workers](../src/linux_deferred.rs) to stop and join.
+[the shared Linux workers](../src/drivers/linux_deferred.rs) to stop and join.
 Live source work objects produce an explicit busy error and retain the workers;
 the caller retires those objects and retries. Unstarted task admission failures
 roll back owned stacks; started Rust stacks must return normally and are
@@ -1444,7 +1444,7 @@ for **60,377 bytes**. Normal boot now retains the runtime.
 
 #### Managed native network interface
 
-[linux_driver.rs](../src/linux_driver.rs) registers production driver ID 1,
+[linux_driver.rs](../src/drivers/linux_driver.rs) registers production driver ID 1,
 priority 10, for the selected `8086:100e` Ethernet profile. It declares one
 instance and named platform/shared-worker dependencies. The runtime checks the
 completed inventory for multiple matching endpoints before BAR sizing, MMIO,
@@ -1462,8 +1462,8 @@ Link transitions and real packet notifications wake the coordinator to refresh
 source-derived manager readiness and retry eligible dependencies, not a
 fabricated polling worker.
 
-[net_device.rs](../src/net_device.rs) exposes epoch-checked native handles;
-[portable packet values](../src/net_state.rs) contain no Linux-private layouts:
+[net_device.rs](../src/net/device.rs) exposes epoch-checked native handles;
+[portable packet values](../src/net/state.rs) contain no Linux-private layouts:
 
 - `enumerate(runtime)` returns bound network handles even while link readiness
   is still pending. `info()` returns actual MAC, full BDF, link, MTU and source
@@ -1507,8 +1507,8 @@ No new Linux algorithm, network stack or arbitrary hardware support is claimed.
 #### Kernel-client lifecycle
 
 These APIs are kernel-internal, not userspace sockets or a binary driver ABI.
-Use [kernel_runtime.rs](../src/kernel_runtime.rs) and
-[net_device.rs](../src/net_device.rs) from guarded cooperative client threads,
+Use [kernel_runtime.rs](../src/runtime/kernel_runtime.rs) and
+[net_device.rs](../src/net/device.rs) from guarded cooperative client threads,
 with no outer IRQ-saving guard. The normal boot path supplies an empty
 `Clients` list and admits the separate ARP/static IPv4/ICMP protocol future.
 It answers network requests but starts no userspace/socket application.
@@ -1566,7 +1566,7 @@ not APIs required by production consumers.
 
 #### Default runtime boot and end-to-end acceptance
 
-[The boot selector](../src/fw_cfg.rs) chooses `run` when the optional fw_cfg
+[The boot selector](../src/boot/fw_cfg.rs) chooses `run` when the optional fw_cfg
 mode is absent. Explicit `run` is valid in both build profiles; `probe`,
 EEPROM timeout, faults, heap/stack-guard and kernel-test modes keep their
 existing semantics. Configuration and build gating still fail before memory/
@@ -1622,7 +1622,7 @@ complete for this profile.
 
 #### Managed failure, concurrency and callback lifetime
 
-[Manager stop admission](../src/drivers.rs) invokes `NativeDevice::begin_stop`
+[Manager stop admission](../src/drivers/manager.rs) invokes `NativeDevice::begin_stop`
 outside IRQ locks before reserving final retirement. The selected e1000 adapter
 atomically closes existing/new views and wakes waiters, while active operations
 retain their Arc/source backing. `stop` remains the source close/remove and
@@ -1634,7 +1634,7 @@ stopping and resumes on actual completion, not polling or success-shaped error
 suppression. Context-rejected calls do not invoke notifications under outer
 IRQ guards.
 
-[Portable manager tests](../src/driver_manager_tests.rs) exercise exact driver/
+[Portable manager tests](../src/drivers/manager_tests.rs) exercise exact driver/
 device/binding/operation capacities, notification before late reservation
 release, selective stop isolation, deferred publication after startup and
 context-safe completion. The existing duplicate/metadata/cycle/failure/restart
@@ -1723,7 +1723,7 @@ ownership checks and normal diagnostics remain. The callback/packet observer
 boundary remains runtime code, not an unconditional-success substitute.
 
 The IRQ helper is [E1000IrqFixture](../src/guest_tests/e1000_irq.rs), explicitly
-test-only. [linux_driver.rs](../src/linux_driver.rs) is now the core control/
+test-only. [linux_driver.rs](../src/drivers/linux_driver.rs) is now the core control/
 packet ticket adapter; waiting scenarios and stale-ticket assertions live in
 [the guest e1000 fixture](../src/guest_tests/linux_e1000.rs).
 ELF profile checks positively require real driver/service symbols and require

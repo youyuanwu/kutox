@@ -59,7 +59,7 @@ pub unsafe extern "C" fn netif_napi_add(
             irq: 0,
         });
         (*state()).napi[slot] = napi;
-        crate::linux_driver::trace(12, poll.map_or(0, |f| f as usize), napi as usize, 0);
+        crate::drivers::linux_driver::trace(12, poll.map_or(0, |f| f as usize), napi as usize, 0);
     }
 }
 #[unsafe(no_mangle)]

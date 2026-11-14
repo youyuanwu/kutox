@@ -2,7 +2,7 @@
 use crate::boot::BootInfo;
 
 use super::*;
-use crate::completion::{Completion, Error as CompletionError, WaitResult};
+use crate::runtime::completion::{Completion, Error as CompletionError, WaitResult};
 use core::sync::atomic::AtomicUsize;
 use kutox::completion_state::{CompletionState, Error as CompletionStateError};
 

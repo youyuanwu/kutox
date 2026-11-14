@@ -2,11 +2,20 @@
 
 use super::TestCase;
 use crate::{
-    Failure, async_runtime,
+    Failure,
+    arch::x86_64::serial,
     boot::BootInfo,
-    driver_memory, heap,
-    kernel_runtime::{self, Clients, Resources},
-    linux_driver, memory, net_async, net_device, net_stack, serial, threads, time,
+    drivers::linux_driver,
+    drivers::memory as driver_memory,
+    memory,
+    memory::heap,
+    net::async_service as net_async,
+    net::device as net_device,
+    net::stack as net_stack,
+    runtime::async_runtime,
+    runtime::kernel_runtime::{self, Clients, Resources},
+    runtime::threads,
+    runtime::time,
 };
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use kutox::{async_state::Outcome, network_config::Config};
@@ -29,16 +38,18 @@ pub(crate) static TESTS: &[TestCase] = &[
         run: shutdown,
     },
 ];
-static RUNTIME: SpinLockIrq<Option<kernel_runtime::Handle>, crate::cpu::X86Cpu> =
+static RUNTIME: SpinLockIrq<Option<kernel_runtime::Handle>, crate::arch::x86_64::cpu::X86Cpu> =
     SpinLockIrq::new(None);
-static SESSION: SpinLockIrq<Option<net_async::Session>, crate::cpu::X86Cpu> =
+static SESSION: SpinLockIrq<Option<net_async::Session>, crate::arch::x86_64::cpu::X86Cpu> =
     SpinLockIrq::new(None);
-static OLD_SESSION: SpinLockIrq<Option<net_async::Session>, crate::cpu::X86Cpu> =
+static OLD_SESSION: SpinLockIrq<Option<net_async::Session>, crate::arch::x86_64::cpu::X86Cpu> =
     SpinLockIrq::new(None);
-static OLD_RUNTIME: SpinLockIrq<Option<kernel_runtime::Handle>, crate::cpu::X86Cpu> =
+static OLD_RUNTIME: SpinLockIrq<Option<kernel_runtime::Handle>, crate::arch::x86_64::cpu::X86Cpu> =
     SpinLockIrq::new(None);
-static CONFIG: SpinLockIrq<Option<Config>, crate::cpu::X86Cpu> = SpinLockIrq::new(None);
-static COPY: SpinLockIrq<Option<net_async::Packet>, crate::cpu::X86Cpu> = SpinLockIrq::new(None);
+static CONFIG: SpinLockIrq<Option<Config>, crate::arch::x86_64::cpu::X86Cpu> =
+    SpinLockIrq::new(None);
+static COPY: SpinLockIrq<Option<net_async::Packet>, crate::arch::x86_64::cpu::X86Cpu> =
+    SpinLockIrq::new(None);
 static RETAIN: AtomicBool = AtomicBool::new(false);
 static EPOCH: AtomicUsize = AtomicUsize::new(0);
 const PAYLOADS: [usize; 5] = [0, 32, 64, 512, 1472];

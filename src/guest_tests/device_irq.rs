@@ -3,13 +3,15 @@
 use crate::guest_tests::e1000_irq::{self, E1000IrqFixture, ICR, ICS, read, write};
 use crate::{
     Failure,
+    arch::x86_64::cpu::{self, X86Cpu},
+    arch::x86_64::irq::{self, LocalApic, external::IoApic},
+    arch::x86_64::platform,
     boot::BootInfo,
-    completion::{Completion, WaitResult},
-    cpu::{self, X86Cpu},
-    irq::{self, LocalApic, external::IoApic},
-    memory, pci, platform,
-    threads::Scheduler,
-    time,
+    drivers::pci,
+    memory,
+    runtime::completion::{Completion, WaitResult},
+    runtime::threads::Scheduler,
+    runtime::time,
 };
 use core::sync::atomic::{AtomicUsize, Ordering};
 use kutox::completion_state::CompletionState;
@@ -29,8 +31,8 @@ fn handle() -> Result<(), Failure> {
         Failure::new(
             "e1000_irq_completion",
             match error {
-                crate::completion::Error::Context(error) => error as i32,
-                crate::completion::Error::State(error) => error as i32,
+                crate::runtime::completion::Error::Context(error) => error as i32,
+                crate::runtime::completion::Error::State(error) => error as i32,
             },
         )
     })?;

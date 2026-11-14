@@ -1,5 +1,7 @@
 use crate::linux_compat::tests::block_tests as fixture;
-use crate::{Failure, boot::BootInfo, irq, memory, serial, time};
+use crate::{
+    Failure, arch::x86_64::irq, arch::x86_64::serial, boot::BootInfo, memory, runtime::time,
+};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 static FIRED: AtomicBool = AtomicBool::new(false);
@@ -26,7 +28,7 @@ pub fn ownership(
     }
     fixture::irq_finish();
     drop(timer);
-    if !crate::block_services::quiescent() {
+    if !crate::storage::block_services::quiescent() {
         return Err(Failure::new("block_services_live", -1));
     }
     serial::print(format_args!(

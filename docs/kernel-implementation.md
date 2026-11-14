@@ -3,9 +3,42 @@
 Detailed foundation and driver-service contracts, moved from the README.
 For current boot and network behavior, see the [async/network guide](async-kernel-networking.md).
 
+## Source organization
+
+The kernel uses subsystem modules within one package, not separate crates for
+each service:
+
+| Directory | Responsibility |
+| --- | --- |
+| [`arch/x86_64/`](../src/arch/x86_64/) | CPU operations, exceptions, APIC/IRQ routing, platform validation, low-level I/O and assembly entry points. |
+| [`boot/`](../src/boot/) | Limine metadata, firmware configuration and read-only rootfs program boot. |
+| [`memory/`](../src/memory/) | Physical frames, page tables, heap, native DMA ownership and user mappings. |
+| [`runtime/`](../src/runtime/) | Threads, scheduling, timers, synchronization, the async executor and persistent service scope. |
+| [`drivers/`](../src/drivers/) | Native driver management, PCI discovery, driver resources and the native backends used by Linux compatibility services. |
+| [`net/`](../src/net/) | Owned packets, the async broker, IPv4 stack, TCP, UDP and DNS. |
+| [`storage/`](../src/storage/) | Scoped native disk access and block resource services. |
+| [`user/`](../src/user/) | CPL3 execution, resumable tasks and portable syscall policy. |
+| [`linux_compat/`](../src/linux_compat/) | Linux C ABI providers, safe native ownership frontends and private raw adapters. |
+| [`testing/`](../src/testing/) | Portable test selection and cleanup accounting. |
+| [`guest_tests/`](../src/guest_tests/) | Feature-gated guest acceptance fixtures. |
+
+[The kernel entry point](../src/main.rs) wires these subsystems together.
+Implementation modules are crate-private; existing public service types and
+ownership contracts remain unchanged. In particular, raw compatibility adapters
+stay private to `linux_compat`, and no additional registry or forwarding service
+layer is introduced.
+
+Portable state machines live beside their corresponding native subsystem, but
+[the library root](../src/lib.rs) selects only host-testable sources with explicit
+paths. Its existing public module names, such as `kutox::async_state` and
+`kutox::net_state`, remain stable. Guest fixtures that need private implementation
+access are still compiled as children of their original service, only when
+`guest-tests` is enabled. Moving a file does not broaden its build profile or
+turn native hardware code into a host library dependency.
+
 ## Owned user address spaces
 
-[The native memory service](../src/user_memory.rs) adapts Moss's
+[The native memory service](../src/memory/user.rs) adapts Moss's
 [permission types](../third_party/moss-libkernel/src/memory/permissions.rs) and
 [reduced address-space contract](../third_party/moss-libkernel/src/memory/address_space.rs).
 It keeps the existing `x86_64` mapper and exclusive Moss-derived frame guards;
@@ -189,7 +222,7 @@ and a named Limine module. Both ON and OFF package the same ordinary program;
 it is not a guest fixture or an `include_bytes!` payload in the kernel.
 The existing whole-ISO/kernel/profile identity manifest still protects packaging.
 
-[Boot collection](../src/boot.rs) accepts at most one `kutox-rootfs` module,
+[Boot collection](../src/boot/mod.rs) accepts at most one `kutox-rootfs` module,
 checks its exact size and its whole physical span against Limine
 EXECUTABLE_AND_MODULES memory, then borrows the mapped bytes immutably. Those
 frames are not USABLE and are never handed to the physical allocator. The
@@ -211,7 +244,7 @@ directory sizes are bounded before iteration and regular-file size before open.
 Only nonempty regular files up to 64 KiB are loaded; fallible allocation and
 chunked reads retain short-I/O handling. Lookup, format, range, size and upstream
 filesystem errors are explicit, with upstream diagnostic detail logged.
-The [native boot service](../src/boot_fs.rs) reads the fixed `/bin/init` path,
+The [native boot service](../src/boot/fs.rs) reads the fixed `/bin/init` path,
 passes those bytes to the existing checked x86_64 static ELF loader, then drops
 the temporary file/filesystem before entry. All existing ELF/window/W^X/stack
 restrictions remain; this does not add Linux binary compatibility.
@@ -240,7 +273,7 @@ The [Rust block provider](../src/linux_compat/block.rs) implements the first sto
 source-facing service boundary, not a Linux block layer or a hardware driver.
 Its [runtime header](../compat/include/block/services.h) uses the same block-class
 declarations as the audit, without including audit headers or markers.
-The [Rust platform adapter](../src/block_services.rs)
+The [Rust platform adapter](../src/storage/block_services.rs)
 uses the existing Moss-backed kernel heap and the existing boot/thread context
 check; it does not reuse e1000's NIC-bound allocation/DMA registry or reinterpret
 its device structs.
@@ -341,7 +374,7 @@ acceptance below.
 
 [The Rust compatibility adapter](../src/linux_compat/storage.rs) connects all
 seven unchanged Linux storage units to the bounded block provider.
-[The platform backend](../src/storage.rs)
+[The platform backend](../src/storage/mod.rs)
 supplies owned PCI/BAR/MMIO, allocation and DMA services. Compilation follows
 e1000's direct freestanding Clang approach; no Kbuild or native Rust VirtIO ring
 implementation is introduced. Both drivers now use the same checked
@@ -481,7 +514,7 @@ from the selected Linux-facing C ABI providers. Genuine C providers use
   The raw-address Rust probe is unsafe; its caller must retain the identified
   device's owned mapping for the complete C probe.
 - `block.rs`: raw request/PDU/payload state, queue/scatterlist services, cancellation
-  and deferred completion, with separate [block ABI types](../src/block_abi.rs).
+  and deferred completion, with separate [block ABI types](../src/linux_compat/block_abi.rs).
 - `optional.rs`: explicit unsupported operations and bounded network helpers.
 - `diagnostics.rs`: bounded formatting, output sinks, warning state and logging
   policy, including C-variadic definitions using stable `core::ffi::VaList`.
@@ -489,7 +522,7 @@ from the selected Linux-facing C ABI providers. Genuine C providers use
   forwarding APIs clone the caller's cursor before formatting.
 
 [Shared base/device headers](../compat/include/common/device_types.h) and
-[Rust `repr(C)` contracts](../src/linux_abi.rs) replace the former incompatible
+[Rust `repr(C)` contracts](../src/linux_compat/abi.rs) replace the former incompatible
 minimal/e1000/storage device and PCI declarations. A freestanding Rust probe
 and actual C probes in all three profiles compare 37 layout/offset/GFP values.
 The network profile additionally compares 122 packet/device/NAPI layout and
@@ -580,7 +613,7 @@ callback. IRQ owner operations validate a monotonic registration generation
 before masking or synchronizing, so a stale owner cannot retire a replacement
 at the same IRQ/data address. Legacy C IRQ synchronization without a handler
 remains supported. No second registration registry is introduced.
-Native Rust-only helpers such as [net_device::wake](../src/net_device.rs) may
+Native Rust-only helpers such as [net_device::wake](../src/net/device.rs) may
 inline out of the optimized kernel; guest acceptance checks their wake behavior
 rather than requiring a standalone helper symbol. Original driver callback and
 fixture gates remain.
@@ -623,7 +656,7 @@ while guest guards still verify complete resource retirement.
 
 ## Timer-bounded ring-3 runs
 
-[The native service](../src/user.rs), explicitly named `kutox_user_bringup`,
+[The native service](../src/user/mod.rs), explicitly named `kutox_user_bringup`,
 runs one program synchronously in an exclusively borrowed owned address space.
 It now requires a calibrated, stopped `irq::Timer` and a budget of
 1..=1,000,000 microseconds. The current bring-up caller is quiescent boot context,
@@ -637,7 +670,7 @@ page. A full initial page has no push headroom; overflowing below it remains a
 contained user fault. Invalid admission returns a
 kernel error without entering user mode or publishing active state.
 
-[Native assembly](../src/user_entry.S) saves the kernel's callee-saved registers
+[Native assembly](../src/arch/x86_64/user_entry.S) saves the kernel's callee-saved registers
 and continuation stack, clears all user general registers, and uses `iretq`
 with user GDT selectors, IOPL zero and IF set. The existing supervisor-only
 16-KiB TSS RSP0 stack receives user exceptions and the DPL3 interrupt gate at
@@ -698,7 +731,7 @@ user return and always builds the kernel continuation frame.
 The same bounds/flag gate protects returning hardware IRQs. Deadline checks
 also occur before syscall work and before resuming after that work.
 
-The [portable user-copy planner](../src/user_state.rs) checks the entire range
+The [portable user-copy planner](../src/user/state.rs) checks the entire range
 against a snapshot of owned, effectively readable user mappings before copying
 at most two physical segments through the kernel direct map. The exclusive
 address-space borrow pins these frames throughout the run; no raw user pointer
@@ -747,12 +780,12 @@ page. Normal boot runs no userspace demo or fixture.
 
 ## Resumable user tasks
 
-The [bounded dispatcher](../src/user_tasks.rs) owns at most two address spaces
+The [bounded dispatcher](../src/user/tasks.rs) owns at most two address spaces
 and saved user contexts. Its [context port](../third_party/moss-libkernel/src/task/context.rs)
 adapts pinned Moss's `src/process/ctx.rs`: `from_user_ctx`, user access, save
 and restore retain owned snapshot semantics, but typed `Copy` values replace
 raw-pointer copies and no signal/kernel futures are imported. The existing
-[FIFO](../src/run_queue.rs), already built on ported Moss `TaskState`, supplies
+[FIFO](../src/runtime/run_queue.rs), already built on ported Moss `TaskState`, supplies
 runnable/running/finished transitions, generation-bearing handles and reaping.
 There is no second ready-queue or task-state implementation.
 
@@ -1000,23 +1033,23 @@ both builds, with all images and acceptance code ON-only.
 
 ## Implementation boundaries
 
-- [CPU support](../src/cpu.rs) implements `CpuOps` for the BSP. It requires one
+- [CPU support](../src/arch/x86_64/cpu.rs) implements `CpuOps` for the BSP. It requires one
   Limine-discovered CPU, reports the hardware initial APIC ID, and retains only
   the interrupt-enable bit when saving/restoring interrupt state. It does not
   overwrite unrelated RFLAGS. Halting disables interrupts and executes `hlt`.
-- [Exception support](../src/exceptions.rs) installs kernel-owned GDT, TSS, and all
+- [Exception support](../src/arch/x86_64/exceptions.rs) installs kernel-owned GDT, TSS, and all
   256 interrupt gates. Separate permanent stacks back NMI, double-fault, and
   machine-check IST entries. These stacks have no guard pages yet.
-  [Assembly entry stubs](../src/exception_entry.S) normalize hardware error codes,
+  [Assembly entry stubs](../src/arch/x86_64/exception_entry.S) normalize hardware error codes,
   preserve general-purpose registers, clear DF for the Rust ABI, align the call
   stack, and return via `iretq` for an expected breakpoint or an owned APIC timer/
   device/spurious interrupt. The separate cooperative user boundary handles
   owned user traps; unexpected kernel interrupts/exceptions still fail explicitly.
-- [IRQ support](../src/irq.rs) reference-counts ownership of the BSP's xAPIC through a
+- [IRQ support](../src/arch/x86_64/irq.rs) reference-counts ownership of the BSP's xAPIC through a
   separate supervisor-only writable/NX, uncacheable mapping. All local interrupt
   sources start masked, and only the timer is intentionally unmasked. The legacy
   PIC stays fully masked; the local APIC is disabled at boot and between tests.
-  [Owned I/O APIC claims](../src/external_irq.rs) separately enable the selected
+  [Owned I/O APIC claims](../src/arch/x86_64/external_irq.rs) separately enable the selected
   device vector; timer teardown does not disable a controller still in use.
   AP startup, x2APIC, broader device routing, independently scheduled userspace, FPU/SIMD switching,
   and preemptive scheduling remain unsupported.
@@ -1040,8 +1073,8 @@ both builds, with all images and acceptance code ON-only.
   pending delivery while its handler/mapping are live, then releases its APIC
   reference. Final controller release disables the local APIC, restores its
   original base MSR, then releases all mapping frames.
-- [ACPI discovery](../src/platform.rs) uses bounded, checksum-validated
-  [parsers and route policy](../src/irq_platform.rs). Firmware tables are copied
+- [ACPI discovery](../src/arch/x86_64/platform.rs) uses bounded, checksum-validated
+  [parsers and route policy](../src/arch/x86_64/irq_platform.rs). Firmware tables are copied
   through owned read-only WB mappings, including SeaBIOS reserved RAM after
   validating QEMU/PIIX identity and RAM bounds. The supported profile has one
   xAPIC CPU, one I/O APIC, at most 1 GiB RAM, and a root or conventionally bridged
@@ -1056,7 +1089,7 @@ both builds, with all images and acceptance code ON-only.
   Duplicate/stale claims fail explicitly. Bus mastering, RX and TX remain
   disabled in this interrupt-only proof; shared-source demultiplexing, MSI/MSI-X and Linux `request_irq`
   remain absent.
-- [Coherent DMA buffers](../src/dma.rs) retain exclusive Moss frame guards for
+- [Coherent DMA buffers](../src/memory/dma.rs) retain exclusive Moss frame guards for
   physically contiguous blocks. Sizes are 1 byte through 4 MiB, with power-of-two
   alignment up to 4 MiB; the complete rounded backing block is zeroed and checked
   against the device mask and verified RAM extent. CPU addresses use the WB HHDM,
@@ -1074,7 +1107,7 @@ both builds, with all images and acceptance code ON-only.
   A bounded unsafe `device_read_u32()` permits an aligned, in-range coherent
   descriptor-status observation while device-owned, without exposing a slice or
   transferring ownership.
-- [The coherent Rust backend](../src/linux_dma.rs) explicitly binds one static opaque
+- [The coherent Rust backend](../src/drivers/linux_dma.rs) explicitly binds one static opaque
   C device and at most eight buffers. It supplies `dma_set_mask_and_coherent`,
   `dma_alloc_coherent`, `dma_free_coherent`, `dma_wmb` and `dma_rmb`.
   Only the admitted Linux `GFP_KERNEL` flags are accepted. Exhaustion/capacity
@@ -1090,7 +1123,7 @@ both builds, with all images and acceptance code ON-only.
   The [C boundary test](../compat/guest_tests/dma_test.c) covers real DMA
   declarations/macros and unchanged handle outputs on exhaustion.
   They never enable bus mastering or a DMA engine.
-- [The original Linux TX fixture](../src/linux_driver.rs) calls registered source
+- [The original Linux TX fixture](../src/drivers/linux_driver.rs) calls registered source
   callbacks through [the Rust lifecycle adapter](../src/linux_compat/lifecycle.rs).
   Only Linux
   constructs and reclaims descriptors. Rust supplies source-facing allocation,
@@ -1108,8 +1141,8 @@ both builds, with all images and acceptance code ON-only.
   that the kernel supports SMP. The adapted `CpuOps` adds mandatory per-CPU
   IRQ-guard acquisition/release/depth hooks; the single-CPU backend counts all
   guards and rejects a cooperative switch until every guard is released.
-- [Cooperative threads](../src/threads.rs) use a bounded, allocation-free
-  [FIFO policy](../src/run_queue.rs), with eight task slots and one kernel address
+- [Cooperative threads](../src/runtime/threads.rs) use a bounded, allocation-free
+  [FIFO policy](../src/runtime/run_queue.rs), with eight task slots and one kernel address
   space. `spawn` takes a function pointer and integer argument; `yield_now`
   resumes the same call stack on a later turn. `run` returns when all tasks have
   exited. Threads exit by returning normally, so Rust locals are dropped before
@@ -1157,8 +1190,8 @@ both builds, with all images and acceptance code ON-only.
   the task return normally so its Rust locals are dropped. It is not forced
   thread termination or stack unwinding. Dropping never-run tasks remains
   supported; discarding any started, suspended Rust stack is explicitly rejected.
-- [Native completions](../src/completion.rs) combine the existing Moss IRQ lock
-  and native wait queue with a [portable counting policy](../src/completion_state.rs).
+- [Native completions](../src/runtime/completion.rs) combine the existing Moss IRQ lock
+  and native wait queue with a [portable counting policy](../src/runtime/completion_state.rs).
   `complete()` adds one remembered credit and notifies one blocked FIFO waiter.
   `try_wait()` consumes one available credit without sleeping; `wait(timeout_us)`
   returns `Completed`, `TimedOut`, or `Cancelled`. Woken tasks recheck the credit
@@ -1185,7 +1218,7 @@ both builds, with all images and acceptance code ON-only.
   breakpoint probe verifies interrupt-entry rejection without modifying stored
   credits. Completion metadata stays locked through the non-scheduling wake,
   in completion-then-runnable-state order; thread callers yield after unlocking.
-- [Sleeping mutexes](../src/mutex.rs) adapt Moss's protected-data/RAII-guard layout
+- [Sleeping mutexes](../src/runtime/mutex.rs) adapt Moss's protected-data/RAII-guard layout
   to the native thread runtime. Static `Mutex<T>` values expose `lock()`,
   `try_lock()`, and `lock_timeout(usec)`, returning guards with `Deref`/`DerefMut`
   access. Unique Rust ownership also permits `get_mut()` and `into_inner()`
@@ -1212,7 +1245,7 @@ both builds, with all images and acceptance code ON-only.
   abandoned-owner recovery, or SMP support. These are native Rust mutexes;
   the shared Rust compatibility adapter supplies a smaller Linux-facing API.
 - [Rust C-ABI execution services](../src/linux_compat/execution.rs) call the
-  [native adapter](../src/linux_runtime.rs) for `msleep`, `cond_resched`, mutexes,
+  [native adapter](../src/drivers/linux_runtime.rs) for `msleep`, `cond_resched`, mutexes,
   and selected completion APIs. In thread context `msleep` genuinely suspends
   the C stack and `cond_resched` yields, returning 1. In the interrupt-disabled
   quiescent boot dispatcher only `cond_resched` (returning 0), non-sleeping
@@ -1264,13 +1297,13 @@ both builds, with all images and acceptance code ON-only.
   ownership/context/lifecycle requests, registry capacity/reuse, and complete
   cleanup. No additional Linux translation unit is imported for this test;
   it proves this execution-API subset, not a complete Linux driver.
-- [Context switching](../src/context_switch.S) saves the six SysV callee-saved
+- [Context switching](../src/arch/x86_64/context_switch.S) saves the six SysV callee-saved
   registers and RSP; the saved return address resumes execution. The initial
   trampoline verifies SysV stack alignment. All switching requires interrupts
   disabled, no held IRQ guards, no interrupt/exception dispatch, and no nested dispatcher. There is no timer
   preemption, migration, user-task scheduling, or FPU/SIMD state switch.
   A thread that never yields can monopolize the CPU. Panics abort the guest.
-- [Stack mappings](../src/memory.rs) provide each thread a 16 KiB writable/NX
+- [Stack mappings](../src/memory/mod.rs) provide each thread a 16 KiB writable/NX
   supervisor stack between unmapped lower and upper guards in a private virtual
   window. The physical backing remains owned by a buddy guard. Page-table access
   is scoped under an IRQ lock rather than retained across yields; stack and MMIO
@@ -1278,7 +1311,7 @@ both builds, with all images and acceptance code ON-only.
   release, with shared intermediate tables released when the final stack leaves.
   The isolated guard test is a deliberate guard read, not stack-overflow recovery.
   Boot and exception IST stacks retain their existing unguarded storage.
-- [Boot configuration](../src/fw_cfg.rs) reads the optional mode file through
+- [Boot configuration](../src/boot/fw_cfg.rs) reads the optional mode file through
   the QEMU I/O selector/data interface during interrupt-disabled boot. Directory
   scanning and payload sizes are bounded; host tests exercise the same parser.
 - [Moss bootstrap memory](../third_party/moss-libkernel/src/memory) is a dependency-free,
@@ -1303,7 +1336,7 @@ both builds, with all images and acceptance code ON-only.
   following the payload. Blocks are at most 4 MiB including the guard/padding;
   payloads therefore have a slightly smaller maximum. Alignment up to 4 MiB is
   supported. The direct-map offset must preserve maximum-order alignment.
-- [Heap integration](../src/heap.rs) publishes frame/heap instances in permanent
+- [Heap integration](../src/memory/heap.rs) publishes frame/heap instances in permanent
   kernel BSS exactly once before any Rust allocation. Early allocation and
   repeated initialization fail explicitly. `GlobalAlloc` returns null on
   allocation failure; Rust's default zeroing and allocate/copy/free reallocation
@@ -1354,14 +1387,14 @@ both builds, with all images and acceptance code ON-only.
 
 ### Source-facing driver memory and packet services
 
-[The driver memory backend](../src/driver_memory.rs) retains exclusive buddy-page
+[The driver memory backend](../src/drivers/memory.rs) retains exclusive buddy-page
 allocation guards in a 2048-entry provenance registry. Streaming DMA has 1024
 range/direction/device-bound slots; allocations remain pinned through map,
 partial CPU sync and exact unmap. Standard unmap trusts the unchanged driver's
 completion or unpublished-abort contract, rather than guessing completion or
 requiring custom publish/reclaim calls. Normal TX unmap does not stop RX.
 
-[The platform owner](../src/driver_platform.rs) binds PCI, validated identity-DMA
+[The platform owner](../src/drivers/platform.rs) binds PCI, validated identity-DMA
 RAM and an owned MMIO mapping before upstream-style master/map/mask ordering.
 The boot-MAC MMIO window remains separate. A QEMU-only gate disables/flushed
 RX/TX, masks/drains the IRQ route with backing live, and checks disabled engines.

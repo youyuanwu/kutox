@@ -531,7 +531,7 @@ The deliberately failing acceptance case exercises this diagnostic path.
 
 The per-case fixture always checks frame/heap invariants, exact resource
 snapshots and shared quiescence after ordinary success or failure. Corruption
-still aborts the boot. [Bounded cleanup actions](../src/test_cleanup.rs) run in
+still aborts the boot. [Bounded cleanup actions](../src/testing/cleanup.rs) run in
 reverse order, including ordinary early returns; capacity rejection runs the
 unregistered action immediately and reports cleanup errors. These actions are
 for synchronous, owned fixture state only. Accepted DMA and async services must

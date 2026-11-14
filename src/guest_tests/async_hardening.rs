@@ -2,13 +2,24 @@
 
 use super::TestCase;
 use crate::{
-    Failure, async_runtime as runtime, async_sync,
+    Failure,
+    arch::x86_64::cpu::X86Cpu,
+    arch::x86_64::serial,
     boot::BootInfo,
-    cpu::X86Cpu,
-    driver_memory, heap,
-    kernel_runtime::{self, Clients, Resources, Stage},
-    linux_deferred, linux_driver, linux_irq, memory, net_async, net_device, net_stack, serial,
-    threads, time,
+    drivers::linux_deferred,
+    drivers::linux_driver,
+    drivers::linux_irq,
+    drivers::memory as driver_memory,
+    memory,
+    memory::heap,
+    net::async_service as net_async,
+    net::device as net_device,
+    net::stack as net_stack,
+    runtime::async_runtime as runtime,
+    runtime::async_sync,
+    runtime::kernel_runtime::{self, Clients, Resources, Stage},
+    runtime::threads,
+    runtime::time,
 };
 use core::{
     future::Future,
@@ -147,7 +158,7 @@ fn arm_irq(kind: usize) {
     IRQ_KIND.store(kind, Ordering::Release);
     IRQ_REQUEST.store(true, Ordering::Release);
 }
-pub(crate) fn before_idle(timer: &crate::irq::Timer<'_, '_>) -> Result<(), Failure> {
+pub(crate) fn before_idle(timer: &crate::arch::x86_64::irq::Timer<'_, '_>) -> Result<(), Failure> {
     if IRQ_REQUEST.swap(false, Ordering::AcqRel) {
         timer.schedule_handler(time::deadline_after_us(1000)?, irq_wake)?;
     }

@@ -131,11 +131,11 @@ pub extern "C" fn virt_mb() {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn dma_wmb() {
-    crate::dma::write_barrier()
+    crate::memory::dma::write_barrier()
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn dma_rmb() {
-    crate::dma::read_barrier()
+    crate::memory::dma::read_barrier()
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn virt_wmb() {
@@ -163,14 +163,14 @@ pub extern "C" fn msecs_to_jiffies(ms: u32) -> usize {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn msleep(ms: u32) {
-    crate::linux_runtime::msleep(ms)
+    crate::drivers::linux_runtime::msleep(ms)
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn storage_msleep(ms: u32) {
     context();
     require(ms <= 1000, c"storage_sleep_bound");
     {
-        crate::time::delay_us(ms as u64 * 1000);
+        crate::runtime::time::delay_us(ms as u64 * 1000);
         crate::storage::clock(1);
     }
 }
@@ -178,12 +178,12 @@ pub extern "C" fn storage_msleep(ms: u32) {
 pub extern "C" fn mdelay(ms: usize) {
     require(ms <= 1000, c"mdelay_bound");
     for _ in 0..ms {
-        crate::time::delay_us(1000)
+        crate::runtime::time::delay_us(1000)
     }
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn usleep_range(minimum: usize, maximum: usize) {
-    crate::linux_runtime::sleep_range(minimum as u64, maximum as u64)
+    crate::drivers::linux_runtime::sleep_range(minimum as u64, maximum as u64)
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn msleep_interruptible(_ms: u32) -> usize {
@@ -191,7 +191,7 @@ pub extern "C" fn msleep_interruptible(_ms: u32) -> usize {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn cond_resched() -> i32 {
-    crate::linux_runtime::cond_resched()
+    crate::drivers::linux_runtime::cond_resched()
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn might_sleep() {
@@ -209,24 +209,24 @@ unsafe fn mutex_key(p: *mut Mutex) -> usize {
     let key = p as usize;
     if unsafe { (*p).generation } == 0 {
         let thread = checked(
-            crate::linux_runtime::context_code(),
+            crate::drivers::linux_runtime::context_code(),
             c"mutex_register_context",
         );
         if thread == 0 {
             return key;
         }
         checked(
-            unsafe { crate::linux_runtime::mutex(key, 0) },
+            unsafe { crate::drivers::linux_runtime::mutex(key, 0) },
             c"mutex_register",
         );
         unsafe {
-            (*p).generation = crate::linux_runtime::object_generation(key, 0);
+            (*p).generation = crate::drivers::linux_runtime::object_generation(key, 0);
         }
     }
     require(
         unsafe {
             (*p).generation != 0
-                && (*p).generation == crate::linux_runtime::object_generation(key, 0)
+                && (*p).generation == crate::drivers::linux_runtime::object_generation(key, 0)
         },
         c"stale_mutex_generation",
     );
@@ -237,17 +237,18 @@ pub unsafe extern "C" fn mutex_init(p: *mut Mutex) {
     validate(p);
     require(
         unsafe {
-            crate::linux_runtime::object_generation(p as usize, 0) == 0 || (*p).boot_held == 0
+            crate::drivers::linux_runtime::object_generation(p as usize, 0) == 0
+                || (*p).boot_held == 0
         },
         c"mutex_init_boot_held",
     );
     checked(
-        unsafe { crate::linux_runtime::mutex(p as usize, 0) },
+        unsafe { crate::drivers::linux_runtime::mutex(p as usize, 0) },
         c"mutex_init",
     );
     unsafe {
         (*p).boot_held = 0;
-        (*p).generation = crate::linux_runtime::object_generation(p as usize, 0);
+        (*p).generation = crate::drivers::linux_runtime::object_generation(p as usize, 0);
     }
 }
 #[unsafe(no_mangle)]
@@ -257,7 +258,7 @@ pub unsafe extern "C" fn mutex_destroy(p: *mut Mutex) {
     }
     require(unsafe { (*p).boot_held == 0 }, c"mutex_destroy_held");
     checked(
-        unsafe { crate::linux_runtime::mutex(mutex_key(p), 4) },
+        unsafe { crate::drivers::linux_runtime::mutex(mutex_key(p), 4) },
         c"mutex_destroy",
     );
     unsafe {
@@ -267,9 +268,13 @@ pub unsafe extern "C" fn mutex_destroy(p: *mut Mutex) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mutex_lock(p: *mut Mutex) {
     let key = unsafe { mutex_key(p) };
-    if checked(crate::linux_runtime::context_code(), c"mutex_context") == 0 {
+    if checked(
+        crate::drivers::linux_runtime::context_code(),
+        c"mutex_context",
+    ) == 0
+    {
         require(
-            unsafe { crate::linux_runtime::mutex(key, 5) } == 0,
+            unsafe { crate::drivers::linux_runtime::mutex(key, 5) } == 0,
             c"mutex_boot_owner",
         );
         require(
@@ -281,7 +286,7 @@ pub unsafe extern "C" fn mutex_lock(p: *mut Mutex) {
     } else {
         require(unsafe { (*p).boot_held == 0 }, c"mutex_boot_held");
         checked(
-            unsafe { crate::linux_runtime::mutex(key, 1) },
+            unsafe { crate::drivers::linux_runtime::mutex(key, 1) },
             c"mutex_lock",
         );
     }
@@ -290,12 +295,12 @@ pub unsafe extern "C" fn mutex_lock(p: *mut Mutex) {
 pub unsafe extern "C" fn mutex_trylock(p: *mut Mutex) -> i32 {
     let key = unsafe { mutex_key(p) };
     if checked(
-        crate::linux_runtime::context_code(),
+        crate::drivers::linux_runtime::context_code(),
         c"mutex_trylock_context",
     ) == 0
     {
         if checked(
-            unsafe { crate::linux_runtime::mutex(key, 5) },
+            unsafe { crate::drivers::linux_runtime::mutex(key, 5) },
             c"mutex_boot_owner",
         ) != 0
         {
@@ -310,7 +315,7 @@ pub unsafe extern "C" fn mutex_trylock(p: *mut Mutex) -> i32 {
         0
     } else {
         checked(
-            unsafe { crate::linux_runtime::mutex(key, 2) },
+            unsafe { crate::drivers::linux_runtime::mutex(key, 2) },
             c"mutex_trylock",
         )
     }
@@ -319,7 +324,7 @@ pub unsafe extern "C" fn mutex_trylock(p: *mut Mutex) -> i32 {
 pub unsafe extern "C" fn mutex_unlock(p: *mut Mutex) {
     let key = unsafe { mutex_key(p) };
     if checked(
-        crate::linux_runtime::context_code(),
+        crate::drivers::linux_runtime::context_code(),
         c"mutex_unlock_context",
     ) == 0
     {
@@ -331,7 +336,7 @@ pub unsafe extern "C" fn mutex_unlock(p: *mut Mutex) {
         held.store(0, Ordering::Release);
     } else {
         checked(
-            unsafe { crate::linux_runtime::mutex(key, 3) },
+            unsafe { crate::drivers::linux_runtime::mutex(key, 3) },
             c"mutex_unlock",
         );
     }
@@ -343,7 +348,7 @@ pub unsafe extern "C" fn mutex_is_locked(p: *mut Mutex) -> i32 {
     i32::from(
         unsafe { (*p).boot_held != 0 }
             || checked(
-                unsafe { crate::linux_runtime::mutex(key, 5) },
+                unsafe { crate::drivers::linux_runtime::mutex(key, 5) },
                 c"mutex_is_locked",
             ) != 0,
     )
@@ -365,15 +370,15 @@ pub unsafe extern "C" fn kutox_spin_lock_irqsave(p: *mut Spinlock) -> usize {
     unsafe {
         object(p);
     }
-    let flags = { crate::linux_runtime::irq_save() };
-    let owner = { crate::linux_runtime::spin_owner() };
+    let flags = { crate::drivers::linux_runtime::irq_save() };
+    let owner = { crate::drivers::linux_runtime::spin_owner() };
     require(
         unsafe { AtomicU8::from_ptr(ptr::addr_of_mut!((*p).held)) }.swap(1, Ordering::Acquire) == 0,
         c"spin_contention_or_recursion",
     );
     unsafe {
         (*p).owner = owner;
-        crate::linux_runtime::irq_acquired();
+        crate::drivers::linux_runtime::irq_acquired();
     }
     flags as usize
 }
@@ -384,13 +389,13 @@ pub unsafe extern "C" fn kutox_spin_unlock_irqrestore(p: *mut Spinlock, flags: u
     }
     require(
         unsafe { AtomicU8::from_ptr(ptr::addr_of_mut!((*p).held)) }.load(Ordering::Relaxed) != 0
-            && unsafe { (*p).owner == crate::linux_runtime::spin_owner() },
+            && unsafe { (*p).owner == crate::drivers::linux_runtime::spin_owner() },
         c"spin_unlock_owner",
     );
     unsafe {
         (*p).owner = 0;
         AtomicU8::from_ptr(ptr::addr_of_mut!((*p).held)).store(0, Ordering::Release);
-        crate::linux_runtime::irq_released(flags as u64);
+        crate::drivers::linux_runtime::irq_released(flags as u64);
     }
 }
 #[unsafe(no_mangle)]
@@ -420,7 +425,8 @@ unsafe fn completion_key(p: *mut Completion) -> usize {
     require(
         unsafe {
             (*p).generation != 0
-                && (*p).generation == crate::linux_runtime::object_generation(p as usize, 1)
+                && (*p).generation
+                    == crate::drivers::linux_runtime::object_generation(p as usize, 1)
         },
         c"stale_completion_generation",
     );
@@ -430,14 +436,14 @@ unsafe fn completion_key(p: *mut Completion) -> usize {
 pub unsafe extern "C" fn init_completion(p: *mut Completion) {
     validate(p);
     checked(
-        unsafe { crate::linux_runtime::completion(p as usize, 0) },
+        unsafe { crate::drivers::linux_runtime::completion(p as usize, 0) },
         c"init_completion",
     );
-    unsafe { (*p).generation = crate::linux_runtime::object_generation(p as usize, 1) };
+    unsafe { (*p).generation = crate::drivers::linux_runtime::object_generation(p as usize, 1) };
 }
 unsafe fn completion(p: *mut Completion, operation: u32) -> i32 {
     checked(
-        unsafe { crate::linux_runtime::completion(completion_key(p), operation) },
+        unsafe { crate::drivers::linux_runtime::completion(completion_key(p), operation) },
         c"completion_operation",
     )
 }
@@ -470,13 +476,14 @@ pub unsafe extern "C" fn try_wait_for_completion(p: *mut Completion) -> bool {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wait_for_completion(p: *mut Completion) {
     unsafe {
-        crate::linux_runtime::wait_completion(completion_key(p), 0, 0);
+        crate::drivers::linux_runtime::wait_completion(completion_key(p), 0, 0);
     }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wait_for_completion_timeout(p: *mut Completion, timeout: usize) -> usize {
-    (unsafe { crate::linux_runtime::wait_completion(completion_key(p), timeout as u64, 1) })
-        as usize
+    (unsafe {
+        crate::drivers::linux_runtime::wait_completion(completion_key(p), timeout as u64, 1)
+    }) as usize
 }
 pub(super) unsafe fn destroy_completion(p: *mut Completion) {
     unsafe {
@@ -502,8 +509,8 @@ pub unsafe extern "C" fn request_irq(
             .map(|registration| registration.into_abi())
             .map_or_else(|code| code, |_| 0)
     };
-    if result < 0 && { crate::driver_platform::device_key() != 0 } {
-        crate::driver_platform::gate()
+    if result < 0 && { crate::drivers::platform::device_key() != 0 } {
+        crate::drivers::platform::gate()
     }
     if result == 0
         && pci::storage_bound()
@@ -515,7 +522,10 @@ pub unsafe extern "C" fn request_irq(
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn synchronize_irq(irq: u32) {
-    checked(crate::linux_irq::operation(irq, 0, 0), c"synchronize_irq");
+    checked(
+        crate::drivers::linux_irq::operation(irq, 0, 0),
+        c"synchronize_irq",
+    );
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn free_irq(irq: u32, device: *mut c_void) {
@@ -528,11 +538,11 @@ pub extern "C" fn free_irq(irq: u32, device: *mut c_void) {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn local_bh_disable() {
-    checked(crate::linux_deferred::bh(0), c"bh_disable");
+    checked(crate::drivers::linux_deferred::bh(0), c"bh_disable");
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn local_bh_enable() {
-    checked(crate::linux_deferred::bh(1), c"bh_enable");
+    checked(crate::drivers::linux_deferred::bh(1), c"bh_enable");
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn init_work(p: *mut Work, f: Option<unsafe extern "C" fn(*mut c_void)>) {
@@ -548,7 +558,7 @@ pub unsafe extern "C" fn init_work(p: *mut Work, f: Option<unsafe extern "C" fn(
     if !pci::storage_bound()
         && let Some(f) = f
     {
-        crate::linux_driver::trace(10, f as usize, p as usize, 0)
+        crate::drivers::linux_driver::trace(10, f as usize, p as usize, 0)
     }
 }
 #[unsafe(no_mangle)]

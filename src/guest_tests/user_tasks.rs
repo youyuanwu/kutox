@@ -2,10 +2,11 @@
 
 use super::*;
 use crate::{
+    arch::x86_64::cpu::{self, X86Cpu},
+    arch::x86_64::serial,
     boot::BootInfo,
-    cpu::{self, X86Cpu},
     guest_tests::{support::assert_eq, user_elf::ELF},
-    memory, serial,
+    memory,
 };
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use kutox::user_state::{MAX_SYSCALLS, USER_BASE, USER_END};
@@ -1070,14 +1071,14 @@ pub fn runtime_cleanup(
     boot: &BootInfo,
     frames: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
-    use crate::kernel_runtime::{Clients, Resources, Stage, tests};
+    use crate::runtime::kernel_runtime::{Clients, Resources, Stage, tests};
     serial::print(format_args!("# USER_RUNTIME_ERRORS_BEGIN\n"));
     time::calibrate()?;
     runtime_sleep_idle(boot, frames)?;
     runtime_input_idle(boot, frames)?;
     for mode in 0..4 {
         let before = memory::allocation_snapshot(frames);
-        let heap_before = crate::heap::global().stats();
+        let heap_before = crate::memory::heap::global().stats();
         let resources = Resources::start(boot, frames)?;
         let mut users = Dispatcher::new();
         let handle = users.admit(load(boot, frames, &["elf", "loop"])?, 100_000)?;
@@ -1135,13 +1136,13 @@ pub fn runtime_cleanup(
         assert_eq!(users.cancel(handle).is_err(), true);
         drop(users);
         drop(resources);
-        assert_eq!(crate::kernel_runtime::quiescent(), true);
+        assert_eq!(crate::runtime::kernel_runtime::quiescent(), true);
         assert_eq!(
-            crate::async_runtime::quiescent() && crate::net_async::quiescent(),
+            crate::runtime::async_runtime::quiescent() && crate::net::async_service::quiescent(),
             true
         );
         assert_eq!(memory::allocation_snapshot(frames), before);
-        assert_eq!(crate::heap::global().stats(), heap_before);
+        assert_eq!(crate::memory::heap::global().stats(), heap_before);
     }
     serial::print(format_args!(
         "# USER_RUNTIME_ERRORS invalid=2 admission=joined observer=joined entry=joined startup=joined callbacks=1 frames=balanced\n"
@@ -1153,9 +1154,9 @@ fn runtime_sleep_idle(
     boot: &BootInfo,
     frames: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
-    use crate::kernel_runtime::{Clients, Resources};
+    use crate::runtime::kernel_runtime::{Clients, Resources};
     let before = memory::allocation_snapshot(frames);
-    let heap_before = crate::heap::global().stats();
+    let heap_before = crate::memory::heap::global().stats();
     IDLE_DONE.store(false, Ordering::Release);
     let resources = Resources::start(boot, frames)?;
     let mut users = Dispatcher::new();
@@ -1172,7 +1173,7 @@ fn runtime_sleep_idle(
                     token.wait(None).unwrap();
                 }
             }
-            let runtime = crate::kernel_runtime::current_handle();
+            let runtime = crate::runtime::kernel_runtime::current_handle();
             runtime.request_shutdown().unwrap();
             runtime.wait_stopped().unwrap();
         },
@@ -1246,7 +1247,7 @@ fn runtime_sleep_idle(
     drop(users);
     drop(resources);
     assert_eq!(memory::allocation_snapshot(frames), before);
-    assert_eq!(crate::heap::global().stats(), heap_before);
+    assert_eq!(crate::memory::heap::global().stats(), heap_before);
     serial::print(format_args!(
         "# USER_SLEEP_IDLE tasks=2 sleep=4 exits=2 wake=timer early=0 idle=hlt callbacks=bounded budget=uncharged shutdown=sleeping frames=balanced\n"
     ));
@@ -1257,9 +1258,9 @@ fn runtime_input_idle(
     boot: &BootInfo,
     frames: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
-    use crate::kernel_runtime::{Clients, Resources};
+    use crate::runtime::kernel_runtime::{Clients, Resources};
     let before = memory::allocation_snapshot(frames);
-    let heap_before = crate::heap::global().stats();
+    let heap_before = crate::memory::heap::global().stats();
     IDLE_DONE.store(false, Ordering::Release);
     INPUT_PARKED.store(false, Ordering::Release);
     INPUT_READY.store(false, Ordering::Release);
@@ -1272,7 +1273,7 @@ fn runtime_input_idle(
     let mut clients = Clients::new();
     clients.add(
         |_| {
-            let runtime = crate::kernel_runtime::current_handle();
+            let runtime = crate::runtime::kernel_runtime::current_handle();
             runtime.wait_ready().unwrap();
             while !INPUT_PARKED.load(Ordering::Acquire) {
                 let token = IDLE_WAKE.prepare();
@@ -1370,7 +1371,7 @@ fn runtime_input_idle(
     drop(users);
     drop(resources);
     assert_eq!(memory::allocation_snapshot(frames), before);
-    assert_eq!(crate::heap::global().stats(), heap_before);
+    assert_eq!(crate::memory::heap::global().stats(), heap_before);
     serial::print(format_args!(
         "# USER_INPUT_IDLE tasks=2 bytes=6 wake=kernel idle=hlt callbacks=bounded budget=uncharged shutdown=reading frames=balanced\n"
     ));

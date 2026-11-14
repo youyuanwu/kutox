@@ -3,59 +3,11 @@
 
 extern crate alloc;
 
-mod async_runtime;
-mod async_sync;
-mod block_services;
+mod arch;
 mod boot;
-mod boot_fs;
-mod completion;
-mod cpu;
-#[cfg_attr(
-    not(feature = "guest-tests"),
-    allow(
-        dead_code,
-        reason = "Additional kernel service APIs are available to native clients"
-    )
-)]
-mod dma;
-mod driver_init;
-#[cfg_attr(
-    not(feature = "guest-tests"),
-    allow(
-        dead_code,
-        reason = "Additional kernel service APIs are available to native clients"
-    )
-)]
-mod driver_memory;
-#[cfg_attr(
-    not(feature = "guest-tests"),
-    allow(
-        dead_code,
-        reason = "Additional kernel service APIs are available to native clients"
-    )
-)]
-mod driver_platform;
-mod exceptions;
+mod drivers;
 #[cfg(feature = "guest-tests")]
 mod guest_tests;
-mod heap;
-mod io;
-#[cfg_attr(
-    not(feature = "guest-tests"),
-    allow(
-        dead_code,
-        reason = "Additional kernel service APIs are available to native clients"
-    )
-)]
-mod irq;
-#[cfg_attr(
-    not(feature = "guest-tests"),
-    allow(
-        dead_code,
-        reason = "Additional native runtime APIs are available to kernel clients"
-    )
-)]
-mod kernel_runtime;
 mod linux_compat;
 #[cfg_attr(
     not(feature = "guest-tests"),
@@ -64,120 +16,10 @@ mod linux_compat;
         reason = "Additional kernel service APIs are available to native clients"
     )
 )]
-mod linux_deferred;
-#[cfg_attr(
-    not(feature = "guest-tests"),
-    allow(
-        dead_code,
-        reason = "Additional kernel service APIs are available to native clients"
-    )
-)]
-mod linux_dma;
-#[cfg_attr(
-    not(feature = "guest-tests"),
-    allow(
-        dead_code,
-        reason = "Additional kernel service APIs are available to native clients"
-    )
-)]
-mod linux_driver;
-#[cfg_attr(
-    not(feature = "guest-tests"),
-    allow(
-        dead_code,
-        reason = "Additional kernel service APIs are available to native clients"
-    )
-)]
-mod linux_irq;
-#[cfg_attr(
-    not(feature = "guest-tests"),
-    allow(
-        dead_code,
-        reason = "Additional kernel service APIs are available to native clients"
-    )
-)]
-mod linux_runtime;
-#[cfg_attr(
-    not(feature = "guest-tests"),
-    allow(
-        dead_code,
-        reason = "Additional kernel service APIs are available to native clients"
-    )
-)]
 mod memory;
-#[cfg_attr(
-    not(feature = "guest-tests"),
-    allow(
-        dead_code,
-        reason = "Additional kernel service APIs are available to native clients"
-    )
-)]
-mod mutex;
-mod net_async;
-#[cfg_attr(
-    not(feature = "guest-tests"),
-    allow(
-        dead_code,
-        reason = "Additional native packet APIs are available to kernel clients"
-    )
-)]
-mod net_device;
-#[cfg_attr(
-    not(feature = "guest-tests"),
-    allow(dead_code, reason = "DNS API is available to native kernel clients")
-)]
-mod net_dns;
-#[cfg_attr(
-    not(feature = "guest-tests"),
-    allow(
-        dead_code,
-        reason = "Native stack diagnostics are available to kernel clients"
-    )
-)]
-mod net_stack;
-#[cfg_attr(
-    not(feature = "guest-tests"),
-    allow(
-        dead_code,
-        reason = "TCP sockets are opened explicitly by native clients"
-    )
-)]
-mod net_tcp;
-#[cfg_attr(
-    not(feature = "guest-tests"),
-    allow(
-        dead_code,
-        reason = "Native UDP sockets are opened explicitly by kernel clients"
-    )
-)]
-mod net_udp;
-#[cfg_attr(
-    not(feature = "guest-tests"),
-    allow(
-        dead_code,
-        reason = "Additional kernel service APIs are available to native clients"
-    )
-)]
-mod pci;
-#[cfg_attr(
-    not(feature = "guest-tests"),
-    allow(
-        dead_code,
-        reason = "Additional kernel service APIs are available to native clients"
-    )
-)]
-mod platform;
-mod serial;
+mod net;
+mod runtime;
 mod storage;
-#[cfg_attr(
-    not(feature = "guest-tests"),
-    allow(
-        dead_code,
-        reason = "Additional kernel service APIs are available to native clients"
-    )
-)]
-mod threads;
-mod time;
 #[cfg_attr(
     not(feature = "guest-tests"),
     allow(
@@ -186,17 +28,15 @@ mod time;
     )
 )]
 mod user;
-#[cfg_attr(
-    not(feature = "guest-tests"),
-    allow(
-        dead_code,
-        reason = "User tasks are admitted explicitly by native clients"
-    )
-)]
-mod user_tasks;
 
+use arch::x86_64::{exceptions, io, serial};
+use boot::fs as boot_fs;
 use core::{arch::asm, ffi::CStr, panic::PanicInfo};
+use drivers::{init as driver_init, linux_driver, pci};
 use kutox::fw_cfg::BootMode;
+use memory::heap;
+use runtime::{kernel_runtime, threads, time};
+use storage::block_services;
 
 macro_rules! println {
     ($($arg:tt)*) => { serial::print(format_args!("{}\n", format_args!($($arg)*))) };

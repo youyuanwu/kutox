@@ -71,7 +71,7 @@ pub(super) struct Access(PhantomData<*mut ()>);
 
 impl Access {
     pub(super) fn enter() -> Result<Self, i32> {
-        let code = crate::linux_runtime::context_code();
+        let code = crate::drivers::linux_runtime::context_code();
         if code < 0 {
             return Err(code);
         }

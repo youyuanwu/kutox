@@ -1,7 +1,8 @@
 //! Guest-only acceptance fixtures; not production driver code.
 
 use crate::{
-    Failure, boot::BootInfo, irq::external::ClaimedIrq, irq::external::IoApic, memory, pci, serial,
+    Failure, arch::x86_64::irq::external::ClaimedIrq, arch::x86_64::irq::external::IoApic,
+    arch::x86_64::serial, boot::BootInfo, drivers::pci, memory,
 };
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -62,7 +63,7 @@ impl<'a, 'storage> E1000IrqFixture<'a, 'storage> {
         }
         serial::print(format_args!(
             "# e1000 IRQ gsi={gsi} source=piix vector={:#x} dma=disabled\n",
-            crate::irq::DEVICE_VECTOR
+            crate::arch::x86_64::irq::DEVICE_VECTOR
         ));
         Ok(Self {
             mapping,
@@ -79,7 +80,7 @@ impl<'a, 'storage> E1000IrqFixture<'a, 'storage> {
         &'nic self,
         controller: &'controller IoApic<'a, 'storage>,
         cause: u32,
-        handler: crate::irq::Handler,
+        handler: crate::arch::x86_64::irq::Handler,
     ) -> Result<E1000IrqClaim<'nic, 'controller, 'a, 'storage>, Failure> {
         let claim = controller.claim(self.gsi, handler)?;
         let _ = read(self.address(), ICR);
