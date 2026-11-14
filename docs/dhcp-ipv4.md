@@ -52,7 +52,7 @@ fallback. No/unsupported NIC retains the existing source-waiting behavior.
 
 ## Configuration and socket policy
 
-[Boot mode and settings](../src/network_config.rs) distinguish static
+[Boot mode and settings](../src/net/config.rs) distinguish static
 configuration from DHCP and validate every offered configuration before applying:
 
 - One IPv4 address, prefix 1-30, excluding reserved, network and broadcast
@@ -65,7 +65,7 @@ configuration from DHCP and validate every offered configuration before applying
 An invalid published lease is logged with `DHCP_REJECT`; the client is reset and
 discovery resumes without using that address, route or DNS list.
 
-[The protocol owner](../src/net_stack.rs) applies accepted configuration to the
+[The protocol owner](../src/net/stack.rs) applies accepted configuration to the
 same smoltcp Interface and publishes an owned status snapshot containing
 settings, readiness, configuration generation and rejected-lease count.
 `DHCP_CONFIG` reports the address/gateway/DNS values. `DHCP_DECONFIG` reports

@@ -22,17 +22,13 @@ FetchContent_MakeAvailable(limine)
 set(KERNEL "${CMAKE_SOURCE_DIR}/target/x86_64-unknown-none/release/kutox")
 option(KUTOX_GUEST_TESTS "Include guest acceptance fixtures in the reusable image" ON)
 if(KUTOX_GUEST_TESTS)
-    set(KERNEL_FEATURES --features guest-tests)
     set(IMAGE_PROFILE ON)
 else()
-    set(KERNEL_FEATURES --no-default-features)
     set(IMAGE_PROFILE OFF)
 endif()
 add_custom_target(kernel
-    COMMAND ${CARGO} rustc --locked --release --jobs 1 --bin kutox ${KERNEL_FEATURES}
-        -- --emit=obj,link
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/linux_compat_check.py"
-        --record-kernel "${KERNEL}"
+        --build-kernel "${KERNEL}" --cargo "${CARGO}" --guest-tests "${IMAGE_PROFILE}"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     BYPRODUCTS "${KERNEL}" "${KERNEL}.build.json"
     USES_TERMINAL

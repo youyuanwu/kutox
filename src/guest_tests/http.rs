@@ -2,17 +2,15 @@
 
 use super::TestCase;
 use crate::{
-    Failure, async_runtime, async_sync,
-    boot::BootInfo,
-    heap,
-    kernel_runtime::{self, Clients, Resources},
-    memory, net_async, net_dns, net_stack,
-    net_tcp::{self, Endpoint, Error},
-    serial, time,
-    user_tasks::{Dispatcher, tests as user_tasks},
+    Failure, arch::x86_64::serial, boot::limine::BootInfo, memory::heap, memory::paging as memory,
+    net::async_service as net_async, net::dns as net_dns, net::stack as net_stack,
+    net::tcp as net_tcp, net::tcp::Endpoint, net::tcp::Error, runtime::async_runtime,
+    runtime::async_sync, runtime::kernel_runtime, runtime::kernel_runtime::Clients,
+    runtime::kernel_runtime::Resources, runtime::time, user::tasks::Dispatcher,
+    user::tasks::tests as user_tasks,
 };
+use crate::{net::config::Mode, runtime::async_state::Outcome};
 use core::sync::atomic::{AtomicUsize, Ordering};
-use kutox::{async_state::Outcome, network_config::Mode};
 
 pub(crate) static TESTS: &[TestCase] = &[TestCase {
     name: "http.exchange",
@@ -258,11 +256,11 @@ pub fn kutox_guest_http_client(_: usize) {
             time::now_ticks() < deadline,
             "user/network startup deadline"
         );
-        crate::threads::sleep_us(1_000).unwrap();
+        crate::runtime::threads::sleep_us(1_000).unwrap();
     }
     for _ in 0..8 {
         let start = time::now_ticks();
-        crate::threads::sleep_us(1_000).unwrap();
+        crate::runtime::threads::sleep_us(1_000).unwrap();
         let elapsed = time::now_ticks() - start;
         assert!(elapsed >= time::ticks_for_us(1_000).unwrap());
         assert!(
@@ -279,7 +277,7 @@ pub fn kutox_guest_http_client(_: usize) {
     let deadline = time::deadline_after_us(1_000_000).unwrap();
     while !user_tasks::runtime_parked() {
         assert!(time::now_ticks() < deadline, "user runtime join deadline");
-        crate::threads::sleep_us(1_000).unwrap();
+        crate::runtime::threads::sleep_us(1_000).unwrap();
     }
     let runtime = kernel_runtime::current_handle();
     runtime.request_shutdown().unwrap();

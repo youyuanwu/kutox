@@ -55,9 +55,9 @@ def build_inputs():
         ROOT / "compat/include/profiles/e1000.headers", ROOT / "compat/include/profiles/uapi-forwarders.json",
         ROOT / "linker.ld",
         ROOT / "compat/include/block/services.h",
-        ROOT / "src/block_services.rs", ROOT / "build.rs",
+        ROOT / "src/storage/block_services.rs", ROOT / "build.rs",
         ROOT / "compat/virtio_bridge.c", ROOT / "compat/include/block/runtime.h",
-        ROOT / "src/storage.rs",
+        ROOT / "src/storage/mod.rs",
     ]
     files.extend(path for path in DECLARATIONS.rglob("*") if path.is_file())
     files.extend(path for path in (ROOT / "compat/include").rglob("*") if path.is_file())

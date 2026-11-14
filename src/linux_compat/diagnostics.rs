@@ -27,11 +27,11 @@ impl Output {
         require(self.count < 4096, c"diagnostic_length");
         unsafe {
             if self.serial {
-                if *BEGINNING.0.get() && crate::linux_driver::tracing() {
-                    crate::serial::byte(b'#');
-                    crate::serial::byte(b' ');
+                if *BEGINNING.0.get() && crate::drivers::linux_driver::tracing() {
+                    crate::arch::x86_64::serial::byte(b'#');
+                    crate::arch::x86_64::serial::byte(b' ');
                 }
-                crate::serial::byte(value);
+                crate::arch::x86_64::serial::byte(value);
                 *BEGINNING.0.get() = value == b'\n';
             } else if self.capacity != 0 && self.count < self.capacity - 1 {
                 self.buffer.add(self.count).write(value);
@@ -114,7 +114,7 @@ unsafe fn length(text: *const u8) -> usize {
             return i;
         }
     }
-    crate::platform_fail(c"diagnostic_string_length")
+    crate::boot::entry::platform_fail(c"diagnostic_string_length")
 }
 unsafe fn format_message(
     buffer: *mut u8,
@@ -253,7 +253,7 @@ unsafe fn format_message(
                     1 => args.next_arg::<c_ulong>(),
                     _ => u64::from(args.next_arg::<c_uint>()),
                 },
-                _ => crate::platform_fail(c"diagnostic_format"),
+                _ => crate::boot::entry::platform_fail(c"diagnostic_format"),
             };
             out.number(
                 value,
@@ -348,7 +348,7 @@ unsafe fn log_prefix(
         });
         let bit = match bit {
             Some(bit) => bit,
-            None => crate::platform_fail(c"diagnostic_message_level"),
+            None => crate::boot::entry::platform_fail(c"diagnostic_message_level"),
         };
         if mask & (1 << bit) == 0 {
             return false;
@@ -387,7 +387,7 @@ pub unsafe extern "C" fn warn_on(condition: bool, expression: *const u8) -> bool
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn bug() -> ! {
-    crate::platform_fail(c"linux_bug")
+    crate::boot::entry::platform_fail(c"linux_bug")
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn bug_on(condition: bool) {
@@ -435,7 +435,7 @@ pub extern "C" fn netif_msg_tx_done(mask: u32) -> bool {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn net_ratelimit() -> bool {
-    crate::linux_runtime::ratelimit()
+    crate::drivers::linux_runtime::ratelimit()
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn print_hex_dump(
@@ -492,13 +492,13 @@ unsafe fn storage_log(format: *const c_char, args: &mut VaList<'_>) -> i32 {
     require(n >= 0 && (n as usize) < text.len(), c"storage_log_capacity");
     {
         for byte in b"# STORAGE_LINUX " {
-            crate::serial::byte(*byte);
+            crate::arch::x86_64::serial::byte(*byte);
         }
         for &byte in &text[..n as usize] {
-            crate::serial::byte(byte);
+            crate::arch::x86_64::serial::byte(byte);
         }
         if n == 0 || text[n as usize - 1] != b'\n' {
-            crate::serial::byte(b'\n');
+            crate::arch::x86_64::serial::byte(b'\n');
         }
     }
     n
@@ -522,7 +522,7 @@ pub extern "C" fn kutox_storage_trace_callback(kind: u32, address: usize) {
     require(out.count <= text.len(), c"storage_callback_capacity");
     {
         for &byte in &text[..out.count] {
-            crate::serial::byte(byte);
+            crate::arch::x86_64::serial::byte(byte);
         }
     }
 }
@@ -667,7 +667,7 @@ pub unsafe extern "C" fn storage_dev_printk(
 pub unsafe extern "C" fn panic(format: *const c_char, mut args: ...) -> ! {
     unsafe {
         storage_log(format, &mut args);
-        crate::platform_fail(c"storage_linux_panic")
+        crate::boot::entry::platform_fail(c"storage_linux_panic")
     }
 }
 #[unsafe(no_mangle)]

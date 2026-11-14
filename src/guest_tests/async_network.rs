@@ -1,16 +1,15 @@
 //! Exact Ethernet and lifecycle acceptance through the production async broker.
 
 use super::TestCase;
+use crate::runtime::async_state::Outcome;
 use crate::{
-    Failure, async_runtime,
-    boot::BootInfo,
-    cpu::X86Cpu,
-    driver_memory,
-    kernel_runtime::{self, Clients, Resources},
-    linux_driver, memory, net_async, net_device, serial, threads, time,
+    Failure, arch::x86_64::cpu::X86Cpu, arch::x86_64::serial, boot::limine::BootInfo,
+    drivers::linux_driver, drivers::memory as driver_memory, memory::paging as memory,
+    net::async_service as net_async, net::device as net_device, runtime::async_runtime,
+    runtime::kernel_runtime, runtime::kernel_runtime::Clients, runtime::kernel_runtime::Resources,
+    runtime::threads, runtime::time,
 };
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use kutox::async_state::Outcome;
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 
 pub(crate) static TESTS: &[TestCase] = &[
@@ -160,9 +159,9 @@ fn run_packet(session: net_async::Session, epoch: usize, sequence: usize) {
     let task = async_runtime::spawn(one(session, epoch, sequence)).unwrap();
     assert_eq!(task.wait(), Ok(Outcome::Complete));
 }
-fn native() -> kutox::driver_registry::DeviceHandle {
+fn native() -> crate::drivers::registry::DeviceHandle {
     let manager = current().manager().unwrap();
-    (0..kutox::driver_registry::MAX_DEVICES)
+    (0..crate::drivers::registry::MAX_DEVICES)
         .filter_map(|index| manager.device_at(index).unwrap())
         .find(|(handle, _)| handle.identity() == session().identity())
         .unwrap()
@@ -180,7 +179,7 @@ pub fn kutox_guest_async_network(mode: usize) {
     assert!(matches!(raw.receive(), Err(net_device::Error::Busy)));
     assert_eq!(
         raw.submit(
-            &kutox::net_state::Frame::from_bytes(bytes(epoch, 3, 60, false).bytes()).unwrap()
+            &crate::net::state::Frame::from_bytes(bytes(epoch, 3, 60, false).bytes()).unwrap()
         ),
         Err(net_device::Error::Busy)
     );
@@ -281,7 +280,7 @@ pub fn kutox_guest_async_network(mode: usize) {
             let held = manager.operation(device).unwrap();
             assert_eq!(
                 manager.stop(device),
-                Err(kutox::driver_registry::Error::Busy)
+                Err(crate::drivers::registry::Error::Busy)
             );
             assert_eq!(driver_memory::snapshot(), mapped);
             assert!(selected.info().is_err());
@@ -347,7 +346,7 @@ fn scope(
     mode: usize,
 ) -> Result<(), Failure> {
     let before = memory::allocation_snapshot(frames);
-    let heap_before = crate::heap::global().stats();
+    let heap_before = crate::memory::heap::global().stats();
     EPOCH.store(epoch, Ordering::Release);
     let resources = Resources::start(boot, frames)?;
     *RUNTIME.lock_save_irq() = Some(resources.handle());
@@ -362,7 +361,7 @@ fn scope(
     assert_eq!((stats.finished, stats.peak_tasks), (6, 6));
     assert_eq!(net_async::counts(), (0, 0, 0));
     assert_eq!(memory::allocation_snapshot(frames), before);
-    assert_eq!(crate::heap::global().stats(), heap_before);
+    assert_eq!(crate::memory::heap::global().stats(), heap_before);
     let service = net_async::METADATA_BYTES
         + async_runtime::METADATA_BYTES
         + net_async::PACKET_STORAGE_BYTES
@@ -371,7 +370,7 @@ fn scope(
     assert!(service <= 128 * 1024);
     serial::print(format_args!(
         "# ASYNC_NET_JOIN epoch={epoch} finished=6 peak=6 requests=0 packets=0 staged_rx=0 workers=0 balanced=1 metadata={} broker_metadata={} async_metadata={} packet_storage={} stack_storage=32768 future_peak={} service={service}\n",
-        kutox::pci_state::INFRASTRUCTURE_METADATA_BYTES + kernel_runtime::METADATA_BYTES,
+        crate::drivers::pci_state::INFRASTRUCTURE_METADATA_BYTES + kernel_runtime::METADATA_BYTES,
         net_async::METADATA_BYTES,
         async_runtime::METADATA_BYTES,
         net_async::PACKET_STORAGE_BYTES,

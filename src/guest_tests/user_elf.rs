@@ -5,13 +5,10 @@ use super::{
     user::{execute_entry, exited},
 };
 use crate::{
-    Failure,
-    boot::BootInfo,
-    irq::Timer,
-    memory::{self, user::AddressSpace},
-    serial, user,
+    Failure, arch::x86_64::irq::Timer, arch::x86_64::serial, boot::limine::BootInfo,
+    memory::paging as memory, memory::paging::user::AddressSpace, user::execute as user,
 };
-use kutox::user_state::{PAGE_SIZE, USER_BASE};
+use crate::{user::state::PAGE_SIZE, user::state::USER_BASE};
 use moss_libkernel::memory::{
     PhysMemoryRegion, address_space::UserAddressSpace, allocators::frame::Frame,
     permissions::PtePermissions,

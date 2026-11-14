@@ -26,16 +26,15 @@ use self::{
     driver_services as driver_service_tests, linux_e1000 as linux_driver,
     linux_execution as linux_driver_tests,
 };
+use crate::boot::fw_cfg::BootMode;
 use crate::{
-    Failure,
-    boot::BootInfo,
-    completion,
-    cpu::{self, X86Cpu},
-    dma, exceptions, heap, io, irq, linux_deferred, linux_dma, linux_irq, linux_runtime, memory,
-    mutex, pci, serial, threads,
+    Failure, arch::x86_64::cpu, arch::x86_64::cpu::X86Cpu, arch::x86_64::exceptions,
+    arch::x86_64::io, arch::x86_64::irq, arch::x86_64::serial, boot::limine::BootInfo,
+    drivers::linux_deferred, drivers::linux_dma, drivers::linux_irq, drivers::linux_runtime,
+    drivers::pci, memory::dma, memory::heap, memory::paging as memory, runtime::completion,
+    runtime::mutex, runtime::threads,
 };
-use crate::{driver_memory, driver_platform};
-use kutox::fw_cfg::BootMode;
+use crate::{drivers::memory as driver_memory, drivers::platform as driver_platform};
 use moss_libkernel::CpuOps;
 
 pub(crate) struct TestCase {
@@ -354,15 +353,15 @@ static TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "user.tasks",
-        run: crate::user_tasks::tests::kutox_guest_user_tasks,
+        run: crate::user::tasks::tests::kutox_guest_user_tasks,
     },
     TestCase {
         name: "user.task_limits",
-        run: crate::user_tasks::tests::limits,
+        run: crate::user::tasks::tests::limits,
     },
     TestCase {
         name: "user.runtime_cleanup",
-        run: crate::user_tasks::tests::runtime_cleanup,
+        run: crate::user::tasks::tests::runtime_cleanup,
     },
 ];
 
@@ -373,7 +372,7 @@ static INTENTIONAL_FAILURE: TestCase = TestCase {
         context.expect_eq(false, true, file!(), line!());
         support::assert_eq!(context.finish().err().map(|error| error.code), Some(-320));
         let mut cleanup =
-            kutox::test_cleanup::Cleanup::<_, Failure, 1>::new((), support::cleanup_error);
+            crate::testing::cleanup::Cleanup::<_, Failure, 1>::new((), support::cleanup_error);
         cleanup
             .add(|_| Err(Failure::new("intentional_cleanup", -321)))
             .map_err(|_| Failure::new("test_cleanup_capacity", -321))?;
@@ -392,7 +391,7 @@ pub fn run(boot: &BootInfo) -> ! {
     if cpu::interrupts_enabled() || !support::quiescent(boot) {
         bail("invalid_suite_entry_state");
     }
-    use kutox::test_selection::Selection;
+    use crate::testing::selection::Selection;
     if boot.test_selection == Selection::List {
         for test in TESTS {
             serial::print(format_args!(
@@ -439,7 +438,7 @@ pub fn run(boot: &BootInfo) -> ! {
         }
     };
     let tests = if boot.mode == BootMode::DriverRuntimeTests {
-        match crate::kernel_runtime::tests::suite() {
+        match crate::runtime::kernel_runtime::tests::suite() {
             Ok(tests) => tests,
             Err(error) => {
                 serial::print(format_args!(
@@ -450,9 +449,9 @@ pub fn run(boot: &BootInfo) -> ! {
             }
         }
     } else if boot.mode == BootMode::DriverNetworkTests {
-        crate::linux_driver::tests::TESTS
+        crate::drivers::linux_driver::tests::TESTS
     } else if boot.mode == BootMode::DriverHardeningTests {
-        crate::linux_driver::hardening::TESTS
+        crate::drivers::linux_driver::hardening::TESTS
     } else if boot.mode == BootMode::AsyncCoreTests {
         async_runtime::TESTS
     } else if boot.mode == BootMode::AsyncNetworkTests {

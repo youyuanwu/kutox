@@ -2,7 +2,7 @@
 
 ## Scope and Moss reference
 
-The [native resolver](../src/net_dns.rs) submits IPv4 `A` lookups to smoltcp
+The [native resolver](../src/net/dns.rs) submits IPv4 `A` lookups to smoltcp
 `=0.13.0` under the existing protocol future. Linux e1000 still owns hardware
 packets. No new kernel thread, executor task, production demo, or application
 UDP socket is introduced.
@@ -66,7 +66,7 @@ affect a replacement request.
 
 ## Protocol ownership and response admission
 
-The [portable control and owner state](../src/dns_state.rs) retain four
+The [portable control and owner state](../src/net/dns_state.rs) retain four
 one-query smoltcp DNS sockets. Each has one socket-storage entry and one query
 slot; only the protocol owner starts or cancels that query. The query vector
 never needs to grow. Separate socket sets let the staged device record each

@@ -1,18 +1,14 @@
 //! Guest-only acceptance fixtures; not production driver code.
 
 use crate::{
-    Failure,
-    boot::BootInfo,
-    driver_memory, driver_platform,
-    irq::{self, LocalApic, external::IoApic},
-    linux_compat::{
-        lifecycle::Handle as LifecycleHandle,
-        packet_tx::{self, State as PacketState, Submission, Tx},
-    },
-    linux_deferred,
-    linux_driver::{self, DriverHandle, control},
-    linux_irq::BoundIrq,
-    linux_runtime, memory, pci, platform, serial, threads,
+    Failure, arch::x86_64::irq, arch::x86_64::irq::LocalApic, arch::x86_64::irq::external::IoApic,
+    arch::x86_64::platform, arch::x86_64::serial, boot::limine::BootInfo, drivers::linux_deferred,
+    drivers::linux_driver, drivers::linux_driver::DriverHandle, drivers::linux_driver::control,
+    drivers::linux_irq::BoundIrq, drivers::linux_runtime, drivers::memory as driver_memory,
+    drivers::pci, drivers::platform as driver_platform,
+    linux_compat::lifecycle::Handle as LifecycleHandle, linux_compat::packet_tx,
+    linux_compat::packet_tx::State as PacketState, linux_compat::packet_tx::Submission,
+    linux_compat::packet_tx::Tx, memory::paging as memory, runtime::threads,
 };
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use moss_libkernel::CpuOps;
@@ -29,7 +25,7 @@ fn clear_fault() {
     FAULT.store(0, Ordering::Release);
     driver_memory::fault(u32::MAX, usize::MAX);
     driver_platform::fail_operation(u32::MAX);
-    crate::linux_irq::fail_request(false);
+    crate::drivers::linux_irq::fail_request(false);
 }
 fn inject(fault: u32) {
     clear_fault();
@@ -42,7 +38,7 @@ fn inject(fault: u32) {
         4 => driver_memory::fault(3, 0),
         5 => driver_memory::fault(3, 1),
         6 => driver_memory::fault(1, 0),
-        7 => crate::linux_irq::fail_request(true),
+        7 => crate::drivers::linux_irq::fail_request(true),
         _ => panic!("invalid driver fault"),
     }
 }
@@ -62,7 +58,7 @@ impl DriverHandle {
         assert!(self.ready(), "IRQ/NAPI idle requires an open ready driver");
         for _ in 0..300 {
             if linux_deferred::napi_idle()
-                && !crate::linux_irq::pending().unwrap_or_else(|error| {
+                && !crate::drivers::linux_irq::pending().unwrap_or_else(|error| {
                     panic!("TX idle IRQ query: {} {}", error.stage, error.code)
                 })
             {
@@ -141,9 +137,9 @@ impl DriverHandle {
         typed.test_reentry();
         assert_eq!(typed.rx_path(), Err(-22));
         let expected = typed.info().unwrap();
-        crate::cpu::X86Cpu::enable_interrupts();
+        crate::arch::x86_64::cpu::X86Cpu::enable_interrupts();
         let rejected = typed.info();
-        crate::cpu::X86Cpu::disable_interrupts();
+        crate::arch::x86_64::cpu::X86Cpu::disable_interrupts();
         assert_eq!(
             rejected,
             Err(threads::SwitchError::InterruptsEnabled as i32)
@@ -159,25 +155,25 @@ fn worker(which: usize) {
     if which == 1 {
         fault_worker();
         linux_driver::set_tracing(false);
-        crate::linux_deferred::stop_workers();
+        crate::drivers::linux_deferred::stop_workers();
         return;
     }
     if which == 2 {
         tx_worker();
         linux_driver::set_tracing(false);
-        crate::linux_deferred::stop_workers();
+        crate::drivers::linux_deferred::stop_workers();
         return;
     }
     if which == 3 {
         rx_worker();
         linux_driver::set_tracing(false);
-        crate::linux_deferred::stop_workers();
+        crate::drivers::linux_deferred::stop_workers();
         return;
     }
     if which >= 4 {
         crate::guest_tests::linux_hardening::worker(which);
         linux_driver::set_tracing(false);
-        crate::linux_deferred::stop_workers();
+        crate::drivers::linux_deferred::stop_workers();
         return;
     }
     let mut retired: Option<LifecycleHandle> = None;
@@ -197,7 +193,7 @@ fn worker(which: usize) {
         handle.unbind_checked();
     }
     linux_driver::set_tracing(false);
-    crate::linux_deferred::stop_workers();
+    crate::drivers::linux_deferred::stop_workers();
 }
 
 fn run(

@@ -1,5 +1,5 @@
 use super::{Bsp, block::*, block_abi::*, block_request::Request as OwnedRequest};
-use crate::block_services;
+use crate::storage::block_services;
 use core::{cell::UnsafeCell, ptr};
 
 struct Fixture {

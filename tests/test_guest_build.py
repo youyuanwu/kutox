@@ -104,7 +104,7 @@ class GuestBuildTests(unittest.TestCase):
         self.assertIn("kutox_user_dispatch_next", RUNTIME_SYMBOLS)
         self.assertIn("kutox_runtime_users", RUNTIME_SYMBOLS)
         self.assertTrue({"kutox_user_bringup", "kutox_user_load_elf", "kutox_user_enter", "kutox_user_resume", "kutox_user_dispatch"} <= RUNTIME_SYMBOLS)
-        self.assertIn("kutox::net_udp::CONTROL", RUNTIME_SYMBOLS)
+        self.assertIn("kutox::net::udp::CONTROL", RUNTIME_SYMBOLS)
         validate_symbols(RUNTIME_SYMBOLS | GUEST_SYMBOLS, True)
         with self.assertRaises(AssertionError):
             validate_symbols(RUNTIME_SYMBOLS, True)
@@ -117,7 +117,7 @@ class GuestBuildTests(unittest.TestCase):
         validate_symbols(RUNTIME_SYMBOLS, False)
         for symbol in [
             *GUEST_SYMBOLS, "kutox::guest_tests::e1000_irq::E1000IrqFixture::start",
-            "kutox::irq::tests::test_delivery", "kutox::driver_memory::FAIL_AFTER",
+            "kutox::arch::x86_64::irq::tests::test_delivery", "kutox::drivers::memory::FAIL_AFTER",
             "kutox_c_linux_kick", "kutox_linux_test_now_us", "deny_eeprom_grant",
         ]:
             with self.subTest(symbol=symbol), self.assertRaises(AssertionError):
@@ -172,7 +172,7 @@ class GuestBuildTests(unittest.TestCase):
             dependencies = kernel.with_suffix(".d")
             with self.assertRaises(FileNotFoundError):
                 validate_runtime_dependencies(kernel)
-            native = [ROOT / "src/main.rs", ROOT / "src/driver_memory.rs"]
+            native = [ROOT / "src/main.rs", ROOT / "src/lib.rs", ROOT / "src/drivers/memory.rs"]
             dependencies.write_text("kutox: " + " ".join(map(str, native)) + "\n")
             self.assertEqual(validate_runtime_dependencies(kernel), sorted(map(str, native)))
             alias = Path(directory) / "backend.rs"

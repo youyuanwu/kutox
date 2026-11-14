@@ -1,3 +1,4 @@
+import json
 import struct
 import sys
 import tempfile
@@ -21,6 +22,43 @@ def elf(symbols, marked=False):
 
 
 class SharedCompatibilityTests(unittest.TestCase):
+    def test_library_artifact_is_selected_from_the_actual_cargo_build(self):
+        kernel = compat.ROOT / "target/x86_64-unknown-none/release/kutox"
+        library = kernel.parent / "deps/libkutox-active.rlib"
+        def artifact(source, filenames, executable=None):
+            return {"reason": "compiler-artifact", "target": {"src_path": str(source)},
+                    "filenames": list(map(str, filenames)), "executable": str(executable) if executable else None}
+        lib = artifact(compat.ROOT / "src/lib.rs", [library])
+        binary = artifact(compat.ROOT / "src/main.rs", [kernel], kernel)
+        self.assertEqual(compat.cargo_library("\n".join(map(json.dumps, [lib, binary])), kernel), library)
+        for messages in (
+            [binary], [lib],
+            [lib, binary, artifact(compat.ROOT / "src/lib.rs", [library.with_name("libkutox-stale.rlib")])],
+            [lib, artifact(compat.ROOT / "src/main.rs", [kernel], kernel.with_name("other"))],
+            [artifact(compat.ROOT / "compat/audit/providers.rs", [library]), binary],
+        ):
+            with self.subTest(messages=messages), self.assertRaisesRegex(ValueError, "Cargo"):
+                compat.cargo_library("\n".join(map(json.dumps, messages)), kernel)
+
+    def test_only_actual_library_codegen_members_are_used_and_stale_copies_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            listing = "lib.rmeta\ne1000.o\nkutox-cgu.0.rcgu.o\nkutox-cgu.1.rcgu.o\n"
+            with patch.object(compat, "kernel_provenance", return_value={"library": "/cargo/libkutox-active.rlib"}), \
+                    patch.object(compat, "kernel_object", return_value=Path("entry.o")), \
+                    patch.object(compat.subprocess, "check_output", side_effect=[listing, b"rust-0", b"rust-1"] * 3):
+                paths = compat.kernel_rust_objects(Path("kernel"), output, extract=True)
+                self.assertEqual(paths, [Path("entry.o"), output / "rust/library-0.o", output / "rust/library-1.o"])
+                self.assertEqual(compat.kernel_rust_objects(Path("kernel"), output), paths)
+                paths[2].write_bytes(b"stale")
+                with self.assertRaisesRegex(ValueError, "stale"):
+                    compat.kernel_rust_objects(Path("kernel"), output)
+            for listing in ("lib.rmeta\ne1000.o\n", "../escape.rcgu.o\n"):
+                with patch.object(compat, "kernel_provenance", return_value={"library": "/cargo/libkutox-active.rlib"}), \
+                        patch.object(compat.subprocess, "check_output", return_value=listing), \
+                        self.assertRaisesRegex(ValueError, "codegen"):
+                    compat.kernel_rust_objects(Path("kernel"), output)
+
     def test_rust_services_cannot_be_replaced_by_c_local_data_or_declarations(self):
         with patch.object(compat, "RUST_PROVIDERS", {"open"}):
             self.assertEqual(compat.rust_providers([symbol("open", 1, 2)]), ["open"])
@@ -46,7 +84,8 @@ class SharedCompatibilityTests(unittest.TestCase):
             kernel = root / "release/kutox"
             files = ("Cargo.toml", "Cargo.lock", ".cargo/config.toml", "rust-toolchain.toml",
                      "build.rs", "linker.ld", "CMakeLists.txt", "compat/include/runtime.h",
-                     "src/main.rs", "src/driver_memory.rs", "release/kutox",
+                     "src/main.rs", "src/lib.rs", "src/drivers/memory.rs", "release/kutox",
+                     "release/deps/libkutox-active.rlib",
                      "release/deps/kutox-active.o", "release/deps/kutox-stale.o",
                      "release/deps/kutox-stale")
             for name in files:
@@ -56,12 +95,12 @@ class SharedCompatibilityTests(unittest.TestCase):
             active = root / "release/deps/kutox-active"
             active.hardlink_to(kernel)
             kernel.with_suffix(".d").write_text(
-                f"kutox: {root / 'src/main.rs'} {root / 'src/driver_memory.rs'}\n")
+                f"kutox: {root / 'src/main.rs'} {root / 'src/lib.rs'} {root / 'src/drivers/memory.rs'}\n")
             with patch.object(compat, "ROOT", root), patch.object(compat, "UNITS", ()):
                 with self.assertRaisesRegex(ValueError, "missing kernel build"):
                     compat.kernel_provenance(kernel)
-                compat.record_kernel(kernel)
-                self.assertEqual(compat.kernel_provenance(kernel)["schema"], 2)
+                compat.record_kernel(kernel, root / "release/deps/libkutox-active.rlib")
+                self.assertEqual(compat.kernel_provenance(kernel)["schema"], 3)
                 self.assertEqual(compat.kernel_object(kernel), active.with_suffix(".o"))
                 (root / "release/deps/kutox-stale.o").write_bytes(b"another profile")
                 compat.kernel_provenance(kernel)
@@ -72,7 +111,8 @@ class SharedCompatibilityTests(unittest.TestCase):
                     compat.kernel_object(kernel)
                 ambiguous.unlink()
                 ambiguous.with_suffix(".o").unlink()
-                for name in ("release/kutox", "release/deps/kutox-active.o", "release/kutox.d", "src/driver_memory.rs",
+                for name in ("release/kutox", "release/deps/kutox-active.o", "release/deps/libkutox-active.rlib",
+                             "release/kutox.d", "src/drivers/memory.rs",
                              "compat/include/runtime.h", ".cargo/config.toml"):
                     path = root / name
                     original = path.read_bytes()
@@ -103,9 +143,9 @@ class SharedCompatibilityTests(unittest.TestCase):
         for index, (c_symbols, r_symbols, closure, executable, marked) in enumerate(cases):
             with self.subTest(case=index), patch.object(compat, "ENTRY_POINTS", {"queue"}), \
                     patch.object(compat, "RUST_PROVIDERS", {"provider"}), \
-                    patch.object(compat, "kernel_object", return_value=Path("actual-kernel.o")), \
+                    patch.object(compat, "kernel_rust_objects", return_value=[Path("entry.o"), Path("library.o")]), \
                     patch.object(driver, "Elf", side_effect=[
-                        elf(c_symbols, marked), elf(r_symbols), elf(closure), elf(executable),
+                        elf(c_symbols, marked), elf([]), elf(r_symbols), elf(closure), elf(executable),
                     ]):
                 if index == 0:
                     result = compat.inventory([Path("driver")], Path("linked"), Path("kernel"))

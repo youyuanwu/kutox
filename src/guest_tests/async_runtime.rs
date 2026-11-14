@@ -2,12 +2,14 @@
 
 use super::TestCase;
 use crate::{
-    Failure,
-    async_runtime::{self as runtime, TaskFailure},
-    async_sync,
-    boot::BootInfo,
-    cpu::X86Cpu,
-    exceptions, heap, irq, kernel_runtime, memory, serial, threads, time,
+    Failure, arch::x86_64::cpu::X86Cpu, arch::x86_64::exceptions, arch::x86_64::irq,
+    arch::x86_64::serial, boot::limine::BootInfo, memory::heap, memory::paging as memory,
+    runtime::async_runtime as runtime, runtime::async_runtime::TaskFailure, runtime::async_sync,
+    runtime::kernel_runtime, runtime::threads, runtime::time,
+};
+use crate::{
+    runtime::async_state::Error as StateError, runtime::async_state::Outcome,
+    runtime::async_state::TaskHandle,
 };
 use alloc::vec::Vec;
 use core::{
@@ -16,7 +18,6 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
     task::{Context, Poll, Waker},
 };
-use kutox::async_state::{Error as StateError, Outcome, TaskHandle};
 use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
 
 pub(crate) static TESTS: &[TestCase] = &[
@@ -88,7 +89,7 @@ impl Future for WakeFuture {
                 Err(threads::SwitchError::AsyncContext)
             );
             assert_eq!(
-                crate::linux_driver::control("async_poll", || {
+                crate::drivers::linux_driver::control("async_poll", || {
                     C_CALLS.fetch_add(1, Ordering::Relaxed);
                     0
                 }),
@@ -179,7 +180,7 @@ fn timer_handler() -> Result<(), Failure> {
     assert_eq!(runtime::counts().1, 1);
     assert_eq!(EVENT.signal(), Ok(1));
     assert_eq!(
-        crate::linux_driver::control("async_irq", || {
+        crate::drivers::linux_driver::control("async_irq", || {
             C_CALLS.fetch_add(1, Ordering::Relaxed);
             0
         }),
