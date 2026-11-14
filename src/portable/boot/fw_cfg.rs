@@ -220,7 +220,7 @@ pub fn read_mode(
 pub fn read_ipv4(
     mut select: impl FnMut(u16),
     mut read: impl FnMut() -> u8,
-) -> Result<crate::network_config::Mode, Error> {
+) -> Result<crate::net::config::Mode, Error> {
     let Some((bytes, size)) = read_file::<MAX_MODE_BYTES>(
         &mut select,
         &mut read,
@@ -231,14 +231,14 @@ pub fn read_ipv4(
     else {
         return Ok(Default::default());
     };
-    crate::network_config::Mode::parse(&bytes[..size]).map_err(|_| Error::InvalidIpv4)
+    crate::net::config::Mode::parse(&bytes[..size]).map_err(|_| Error::InvalidIpv4)
 }
 
 pub fn read_test_options(
     mut select: impl FnMut(u16),
     mut read: impl FnMut() -> u8,
     mode: BootMode,
-) -> Result<crate::test_selection::Selection, Error> {
+) -> Result<crate::testing::selection::Selection, Error> {
     let Some((bytes, size)) = read_file::<64>(
         &mut select,
         &mut read,
@@ -255,7 +255,7 @@ pub fn read_test_options(
     if mode != BootMode::KernelTests {
         return Err(Error::TestOptionsMode);
     }
-    crate::test_selection::Selection::parse(&bytes[..size]).ok_or(Error::InvalidTestOptions)
+    crate::testing::selection::Selection::parse(&bytes[..size]).ok_or(Error::InvalidTestOptions)
 }
 
 fn read_file<const N: usize>(
@@ -499,7 +499,7 @@ mod tests {
         );
     }
 
-    fn ipv4(files: &[(&str, &[u8])]) -> Result<crate::network_config::Mode, Error> {
+    fn ipv4(files: &[(&str, &[u8])]) -> Result<crate::net::config::Mode, Error> {
         let blobs = fixture(files);
         let state = RefCell::new((0, 0));
         read_ipv4(
@@ -518,7 +518,7 @@ mod tests {
         fn options(
             files: &[(&str, &[u8])],
             mode: BootMode,
-        ) -> Result<crate::test_selection::Selection, Error> {
+        ) -> Result<crate::testing::selection::Selection, Error> {
             let blobs = fixture(files);
             let state = RefCell::new((0, 0));
             read_test_options(
@@ -532,7 +532,7 @@ mod tests {
                 mode,
             )
         }
-        use crate::test_selection::Selection;
+        use crate::testing::selection::Selection;
         const FILE: &str = "opt/kutox/test-options";
         assert_eq!(options(&[], BootMode::Run), Ok(Selection::All));
         assert_eq!(
@@ -580,7 +580,7 @@ mod tests {
         assert_eq!(ipv4(&[]), Ok(Default::default()));
         assert_eq!(
             ipv4(&[("opt/kutox/ipv4", b"dhcp")]),
-            Ok(crate::network_config::Mode::Dhcp)
+            Ok(crate::net::config::Mode::Dhcp)
         );
         assert_eq!(
             ipv4(&[("opt/kutox/ipv4", b"10.0.2.15/24")]),

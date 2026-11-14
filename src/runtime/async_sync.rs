@@ -10,7 +10,7 @@ use core::{
     pin::Pin,
     task::{Context, Poll},
 };
-use kutox::async_state::{DeadlineId, Event as PolicyEvent, EventToken, EventWait};
+use kutox::runtime::async_state::{DeadlineId, Event as PolicyEvent, EventToken, EventWait};
 use moss_libkernel::sync::{spinlock::SpinLockIrq, waker_set::RegistrationId};
 
 pub struct Event {
@@ -64,7 +64,7 @@ impl Future for EventFuture {
             let epoch = async_runtime::event_epoch()?;
             let token = this.token?;
             if token.epoch() != epoch {
-                return Err(Error::State(kutox::async_state::Error::Stale));
+                return Err(Error::State(kutox::runtime::async_state::Error::Stale));
             }
             let mut event = this.event.state.lock_save_irq();
             if event.as_ref().is_none_or(|event| event.epoch() != epoch) {

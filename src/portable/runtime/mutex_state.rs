@@ -1,6 +1,6 @@
 //! Portable ownership policy for a non-recursive sleeping mutex.
 
-use crate::run_queue::TaskHandle;
+use crate::runtime::run_queue::TaskHandle;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(i32)]
@@ -70,7 +70,7 @@ impl MutexState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::run_queue::{RunQueue, TaskId};
+    use crate::runtime::run_queue::{RunQueue, TaskId};
 
     fn handles() -> [TaskHandle; 3] {
         let mut queue = RunQueue::<3>::new();

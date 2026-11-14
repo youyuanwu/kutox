@@ -18,9 +18,9 @@ use core::{
     sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering},
 };
 use kutox::{
-    driver_registry::{Phase, Scope, ServiceId},
-    irq_platform::Topology,
-    pci_state::Inventory,
+    arch::x86_64::irq_platform::Topology,
+    drivers::pci_state::Inventory,
+    drivers::registry::{Phase, Scope, ServiceId},
 };
 
 pub const MAX_TASKS: usize = 6;
@@ -126,7 +126,7 @@ pub(crate) fn async_failed(code: i32) {
 }
 
 fn refresh_ready(resources: &Resources<'_>, initial: bool) -> Result<(), Failure> {
-    for index in 0..kutox::driver_registry::MAX_DEVICES {
+    for index in 0..kutox::drivers::registry::MAX_DEVICES {
         let Some((device, snapshot)) = MANAGER
             .device_at(index)
             .map_err(|error| Failure::new("runtime_ready_enumeration", error.code()))?
@@ -135,7 +135,7 @@ fn refresh_ready(resources: &Resources<'_>, initial: bool) -> Result<(), Failure
         };
         if matches!(
             snapshot.state,
-            kutox::driver_registry::DeviceState::Bound { .. }
+            kutox::drivers::registry::DeviceState::Bound { .. }
         ) {
             let operation = MANAGER
                 .operation(device)
@@ -145,7 +145,7 @@ fn refresh_ready(resources: &Resources<'_>, initial: bool) -> Result<(), Failure
                 .map_err(|error| Failure::new("runtime_device_ready", error.code()))?;
             if resources.reporting()
                 && matches!(snapshot.state,
-                    kutox::driver_registry::DeviceState::Bound { driver, ready: previous }
+                    kutox::drivers::registry::DeviceState::Bound { driver, ready: previous }
                         if driver == linux_driver::DRIVER_ID && (previous != ready || initial && ready)
                 )
             {
@@ -347,7 +347,7 @@ pub(crate) enum Stage {
     Manager,
 }
 
-fn checkpoint(_stage: Stage, _mode: kutox::fw_cfg::BootMode) -> Result<(), Failure> {
+fn checkpoint(_stage: Stage, _mode: kutox::boot::fw_cfg::BootMode) -> Result<(), Failure> {
     #[cfg(feature = "guest-tests")]
     if _mode.is_guest_test() {
         tests::checkpoint(_stage)?;
@@ -382,17 +382,17 @@ pub const METADATA_BYTES: usize = core::mem::size_of::<Resources<'static>>()
     + core::mem::size_of::<crate::drivers::platform::Owner>()
     + core::mem::size_of::<linux_irq::BoundIrq<'static, 'static, 'static>>();
 const _: () =
-    assert!(kutox::pci_state::INFRASTRUCTURE_METADATA_BYTES + METADATA_BYTES <= 64 * 1024);
+    assert!(kutox::drivers::pci_state::INFRASTRUCTURE_METADATA_BYTES + METADATA_BYTES <= 64 * 1024);
 
 impl<'a> Resources<'a> {
     fn reporting(&self) -> bool {
         matches!(
             self.boot.mode,
-            kutox::fw_cfg::BootMode::Run
-                | kutox::fw_cfg::BootMode::DriverRun
-                | kutox::fw_cfg::BootMode::NetworkRun
-                | kutox::fw_cfg::BootMode::NetworkTests
-                | kutox::fw_cfg::BootMode::DriverRuntimeTests
+            kutox::boot::fw_cfg::BootMode::Run
+                | kutox::boot::fw_cfg::BootMode::DriverRun
+                | kutox::boot::fw_cfg::BootMode::NetworkRun
+                | kutox::boot::fw_cfg::BootMode::NetworkTests
+                | kutox::boot::fw_cfg::BootMode::DriverRuntimeTests
         )
     }
     pub fn start(
@@ -642,9 +642,9 @@ impl<'a> Resources<'a> {
         self.network.set(network);
         if matches!(
             self.boot.mode,
-            kutox::fw_cfg::BootMode::Run
-                | kutox::fw_cfg::BootMode::NetworkRun
-                | kutox::fw_cfg::BootMode::DriverRun
+            kutox::boot::fw_cfg::BootMode::Run
+                | kutox::boot::fw_cfg::BootMode::NetworkRun
+                | kutox::boot::fw_cfg::BootMode::DriverRun
         ) {
             serial::print(format_args!(
                 "# KERNEL_SERVICES epoch={} mode={} tasks={} clients={} async={} network={}\n",
@@ -685,7 +685,7 @@ impl<'a> Resources<'a> {
         drop(binding);
         drop(platform);
         if self.boot.mode.is_network_runtime()
-            || self.boot.mode == kutox::fw_cfg::BootMode::DriverRun
+            || self.boot.mode == kutox::boot::fw_cfg::BootMode::DriverRun
         {
             serial::print(format_args!(
                 "# KERNEL_SERVICES_CLOSED epoch={} tasks={}\n",
@@ -754,7 +754,7 @@ fn initialize(resources: &Resources<'_>) -> Result<(), Failure> {
             summary.failed,
             summary.waiting + summary.unavailable + summary.cycles,
             linux_deferred::worker_count(),
-            kutox::pci_state::INFRASTRUCTURE_METADATA_BYTES + METADATA_BYTES,
+            kutox::drivers::pci_state::INFRASTRUCTURE_METADATA_BYTES + METADATA_BYTES,
         ));
     }
     refresh_ready(resources, true)?;

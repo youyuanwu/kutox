@@ -1,6 +1,6 @@
 //! Native Ethernet values, independent of Linux-private packet layouts.
 
-use crate::driver_registry::PciAddress;
+use crate::drivers::registry::PciAddress;
 use alloc::vec::Vec;
 
 pub const MAX_FRAME: usize = 1514;

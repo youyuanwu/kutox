@@ -16,7 +16,7 @@ use crate::{
     runtime::time,
 };
 use core::sync::atomic::{AtomicUsize, Ordering};
-use kutox::{async_state::Outcome, network_config::Mode};
+use kutox::{net::config::Mode, runtime::async_state::Outcome};
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 use smoltcp::wire::Ipv4Address;
 

@@ -18,7 +18,7 @@ use crate::{
     user::tasks::{Dispatcher, tests as user_tasks},
 };
 use core::sync::atomic::{AtomicUsize, Ordering};
-use kutox::{async_state::Outcome, network_config::Mode};
+use kutox::{net::config::Mode, runtime::async_state::Outcome};
 
 pub(crate) static TESTS: &[TestCase] = &[TestCase {
     name: "http.exchange",

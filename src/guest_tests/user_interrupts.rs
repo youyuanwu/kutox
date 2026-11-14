@@ -21,7 +21,7 @@ use core::{
     ptr::addr_of,
     sync::atomic::{AtomicUsize, Ordering},
 };
-use kutox::user_state::{MAX_RUN_US, PAGE_SIZE, USER_BASE, USER_END};
+use kutox::user::state::{MAX_RUN_US, PAGE_SIZE, USER_BASE, USER_END};
 use moss_libkernel::{
     CpuOps,
     memory::{

@@ -29,8 +29,8 @@ use core::{
     task::{Context, Poll, Waker},
 };
 use kutox::{
-    async_state::{Error as StateError, Outcome},
-    network_config::Config,
+    net::config::Config,
+    runtime::async_state::{Error as StateError, Outcome},
 };
 use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
 
@@ -258,9 +258,9 @@ fn acquire() -> net_async::Session {
     ));
     session
 }
-fn native(session: net_async::Session) -> kutox::driver_registry::DeviceHandle {
+fn native(session: net_async::Session) -> kutox::drivers::registry::DeviceHandle {
     let manager = current().manager().unwrap();
-    (0..kutox::driver_registry::MAX_DEVICES)
+    (0..kutox::drivers::registry::MAX_DEVICES)
         .filter_map(|index| manager.device_at(index).unwrap())
         .find(|(handle, _)| handle.identity() == session.identity())
         .unwrap()
@@ -364,7 +364,7 @@ fn capacity(session: net_async::Session) {
     let protocol = net_stack::start(Config::default()).unwrap();
     wait(|| net_stack::snapshot().ready);
     let protocol_bytes = runtime::stats().payload_bytes;
-    assert!(protocol_bytes > 0 && protocol_bytes <= kutox::async_state::MAX_FUTURE_BYTES);
+    assert!(protocol_bytes > 0 && protocol_bytes <= kutox::runtime::async_state::MAX_FUTURE_BYTES);
     PIN_REPOLLS.store(0, Ordering::Release);
     for (index, task) in tasks[..15].iter_mut().enumerate() {
         ADDRESSES[index].store(0, Ordering::Release);
@@ -478,7 +478,7 @@ fn cancellation(session: net_async::Session) {
     let held = manager.operation(device).unwrap();
     assert_eq!(
         manager.stop(device),
-        Err(kutox::driver_registry::Error::Busy)
+        Err(kutox::drivers::registry::Error::Busy)
     );
     assert_eq!(driver_memory::snapshot(), mapped);
     drop(held);
@@ -593,7 +593,7 @@ fn retirement(session: net_async::Session) {
     let held = manager.operation(device).unwrap();
     assert_eq!(
         manager.stop(device),
-        Err(kutox::driver_registry::Error::Busy)
+        Err(kutox::drivers::registry::Error::Busy)
     );
     assert_eq!(driver_memory::snapshot(), after_cancel);
     assert_eq!(session.info(), Err(net_async::Error::Closed));
@@ -794,7 +794,7 @@ fn scope(
     assert_eq!(heap::global().stats(), heap_before);
     serial::print(format_args!(
         "# ASYNC_HARD_JOIN scope={scope} result={expected} frames=balanced heap=balanced requests=0 packets=0 futures=0 tasks=0 workers=0 metadata={} future_storage=32768 packet_storage=32768\n",
-        kutox::pci_state::INFRASTRUCTURE_METADATA_BYTES + kernel_runtime::METADATA_BYTES
+        kutox::drivers::pci_state::INFRASTRUCTURE_METADATA_BYTES + kernel_runtime::METADATA_BYTES
     ));
     Ok(())
 }

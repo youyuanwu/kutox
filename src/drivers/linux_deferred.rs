@@ -12,7 +12,7 @@ use core::{
     ffi::c_void,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
-use kutox::deferred_state::{Error, Invocation, Key, Kind, Registry};
+use kutox::drivers::deferred_state::{Error, Invocation, Key, Kind, Registry};
 use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
 
 const CAPACITY: usize = 32;
@@ -399,7 +399,7 @@ fn napi(address: usize, key: Key, operation: u32, done: i32) -> Result<bool, Err
 }
 
 pub struct WorkerTasks {
-    handles: [kutox::run_queue::TaskHandle; 2],
+    handles: [kutox::runtime::run_queue::TaskHandle; 2],
 }
 
 impl WorkerTasks {

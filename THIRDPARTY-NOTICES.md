@@ -13,8 +13,8 @@
   DHCPv4, DNS, TCP, owned allocation support, and fixed DNS/interface capacities.
   UDP sockets are instantiated only when an explicit kernel client binds.
 
-The [staged token adapter](src/net/stack_state.rs), [protocol service](src/net/stack.rs)
-and [network configuration](src/net/config.rs) are kutox code. smoltcp owns
+The [staged token adapter](src/portable/net/stack_state.rs), [protocol service](src/net/stack.rs)
+and [network configuration](src/portable/net/config.rs) are kutox code. smoltcp owns
 ARP/IP/ICMP/UDP/DHCP/DNS/TCP processing; unchanged Linux e1000 still owns hardware TX/RX.
 This follows pinned Moss's declared stack baseline, not a copy of its complete
 socket, networking syscall or process-oriented service modules.
@@ -22,7 +22,7 @@ The [stdlib packet peer](scripts/network_packets.py), bounded production
 callback/status records and directed guest acceptance are also kutox code.
 They observe unchanged Linux and smoltcp implementations; no packet algorithm
 or additional upstream networking/syscall source is copied.
-The [native UDP API](src/net/udp.rs), [bounded socket control](src/net/udp_state.rs)
+The [native UDP API](src/net/udp.rs), [bounded socket control](src/portable/net/udp_state.rs)
 and [guest acceptance](src/guest_tests/udp.rs) are kutox code, with UDP processing supplied
 by smoltcp. Pinned Moss's socket handles, buffers and readiness separation
 informed this boundary; that revision has no IPv4 UDP implementation. No
@@ -145,7 +145,7 @@ is retained in the portable port and shared license file.
 
 The [cooperative user-run service](src/user/mod.rs), its
 [x86_64 entry/return assembly](src/arch/x86_64/user_entry.S),
-[portable copy planner](src/user/state.rs) and embedded acceptance programs
+[portable copy planner](src/portable/user/state.rs) and embedded acceptance programs
 are kutox implementations. They use the adapted memory boundary and startup
 stack, but import no Moss CPU entry/return, syscall or process-runtime source.
 The native entry is explicitly named `kutox_user_bringup`, not a replacement
@@ -362,7 +362,7 @@ metadata instead of invoking Waker hooks under an IRQ lock. Registration guards
 borrow the set without retaining a held lock and drop only copyable metadata.
 The upstream `Arc`/`WaitUntil` future implementation is not copied.
 
-[src/runtime/async_state.rs](src/runtime/async_state.rs) is native kutox policy using these
+[src/portable/runtime/async_state.rs](src/portable/runtime/async_state.rs) is native kutox policy using these
 adaptations: checked epochs, sixteen live/retained task slots, FIFO admission,
 event generations, sixteen registrations/deadlines and explicit cancellation,
 failure and off-lock payload-release acknowledgement. Waker records retain
@@ -384,7 +384,7 @@ ownership glue using the existing Moss frame guard, not a copied upstream
 executor. No Linux packet algorithm is replaced.
 
 [src/net/async_service.rs](src/net/async_service.rs) and
-[src/net/async_state.rs](src/net/async_state.rs) add native kutox owned request,
+[src/portable/net/async_state.rs](src/portable/net/async_state.rs) add native kutox owned request,
 packet-arena, session and broker policy. They use the existing Moss-derived
 heap/IRQ primitives and guarded async core, not Moss socket/syscall code.
 The single caller still executes unchanged Linux TX/RX/IRQ/NAPI/close/remove.
@@ -512,7 +512,7 @@ and all four selected upstream units remain unchanged. These services now back
 original driver execution for the selected profile, not general Linux
 synchronization or binary ABI compatibility.
 
-The shared compatibility modules and [C/Rust ABI contracts](src/linux_compat/abi.rs)
+The shared compatibility modules and [C/Rust ABI contracts](src/portable/linux_compat/abi.rs)
 are kutox implementations of selected Linux-facing services. They replace the
 former C allocation/PCI/execution adapters and storage device/work/lifecycle
 policy; they do not replace original Linux device algorithms. Network-device,
@@ -531,9 +531,9 @@ existing attribution.
 
 ## Native driver infrastructure and persistent integration
 
-The native [registry policy](src/drivers/registry.rs),
-[retained manager](src/drivers/manager.rs), [initializer validation](src/drivers/init.rs),
-[PCI hierarchy](src/drivers/pci_state.rs), [runtime](src/runtime/kernel_runtime.rs) and
+The native [registry policy](src/portable/drivers/registry.rs),
+[retained manager](src/portable/drivers/manager.rs), [initializer validation](src/drivers/init.rs),
+[PCI hierarchy](src/portable/drivers/pci_state.rs), [runtime](src/runtime/kernel_runtime.rs) and
 [Ethernet handle/value boundary](src/net/device.rs) are kutox implementations.
 They follow pinned Moss's
 [built-in initialization](https://github.com/hexagonal-sun/moss-kernel/blob/1358b5d78b9151e382dc60ccda7fe0de191e56af/src/drivers/init.rs)

@@ -7,8 +7,8 @@ use crate::{
     user::{self, Counts, Report, RunOptions, Stop, UserContext},
 };
 use kutox::{
-    run_queue::{RunQueue, TaskHandle, TaskId, WaitKey},
-    user_state::{ExecutionBudget, Input, MAX_RUN_US, ReadRequest},
+    runtime::run_queue::{RunQueue, TaskHandle, TaskId, WaitKey},
+    user::state::{ExecutionBudget, Input, MAX_RUN_US, ReadRequest},
 };
 use moss_libkernel::task::{context::Context, elf::Loaded};
 

@@ -1,7 +1,7 @@
 pub(crate) mod fs;
 
 use crate::{Failure, arch::x86_64::io};
-use kutox::fw_cfg::{self, BootMode};
+use kutox::boot::fw_cfg::{self, BootMode};
 use limine::{
     BaseRevision,
     request::{
@@ -53,11 +53,11 @@ pub struct BootInfo {
     pub memory_map: &'static [&'static limine::memory_map::Entry],
     pub mode: BootMode,
     pub mode_configured: bool,
-    pub ipv4: kutox::network_config::Mode,
+    pub ipv4: kutox::net::config::Mode,
     pub rsdp_physical: Option<u64>,
     pub rootfs: Option<&'static [u8]>,
     #[cfg(feature = "guest-tests")]
-    pub test_selection: kutox::test_selection::Selection,
+    pub test_selection: kutox::testing::selection::Selection,
 }
 
 pub fn processor_count() -> Result<usize, Failure> {

@@ -12,7 +12,7 @@ use crate::{
     user::{self, Report, Stop},
 };
 use core::{arch::global_asm, ptr::addr_of};
-use kutox::user_state::{MAX_SYSCALLS, PAGE_SIZE, USER_BASE, USER_END};
+use kutox::user::state::{MAX_SYSCALLS, PAGE_SIZE, USER_BASE, USER_END};
 use moss_libkernel::memory::{address_space::UserAddressSpace, permissions::PtePermissions};
 use x86_64::registers::{
     control::{Cr0, Cr3},

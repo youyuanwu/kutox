@@ -25,7 +25,7 @@ fn connected(control: &mut Control) -> Key {
 
 fn interface() -> Interface {
     let mut device = Loopback::new(Medium::Ethernet);
-    crate::net_stack_state::interface(
+    crate::net::stack_state::interface(
         Config::default(),
         [2, 0, 0, 0, 0, 1],
         &mut device,
@@ -238,9 +238,9 @@ fn no_application_socket_still_rejects_closed_tcp_ports_with_rst() {
         &mut device,
         Instant::ZERO,
     );
-    crate::net_stack_state::apply_settings(
+    crate::net::stack_state::apply_settings(
         &mut interface,
-        Some(crate::network_config::Settings {
+        Some(crate::net::config::Settings {
             address: Config::default(),
             router: None,
             dns: [None; 2],

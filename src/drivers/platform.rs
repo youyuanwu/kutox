@@ -37,7 +37,10 @@ pub fn fail_operation(operation: u32) {
 
 pub struct Owner;
 impl Owner {
-    pub fn report_path(&self, topology: &kutox::irq_platform::Topology) -> Result<(), Failure> {
+    pub fn report_path(
+        &self,
+        topology: &kutox::arch::x86_64::irq_platform::Topology,
+    ) -> Result<(), Failure> {
         driver_memory::context(false)
             .map_err(|error| Failure::new("driver_path_context", error))?;
         let binding = unsafe { (&*BINDING.0.get()).as_ref() }

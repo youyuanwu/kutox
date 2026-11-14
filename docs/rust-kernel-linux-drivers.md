@@ -1240,8 +1240,8 @@ they do not replace this roadmap's driver-execution gates.
 ### Moss-style driver infrastructure
 
 The integration milestone has **all eight phases complete**. The native
-[registry policy](../src/drivers/registry.rs) and
-[owned manager boundary](../src/drivers/manager.rs) have portable and guarded-thread
+[registry policy](../src/portable/drivers/registry.rs) and
+[owned manager boundary](../src/portable/drivers/manager.rs) have portable and guarded-thread
 guest tests, including retained built-in initializers and probe coordination.
 The e1000 backend now works behind retained native network handles in the
 managed runtime, and normal boot now starts and retains this runtime.
@@ -1318,7 +1318,7 @@ hierarchy support; subsequent phases supply the guest proofs below.
 The new registry/manager is kutox code following Moss's model, not a wholesale
 copy of Moss's FDT/VFS driver subsystem.
 
-Phase 2's [portable inventory](../src/drivers/pci_state.rs) enumerates present functions
+Phase 2's [portable inventory](../src/portable/drivers/pci_state.rs) enumerates present functions
 and firmware-assigned type-1 bridge buses without touching unrelated command/
 BAR registers or assigning resources. It rejects malformed headers, primary/
 secondary/subordinate conflicts, sibling overlap, stale identity/parent paths
@@ -1347,7 +1347,7 @@ Linux TX/RX acceptance runs at root and one/two bridge levels on the same ISO.
 Phase 6 now uses this inventory/routing for persistent default startup; explicit
 `probe` keeps the earlier MAC proof.
 
-Phase 3's [native initializer records](../src/drivers/manager.rs) use a versioned
+Phase 3's [native initializer records](../src/portable/drivers/manager.rs) use a versioned
 24-byte layout, stable priority/ID ordering and a bounded initializer table.
 [The linker](../linker.ld) retains separate production/test tables and a
 16-byte read-only header, with exact bounds and layout assertions.
@@ -1408,7 +1408,7 @@ without preventing ordinary timed sleeping or unlocked metadata reentry.
 The production table now contains the e1000 descriptor; no-NIC startup retains
 real unclaimed inventory and zero bindings rather than fabricating a device.
 
-The [scheduler idle policy](../src/runtime/run_queue.rs) is explicit: finite calls retain
+The [scheduler idle policy](../src/portable/runtime/run_queue.rs) is explicit: finite calls retain
 their previous completion/deadlock/deadline/armed-IRQ behavior; persistent calls
 cannot finish until deliberate shutdown has completed and every stack has
 returned. With no deadline or device IRQ, persistent idle uses the BSP's
@@ -1463,7 +1463,7 @@ source-derived manager readiness and retry eligible dependencies, not a
 fabricated polling worker.
 
 [net_device.rs](../src/net/device.rs) exposes epoch-checked native handles;
-[portable packet values](../src/net/state.rs) contain no Linux-private layouts:
+[portable packet values](../src/portable/net/state.rs) contain no Linux-private layouts:
 
 - `enumerate(runtime)` returns bound network handles even while link readiness
   is still pending. `info()` returns actual MAC, full BDF, link, MTU and source
@@ -1566,7 +1566,7 @@ not APIs required by production consumers.
 
 #### Default runtime boot and end-to-end acceptance
 
-[The boot selector](../src/boot/fw_cfg.rs) chooses `run` when the optional fw_cfg
+[The boot selector](../src/portable/boot/fw_cfg.rs) chooses `run` when the optional fw_cfg
 mode is absent. Explicit `run` is valid in both build profiles; `probe`,
 EEPROM timeout, faults, heap/stack-guard and kernel-test modes keep their
 existing semantics. Configuration and build gating still fail before memory/
@@ -1622,7 +1622,7 @@ complete for this profile.
 
 #### Managed failure, concurrency and callback lifetime
 
-[Manager stop admission](../src/drivers/manager.rs) invokes `NativeDevice::begin_stop`
+[Manager stop admission](../src/portable/drivers/manager.rs) invokes `NativeDevice::begin_stop`
 outside IRQ locks before reserving final retirement. The selected e1000 adapter
 atomically closes existing/new views and wakes waiters, while active operations
 retain their Arc/source backing. `stop` remains the source close/remove and
@@ -1634,7 +1634,7 @@ stopping and resumes on actual completion, not polling or success-shaped error
 suppression. Context-rejected calls do not invoke notifications under outer
 IRQ guards.
 
-[Portable manager tests](../src/drivers/manager_tests.rs) exercise exact driver/
+[Portable manager tests](../src/portable/drivers/manager_tests.rs) exercise exact driver/
 device/binding/operation capacities, notification before late reservation
 release, selective stop isolation, deferred publication after startup and
 context-safe completion. The existing duplicate/metadata/cycle/failure/restart

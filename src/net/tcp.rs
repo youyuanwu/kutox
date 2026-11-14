@@ -6,16 +6,16 @@ use crate::{
 };
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::{future::poll_fn, pin::Pin, task::Poll};
-pub use kutox::tcp_state::{Endpoint, Error};
+pub use kutox::net::tcp_state::{Endpoint, Error};
 use kutox::{
-    network_config::{Config, Settings},
-    tcp_state::{Buffers, Control, Engine, Key},
+    net::config::{Config, Settings},
+    net::tcp_state::{Buffers, Control, Engine, Key},
 };
 use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
 use smoltcp::iface::Interface;
 
-pub const MAX_CONNECTIONS: usize = kutox::tcp_state::MAX_CONNECTIONS;
-pub const BUFFER_BYTES: usize = kutox::tcp_state::BUFFER_BYTES;
+pub const MAX_CONNECTIONS: usize = kutox::net::tcp_state::MAX_CONNECTIONS;
+pub const BUFFER_BYTES: usize = kutox::net::tcp_state::BUFFER_BYTES;
 static CONTROL: SpinLockIrq<Control, cpu::X86Cpu> = SpinLockIrq::new(Control::new());
 static WORK: async_sync::Event = async_sync::Event::new();
 static PROGRESS: async_sync::Event = async_sync::Event::new();

@@ -3,7 +3,7 @@ use crate::{
     memory::dma::{self, Buffer, Device, Error},
 };
 use core::cell::UnsafeCell;
-use kutox::dma_state;
+use kutox::memory::dma_state;
 
 const CAPACITY: usize = 8;
 struct State {
@@ -70,7 +70,7 @@ pub(crate) fn allocate(key: usize, size: usize, flags: u32) -> Result<(usize, u6
         });
     }
     with_registry(|state| {
-        if flags != kutox::linux_abi::GFP_KERNEL {
+        if flags != kutox::linux_compat::abi::GFP_KERNEL {
             return Err(dma_state::Error::Layout.into());
         }
         dma_state::Layout::new(size, 4096)?;

@@ -18,7 +18,7 @@ use crate::{
     runtime::time,
 };
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use kutox::{async_state::Outcome, network_config::Config};
+use kutox::{net::config::Config, runtime::async_state::Outcome};
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 use smoltcp::wire::{
     ArpOperation, ArpPacket, ArpRepr, EthernetAddress, EthernetFrame, EthernetProtocol, Ipv4Address,
@@ -278,7 +278,8 @@ fn exchange(
         assert_eq!((stats.finished, stats.peak_tasks), (6, 6));
         serial::print(format_args!(
             "# NET_IP_JOIN epoch={epoch} finished=6 peak=6 frame=balanced heap=balanced sessions=0 requests=0 packets=0 futures=0 tasks=0 workers=0 copied_after_remove=1 source_unchanged=1 metadata={}\n",
-            kutox::pci_state::INFRASTRUCTURE_METADATA_BYTES + kernel_runtime::METADATA_BYTES,
+            kutox::drivers::pci_state::INFRASTRUCTURE_METADATA_BYTES
+                + kernel_runtime::METADATA_BYTES,
         ));
     }
     Ok(())

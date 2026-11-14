@@ -135,7 +135,7 @@ objects are compiled separately against the same selected source profile.
 
 The [shared compatibility implementation](src/linux_compat/) exports Linux-facing
 C ABI functions from Rust. Both drivers share checked
-[device/PCI/execution contracts](src/linux_compat/abi.rs), synchronization, allocation
+[device/PCI/execution contracts](src/portable/linux_compat/abi.rs), synchronization, allocation
 adapters, PCI registration/access and DMA dispatch. Storage device references,
 work tracking and lifecycle/recovery orchestration also live in Rust.
 [Network packet services](src/linux_compat/packet.rs) own network-device

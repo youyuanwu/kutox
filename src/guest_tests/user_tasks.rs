@@ -9,7 +9,7 @@ use crate::{
     memory,
 };
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use kutox::user_state::{MAX_SYSCALLS, USER_BASE, USER_END};
+use kutox::user::state::{MAX_SYSCALLS, USER_BASE, USER_END};
 use moss_libkernel::{CpuOps, memory::address_space::UserAddressSpace};
 use x86_64::registers::control::{Cr0, Cr3};
 

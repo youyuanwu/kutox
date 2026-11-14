@@ -397,7 +397,7 @@ pub fn run(
 
 pub(crate) fn allocate(size: usize, alignment: usize, gfp: u32) -> usize {
     if driver_memory::context(false).is_err()
-        || gfp & !kutox::linux_abi::GFP_ZERO != kutox::linux_abi::GFP_KERNEL
+        || gfp & !kutox::linux_compat::abi::GFP_ZERO != kutox::linux_compat::abi::GFP_KERNEL
         || size == 0
         || size > 65536
         || !matches!(alignment, 16 | 4096)

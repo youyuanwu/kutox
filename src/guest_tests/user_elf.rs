@@ -12,7 +12,7 @@ use crate::{
     memory::{self, user::AddressSpace},
     user,
 };
-use kutox::user_state::{PAGE_SIZE, USER_BASE};
+use kutox::user::state::{PAGE_SIZE, USER_BASE};
 use moss_libkernel::memory::{
     PhysMemoryRegion, address_space::UserAddressSpace, allocators::frame::Frame,
     permissions::PtePermissions,

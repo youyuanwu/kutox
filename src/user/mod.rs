@@ -20,7 +20,7 @@ use core::{
     mem::{offset_of, size_of},
     ptr::{addr_of, addr_of_mut},
 };
-use kutox::user_state::{
+use kutox::user::state::{
     Input, MAX_OUTPUT, MAX_PAGES, MAX_READ, MAX_RUN_US, MAX_SYSCALLS, MAX_WRITE, PAGE_SIZE,
     ReadRequest, ReturnAction, SYS_EXIT, SYS_READ, SYS_SLEEP, SYS_WRITE, SYS_YIELD, SlicePlan,
     USER_BASE, USER_END, plan_copy, plan_copy_to_user, return_action, sleep_deadline, user_flags,

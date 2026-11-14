@@ -1,9 +1,9 @@
 use crate::arch::x86_64::cpu::X86Cpu;
 use crate::{Failure, arch::x86_64::io, arch::x86_64::serial};
 use alloc::sync::Arc;
-use kutox::driver_registry::PciAddress;
-use kutox::irq_platform::{self, Topology};
-use kutox::pci_state::{self, Inventory};
+use kutox::arch::x86_64::irq_platform::{self, Topology};
+use kutox::drivers::pci_state::{self, Inventory};
+use kutox::drivers::registry::PciAddress;
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 
 static CONFIG: SpinLockIrq<(), X86Cpu> = SpinLockIrq::new(());

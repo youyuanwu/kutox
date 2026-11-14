@@ -7,7 +7,7 @@ use core::{
     ptr::NonNull,
     sync::atomic::{Ordering, compiler_fence},
 };
-use kutox::dma_state::{self, Layout, Ownership, State};
+use kutox::memory::dma_state::{self, Layout, Ownership, State};
 use moss_libkernel::{
     memory::{Error as FrameError, allocators::phys::PageAllocation},
     sync::spinlock::SpinLockIrq,

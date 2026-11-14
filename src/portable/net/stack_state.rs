@@ -1,6 +1,6 @@
 //! Staged smoltcp tokens borrow CPU copies and already-reserved TX credit.
 
-use crate::{net_state::Error, network_config};
+use crate::{net::config as network_config, net::state::Error};
 use alloc::vec::Vec;
 use smoltcp::{
     iface::{Config, Interface, SocketHandle, SocketSet, SocketStorage},
@@ -18,11 +18,11 @@ pub struct Dhcp {
 }
 
 impl Dhcp {
-    pub fn new() -> Result<Self, crate::udp_state::Error> {
+    pub fn new() -> Result<Self, crate::net::udp_state::Error> {
         let mut storage = Vec::new();
         storage
             .try_reserve_exact(1)
-            .map_err(|_| crate::udp_state::Error::NoMemory)?;
+            .map_err(|_| crate::net::udp_state::Error::NoMemory)?;
         storage.push(SocketStorage::EMPTY);
         let mut sockets = SocketSet::new(storage);
         let handle = sockets.add(smoltcp::socket::dhcpv4::Socket::new());

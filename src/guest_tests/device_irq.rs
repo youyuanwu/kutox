@@ -14,7 +14,7 @@ use crate::{
     runtime::time,
 };
 use core::sync::atomic::{AtomicUsize, Ordering};
-use kutox::completion_state::CompletionState;
+use kutox::runtime::completion_state::CompletionState;
 use moss_libkernel::CpuOps;
 
 const CAUSE: u32 = 0x10;

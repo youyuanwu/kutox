@@ -1,5 +1,5 @@
 use super::*;
-use kutox::irq_platform::Topology;
+use kutox::arch::x86_64::irq_platform::Topology;
 
 const MASK: u32 = 1 << 16;
 const REMOTE_IRR: u32 = 1 << 14;

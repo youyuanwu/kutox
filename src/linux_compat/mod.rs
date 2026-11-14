@@ -1,6 +1,6 @@
 //! C ABI implementations; all policy and ownership here are Rust, not driver code.
 #![allow(dead_code)]
-pub(crate) mod abi;
+pub(crate) use kutox::linux_compat::abi;
 pub(crate) mod block;
 mod block_abi;
 pub(crate) mod block_request;

@@ -1,6 +1,6 @@
 //! Bounded socket commands and protocol-owned smoltcp UDP buffers.
 
-use crate::network_config::Config;
+use crate::net::config::Config;
 use alloc::vec::Vec;
 use smoltcp::{
     iface::{SocketHandle, SocketSet, SocketStorage},
@@ -49,7 +49,7 @@ impl Endpoint {
             || address == cidr.address()
             || address == cidr.network().address()
             || Some(address) == cidr.broadcast()
-            || !crate::network_config::valid_unicast(address)
+            || !crate::net::config::valid_unicast(address)
         {
             return Err(Error::Unaddressable);
         }

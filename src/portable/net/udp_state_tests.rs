@@ -61,7 +61,7 @@ fn dhcp_reserves_its_client_port_even_after_configuration() {
 
 #[test]
 fn dhcp_socket_does_not_eagerly_allocate_or_consume_udp_capacity() {
-    let dhcp = crate::net_stack_state::Dhcp::new().unwrap();
+    let dhcp = crate::net::stack_state::Dhcp::new().unwrap();
     assert_eq!(dhcp.sockets.iter().count(), 1);
     let mut engine = Engine::new().unwrap();
     assert_eq!(engine.sockets.iter().count(), MAX_SOCKETS);
@@ -246,7 +246,7 @@ fn smoltcp_ingress_is_bounded_fifo_and_close_flushes_all_buffers() {
     let mac = [0x52, 0x54, 0, 0x12, 0x34, 0x56];
     let mut device = Loopback::new(Medium::Ethernet);
     let mut interface =
-        crate::net_stack_state::interface(config, mac, &mut device, Instant::ZERO).unwrap();
+        crate::net::stack_state::interface(config, mac, &mut device, Instant::ZERO).unwrap();
     for sequence in 0..4 {
         device
             .transmit(Instant::ZERO)

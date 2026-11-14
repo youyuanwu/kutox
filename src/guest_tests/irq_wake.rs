@@ -4,7 +4,7 @@ use crate::boot::BootInfo;
 use super::*;
 use crate::runtime::completion::{Completion, Error as CompletionError, WaitResult};
 use core::sync::atomic::AtomicUsize;
-use kutox::completion_state::{CompletionState, Error as CompletionStateError};
+use kutox::runtime::completion_state::{CompletionState, Error as CompletionStateError};
 
 static SIGNAL: Completion = Completion::new();
 static QUEUE: WaitQueue = WaitQueue::new();

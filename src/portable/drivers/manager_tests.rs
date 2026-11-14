@@ -1,5 +1,5 @@
 use super::*;
-use crate::driver_registry::{MAX_DEPENDENCIES, Matcher};
+use crate::drivers::registry::{MAX_DEPENDENCIES, Matcher};
 use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::{sync::Weak, vec::Vec};
@@ -859,7 +859,7 @@ fn manager_capacities_reject_admission_without_losing_owned_instances() {
     }
     assert!(matches!(manager.reserve_probe(), Err(Error::Capacity)));
     let mut operations = Vec::new();
-    for _ in 0..crate::driver_registry::MAX_OPERATIONS {
+    for _ in 0..crate::drivers::registry::MAX_OPERATIONS {
         operations.push(manager.operation(handles[0]).unwrap());
     }
     assert!(matches!(

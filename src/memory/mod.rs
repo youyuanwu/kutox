@@ -387,7 +387,7 @@ pub fn map_firmware<'a, 'storage>(
         .checked_add(length as u64)
         .ok_or(Failure::new("acpi_range", -1))?;
     if length == 0
-        || length > kutox::irq_platform::MAX_TABLE
+        || length > kutox::arch::x86_64::irq_platform::MAX_TABLE
         || end > 0x1_0000_0000
         || !boot.memory_map.iter().any(|entry| {
             entry.base <= physical
@@ -399,8 +399,10 @@ pub fn map_firmware<'a, 'storage>(
                     entry.entry_type,
                     EntryType::ACPI_RECLAIMABLE | EntryType::ACPI_NVS
                 ) || (entry.entry_type == EntryType::RESERVED
-                    && kutox::irq_platform::reserved_firmware_range(physical, length, ram_limit)
-                        .is_ok()))
+                    && kutox::arch::x86_64::irq_platform::reserved_firmware_range(
+                        physical, length, ram_limit,
+                    )
+                    .is_ok()))
         })
     {
         crate::arch::x86_64::serial::print(format_args!(

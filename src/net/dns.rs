@@ -5,15 +5,15 @@ use crate::{
     runtime::async_sync, runtime::threads,
 };
 use core::{future::poll_fn, pin::Pin, task::Poll};
-pub use kutox::dns_state::{Answer, Error};
+pub use kutox::net::dns_state::{Answer, Error};
 use kutox::{
-    dns_state::{Admission, Control, Engine, Key},
-    network_config::Settings,
+    net::config::Settings,
+    net::dns_state::{Admission, Control, Engine, Key},
 };
 use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
 use smoltcp::iface::Interface;
 
-pub const MAX_QUERIES: usize = kutox::dns_state::MAX_QUERIES;
+pub const MAX_QUERIES: usize = kutox::net::dns_state::MAX_QUERIES;
 static CONTROL: SpinLockIrq<Control, cpu::X86Cpu> = SpinLockIrq::new(Control::new());
 static WORK: async_sync::Event = async_sync::Event::new();
 static PROGRESS: async_sync::Event = async_sync::Event::new();
@@ -112,7 +112,7 @@ pub(crate) fn drive(engine: &mut Option<Engine>, interface: &mut Interface) {
 
 pub(crate) fn admission(
     engine: &mut Engine,
-    udp: Option<&kutox::udp_state::Engine>,
+    udp: Option<&kutox::net::udp_state::Engine>,
     bytes: &[u8],
 ) -> Admission {
     let result = engine.admission(bytes, &CONTROL.lock_save_irq(), |port| {

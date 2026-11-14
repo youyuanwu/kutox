@@ -23,7 +23,7 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
     task::{Context, Poll, Waker},
 };
-use kutox::async_state::{Error as StateError, Outcome, TaskHandle};
+use kutox::runtime::async_state::{Error as StateError, Outcome, TaskHandle};
 use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
 
 pub(crate) static TESTS: &[TestCase] = &[

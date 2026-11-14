@@ -13,8 +13,8 @@ use core::{
     ptr::{addr_of, addr_of_mut},
     sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
 };
-pub use kutox::run_queue::WakeReason;
-use kutox::run_queue::{IdleAction, IdleMode, RunQueue, TaskHandle, WaitKey, idle_action};
+pub use kutox::runtime::run_queue::WakeReason;
+use kutox::runtime::run_queue::{IdleAction, IdleMode, RunQueue, TaskHandle, WaitKey, idle_action};
 use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
 
 global_asm!(include_str!("../arch/x86_64/context_switch.S"));
@@ -615,7 +615,7 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
             if self.tasks[slot].is_some() {
                 let handle = self
                     .queue
-                    .handle(kutox::run_queue::TaskId(slot))
+                    .handle(kutox::runtime::run_queue::TaskId(slot))
                     .map_err(|error| Failure::new("thread_discard_handle", error as i32))?;
                 self.discard_unstarted(handle)?;
             }

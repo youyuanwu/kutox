@@ -8,7 +8,7 @@ use crate::{
     memory,
 };
 use alloc::vec::Vec;
-use kutox::irq_platform::{self, Topology};
+use kutox::arch::x86_64::irq_platform::{self, Topology};
 use moss_libkernel::{CpuOps, memory::PAGE_SIZE};
 
 fn failure(error: irq_platform::Error) -> Failure {

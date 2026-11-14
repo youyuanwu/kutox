@@ -1,5 +1,5 @@
 use super::*;
-use crate::network_config::Config;
+use crate::net::config::Config;
 use smoltcp::{
     phy::Loopback,
     wire::{EthernetAddress, HardwareAddress, Ipv4Address},
@@ -351,7 +351,7 @@ fn protocol_timeouts_are_bounded_across_both_servers() {
     let key = control.open("timeout.test").unwrap();
     let mut device = Loopback::new(smoltcp::phy::Medium::Ethernet);
     let mut interface = interface();
-    crate::net_stack_state::apply_settings(&mut interface, Some(settings())).unwrap();
+    crate::net::stack_state::apply_settings(&mut interface, Some(settings())).unwrap();
     let mut engine = Engine::new().unwrap();
     engine.sync(&mut control, &mut interface);
     engine.egress(&mut interface, Instant::ZERO, &mut device);

@@ -5,15 +5,15 @@ use crate::{
     runtime::async_sync, runtime::threads,
 };
 use core::{future::poll_fn, pin::Pin, task::Poll};
-pub use kutox::udp_state::{Endpoint, Error};
+pub use kutox::net::udp_state::{Endpoint, Error};
 use kutox::{
-    network_config::{Config, Settings},
-    udp_state::{Buffers, Control, Engine, Key},
+    net::config::{Config, Settings},
+    net::udp_state::{Buffers, Control, Engine, Key},
 };
 use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
 
-pub const MAX_DATAGRAM: usize = kutox::udp_state::MAX_DATAGRAM;
-pub const MAX_SOCKETS: usize = kutox::udp_state::MAX_SOCKETS;
+pub const MAX_DATAGRAM: usize = kutox::net::udp_state::MAX_DATAGRAM;
+pub const MAX_SOCKETS: usize = kutox::net::udp_state::MAX_SOCKETS;
 
 static CONTROL: SpinLockIrq<Control, cpu::X86Cpu> = SpinLockIrq::new(Control::new());
 static WORK: async_sync::Event = async_sync::Event::new();

@@ -9,9 +9,9 @@ use alloc::{alloc::alloc, boxed::Box};
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::{alloc::Layout, future::poll_fn, mem::size_of_val, pin::Pin, task::Poll};
 use kutox::{
-    net_stack_state::{self, Adapter, Admission, Dhcp, TxBacking},
-    network_config::{Mode, Settings},
-    udp_state::Engine,
+    net::config::{Mode, Settings},
+    net::stack_state::{self as net_stack_state, Adapter, Admission, Dhcp, TxBacking},
+    net::udp_state::Engine,
 };
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 use smoltcp::{
@@ -95,8 +95,8 @@ struct State {
     _dns: net_dns::Service,
     _tcp: net_tcp::Service,
     udp: Option<Engine>,
-    dns: Option<kutox::dns_state::Engine>,
-    tcp: Option<kutox::tcp_state::Engine>,
+    dns: Option<kutox::net::dns_state::Engine>,
+    tcp: Option<kutox::net::tcp_state::Engine>,
     identity: u64,
     interface: Option<Interface>,
     mode: Mode,
@@ -656,11 +656,11 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
             let dns_admission = if admission == Admission::Other {
                 let State { dns, udp, .. } = &mut *state;
                 dns.as_mut()
-                    .map_or(kutox::dns_state::Admission::Other, |dns| {
+                    .map_or(kutox::net::dns_state::Admission::Other, |dns| {
                         net_dns::admission(dns, udp.as_ref(), packet.bytes())
                     })
             } else {
-                kutox::dns_state::Admission::Other
+                kutox::net::dns_state::Admission::Other
             };
             #[cfg(feature = "guest-tests")]
             crate::guest_tests::network_stack::retain(rx.as_ref().expect("staged RX"));
@@ -673,19 +673,19 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
                 Admission::Rejected => state.rejected += 1,
                 Admission::Other | Admission::Dhcp => {}
             }
-            if dns_admission == kutox::dns_state::Admission::Rejected {
+            if dns_admission == kutox::net::dns_state::Admission::Rejected {
                 state.rejected += 1;
             }
             if admission == Admission::Rejected
                 || matches!(
                     dns_admission,
-                    kutox::dns_state::Admission::Rejected
-                        | kutox::dns_state::Admission::Finished(..)
+                    kutox::net::dns_state::Admission::Rejected
+                        | kutox::net::dns_state::Admission::Finished(..)
                 )
             {
                 rx = None;
                 drop(backing.take());
-            } else if let kutox::dns_state::Admission::Accepted(index) = dns_admission {
+            } else if let kutox::net::dns_state::Admission::Accepted(index) = dns_admission {
                 let State { dns, interface, .. } = &mut *state;
                 let result = dns.as_mut().expect("DNS admission").ingress(
                     index,
@@ -702,7 +702,7 @@ async fn run(mut state: Box<State>) -> Result<(), async_runtime::TaskFailure> {
                     PollIngressSingleResult::None,
                     "DNS pair not consumed"
                 );
-            } else if let Some(reset) = kutox::tcp_state::packet(packet.bytes())
+            } else if let Some(reset) = kutox::net::tcp_state::packet(packet.bytes())
                 && let Some(tcp) = &mut state.tcp
             {
                 let result = tcp.ingress(

@@ -47,7 +47,7 @@ use crate::{
     runtime::threads,
 };
 use crate::{drivers::memory as driver_memory, drivers::platform as driver_platform};
-use kutox::fw_cfg::BootMode;
+use kutox::boot::fw_cfg::BootMode;
 use moss_libkernel::CpuOps;
 
 pub(crate) struct TestCase {
@@ -385,7 +385,7 @@ static INTENTIONAL_FAILURE: TestCase = TestCase {
         context.expect_eq(false, true, file!(), line!());
         support::assert_eq!(context.finish().err().map(|error| error.code), Some(-320));
         let mut cleanup =
-            kutox::test_cleanup::Cleanup::<_, Failure, 1>::new((), support::cleanup_error);
+            kutox::testing::cleanup::Cleanup::<_, Failure, 1>::new((), support::cleanup_error);
         cleanup
             .add(|_| Err(Failure::new("intentional_cleanup", -321)))
             .map_err(|_| Failure::new("test_cleanup_capacity", -321))?;
@@ -404,7 +404,7 @@ pub fn run(boot: &BootInfo) -> ! {
     if cpu::interrupts_enabled() || !support::quiescent(boot) {
         bail("invalid_suite_entry_state");
     }
-    use kutox::test_selection::Selection;
+    use kutox::testing::selection::Selection;
     if boot.test_selection == Selection::List {
         for test in TESTS {
             serial::print(format_args!(

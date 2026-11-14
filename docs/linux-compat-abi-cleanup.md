@@ -51,7 +51,7 @@ authoritative; no allocation or DMA policy was moved into an adapter.
 Execution, work/NAPI, IRQ registration, PCI/MMIO/ports, tracing, diagnostics,
 delays and network wake now call native Rust APIs directly too. Work and IRQ
 callback backing remains an unsafe registration contract. Native NAPI callbacks
-use the actual [ABI NAPI type](../src/linux_compat/abi.rs), not a cast or trampoline,
+use the actual [ABI NAPI type](../src/portable/linux_compat/abi.rs), not a cast or trampoline,
 so original callback identities remain unchanged. Static-object retirement is
 now a module-level Rust function with the same live-object and context guards.
 

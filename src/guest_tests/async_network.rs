@@ -17,7 +17,7 @@ use crate::{
     runtime::time,
 };
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use kutox::async_state::Outcome;
+use kutox::runtime::async_state::Outcome;
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 
 pub(crate) static TESTS: &[TestCase] = &[
@@ -167,9 +167,9 @@ fn run_packet(session: net_async::Session, epoch: usize, sequence: usize) {
     let task = async_runtime::spawn(one(session, epoch, sequence)).unwrap();
     assert_eq!(task.wait(), Ok(Outcome::Complete));
 }
-fn native() -> kutox::driver_registry::DeviceHandle {
+fn native() -> kutox::drivers::registry::DeviceHandle {
     let manager = current().manager().unwrap();
-    (0..kutox::driver_registry::MAX_DEVICES)
+    (0..kutox::drivers::registry::MAX_DEVICES)
         .filter_map(|index| manager.device_at(index).unwrap())
         .find(|(handle, _)| handle.identity() == session().identity())
         .unwrap()
@@ -187,7 +187,7 @@ pub fn kutox_guest_async_network(mode: usize) {
     assert!(matches!(raw.receive(), Err(net_device::Error::Busy)));
     assert_eq!(
         raw.submit(
-            &kutox::net_state::Frame::from_bytes(bytes(epoch, 3, 60, false).bytes()).unwrap()
+            &kutox::net::state::Frame::from_bytes(bytes(epoch, 3, 60, false).bytes()).unwrap()
         ),
         Err(net_device::Error::Busy)
     );
@@ -288,7 +288,7 @@ pub fn kutox_guest_async_network(mode: usize) {
             let held = manager.operation(device).unwrap();
             assert_eq!(
                 manager.stop(device),
-                Err(kutox::driver_registry::Error::Busy)
+                Err(kutox::drivers::registry::Error::Busy)
             );
             assert_eq!(driver_memory::snapshot(), mapped);
             assert!(selected.info().is_err());
@@ -378,7 +378,7 @@ fn scope(
     assert!(service <= 128 * 1024);
     serial::print(format_args!(
         "# ASYNC_NET_JOIN epoch={epoch} finished=6 peak=6 requests=0 packets=0 staged_rx=0 workers=0 balanced=1 metadata={} broker_metadata={} async_metadata={} packet_storage={} stack_storage=32768 future_peak={} service={service}\n",
-        kutox::pci_state::INFRASTRUCTURE_METADATA_BYTES + kernel_runtime::METADATA_BYTES,
+        kutox::drivers::pci_state::INFRASTRUCTURE_METADATA_BYTES + kernel_runtime::METADATA_BYTES,
         net_async::METADATA_BYTES,
         async_runtime::METADATA_BYTES,
         net_async::PACKET_STORAGE_BYTES,

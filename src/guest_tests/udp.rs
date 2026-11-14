@@ -21,7 +21,7 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
     task::Poll,
 };
-use kutox::async_state::Outcome;
+use kutox::runtime::async_state::Outcome;
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 
 const TIMEOUT: u64 = 3_000_000;
@@ -261,7 +261,7 @@ async fn exercise() -> Result<(), async_runtime::TaskFailure> {
 
 #[unsafe(no_mangle)]
 pub fn kutox_guest_udp_client(_: usize) {
-    let protocol = net_stack::start(kutox::network_config::Config::default()).unwrap();
+    let protocol = net_stack::start(kutox::net::config::Config::default()).unwrap();
     let task = async_runtime::spawn(exercise()).unwrap();
     assert_eq!(task.wait(), Ok(Outcome::Complete));
     drop(task);
@@ -275,7 +275,7 @@ fn exchange(
     boot: &BootInfo,
     frames: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
-    if boot.ipv4 != kutox::network_config::Mode::default() {
+    if boot.ipv4 != kutox::net::config::Mode::default() {
         return Err(Failure::new("udp_test_config", -291));
     }
     time::calibrate()?;

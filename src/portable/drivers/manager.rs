@@ -1,6 +1,6 @@
 //! Owned native driver boundary. Callbacks run after releasing Moss IRQ locks.
 
-use crate::driver_registry::{
+use crate::drivers::registry::{
     Dependency, DependencyStatus, DeviceHandle, DeviceInfo, DeviceSnapshot, DeviceState, DriverId,
     DriverSpec, Error, Invocation, MAX_BOUND, MAX_DEVICES, MAX_DRIVERS, METADATA_BUDGET,
     Operation as OperationKey, Phase, ProbeOutcome, Registry, Scope, ServiceId, Snapshot,
@@ -132,7 +132,7 @@ pub const INIT_METADATA_BYTES: usize = 16
 
 pub trait NativeDevice: Send + Sync {
     fn ready(&self) -> Result<bool, i32>;
-    fn network(&self) -> Option<&dyn crate::net_state::NetworkDevice> {
+    fn network(&self) -> Option<&dyn crate::net::state::NetworkDevice> {
         None
     }
     /// Close admission and wake waiters idempotently; do not sleep or release backing.
@@ -292,7 +292,10 @@ impl<CPU: CpuOps> Manager<CPU> {
         self.update("driver-discover", |state| state.registry.discover(device))
     }
 
-    pub fn discover_inventory(&self, inventory: &crate::pci_state::Inventory) -> Result<(), Error> {
+    pub fn discover_inventory(
+        &self,
+        inventory: &crate::drivers::pci_state::Inventory,
+    ) -> Result<(), Error> {
         self.update("driver-inventory", |state| {
             if state.registry.snapshot().discovered != 0 {
                 return Err(Error::Duplicate);
@@ -334,7 +337,7 @@ impl<CPU: CpuOps> Manager<CPU> {
             };
             let handle = probe.device();
             if summary.attempts
-                == MAX_DEVICES * (MAX_DRIVERS + crate::driver_registry::MAX_DEPENDENCIES + 1)
+                == MAX_DEVICES * (MAX_DRIVERS + crate::drivers::registry::MAX_DEPENDENCIES + 1)
             {
                 drop(probe);
                 (self.hooks.report_error)("driver-probe-budget", Error::Capacity);
@@ -688,7 +691,7 @@ pub struct DeviceOperation<'a, CPU: CpuOps> {
 }
 
 impl<CPU: CpuOps> DeviceOperation<'_, CPU> {
-    pub fn network(&self) -> Result<&dyn crate::net_state::NetworkDevice, Error> {
+    pub fn network(&self) -> Result<&dyn crate::net::state::NetworkDevice, Error> {
         self.manager.context().inspect_err(|&error| {
             (self.manager.hooks.report_error)("driver-network-context", error)
         })?;

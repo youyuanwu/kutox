@@ -12,7 +12,7 @@ use crate::{
 use core::cell::UnsafeCell;
 #[cfg(feature = "guest-tests")]
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use kutox::linux_abi::{GFP_ATOMIC, GFP_KERNEL};
+use kutox::linux_compat::abi::{GFP_ATOMIC, GFP_KERNEL};
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 use moss_libkernel::{CpuOps, memory::allocators::phys::PageAllocation};
 

@@ -22,11 +22,11 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll},
 };
-use kutox::net_async_state::{
+use kutox::net::async_state::{
     MAX_PACKETS, MAX_REQUESTS, PacketId, PacketPool, Phase, RX_CAPACITY, RequestId, Requests,
     RxQueue, SessionKey,
 };
-pub use kutox::net_state::{Error, Info};
+pub use kutox::net::state::{Error, Info};
 use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
 
 struct Control {
@@ -224,7 +224,7 @@ impl Packet {
         allow(dead_code, reason = "Native client packet construction")
     )]
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
-        kutox::net_state::Frame::validate(bytes)?;
+        kutox::net::state::Frame::validate(bytes)?;
         let mut packet = Self::empty()?;
         packet.buffer_mut()[..bytes.len()].copy_from_slice(bytes);
         packet.length = bytes.len();
@@ -241,7 +241,7 @@ impl Packet {
         if length > 1514 {
             return Err(Error::Unsupported);
         }
-        kutox::net_state::Frame::validate(&self.buffer_mut()[..length])?;
+        kutox::net::state::Frame::validate(&self.buffer_mut()[..length])?;
         self.length = length;
         Ok(())
     }
@@ -351,7 +351,7 @@ impl Session {
     pub fn submit(self, packet: Packet) -> Result<TxFuture, (Error, Packet)> {
         if let Err(error) = copy_context().and_then(|()| {
             self.check()
-                .and_then(|()| kutox::net_state::Frame::validate(packet.bytes()))
+                .and_then(|()| kutox::net::state::Frame::validate(packet.bytes()))
         }) {
             report("admit", error);
             return Err((error, packet));
@@ -915,7 +915,7 @@ pub fn kutox_packet_broker(_: usize) {
 }
 
 pub(crate) struct Service {
-    task: kutox::run_queue::TaskHandle,
+    task: kutox::runtime::run_queue::TaskHandle,
 }
 pub(crate) fn start_owned(
     scheduler: &mut threads::Scheduler<'_, '_, '_>,

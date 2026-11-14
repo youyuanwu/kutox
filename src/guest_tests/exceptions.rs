@@ -2,7 +2,7 @@
 
 use super::*;
 use core::arch::asm;
-use kutox::fw_cfg::BootMode;
+use kutox::boot::fw_cfg::BootMode;
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 
 pub fn test_thread_context(probe: fn()) -> Result<(), Failure> {

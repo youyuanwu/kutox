@@ -8,15 +8,15 @@ boot retains Linux e1000, kernel workers, executor, packet broker and a smoltcp
 ARP/static IPv4/ICMP future, without application sockets or native clients;
 see the [current architecture](rust-kernel-linux-drivers.md#moss-style-driver-infrastructure).
 
-Phases 1-3 implement the [portable async ownership policy](../src/runtime/async_state.rs),
+Phases 1-3 implement the [portable async ownership policy](../src/portable/runtime/async_state.rs),
 bounded Moss task/registration adaptations, a [guarded executor](../src/runtime/async_runtime.rs)
 and [async waits](../src/runtime/async_sync.rs). Real guest tests cover IRQ wakeups,
 one-shot deadlines, sixteen-poll fairness and joined cancellation/reopen.
 The [owned Ethernet broker](../src/net/async_service.rs) and its
-[portable policy](../src/net/async_state.rs) now pass real Linux-backed
+[portable policy](../src/portable/net/async_state.rs) now pass real Linux-backed
 exchange, timeout/cancellation and rebind acceptance. Phase 4 adds a bounded
-[smoltcp token adapter](../src/net/stack_state.rs), [protocol future](../src/net/stack.rs)
-and [static CIDR configuration](../src/net/config.rs) in explicit `network-run`.
+[smoltcp token adapter](../src/portable/net/stack_state.rs), [protocol future](../src/net/stack.rs)
+and [static CIDR configuration](../src/portable/net/config.rs) in explicit `network-run`.
 Phase 5 proves exact ARP/ICMP, rejection and balanced epochs with a separate
 [guest fixture](../src/guest_tests/network_stack.rs) and
 [isolated stdlib peer](../scripts/network_packets.py).

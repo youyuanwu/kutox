@@ -41,7 +41,7 @@ impl<'a, 'storage> E1000IrqFixture<'a, 'storage> {
     pub fn start(
         boot: &BootInfo,
         frames: &'a memory::PhysicalFrames<'storage>,
-        topology: &kutox::irq_platform::Topology,
+        topology: &kutox::arch::x86_64::irq_platform::Topology,
     ) -> Result<Self, Failure> {
         let device = pci::discover()?;
         let gsi = device.interrupt_route(topology)?;

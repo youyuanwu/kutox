@@ -86,7 +86,7 @@ def inputs():
         Path(__file__).resolve(), ROOT / "rust-toolchain.toml",
         ROOT / "compat/audit/common/abi_probe.rs", ROOT / "compat/audit/common/common_layout.c",
         ROOT / "compat/include/common/base_types.h", ROOT / "compat/include/common/device_types.h",
-        ROOT / "src/linux_compat/abi.rs", ROOT / "src/linux_compat/block_abi.rs", ROOT / "src/drivers/memory.rs",
+        ROOT / "src/portable/linux_compat/abi.rs", ROOT / "src/linux_compat/block_abi.rs", ROOT / "src/drivers/memory.rs",
         ROOT / "src/drivers/linux_dma.rs", ROOT / "src/memory/dma.rs", ROOT / "src/storage/block_services.rs",
         ROOT / "src/storage/mod.rs",
         ROOT / "src/drivers/linux_runtime.rs", ROOT / "src/drivers/linux_deferred.rs", ROOT / "src/drivers/linux_irq.rs",

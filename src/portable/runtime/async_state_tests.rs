@@ -393,8 +393,8 @@ fn published_cancellation_does_not_acknowledge_payload_retirement() {
     state.release_waker(lease).unwrap();
     assert_eq!(state.payload_released(task), Err(Error::Stale));
     assert_eq!(
-        crate::net_state::Error::from_code(-59),
-        crate::net_state::Error::Context
+        crate::net::state::Error::from_code(-59),
+        crate::net::state::Error::Context
     );
 }
 

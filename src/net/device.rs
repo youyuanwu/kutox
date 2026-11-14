@@ -3,9 +3,9 @@
 use crate::arch::x86_64::cpu::X86Cpu;
 use crate::{arch::x86_64::serial, runtime::kernel_runtime, runtime::threads, runtime::time};
 use alloc::vec::Vec;
-use kutox::driver_registry::{DeviceHandle, DeviceState, MAX_DEVICES};
-use kutox::net_async_state::{SessionGate, SessionKey};
-pub use kutox::net_state::{Error, Frame, Info, TxStatus, TxTicket};
+use kutox::drivers::registry::{DeviceHandle, DeviceState, MAX_DEVICES};
+use kutox::net::async_state::{SessionGate, SessionKey};
+pub use kutox::net::state::{Error, Frame, Info, TxStatus, TxTicket};
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 
 static EVENT: threads::WaitQueue = threads::WaitQueue::new();
@@ -71,7 +71,7 @@ pub struct Handle {
     device: DeviceHandle,
 }
 
-fn registry_error(error: kutox::driver_registry::Error) -> Error {
+fn registry_error(error: kutox::drivers::registry::Error) -> Error {
     Error::from_code(error.code())
 }
 
@@ -79,7 +79,7 @@ impl Handle {
     fn call<T>(
         self,
         operation: &'static str,
-        call: impl FnOnce(&dyn kutox::net_state::NetworkDevice) -> Result<T, Error>,
+        call: impl FnOnce(&dyn kutox::net::state::NetworkDevice) -> Result<T, Error>,
     ) -> Result<T, Error> {
         let result = (|| {
             let manager = self.runtime.manager().map_err(|error| match error.code {

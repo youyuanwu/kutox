@@ -1,7 +1,7 @@
 //! Bounded stream commands; transport buffers and connection state belong to smoltcp.
 
-use crate::network_config::Config;
-pub use crate::udp_state::Endpoint;
+use crate::net::config::Config;
+pub use crate::net::udp_state::Endpoint;
 use alloc::vec::Vec;
 use smoltcp::{
     iface::{Interface, PollIngressSingleResult, SocketHandle, SocketSet, SocketStorage},

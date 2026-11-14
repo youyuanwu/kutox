@@ -15,7 +15,7 @@ use crate::{
     runtime::threads,
 };
 use core::sync::atomic::AtomicUsize;
-use kutox::driver_registry::{DeviceHandle, DeviceState};
+use kutox::drivers::registry::{DeviceHandle, DeviceState};
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 
 pub(crate) static TESTS: &[TestCase] = &[
@@ -135,7 +135,7 @@ fn opened() -> net_device::Handle {
     assert_eq!(devices.len(), 1);
     let device = devices[0];
     let manager = runtime.manager().unwrap();
-    let handle = (0..kutox::driver_registry::MAX_DEVICES)
+    let handle = (0..kutox::drivers::registry::MAX_DEVICES)
         .filter_map(|index| manager.device_at(index).unwrap())
         .find(|(handle, _)| handle.identity() == device.identity())
         .unwrap()
@@ -423,7 +423,7 @@ fn companion(_: usize) {
         let before = driver_memory::snapshot();
         assert_eq!(
             runtime().manager().unwrap().stop(native()),
-            Err(kutox::driver_registry::Error::Busy)
+            Err(kutox::drivers::registry::Error::Busy)
         );
         assert_eq!(driver_memory::snapshot(), before);
         assert_eq!(device().submit(&packet(2, false)), Err(Error::Closed));
@@ -512,7 +512,7 @@ fn exercise(
         "# MANAGED_HARD_JOIN mode={mode} finished={} peak={} balanced=1 workers=0 metadata={}\n",
         stats.finished,
         stats.peak_tasks,
-        kutox::pci_state::INFRASTRUCTURE_METADATA_BYTES
+        kutox::drivers::pci_state::INFRASTRUCTURE_METADATA_BYTES
             + crate::runtime::kernel_runtime::METADATA_BYTES
     ));
     Ok(())

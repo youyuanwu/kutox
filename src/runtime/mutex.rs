@@ -12,8 +12,8 @@ use core::{
     ops::{Deref, DerefMut},
 };
 use kutox::{
-    mutex_state::{Error as StateError, MutexState},
-    run_queue::TaskHandle,
+    runtime::mutex_state::{Error as StateError, MutexState},
+    runtime::run_queue::TaskHandle,
 };
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 
