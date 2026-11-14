@@ -52,6 +52,18 @@ def execute_storage(args, case):
         return completed
 
 
+def validate_callbacks(lines, symbols, expected):
+    callback_order = []
+    for line in lines:
+        if line.startswith("# STORAGE_LINUX callback="):
+            match = re.fullmatch(r"# STORAGE_LINUX callback=(irq|probe|queue|complete|ring) address=([0-9a-f]+)", line)
+            if not match or int(match[2], 16) != symbols.get(CALLBACKS[match[1]]):
+                raise AssertionError("storage callback is not the linked original Linux function")
+            callback_order.append(match[1])
+    if callback_order != list(CALLBACKS) * expected:
+        raise AssertionError("missing, duplicate or reordered original storage driver callback evidence")
+
+
 def validate_storage(case, returncode, output, symbols):
     from qemu_validation import strip_limine_preamble, validate_boot_preamble, validate_ktap, validate_allocator
     lines = strip_limine_preamble(output.splitlines())
@@ -70,20 +82,8 @@ def validate_storage(case, returncode, output, symbols):
         return
     if returncode != 1 or any(line.startswith(("E1000_", "Bail out!", "CPU_EXCEPTION", "not ok")) for line in lines):
         raise AssertionError("storage runtime did not complete successfully")
-    callbacks = {kind: [] for kind in CALLBACKS}
-    callback_order = []
-    for line in lines:
-        if line.startswith("# STORAGE_LINUX callback="):
-            match = re.fullmatch(r"# STORAGE_LINUX callback=(irq|probe|queue|complete|ring) address=([0-9a-f]+)", line)
-            if not match or int(match[2], 16) != symbols.get(CALLBACKS[match[1]]):
-                raise AssertionError("storage callback is not the linked original Linux function")
-            callbacks[match[1]].append(line)
-            callback_order.append(match[1])
     expected = 3 if mode == "storage-tests" else 1
-    if any(len(entries) != expected for entries in callbacks.values()):
-        raise AssertionError("missing or duplicate original storage driver callback evidence")
-    if callback_order != list(CALLBACKS) * expected:
-        raise AssertionError("storage callback registration order changed")
+    validate_callbacks(lines, symbols, expected)
     msix = "# BLOCK_ERROR operation=storage_msix_not_admitted code=-95"
     errors = Counter(line for line in lines if line.startswith("# BLOCK"))
     allowed = Counter({msix: 3 * expected})

@@ -386,6 +386,17 @@ The OFF build retains the real filesystem/ELF boot service, while guest payloads
 remain absent. `mke2fs`/`debugfs` from e2fsprogs are required for filesystem fast
 tests; no privileged filesystem mounts are performed.
 
+[Disk-rootfs boot](kernel-implementation.md#read-only-disk-rootfs-boot) adds
+`disk-boot*` acceptance in both profiles. All cases use the same ISO; a Limine
+SMBIOS configuration loads only the kernel, without a rootfs module.
+The runner attaches a temporary read-only ext2 disk, verifies it remains
+unchanged, and requires original Linux callback identities plus the exact
+read/close/filesystem/user/cleanup ordering. Both 128- and 32-MiB success boots
+reclaim the temporary 2-MiB snapshot. Negative boots require exact missing-device,
+unsupported-feature, wrong-capacity, malformed-ext2/ELF, actual EIO and unexpected
+module errors, with balanced frame/heap teardown and no success-shaped fallback.
+These are production `disk-run` boots, not additional guest registry cases.
+
 ## Validation tiers
 
 ```sh

@@ -15,7 +15,9 @@ from qemu_scenarios import *
 from qemu_scenarios import SCENARIOS
 from qemu_scenarios import UDP_CASES, DHCP_CASES, DHCP_LIVE_CASES, DNS_CASES, TCP_CASES, HTTP_CASES
 from qemu_scenarios import STORAGE_CASES
+from qemu_scenarios import DISK_BOOT_CASES
 from storage_acceptance import execute_storage, validate_storage
+from disk_boot_acceptance import execute_disk_boot, validate_disk_boot
 from qemu_protocols import *
 from qemu_validation import *
 from qemu_validation import validate_udp_suite, validate_dhcp_suite, validate_dns_suite, validate_tcp_suite, validate_http_suite, strip_limine_preamble
@@ -46,7 +48,9 @@ def run_case(args, case, index=0):
         capture.unlink(missing_ok=True)
     command = qemu_command(args, case) if capture is None and case not in LIVE_CASES else None
     try:
-        if case in STORAGE_CASES:
+        if case in DISK_BOOT_CASES:
+            completed = execute_disk_boot(args, case)
+        elif case in STORAGE_CASES:
             completed = execute_storage(args, case)
         elif case in LIVE_CASES:
             completed, elapsed = execute_live(args, case, capture)
@@ -129,7 +133,9 @@ def run_case(args, case, index=0):
             else:
                 validate_linux_callbacks(output, symbols)
                 validate_native_drivers(output.splitlines(), case, symbols)
-        if case in STORAGE_CASES:
+        if case in DISK_BOOT_CASES:
+            validate_disk_boot(case, completed.returncode, output, runtime_symbols(getattr(args, "nm", "nm")))
+        elif case in STORAGE_CASES:
             validate_storage(case, completed.returncode, output, runtime_symbols(getattr(args, "nm", "nm")))
         elif case not in LIVE_CASES:
             validate_result(case, completed.returncode, output)
