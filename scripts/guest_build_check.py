@@ -73,7 +73,6 @@ GUEST_SYMBOLS = {
     "kutox_c_packet_boundary", "kutox_c_dma_boundary", "kutox_c_block_request",
     "kutox_thread_register_probe", "kutox_irq_register_probe",
     "kutox_guest_native_probe",
-    "kutox_guest_runtime_work",
     "kutox_guest_network_client",
     "kutox_guest_managed_hardening",
     "kutox_guest_async_actor",

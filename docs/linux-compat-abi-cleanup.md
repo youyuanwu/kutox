@@ -79,11 +79,24 @@ The sixteen lifecycle C facades are removed. Rust fixtures use the
 inspectors, preserving admission and generation checks without redundant raw
 output-pointer APIs.
 
+Native TX now uses [owned packet/completion services](../src/linux_compat/packet_tx.rs)
+instead of lifecycle retry flags and numeric packet statuses. Device and
+per-packet generations are checked before original callback invocation; BUSY
+retains ownership, terminal completion consumes it, and failed finish/abort
+returns the owner. Raw skb/fragment/DMA callbacks remain in the existing
+packet backend, without a second registry or replacement Linux packet path.
+
 Native storage reads now use the
 [owned block-request service](../src/linux_compat/block_request.rs), not numeric
 tickets. Finishing a terminal request consumes it into a completion owner for
 slice-based result copying and release; reset completion additionally consumes
 an exact-generation witness. Failed transitions retain their owner.
+The [owned storage session](../src/linux_compat/storage_session.rs) replaces
+the native loaded boolean and unkeyed lifecycle calls. Capacity, preparation,
+reset and close validate the session generation under borrow-free admission.
+Busy shutdown returns the retained session; stale reset returns the retained
+request before any transport side effect. Scope shutdown is explicit, not an
+automatic freeing `Drop`.
 Raw block code uses the actual shared request/queue/disk
 types rather than opaque-pointer Rust-to-Rust extern declarations. Packet, NAPI,
 PCI, block inspectors and private device-name forwarding use ordinary Rust
@@ -315,8 +328,13 @@ variadic services. Keep independent C fixtures for those real boundaries and
 their output/failure contracts.
 
 Keep C-typed callback slots even without a named C relocation. For example,
-[kutox_guest_runtime_work](../src/guest_tests/kernel_runtime.rs) is passed
-by address into a C-compatible work callback slot.
+the original-signature callbacks in the
+[execution fixtures](../src/guest_tests/compat_execution.rs) are passed by
+address into work/NAPI/IRQ slots. Native runtime work now uses an owned
+[safe work registration](../src/linux_compat/callbacks.rs) with a plain Rust
+function; its raw callback trampoline is confined to the attachment adapter.
+The former `kutox_guest_runtime_work` export and symbol requirement are removed,
+not preserved solely for a name check.
 
 Keep the boot entry in [linker.ld](../linker.ld), exception and thread assembly
 calls, and the guest thread-probe calling convention. Stable Rust-only labels

@@ -133,16 +133,15 @@ pub(super) fn allocate_coherent(
     size: usize,
     flags: u32,
 ) -> Result<Coherent, i32> {
-    let (mut cpu, mut dma) = (0, 0);
-    if device.storage {
-        cpu = native_storage::allocate(size, 4096, flags);
+    let (cpu, dma) = if device.storage {
+        let cpu = native_storage::allocate(size, 4096, flags);
         if cpu == 0 {
             return Err(-12);
         }
-        dma = unsafe { native_storage::dma(0, cpu, size, 0) };
+        (cpu, unsafe { native_storage::dma(0, cpu, size, 0) })
     } else {
-        result(unsafe { linux_dma::allocate(device.key, size, flags, &mut cpu, &mut dma) })?;
-    }
+        linux_dma::allocate(device.key, size, flags)?
+    };
     Ok(unsafe { adopt_coherent(device, cpu, size, dma) })
 }
 

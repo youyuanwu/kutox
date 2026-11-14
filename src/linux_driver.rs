@@ -1,7 +1,10 @@
 //! Runtime control and packet tickets for unchanged Linux e1000, not guest fixtures.
 
 use crate::{
-    linux_compat::lifecycle::{self, Handle as LifecycleHandle},
+    linux_compat::{
+        lifecycle::{self, Handle as LifecycleHandle},
+        packet_tx::{State as PacketState, Submission, Tx},
+    },
     linux_deferred, serial, threads,
 };
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -218,7 +221,7 @@ struct ManagedState {
     driver: DriverHandle,
     opened: bool,
     rx: bool,
-    receipt: Option<(TxTicket, usize)>,
+    receipt: Option<(TxTicket, Tx)>,
 }
 
 static MANAGED: crate::mutex::Mutex<Option<ManagedState>> = crate::mutex::Mutex::new(None);
@@ -255,6 +258,21 @@ fn managed_lock() -> Result<crate::mutex::MutexGuard<Option<ManagedState>>, i32>
 
 fn checked(result: i32) -> Result<(), i32> {
     if result == 0 { Ok(()) } else { Err(result) }
+}
+
+fn release_receipt(receipt: &mut Option<(TxTicket, Tx)>) -> Result<(), i32> {
+    let (ticket, packet) = receipt.take().ok_or(-116)?;
+    let completed = match packet.finish() {
+        Ok(completed) => completed,
+        Err(failure) => {
+            *receipt = Some((ticket, failure.retained));
+            return Err(failure.code);
+        }
+    };
+    completed
+        .release()
+        .expect("terminal native TX receipt release; backing retained");
+    Ok(())
 }
 
 fn bind_managed(address: PciAddress) -> Result<ManagedDevice, i32> {
@@ -348,8 +366,9 @@ impl ManagedDevice {
     fn receipt(state: &ManagedState, ticket: TxTicket) -> Result<usize, Error> {
         state
             .receipt
+            .as_ref()
             .filter(|(current, _)| *current == ticket)
-            .map(|(_, bytes)| bytes)
+            .map(|(_, packet)| packet.wire_bytes())
             .ok_or(Error::Stale)
     }
 }
@@ -393,10 +412,10 @@ impl NativeDevice for ManagedDevice {
             state.opened = false;
         }
         if state.receipt.is_some() {
+            let receipt = &mut state.receipt;
             state
                 .driver
-                .call("tx-release", LifecycleHandle::release_packet)?;
-            state.receipt = None;
+                .call("tx-release", |_| release_receipt(receipt))?;
         }
         state.driver.call("unbind", LifecycleHandle::unbind)?;
         crate::driver_memory::discard_ingress();
@@ -463,9 +482,9 @@ impl NetworkDevice for ManagedDevice {
                     value.checked_add(1)
                 })
                 .map_err(|_| Error::Driver(-165))?;
-            checked(state.driver.packet(bytes)).map_err(Error::from_code)?;
             let ticket = TxTicket::new(self.ticket, sequence)?;
-            state.receipt = Some((ticket, bytes.len().max(60)));
+            let packet = state.driver.packet(bytes).map_err(Error::from_code)?;
+            state.receipt = Some((ticket, packet));
             Ok(ticket)
         })
     }
@@ -473,20 +492,32 @@ impl NetworkDevice for ManagedDevice {
     fn progress(&self, ticket: TxTicket) -> Result<TxStatus, Error> {
         self.packet_call("progress", |state| {
             let bytes = Self::receipt(state, ticket)?;
-            let mut status = state.driver.tx_status();
-            if status == 0 {
-                match state.driver.transmit() {
-                    0 => status = state.driver.tx_status(),
-                    16 => return Ok(TxStatus::Busy),
-                    code => return Err(Error::from_code(code)),
+            let packet = &mut state.receipt.as_mut().expect("validated TX receipt").1;
+            let mut status = state
+                .driver
+                .call("tx-state", |_| packet.state())
+                .map_err(Error::from_code)?;
+            if status == PacketState::Prepared {
+                match state
+                    .driver
+                    .call("transmit", |_| packet.submit())
+                    .map_err(Error::from_code)?
+                {
+                    Submission::Accepted => {
+                        status = state
+                            .driver
+                            .call("tx-state", |_| packet.state())
+                            .map_err(Error::from_code)?;
+                    }
+                    Submission::Busy => return Ok(TxStatus::Busy),
                 }
             }
             match status {
-                0 => Ok(TxStatus::Busy),
-                1 => Ok(TxStatus::InFlight),
-                2 => Ok(TxStatus::Complete { bytes }),
-                -5 => Ok(TxStatus::Dropped),
-                code => Err(Error::from_code(code)),
+                PacketState::Prepared => Ok(TxStatus::Busy),
+                PacketState::InFlight => Ok(TxStatus::InFlight),
+                PacketState::Complete => Ok(TxStatus::Complete { bytes }),
+                PacketState::Dropped => Ok(TxStatus::Dropped),
+                PacketState::Cancelled => Err(Error::Closed),
             }
         })
     }
@@ -494,16 +525,11 @@ impl NetworkDevice for ManagedDevice {
     fn finish(&self, ticket: TxTicket) -> Result<(), Error> {
         self.packet_call("finish", |state| {
             Self::receipt(state, ticket)?;
-            match state.driver.tx_status() {
-                2 | -5 => {}
-                0 | 1 => return Err(Error::Busy),
-                code => return Err(Error::from_code(code)),
-            }
+            let receipt = &mut state.receipt;
             state
                 .driver
-                .call("tx-release", LifecycleHandle::release_packet)
+                .call("tx-release", |_| release_receipt(receipt))
                 .map_err(Error::from_code)?;
-            state.receipt = None;
             Ok(())
         })
     }
@@ -564,22 +590,8 @@ impl DriverHandle {
     pub(crate) fn close(&self) -> i32 {
         lifecycle::status(self.call("close", LifecycleHandle::close))
     }
-    pub(crate) fn packet(&self, bytes: &[u8]) -> i32 {
-        lifecycle::status(self.call("packet", |handle| handle.packet(bytes)))
-    }
-    pub(crate) fn transmit(&self) -> i32 {
-        self.call("transmit", |handle| handle.transmit(true))
-            .unwrap_or_else(|error| error)
-    }
-    pub(crate) fn tx_status(&self) -> i32 {
-        self.call("tx-state", |handle| handle.transmit(false))
-            .unwrap_or_else(|error| error)
-    }
-    pub(crate) fn release_packet(&self) {
-        assert_eq!(
-            self.call("tx-release", LifecycleHandle::release_packet),
-            Ok(())
-        );
+    pub(crate) fn packet(&self, bytes: &[u8]) -> Result<Tx, i32> {
+        self.call("packet", |handle| Tx::prepare(handle, bytes))
     }
 
     pub(crate) fn rx_start(&self) -> i32 {

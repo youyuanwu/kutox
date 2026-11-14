@@ -285,6 +285,9 @@ freeing memory still reachable from C or DMA.
 The C/Linux raw pointer APIs remain lifetime-bound interfaces; stale pointers
 are not supported native handles. Destinations are kernel slices, not user
 pointers, and no borrowed view into the payload/PDU is exposed.
+The native read loop repolls if its one-shot wake deadline expires before
+`arm_until` arms the timer. It never idles an unarmed timer or extends the
+request deadline; timeout/reset still retains backing until quiescence is proven.
 
 On the single BSP, lifecycle/admission/pump calls require IF clear in an
 off-lock boot/thread context. Completion signaling may run in IRQ/locked
@@ -377,6 +380,20 @@ All read results remain in the owned block payload until successful native
 result copying; errors never expose a prefix. Identity-DMA, indirect and
 premapped DMA paths fail explicitly rather than bypassing ownership.
 
+The unsafe-free [storage session](../src/linux_compat/storage_session.rs)
+owns a monotonic lifecycle generation, not a boolean loaded flag or raw device
+pointer. Start requires a live native platform scope; capacity, prepare, reset
+and consuming close revalidate the generation under borrow-free BSP admission.
+Nested session operations return busy without entering Linux callbacks.
+An outstanding request or running config callback prevents close and returns
+the retained session; a stale reset retains its request without touching the
+replacement transport. Dropping a session never stops or reclaims a live device.
+The native disk scope explicitly closes its session before releasing IRQ/MMIO/
+platform parents; failed restart/close retains ownership rather than pretending
+teardown succeeded. Capacity errors are returned, not defaulted to a stale size.
+Unprovable hardware-reset/removal failures retain the existing fail-fast policy;
+they never report successful teardown or reclaim backing still reachable by DMA.
+
 Native reads have a 100-ms TSC deadline and use returning timer/INTx interrupts
 with off-IRQ completion pumping. On deadline, the adapter invokes upstream's
 `virtio_reset_device`, requires acknowledged status zero and joined IRQs, then
@@ -428,6 +445,9 @@ from the selected Linux-facing C ABI providers. Genuine C providers use
 
 - `execution.rs`: scalar atomics/barriers, mutex/spinlock/completion wrappers,
   sleep/IRQ/work entry points, reusing existing native registries and waiters.
+- `callbacks.rs`: unsafe-free work/NAPI/IRQ registration handles, typed operations,
+  explicit join/retirement and retained failures. `callbacks_raw.rs` attaches
+  Linux-owned backing and supplies address-stable backing for native Rust work.
 - `pci.rs`: stable owned endpoint objects, matching/probe/remove, driver data,
   resource/config access and MMIO dispatch for both original drivers.
 - `memory.rs`: unsafe-free owned allocations, checked ranges and typed device,
@@ -436,16 +456,21 @@ from the selected Linux-facing C ABI providers. Genuine C providers use
   raw-pointer adoption and completion witnesses. Backing allocators, masks,
   pins and reset proofs stay with each device's existing Rust owner.
 - `storage.rs`: bus/driver/device references, local config-work queue, owned
-  native reads, admission checks and reset/remove/reprobe sequencing. Rust
-  controls return owned requests and consume exact reset witnesses; the
-  completion owner copies into borrowed slices and releases backing.
+  raw provider state and reset/remove/reprobe sequencing. Its borrow-free
+  admission token protects the original callbacks and native lifecycle.
+- `storage_session.rs`: unsafe-free lifecycle owners, generation-checked
+  capacity/prepare/reset/close operations and retained shutdown failures.
+  Requests and exact reset witnesses use the shared owned block frontend.
 - `block_request.rs`: unsafe-free non-cloneable request/completion owners,
   retained failures, unpublished abort and generation-bound reset witnesses.
   The existing `block.rs` retains raw state, callbacks and genuine Linux C APIs.
 - `packet.rs`: network-device lifecycle/queues, linear sk_buffs, fragment
   provenance, TX ownership/completion and native Ethernet ingress.
+- `packet_tx.rs`: unsafe-free native TX/completion owners, per-packet generations,
+  typed submission/state results, unpublished abort and retained failures.
 - `lifecycle.rs`: safe module bind/open/close/remove services, generation-bearing
-  handles, owned information/statistics snapshots and borrowed packet input.
+  handles and owned information/statistics snapshots. Packet ownership belongs
+  to the separate TX service rather than numeric lifecycle packet controls.
   `lifecycle_raw.rs` confines driver pointers, private-header access and callbacks.
   The redundant C facade is removed; Rust fixtures call the service/test APIs.
 - `napi.rs`: generation-bearing NAPI registrations, queue associations and
@@ -536,6 +561,25 @@ C pointer validity, lifetime, capacity and alignment remain caller obligations;
 null checks do not establish those properties. The safe block-request service
 separately owns request/completion transitions; raw packet/block callbacks and
 other compatibility providers still contain unsafe code.
+Raw bus and IRQ registration are explicitly unsafe Rust entry points: callers
+retain address-stable bus tables and callback backing until unregistering, or
+masking/synchronizing/freeing the IRQ. Their Linux C signatures are unchanged.
+The native coherent-allocation backend returns a Rust `Result` containing the
+CPU/DMA addresses; raw output-pointer writes remain only at the actual C
+allocation boundary, which preserves unchanged outputs on failure.
+Callback registration handles are non-cloneable and BSP-local. Native Rust work
+accepts a plain Rust function and owns its stable callback metadata; failed
+registration frees only unpublished metadata. Cancel/join and consuming close
+are separate operations, and a failed close returns the retained owner. Dropping
+an owner never unregisters or frees backing still reachable by a callback.
+Linux-owned work, ABI NAPI objects and IRQ data enter through explicit unsafe
+attachment/adoption contracts; C retains their backing until retirement.
+NAPI queue-association checks remain in the Linux adapter. Original Linux
+callback pointers and signatures are unchanged, and no state borrow spans a
+callback. IRQ owner operations validate a monotonic registration generation
+before masking or synchronizing, so a stale owner cannot retire a replacement
+at the same IRQ/data address. Legacy C IRQ synchronization without a handler
+remains supported. No second registration registry is introduced.
 Native Rust-only helpers such as [net_device::wake](../src/net_device.rs) may
 inline out of the optimized kernel; guest acceptance checks their wake behavior
 rather than requiring a standalone helper symbol. Original driver callback and
@@ -1335,7 +1379,7 @@ Freeing private backing retires idle embedded synchronization/work registrations
 pending/running users prevent reclamation. Offload/fragment/PM controls remain
 explicitly outside the initial profile.
 
-Five synthetic C cases validate real exhaustion/recovery and fault injection,
+Five Rust service scenarios with genuine C boundary fixtures validate exhaustion/recovery and fault injection,
 probe ordering, exact map/sync/unmap/free checks, coherent free exclusion,
 padding/BUSY ownership, copybreak/build-skb ingress, failed-open gating and
 256 RX plus 256 TX mappings together at 32 MiB. No original Linux
@@ -1374,7 +1418,25 @@ acceptance; the separate original TX case below does.
 
 ### Original Linux TX acceptance
 
-The checked C/native boundary copies one owned linear skb and calls the
+The [safe native TX service](../src/linux_compat/packet_tx.rs) returns a
+non-cloneable owner after copying borrowed input into retained linear skb
+backing. It exposes typed prepared/in-flight/complete/drop/cancelled states,
+not retry flags, raw pointers or borrowed views into C/DMA memory. Opaque
+ownership can move between serialized BSP tasks through the existing managed
+mutex, but is not `Sync`; every operation revalidates device and packet
+generations under borrow-free lifecycle admission. Stale owners are rejected
+before invoking original callbacks or inspecting a replacement packet.
+
+Finishing consumes a terminal packet into a completion owner; release and
+unpublished abort consume ownership, returning retained owners on failure.
+In-flight finish/abort remains busy. No owner has an automatic freeing `Drop`,
+and native unbind rejects outstanding packet ownership. Successful original
+driver stop establishes cancellation only after the callback returns and
+streaming mappings/backing users have drained; bus-master disable or a numeric
+device identity alone is not proof. RX still returns owned frames or copies
+into caller slices through the bounded ingress FIFO, never an skb/DMA view.
+
+The checked raw boundary calls the
 registered original `e1000_xmit_frame`. Linux performs streaming mapping,
 descriptor construction and the TDT doorbell. `NETDEV_TX_BUSY` retains the skb;
 `NETDEV_TX_OK` transfers ownership but is not itself proof of transmission.

@@ -1,7 +1,9 @@
 use super::*;
-use core::ptr;
+use core::{marker::PhantomData, num::NonZeroU64, ptr};
 
 struct State {
+    entered: bool,
+    generation: u64,
     bus: *const Bus,
     driver: *mut DeviceDriver,
     device: *mut Device,
@@ -14,6 +16,8 @@ struct State {
 }
 impl State {
     const EMPTY: Self = Self {
+        entered: false,
+        generation: 0,
         bus: ptr::null(),
         driver: ptr::null_mut(),
         device: ptr::null_mut(),
@@ -44,7 +48,7 @@ unsafe extern "C" {
 fn state() -> *mut State {
     STATE.0.get()
 }
-pub fn quiescent() -> bool {
+fn resources_empty() -> bool {
     unsafe {
         let s = &*state();
         !s.loaded
@@ -58,10 +62,102 @@ pub fn quiescent() -> bool {
             && !s.running
     }
 }
+pub fn quiescent() -> bool {
+    resources_empty() && unsafe { !(*state()).entered }
+}
+
+// Admission owns metadata only; no device/state borrow spans a Linux callback.
+pub(super) struct Access(PhantomData<*mut ()>);
+
+impl Access {
+    pub(super) fn enter() -> Result<Self, i32> {
+        let code = crate::linux_runtime::context_code();
+        if code < 0 {
+            return Err(code);
+        }
+        unsafe {
+            if (*state()).entered {
+                return Err(-16);
+            }
+            (*state()).entered = true;
+        }
+        Ok(Self(PhantomData))
+    }
+
+    fn validate(&self, generation: NonZeroU64) -> Result<(), i32> {
+        if unsafe { !(*state()).loaded || (*state()).generation != generation.get() } {
+            Err(-116)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(super) fn start(&mut self, irq: u32) -> Result<NonZeroU64, i32> {
+        if !crate::storage::platform_bound() {
+            return Err(-19);
+        }
+        let generation = unsafe { (*state()).generation }.checked_add(1).ok_or(-75)?;
+        let code = start(irq);
+        if code < 0 {
+            return Err(code);
+        }
+        require(code == 0, c"storage_start_result");
+        unsafe { (*state()).generation = generation };
+        Ok(NonZeroU64::new(generation).expect("live storage session generation"))
+    }
+
+    pub(super) fn capacity(&self, generation: NonZeroU64) -> Result<u64, i32> {
+        self.validate(generation)?;
+        Ok(block::get_capacity(block::registered_disk()))
+    }
+
+    pub(super) fn prepare(
+        &self,
+        generation: NonZeroU64,
+        sector: u64,
+        bytes: usize,
+    ) -> Result<block_request::Request, i32> {
+        self.validate(generation)?;
+        prepare(sector, bytes)
+    }
+
+    pub(super) fn reset(
+        &mut self,
+        generation: NonZeroU64,
+        request: block_request::Request,
+    ) -> Result<block_request::Completed, memory::Failure<block_request::Request>> {
+        if let Err(code) = self.validate(generation) {
+            return Err(memory::Failure {
+                code,
+                retained: request,
+            });
+        }
+        reset_request(request)
+    }
+
+    pub(super) fn stop(&mut self, generation: NonZeroU64) -> Result<(), i32> {
+        self.validate(generation)?;
+        if !block::idle() || unsafe { (*state()).running } {
+            return Err(-16);
+        }
+        stop();
+        Ok(())
+    }
+}
+
+impl Drop for Access {
+    fn drop(&mut self) {
+        context();
+        unsafe { (*state()).entered = false };
+    }
+}
 #[unsafe(no_mangle)]
 pub static mut kutox_storage_module: usize = 0;
 #[unsafe(no_mangle)]
-pub extern "C" fn bus_register(bus: *const Bus) -> i32 {
+/// # Safety
+/// A non-null bus must be readable. On success it and its callback backing must
+/// remain valid and address-stable until all children retire and it is unregistered.
+pub unsafe extern "C" fn bus_register(bus: *const Bus) -> i32 {
     context();
     if bus.is_null()
         || unsafe {
@@ -316,7 +412,9 @@ pub unsafe extern "C" fn queue_work(queue: *mut c_void, work: *mut Work) -> bool
         c"storage_work_capacity",
     );
     let queued = checked(
-        crate::linux_deferred::local_work(work as usize, generation, 0),
+        unsafe { callbacks_raw::work(work as usize, generation) }
+            .and_then(|registration| registration.queue_local())
+            .map_or_else(|code| code, i32::from),
         c"local_work_enqueue",
     ) != 0;
     if queued {
@@ -339,7 +437,9 @@ pub unsafe extern "C" fn flush_work(work: *mut Work) -> bool {
         (*state()).running = true;
     }
     let result = checked(
-        crate::linux_deferred::local_work(work as usize, generation, 1),
+        unsafe { callbacks_raw::work(work as usize, generation) }
+            .and_then(|registration| registration.flush_local())
+            .map_or_else(|code| code, i32::from),
         c"local_work_flush",
     ) != 0;
     unsafe {
@@ -379,9 +479,9 @@ fn reset() {
         c"storage_reset_unacknowledged",
     );
 }
-pub(crate) fn start(irq: u32) -> i32 {
+fn start(irq: u32) -> i32 {
     context();
-    if !quiescent() || pci::storage_bound() {
+    if !resources_empty() || pci::storage_bound() {
         return diagnostic(c"storage_start_busy", -16);
     }
     if let Err(code) = pci::bind_storage(irq) {
@@ -423,18 +523,14 @@ pub(crate) fn start(irq: u32) -> i32 {
     }
     0
 }
-pub(crate) fn capacity() -> u64 {
-    context();
-    block::get_capacity(block::registered_disk())
-}
-pub(crate) fn prepare(sector: u64, bytes: usize) -> Result<block_request::Request, i32> {
+fn prepare(sector: u64, bytes: usize) -> Result<block_request::Request, i32> {
     context();
     if unsafe { !(*state()).loaded } || !block::idle() {
         return Err(diagnostic(c"storage_prepare_busy", -16));
     }
     block_request::Request::read(sector, bytes)
 }
-pub(crate) fn reset_request(
+fn reset_request(
     mut request: block_request::Request,
 ) -> Result<block_request::Completed, memory::Failure<block_request::Request>> {
     context();
@@ -470,7 +566,7 @@ pub(crate) fn reset_request(
         }),
     }
 }
-pub(crate) fn stop() {
+fn stop() {
     context();
     require(
         unsafe { (*state()).loaded } && block::idle(),

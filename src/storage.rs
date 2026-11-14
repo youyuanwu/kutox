@@ -1,4 +1,4 @@
-use crate::linux_compat::storage as driver_services;
+use crate::linux_compat::{storage as driver_services, storage_session::Session};
 use crate::{
     Failure,
     boot::BootInfo,
@@ -66,12 +66,8 @@ fn state() -> &'static mut State {
 pub fn quiescent() -> bool {
     !cpu::interrupts_enabled() && unsafe { driver_services::empty() && (&*STATE.0.get()).is_none() }
 }
-fn checked(code: i32, operation: &'static str) -> Result<(), Failure> {
-    if code < 0 {
-        Err(Failure::new(operation, code))
-    } else {
-        Ok(())
-    }
+pub(crate) fn platform_bound() -> bool {
+    !cpu::interrupts_enabled() && unsafe { (&*STATE.0.get()).is_some() }
 }
 fn span(address: usize, length: usize, start: usize, size: usize) -> bool {
     length != 0 && address >= start && address - start < size && length <= size - (address - start)
@@ -218,48 +214,39 @@ impl Drop for PlatformOwner {
         }
     }
 }
-struct Driver(bool);
-impl Driver {
-    fn start(gsi: u32) -> Result<Self, Failure> {
-        checked(driver_services::start(gsi), "storage_probe")?;
-        Ok(Self(true))
-    }
-    fn restart(&mut self, gsi: u32) -> Result<(), Failure> {
-        if self.0 {
-            {
-                driver_services::stop();
-            }
-        }
-        self.0 = false;
-        checked(driver_services::start(gsi), "storage_reprobe")?;
-        self.0 = true;
-        Ok(())
-    }
-}
-impl Drop for Driver {
-    fn drop(&mut self) {
-        if self.0 {
-            {
-                driver_services::stop();
-            }
-        }
-    }
-}
-
 pub struct Disk<'a, 'storage> {
     timer: &'a irq::Timer<'a, 'storage>,
-    driver: Driver,
+    session: Option<Session>,
     gsi: u32,
 }
 impl Disk<'_, '_> {
-    pub fn capacity(&self) -> u64 {
-        driver_services::capacity()
+    fn session(&self) -> Result<&Session, Failure> {
+        self.session
+            .as_ref()
+            .ok_or(Failure::new("storage_not_bound", -19))
+    }
+    pub fn capacity(&self) -> Result<u64, Failure> {
+        self.session()?
+            .capacity()
+            .map_err(|code| Failure::new("storage_capacity", code))
     }
     pub fn read(&mut self, sector: u64, output: &mut [u8]) -> Result<(), Failure> {
-        if !self.driver.0 {
-            return Err(Failure::new("storage_not_bound", -19));
-        }
         self.read_inner(sector, output, false)
+    }
+    fn close(&mut self) -> Result<(), Failure> {
+        if let Some(session) = self.session.take()
+            && let Err(failure) = session.close()
+        {
+            self.session = Some(failure.retained);
+            return Err(Failure::new("storage_stop", failure.code));
+        }
+        Ok(())
+    }
+    fn restart(&mut self) -> Result<(), Failure> {
+        self.close()?;
+        self.session =
+            Some(Session::start(self.gsi).map_err(|code| Failure::new("storage_reprobe", code))?);
+        Ok(())
     }
     fn read_inner(
         &mut self,
@@ -268,7 +255,9 @@ impl Disk<'_, '_> {
         lose_irq: bool,
     ) -> Result<(), Failure> {
         let deadline = time::deadline_after_us(100_000)?;
-        let mut request = driver_services::prepare(sector, output.len())
+        let mut request = self
+            .session()?
+            .prepare(sector, output.len())
             .map_err(|code| Failure::new("storage_prepare", code))?;
         if lose_irq && let Err(error) = linux_irq::gate() {
             request.abort().expect("storage release before submit");
@@ -300,17 +289,22 @@ impl Disk<'_, '_> {
                     return Err(Failure::new("storage_deadline", -110));
                 }
                 let wake = time::deadline_after_us(1000)?.min(deadline);
-                self.timer.arm_until(wake)?;
+                if !self.timer.arm_until(wake)? {
+                    continue;
+                }
                 self.timer.idle_until_tick()?;
             }
         })();
         if let Err(error) = waited {
             self.timer.stop()?;
-            driver_services::reset_request(request)
+            self.session
+                .as_mut()
+                .expect("live storage session during read")
+                .reset(request)
                 .expect("storage timeout reset proof")
                 .release()
                 .expect("storage timeout release");
-            self.driver.restart(self.gsi)?;
+            self.restart()?;
             return Err(error);
         }
         let completed = request.finish().expect("storage observed completion");
@@ -352,13 +346,16 @@ pub fn with_disk<T>(
     let controller = IoApic::start(boot, frames, &apic, &topology)?;
     let _irq = BoundIrq::bind(&controller, gsi)?;
     let timer = irq::Timer::attach(&apic)?;
-    let driver = Driver::start(gsi)?;
+    let session = Session::start(gsi).map_err(|code| Failure::new("storage_probe", code))?;
     let mut disk = Disk {
         timer: &timer,
-        driver,
+        session: Some(session),
         gsi,
     };
-    client(&mut disk)
+    let result = client(&mut disk);
+    disk.close()
+        .expect("storage scope shutdown failed; device ownership retained");
+    result
 }
 
 pub fn run(
@@ -375,7 +372,7 @@ pub fn run(
         });
         serial::print(format_args!(
             "STORAGE_READ_OK driver=linux-virtio-blk capacity={} sector=0 bytes=512 hash={hash:016x}\n",
-            disk.capacity()
+            disk.capacity()?
         ));
         Ok(())
     });
@@ -657,6 +654,8 @@ pub(crate) fn clock(operation: u32) -> u64 {
 #[cfg(feature = "guest-tests")]
 pub(crate) mod tests {
     use super::*;
+    use crate::linux_compat::storage_session::tests as session_tests;
+    use moss_libkernel::CpuOps;
     fn verify(sector: u64, bytes: &[u8]) {
         for (i, byte) in bytes.iter().enumerate() {
             let absolute = sector * 512 + i as u64;
@@ -671,9 +670,33 @@ pub(crate) mod tests {
         frames: &'static memory::PhysicalFrames<'static>,
     ) -> Result<(), Failure> {
         time::calibrate()?;
+        assert_eq!(Session::start(0).unwrap_err(), -19);
         with_disk(boot, frames, |disk| {
             let irq_before = linux_irq::counts().0;
-            assert_eq!(disk.capacity(), 128);
+            assert_eq!(disk.capacity()?, 128);
+            let session = disk.session().unwrap();
+            session_tests::admission(session);
+            assert_eq!(Session::start(disk.gsi).unwrap_err(), -16);
+            cpu::X86Cpu::enable_interrupts();
+            let rejected = session.capacity();
+            cpu::X86Cpu::disable_interrupts();
+            assert_eq!(
+                rejected,
+                Err(crate::threads::SwitchError::InterruptsEnabled as i32)
+            );
+            assert_eq!(session.capacity(), Ok(128));
+            let retired = session_tests::snapshot(session);
+            let before_close = memory::allocation_snapshot(frames);
+            let heap_before_close = crate::heap::global().stats();
+            let session = disk.session.take().unwrap();
+            let request = session.prepare(0, 512).unwrap();
+            let failure = session.close().unwrap_err();
+            assert_eq!(failure.code, -16);
+            assert_eq!(failure.retained.capacity(), Ok(128));
+            assert_eq!(memory::allocation_snapshot(frames), before_close);
+            assert_eq!(crate::heap::global().stats(), heap_before_close);
+            request.abort().unwrap();
+            disk.session = Some(failure.retained);
             for (sector, bytes) in [(0, 512), (3, 4096), (127, 512)] {
                 let mut output = [0xa5; 4096];
                 disk.read(sector, &mut output[..bytes])?;
@@ -698,9 +721,14 @@ pub(crate) mod tests {
             assert!(time::now_ticks() - before >= time::ticks_for_us(100_000)?);
             assert_eq!(crate::linux_compat::storage_work_flushes(), work_before + 1);
             assert_eq!(output, [0xa5; 512]);
+            let request = disk.session()?.prepare(0, 512).unwrap();
+            retired.reject(request).abort().unwrap();
             disk.read(1, &mut output)?;
             verify(1, &output);
             assert!(linux_irq::counts().0 >= irq_before + 4);
+            serial::print(format_args!(
+                "# STORAGE_SESSION admission=checked close=retained stale=isolated context=rejected requests=retained\n"
+            ));
             serial::print(format_args!(
                 "# STORAGE_PROOF reads=4 exact=1 range=1 dma_rollback=3 work_flush=1 deadline=1 reset=1 recovery=1\n"
             ));

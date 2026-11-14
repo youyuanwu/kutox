@@ -1,7 +1,9 @@
 //! Guest-only acceptance fixtures; not production driver code.
 
 use crate::{
-    driver_memory, linux_deferred,
+    driver_memory,
+    linux_compat::packet_tx::{State as PacketState, Submission},
+    linux_deferred,
     linux_driver::{DriverHandle, control},
     serial, threads, time,
 };
@@ -191,15 +193,17 @@ fn wrap() {
     let baseline = driver_memory::snapshot();
     let mut rx_bytes = 0;
     for sequence in 1..=300 {
-        assert_eq!(handle.packet(&packet(1, sequence, 60, false)[..60]), 0);
-        assert_eq!(handle.transmit(), 0);
+        let mut tx = handle
+            .packet(&packet(1, sequence, 60, false)[..60])
+            .unwrap();
+        assert_eq!(tx.submit(), Ok(Submission::Accepted));
         let size = if sequence % 2 == 1 { 60 } else { 300 };
         ready("wrap", sequence, size);
         receive(1, "wrap", sequence, size);
         handle
-            .wait_transmitted()
+            .wait_transmitted(&mut tx)
             .unwrap_or_else(|error| panic!("wrap TX {} {}", error.stage, error.code));
-        handle.release_packet();
+        tx.finish().unwrap().release().unwrap();
         rx_bytes += size as u32;
         let resident = handle.rx_state(sequence, rx_bytes, 0, 0, true);
         assert!((255..=256).contains(&resident));
@@ -255,15 +259,18 @@ fn backpressure() {
     handle.wait_ready();
     let baseline = driver_memory::snapshot();
     driver_memory::fault(0, 0);
-    assert_eq!(handle.packet(&packet(4, 1, 60, false)[..60]), -12);
+    assert_eq!(
+        handle.packet(&packet(4, 1, 60, false)[..60]).unwrap_err(),
+        -12
+    );
     driver_memory::fault(u32::MAX, usize::MAX);
     assert_eq!(driver_memory::snapshot(), baseline);
     serial::print(format_args!("# LINUX_HARD_FAULT name=tx-skb recovered=1\n"));
-    assert_eq!(handle.packet(&packet(4, 2, 60, false)[..60]), 0);
+    let mut tx = handle.packet(&packet(4, 2, 60, false)[..60]).unwrap();
     driver_memory::map_fault(1, 0);
-    assert_eq!(handle.transmit(), 0);
-    assert_eq!(handle.tx_status(), -5);
-    handle.release_packet();
+    assert_eq!(tx.submit(), Ok(Submission::Accepted));
+    assert_eq!(tx.state(), Ok(PacketState::Dropped));
+    tx.finish().unwrap().release().unwrap();
     driver_memory::map_fault(0, usize::MAX);
     assert_eq!(driver_memory::snapshot(), baseline);
     assert_eq!(counts(&handle, 0, 0, 0, 0, 0), 0);
@@ -355,9 +362,9 @@ fn teardown() {
     TICKET.store(handle.0, Ordering::Release);
     handle.wait_irq_poll_idle();
     assert_eq!(kick(&handle, 0), 0, "watchdog must have requeued");
-    assert_eq!(handle.packet(&packet(3, 1, 60, false)[..60]), 0);
-    assert_eq!(handle.transmit(), 0);
-    assert_eq!(handle.tx_status(), 1);
+    let mut tx = handle.packet(&packet(3, 1, 60, false)[..60]).unwrap();
+    assert_eq!(tx.submit(), Ok(Submission::Accepted));
+    assert_eq!(tx.state(), Ok(PacketState::InFlight));
     let start = time::now_ticks();
     let budget = time::ticks_for_us(100_000)
         .unwrap_or_else(|error| panic!("pending TX IRQ clock: {} {}", error.stage, error.code));
@@ -373,20 +380,20 @@ fn teardown() {
         "# LINUX_HARD_IRQ pending=1 tx=1 watchdog=queued\n"
     ));
     assert_eq!(handle.close(), 0);
-    handle.release_packet();
+    tx.finish().unwrap().release().unwrap();
     assert_eq!(handle.open(), 0);
     handle.wait_ready();
     assert_eq!(handle.rx_start(), 0);
     arm(2);
     ready("pending", 1, 60);
     wait(|| PAUSED.load(Ordering::Acquire) == 2);
-    assert_eq!(handle.packet(&packet(3, 2, 60, false)[..60]), 0);
-    assert_eq!(handle.transmit(), 0);
-    assert_eq!(handle.tx_status(), 1);
+    let mut tx = handle.packet(&packet(3, 2, 60, false)[..60]).unwrap();
+    assert_eq!(tx.submit(), Ok(Submission::Accepted));
+    assert_eq!(tx.state(), Ok(PacketState::InFlight));
     serial::print(format_args!("# LINUX_HARD_STOP kind=pending seq=1\n"));
     assert_eq!(handle.rx_stop(), 0);
     assert_eq!(handle.close(), 0);
-    handle.release_packet();
+    tx.finish().unwrap().release().unwrap();
     wait(|| DONE.load(Ordering::Acquire) == 2);
     receive(3, "pending", 1, 60);
     assert_eq!(handle.close(), 0);

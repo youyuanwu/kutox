@@ -6,6 +6,8 @@ pub(crate) mod block;
 #[path = "../block_abi.rs"]
 mod block_abi;
 pub(crate) mod block_request;
+pub(crate) mod callbacks;
+mod callbacks_raw;
 mod diagnostics;
 mod execution;
 pub(crate) mod lifecycle;
@@ -17,8 +19,10 @@ pub(crate) mod mmio;
 pub(crate) mod napi;
 mod optional;
 pub(crate) mod packet;
+pub(crate) mod packet_tx;
 pub(crate) mod pci;
 pub(crate) mod storage;
+pub(crate) mod storage_session;
 #[cfg(feature = "guest-tests")]
 #[path = "../guest_tests/compat_services.rs"]
 pub(crate) mod tests;

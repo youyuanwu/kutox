@@ -92,22 +92,6 @@ impl Handle {
         Ok(access.device(self)?.statistics())
     }
 
-    pub(crate) fn packet(self, bytes: &[u8]) -> Result<(), i32> {
-        let access = Access::enter()?;
-        status_result(access.active(self)?.packet(bytes))
-    }
-
-    pub(crate) fn transmit(self, retry: bool) -> Result<i32, i32> {
-        let access = Access::enter()?;
-        value_result(access.active(self)?.transmit(retry))
-    }
-
-    pub(crate) fn release_packet(self) -> Result<(), i32> {
-        let access = Access::enter()?;
-        access.active(self)?.release_packet();
-        Ok(())
-    }
-
     pub(crate) fn rx_start(self) -> Result<(), i32> {
         let access = Access::enter()?;
         let device = access.active(self)?;

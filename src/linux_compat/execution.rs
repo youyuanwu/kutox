@@ -485,7 +485,10 @@ pub(super) unsafe fn destroy_completion(p: *mut Completion) {
     }
 }
 #[unsafe(no_mangle)]
-pub extern "C" fn request_irq(
+/// # Safety
+/// The handler must support IRQ context. Its device backing must remain valid
+/// and address-stable until free_irq masks, synchronizes and unregisters it.
+pub unsafe extern "C" fn request_irq(
     irq: u32,
     handler: Option<unsafe extern "C" fn(i32, *mut c_void) -> i32>,
     flags: usize,
@@ -495,7 +498,9 @@ pub extern "C" fn request_irq(
     let result = if name.is_null() {
         -22
     } else {
-        unsafe { crate::linux_irq::request_irq(irq, handler, flags as u64, device as usize) }
+        unsafe { callbacks_raw::attach_irq(irq, handler, flags as u64, device as usize) }
+            .map(|registration| registration.into_abi())
+            .map_or_else(|code| code, |_| 0)
     };
     if result < 0 && { crate::driver_platform::device_key() != 0 } {
         crate::driver_platform::gate()
@@ -515,7 +520,9 @@ pub extern "C" fn synchronize_irq(irq: u32) {
 #[unsafe(no_mangle)]
 pub extern "C" fn free_irq(irq: u32, device: *mut c_void) {
     checked(
-        crate::linux_irq::operation(irq, device as usize, 1),
+        unsafe { callbacks_raw::irq(irq, device as usize) }
+            .and_then(|registration| registration.close().map_err(|failure| failure.code))
+            .map_or_else(|code| code, |()| 0),
         c"free_irq",
     );
 }
@@ -530,11 +537,13 @@ pub extern "C" fn local_bh_enable() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn init_work(p: *mut Work, f: Option<unsafe extern "C" fn(*mut c_void)>) {
     validate(p);
-    let generation = unsafe { crate::linux_deferred::register_work(p as usize, f) };
-    require(generation > 0, c"work_init");
+    let generation = match unsafe { callbacks_raw::attach_work(p as usize, f) } {
+        Ok(registration) => registration.into_abi(),
+        Err(_) => crate::platform_fail(c"work_init"),
+    };
     unsafe {
         (*p).function = f;
-        (*p).generation = generation as u64;
+        (*p).generation = generation;
     }
     if !pci::storage_bound()
         && let Some(f) = f
@@ -551,8 +560,20 @@ pub unsafe extern "C" fn init_delayed_work(
 }
 unsafe fn work(p: *mut Work, operation: u32, delay: u64) -> bool {
     let generation = unsafe { object(p) }.generation;
+    let result =
+        unsafe { callbacks_raw::work(p as usize, generation) }.and_then(|mut registration| {
+            match operation {
+                0 => registration.schedule(delay),
+                1 => registration.cancel_and_join(),
+                2 => registration
+                    .close()
+                    .map(|()| false)
+                    .map_err(|failure| failure.code),
+                _ => Err(-100),
+            }
+        });
     checked(
-        crate::linux_deferred::work_operation(p as usize, generation, operation, delay),
+        result.map_or_else(|code| code, i32::from),
         c"work_operation",
     ) != 0
 }
