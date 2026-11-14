@@ -45,7 +45,7 @@ def async_log():
     lines = [
         f"KUTOX_BOOT linux={q.REVISION}",
         "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled",
-        "BOOT_MODE mode=async-network-tests source=fw_cfg", "KTAP version 1", "1..3",
+        "BOOT_TEST suite=async-network-tests source=fw_cfg", "KTAP version 1", "1..3",
         *source_events(),
     ]
     for epoch in range(1, 6):
@@ -129,16 +129,16 @@ class AsyncNetworkTests(unittest.TestCase):
         args = SimpleNamespace(qemu="qemu-system-x86_64", build_dir=Path("build"))
         for case in q.ASYNC_NETWORK_CASES:
             command = q.qemu_command(args, case, net_fd=7)
-            self.assertIn("name=opt/kutox/test-mode,string=async-network-tests", command)
+            self.assertIn("name=opt/kutox/test-suite,string=async-network-tests", command)
             self.assertEqual(command[command.index("-cdrom") + 1], "build/kutox.iso")
             self.assertEqual(command[command.index("-m") + 1], "32M" if case.endswith("low-memory") else "128M")
             self.assertIn("socket,id=irqtest,fd=7", command)
         self.assertEqual(q.pci_layout("async-network-tests-nested-low-memory"), (5, 7, [(1, 4), (0, 5)]))
 
     def test_disabled_selector_rejects_before_admission(self):
-        q.validate_result("async-network-tests-disabled", 3, f"KUTOX_BOOT linux={q.REVISION}\nE1000_MAC_FAIL stage=boot_mode code=-25\n")
+        q.validate_result("async-network-tests-disabled", 3, f"KUTOX_BOOT linux={q.REVISION}\nE1000_MAC_FAIL stage=boot_test_suite code=-25\n")
         with self.assertRaises(AssertionError):
-            q.validate_result("async-network-tests-disabled", 3, f"KUTOX_BOOT linux={q.REVISION}\nBOOT_MODE mode=async-network-tests source=fw_cfg\nE1000_MAC_FAIL stage=boot_mode code=-25\n")
+            q.validate_result("async-network-tests-disabled", 3, f"KUTOX_BOOT linux={q.REVISION}\nBOOT_TEST suite=async-network-tests source=fw_cfg\nE1000_MAC_FAIL stage=boot_test_suite code=-25\n")
 
 
 if __name__ == "__main__":

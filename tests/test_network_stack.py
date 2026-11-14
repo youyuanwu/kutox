@@ -25,7 +25,7 @@ def fixture(case="network-tests"):
     lines = [
         f"KUTOX_BOOT linux={q.REVISION}",
         "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled",
-        "BOOT_MODE mode=network-tests source=fw_cfg",
+        "BOOT_TEST suite=network-tests source=fw_cfg",
         "KTAP version 1", "1..3",
         "# NET_IP_CONFIG cidr=10.0.2.15/24 rejected=7 allocation=0 source=0",
         "ok 1 net.configuration",
@@ -145,14 +145,14 @@ time.sleep(10)
             command = q.qemu_command(args, case)
             self.assertIn(f"name=opt/kutox/ipv4,string={cidr}", command)
             if mode is None:
-                self.assertFalse(any("name=opt/kutox/test-mode" in value for value in command))
+                self.assertFalse(any("name=opt/kutox/test-suite" in value for value in command))
             output = f"KUTOX_BOOT linux={q.REVISION}\nE1000_MAC_FAIL stage=boot_ipv4 code={code}\n"
             q.validate_result(case, 3, output)
             with self.assertRaises(AssertionError):
                 q.validate_result(case, 3, "BOOT_MEMORY_OK fake=1\n" + output)
-        q.validate_result("async-hardening-tests-disabled", 3, f"KUTOX_BOOT linux={q.REVISION}\nE1000_MAC_FAIL stage=boot_mode code=-25\n")
+        q.validate_result("async-hardening-tests-disabled", 3, f"KUTOX_BOOT linux={q.REVISION}\nE1000_MAC_FAIL stage=boot_test_suite code=-25\n")
         command = q.qemu_command(args, "network-default-ambiguous")
-        self.assertFalse(any("name=opt/kutox/test-mode" in value for value in command))
+        self.assertFalse(any("name=opt/kutox/test-suite" in value for value in command))
         self.assertEqual(sum(value.startswith("e1000,netdev=") for value in command), 2)
         output = f"KUTOX_BOOT linux={q.REVISION}\nE1000_MAC_FAIL stage=runtime_e1000_inventory code=-188\n"
         q.validate_result("network-default-ambiguous", 3, output)
@@ -235,9 +235,9 @@ time.sleep(10)
         args = SimpleNamespace(qemu="qemu-system-x86_64", build_dir=Path("build"))
         for case in q.IP_SUITE_CASES:
             command = q.qemu_command(args, case, net_fd=7)
-            self.assertIn("name=opt/kutox/test-mode,string=network-tests", command)
+            self.assertIn("name=opt/kutox/test-suite,string=network-tests", command)
             self.assertIn("socket,id=irqtest,fd=7", command)
             self.assertEqual(command[command.index("-cdrom") + 1], "build/kutox.iso")
-        q.validate_result("network-tests-disabled", 3, f"KUTOX_BOOT linux={q.REVISION}\nE1000_MAC_FAIL stage=boot_mode code=-25\n")
+        q.validate_result("network-tests-disabled", 3, f"KUTOX_BOOT linux={q.REVISION}\nE1000_MAC_FAIL stage=boot_test_suite code=-25\n")
         with self.assertRaises(AssertionError):
-            q.validate_result("network-tests-disabled", 3, f"KUTOX_BOOT linux={q.REVISION}\n# NET_IP_OFFER epoch=1 step=0 kind=arp bytes=60\nE1000_MAC_FAIL stage=boot_mode code=-25\n")
+            q.validate_result("network-tests-disabled", 3, f"KUTOX_BOOT linux={q.REVISION}\n# NET_IP_OFFER epoch=1 step=0 kind=arp bytes=60\nE1000_MAC_FAIL stage=boot_test_suite code=-25\n")

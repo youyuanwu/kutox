@@ -74,7 +74,7 @@ def live_log(case="driver-runtime-default"):
 
 
 def runtime_network_log(case):
-    lines = managed_log().replace("mode=driver-network-tests", "mode=driver-runtime-tests").replace("metadata=60500", "metadata=60377").splitlines()
+    lines = managed_log().replace("suite=driver-network-tests", "suite=driver-runtime-tests").replace("metadata=60500", "metadata=60377").splitlines()
     output, epoch = [], 0
     _, leaf, parents = runner.pci_layout(case)
     for line in lines:
@@ -196,7 +196,7 @@ class RuntimeBootTests(unittest.TestCase):
         output = "\n".join([
             f"KUTOX_BOOT linux={runner.REVISION}",
             "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled",
-            "BOOT_MODE mode=driver-runtime-tests source=fw_cfg",
+            "BOOT_TEST suite=driver-runtime-tests source=fw_cfg",
             "KTAP version 1", "1..1", summary(1, 6, 0),
             "# DRIVER_UNCLAIMED functions=6 drivers=1 bound=0 unclaimed=6 network=0 workers=2 client_returned=1",
             "# DRIVER_UNCLAIMED_JOIN finished=5 peak=5 workers=0 balanced=1 stale=1",
@@ -213,10 +213,10 @@ class RuntimeBootTests(unittest.TestCase):
             command = runner.qemu_command(args, case, net_fd=17)
             self.assertEqual(command[command.index("-cdrom") + 1], "build/kutox.iso")
             if case in runner.LIVE_CASES and runner.LIVE_CASES[case][0] is None:
-                self.assertNotIn("-fw_cfg", command)
+                self.assertFalse(any(value.startswith("name=opt/kutox/test-suite,") for value in command))
             else:
                 mode = runner.LIVE_CASES[case][0] if case in runner.LIVE_CASES else "driver-runtime-tests"
-                self.assertIn(f"name=opt/kutox/test-mode,string={mode}", command)
+                self.assertIn(f"name=opt/kutox/test-suite,string={mode}", command)
             if case in runner.RUNTIME_NETWORK_CASES:
                 self.assertIn("socket,id=irqtest,fd=17", command)
                 self.assertEqual(command[command.index("-m") + 1], "32M" if case.endswith("low-memory") else "128M")

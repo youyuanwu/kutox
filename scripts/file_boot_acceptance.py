@@ -27,7 +27,7 @@ def validate_file_boot(case, returncode, output, symbols):
         if raw and raw[0] == "limine: Loading executable `odd(1:):/boot/kernel`...":
             raw = raw[1:]
     lines = strip_limine_preamble(raw)
-    validate_boot_preamble(lines, "file-run")
+    validate_boot_preamble(lines, "root=disk init=/bin/init")
     validate_allocator(lines, 32 if case.endswith("low-memory") else 128)
     bindings = 0 if case in ("file-boot-missing", "file-boot-module", "file-boot-unsupported") else 1
     validate_callbacks(lines, symbols, bindings)
@@ -72,11 +72,11 @@ def validate_file_boot(case, returncode, output, symbols):
         ]
         if proofs[:1 + len(application)] != fs + application:
             raise AssertionError("init did not pass the file API checks")
-        index = 1 + len(application)
+        index = 2 + len(application)
         if len(proofs) <= index:
             raise AssertionError("missing file boot read evidence")
         validate_read_statistics(proofs[index], "BOOT_FILE_READ_OK")
-        expected = fs + application + [proofs[index], IO_API if io else API, CLOSED, SHUTDOWN,
+        expected = fs + application + [IO_API if io else API, proofs[index], CLOSED, SHUTDOWN,
                                        IO_EXIT if io else EXIT, "USER_BOOT_OK exit=0"]
         if returncode != 1 or proofs != expected or lines[-1] != expected[-1]:
             raise AssertionError("file reads, descriptors, EOF or shutdown ordering changed")
@@ -89,7 +89,7 @@ def validate_file_boot(case, returncode, output, symbols):
         if case not in FILE_FAILURES and any(line.startswith("# STORAGE_LINUX") for line in lines[lines.index(CLOSED) + 1:]):
             raise AssertionError("file boot received driver callbacks after disk close")
     if any(not line.startswith((
-        "KUTOX_BOOT ", "CPU_FOUNDATION_OK ", "BOOT_MODE ", "BOOT_MEMORY_OK ", "FRAME_ALLOCATOR_OK ",
+        "KUTOX_BOOT ", "CPU_FOUNDATION_OK ", "BOOT_CONFIG ", "BOOT_MEMORY_OK ", "FRAME_ALLOCATOR_OK ",
         "HEAP_OK ", "TSC ", "# BLOCK_ERROR ", "# STORAGE_LINUX ", "# BOOT_FS_", "# USER_FILE_IO ",
         "BOOT_FS_OK ", "BOOT_FILE_", "BOOT_DISK_", "BOOT_USER_EXIT ", "USER_BOOT_OK ",
         "FILE:", "FILE_API:", "E1000_MAC_FAIL ",

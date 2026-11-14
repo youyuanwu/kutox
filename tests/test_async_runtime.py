@@ -12,7 +12,7 @@ def async_log():
     lines = [
         f"KUTOX_BOOT linux={q.REVISION}",
         "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled",
-        "BOOT_MODE mode=async-core-tests source=fw_cfg", "KTAP version 1", "1..5",
+        "BOOT_TEST suite=async-core-tests source=fw_cfg", "KTAP version 1", "1..5",
     ]
     proofs = [
         "# ASYNC_WAKE polls=5 self_wake=coalesced cloned=1 consumed=1 prepoll=1 blocking_rejected=2 c_calls=0",
@@ -65,7 +65,7 @@ class AsyncRuntimeTests(unittest.TestCase):
         for case in q.ASYNC_CORE_CASES:
             command = q.qemu_command(args, case)
             self.assertEqual(command[command.index("-cdrom") + 1], "build/kutox.iso")
-            self.assertEqual(command[command.index("-fw_cfg") + 1], "name=opt/kutox/test-mode,string=async-core-tests")
+            self.assertEqual(command[command.index("-fw_cfg") + 1], "name=opt/kutox/test-suite,string=async-core-tests")
             self.assertEqual(command[command.index("-m") + 1], "32M" if case.endswith("low-memory") else "128M")
             self.assertNotIn("-netdev", command)
             q.validate_result(case, 1, async_log())
@@ -113,7 +113,7 @@ class AsyncRuntimeTests(unittest.TestCase):
                 q.validate_result("async-core-tests", 1, changed)
 
     def test_disabled_fixture_rejects_early_but_production_executor_is_retained(self):
-        output = f"KUTOX_BOOT linux={q.REVISION}\nE1000_MAC_FAIL stage=boot_mode code=-25\n"
+        output = f"KUTOX_BOOT linux={q.REVISION}\nE1000_MAC_FAIL stage=boot_test_suite code=-25\n"
         q.validate_result("async-core-tests-disabled", 3, output)
         for changed in [
             output.replace("-25", "-23"),
@@ -130,7 +130,7 @@ class AsyncRuntimeTests(unittest.TestCase):
         args = SimpleNamespace(qemu="qemu-system-x86_64", build_dir=Path("build"))
         command = q.qemu_command(args, "async-core-tests-disabled")
         self.assertNotIn("-netdev", command)
-        self.assertIn("name=opt/kutox/test-mode,string=async-core-tests", command)
+        self.assertIn("name=opt/kutox/test-suite,string=async-core-tests", command)
 
 
 if __name__ == "__main__":

@@ -275,7 +275,7 @@ fn integration(
     boot: &BootInfo,
     frames: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
-    if boot.mode == crate::boot::fw_cfg::BootMode::DriverRuntimeTests {
+    if boot.test_suite == crate::boot::fw_cfg::TestSuite::DriverRuntimeTests {
         pci::tests::reject_bad_runtime_topology(boot, frames)?;
     }
     let inventory = pci::enumerate()?;

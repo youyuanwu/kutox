@@ -5,6 +5,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from qemu_test import CASES, FAULT_RESULTS, HEAP_RESULT, MOSS_REVISION, REVISION, qemu_command, validate_result
+from qemu_scenarios import boot_banner, BOOT_CONFIG_FAILURES, DISABLED_PROOFS
 
 FOUNDATION = "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled\n"
 
@@ -13,7 +14,7 @@ def boot_log(result, evidence="E1000_EEPROM reads=100 denied_grants=0", mode="pr
     tables = "BOOT_MEMORY_TABLES allocated=3 released=3\n" if evidence else ""
     return (
         f"KUTOX_BOOT linux={REVISION}\n{FOUNDATION}"
-        f"BOOT_MODE mode={mode} source={source}\n"
+        f"{boot_banner(mode, source)}\n"
         f"BOOT_MEMORY_OK source=moss revision={MOSS_REVISION} managed_bytes=1048576 regions=1\n"
         f"FRAME_ALLOCATOR_OK source=moss revision={MOSS_REVISION} total_pages=256 reserved_pages=2 free_pages=254 metadata_bytes=8192\n"
         f"{HEAP_RESULT}\n"
@@ -22,6 +23,20 @@ def boot_log(result, evidence="E1000_EEPROM reads=100 denied_grants=0", mode="pr
 
 
 class ResultTests(unittest.TestCase):
+    def test_configuration_errors_cannot_fall_back_to_network_or_a_test(self):
+        for case, (_, _, code) in BOOT_CONFIG_FAILURES.items():
+            output = f"KUTOX_BOOT linux={REVISION}\n{FOUNDATION}E1000_MAC_FAIL stage=boot_configuration code={code}\n"
+            validate_result(case, 3, output)
+            for changed in (output + "BOOT_CONFIG root=none init=none source=default\n",
+                            output.replace(f"code={code}", "code=0")):
+                with self.subTest(case=case), self.assertRaises(AssertionError):
+                    validate_result(case, 3, changed)
+        for case in DISABLED_PROOFS:
+            output = f"KUTOX_BOOT linux={REVISION}\n{FOUNDATION}E1000_MAC_FAIL stage=boot_test_suite code=-25\n"
+            validate_result(case, 3, output)
+            with self.assertRaises(AssertionError):
+                validate_result(case, 3, output + "BOOT_MEMORY_OK\n")
+
     def test_correct_mac(self):
         validate_result("known", 1, boot_log("E1000_MAC_OK mac=52:54:00:12:34:56"))
 
@@ -113,7 +128,7 @@ class ResultTests(unittest.TestCase):
 
     def test_missing_runtime_mode_result(self):
         output = boot_log("E1000_MAC_OK mac=52:54:00:12:34:56")
-        output = "\n".join(line for line in output.splitlines() if not line.startswith("BOOT_MODE"))
+        output = "\n".join(line for line in output.splitlines() if not line.startswith("BOOT_TEST"))
         with self.assertRaises(AssertionError):
             validate_result("known", 1, output)
 
@@ -125,7 +140,7 @@ class ResultTests(unittest.TestCase):
             )
 
     def test_invalid_mode_is_rejected_before_memory_initialization(self):
-        output = f"KUTOX_BOOT linux={REVISION}\n{FOUNDATION}E1000_MAC_FAIL stage=boot_mode code=-23\n"
+        output = f"KUTOX_BOOT linux={REVISION}\n{FOUNDATION}E1000_MAC_FAIL stage=boot_test_suite code=-23\n"
         validate_result("invalid-mode", 3, output)
 
     def test_invalid_mode_cannot_silently_run_probe(self):
@@ -142,7 +157,7 @@ class CommandTests(unittest.TestCase):
     def test_disabled_guest_mode_uses_no_network_and_the_same_image(self):
         command = qemu_command(self.args, "guest-tests-disabled")
         self.assertNotIn("-netdev", command)
-        self.assertIn("name=opt/kutox/test-mode,string=kernel-tests", command)
+        self.assertIn("name=opt/kutox/test-suite,string=kernel-tests", command)
         self.assertEqual(command[command.index("-cdrom") + 1], str(Path("build/kutox.iso")))
 
     def setUp(self):
@@ -171,7 +186,7 @@ class CommandTests(unittest.TestCase):
                 command = qemu_command(self.args, case, net_fd=17)
                 self.assertEqual(
                     command[command.index("-fw_cfg") + 1],
-                    f"name=opt/kutox/test-mode,string={mode}",
+                    f"name=opt/kutox/test-suite,string={mode}",
                 )
 
     def test_default_mode_omits_fw_cfg(self):
@@ -202,7 +217,7 @@ class CommandTests(unittest.TestCase):
                 self.assertIn(f"e1000,netdev=irqtest,bus=bridge{int(nested)},addr={leaf},mac=52:54:00:12:34:56", command)
                 self.assertIn("socket,id=irqtest,fd=17", command)
                 self.assertEqual(command[command.index("-m") + 1], "32M" if case.endswith("low-memory") else "128M")
-                self.assertEqual(command[command.index("-fw_cfg") + 1], "name=opt/kutox/test-mode,string=kernel-tests")
+                self.assertEqual(command[command.index("-fw_cfg") + 1], "name=opt/kutox/test-suite,string=kernel-tests")
 
     def test_removed_nonfatal_cases_are_not_cli_choices(self):
         for case in ("memory", "cpu-locks", "breakpoint"):
@@ -222,7 +237,7 @@ def fault_log(case):
     }.get(case, "")
     return (
         f"KUTOX_BOOT linux={REVISION}\n{FOUNDATION}"
-        f"BOOT_MODE mode={case} source=fw_cfg\n"
+        f"BOOT_TEST suite={case} source=fw_cfg\n"
         f"{details}{FAULT_RESULTS[case]}\n"
     )
 

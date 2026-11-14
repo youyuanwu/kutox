@@ -370,6 +370,7 @@ impl Disk<'static, 'static> {
     }
 }
 
+#[cfg(feature = "guest-tests")]
 pub fn with_disk<T>(
     boot: &BootInfo,
     frames: &'static memory::PhysicalFrames<'static>,
@@ -381,6 +382,7 @@ pub fn with_disk<T>(
     result
 }
 
+#[cfg(feature = "guest-tests")]
 pub fn run(
     boot: &BootInfo,
     frames: &'static memory::PhysicalFrames<'static>,

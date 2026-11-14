@@ -121,8 +121,8 @@ The [UDP fixture](../src/guest_tests/udp.rs) is part of the existing guest test
 harness, behind the `guest-tests` feature, and runs as the `udp.exchange` KTAP
 case selected by `udp-tests`. It requires the default `10.0.2.15/24`, one
 supported e1000 and the isolated test peer; another configured CIDR fails
-with `udp_test_config`. There is no production demo mode. Normal `run`/absent,
-`network-run` and `driver-run` behavior is not replaced.
+with `udp_test_config`. There is no production demo mode. Default networking
+is unchanged; `driver-only` is now a test-only proof, not a production mode.
 
 ```sh
 python3 scripts/check.py full --profiles ON --scope guest --select 'udp-tests*'

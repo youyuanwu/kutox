@@ -21,13 +21,16 @@ def boot_log():
         "limine: Loading module `boot():/boot/rootfs.img`...",
         f"KUTOX_BOOT linux={REVISION}",
         "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled",
-        "BOOT_MODE mode=user-run source=fw_cfg",
+        "BOOT_CONFIG root=ram init=/bin/init source=cmdline",
         f"BOOT_MEMORY_OK source=moss revision={MOSS_REVISION} managed_bytes=16777216 regions=3",
         f"FRAME_ALLOCATOR_OK source=moss revision={MOSS_REVISION} total_pages=4096 reserved_pages=32 free_pages=4064 metadata_bytes=131072",
         HEAP_RESULT,
         "TSC ticks_per_us=1000",
         "BOOT_FS_OK source=moss-ext4plus format=ext2 image_bytes=2097152 path=/bin/init file_bytes=4744",
         "INIT: hello from /bin/init",
+        "BOOT_FILE_API_OK opens=0 reads=0 closes=0 errors=0 bytes=0 peak_files=0 closed_on_exit=0",
+        "BOOT_ROOT_CLOSED root=ram files=retired irq=joined",
+        "BOOT_FILE_SHUTDOWN_OK frames=balanced heap=balanced",
         "BOOT_USER_EXIT status=0 calls=2 writes=1 bytes=27 frames=balanced heap=balanced",
         "USER_BOOT_OK exit=0", "",
     ])
@@ -38,7 +41,7 @@ class BootFilesystemTests(unittest.TestCase):
         args = SimpleNamespace(qemu="qemu", build_dir=Path("build"))
         for case in FILE_BOOT_CASES:
             command = qemu_command(args, case)
-            self.assertIn("name=opt/kutox/test-mode,string=file-run", command)
+            self.assertIn("cmdline: root=disk init=/bin/init", command[command.index("-smbios") + 1])
             self.assertEqual(command[command.index("-cdrom") + 1], "build/kutox.iso")
             self.assertNotIn("-netdev", command)
             if not case.endswith("-module"):
@@ -46,7 +49,7 @@ class BootFilesystemTests(unittest.TestCase):
 
     def test_file_boot_requires_exact_descriptor_copy_eof_and_retirement_proofs(self):
         foundation = boot_log().split("BOOT_FS_OK")[0].splitlines()[2:]
-        foundation[2] = "BOOT_MODE mode=file-run source=fw_cfg"
+        foundation[2] = "BOOT_CONFIG root=disk init=/bin/init source=cmdline"
         fs = "BOOT_FS_OK source=moss-ext4plus format=ext2 image_bytes=2097152 path=/bin/init file_bytes=6000"
         reads = ("BOOT_FILE_READ_OK driver=linux-virtio-blk image_bytes=2097152 "
                  "read_bytes=32768 requests=40 max_request=1024 buffer_bytes=512 module=absent")
@@ -55,7 +58,7 @@ class BootFilesystemTests(unittest.TestCase):
             proofs = [fs, *(
                 ["FILE_API: EIO retained"] if io else
                 ["FILE: hello from Moss filesystem", "FILE_API: checks passed"]
-            ), reads, file_boot.IO_API if io else file_boot.API, CLOSED, file_boot.SHUTDOWN,
+            ), file_boot.IO_API if io else file_boot.API, reads, CLOSED, file_boot.SHUTDOWN,
                 file_boot.IO_EXIT if io else file_boot.EXIT, "USER_BOOT_OK exit=0"]
             errors = "# BLOCK_ERROR operation=result_io code=-5\n# USER_FILE_IO stage=storage_read code=-5\n" if io else ""
             output = "\n".join(foundation) + "\n" + callbacks() + fs + "\n" + errors + "\n".join(proofs[1:]) + "\n"
@@ -81,7 +84,7 @@ class BootFilesystemTests(unittest.TestCase):
 
     def test_file_boot_failures_and_live_descriptor_timeout_must_balance(self):
         foundation = boot_log().split("BOOT_FS_OK")[0].splitlines()[2:]
-        foundation[2] = "BOOT_MODE mode=file-run source=fw_cfg"
+        foundation[2] = "BOOT_CONFIG root=disk init=/bin/init source=cmdline"
         fs = "BOOT_FS_OK source=moss-ext4plus format=ext2 image_bytes=2097152 path=/bin/init file_bytes=6000"
         for case, error in file_boot.FILE_FAILURES.items():
             evidence = "" if case.endswith(("-missing", "-module", "-unsupported")) else callbacks()
@@ -101,15 +104,16 @@ class BootFilesystemTests(unittest.TestCase):
         args = SimpleNamespace(qemu="qemu", build_dir=Path("build"))
         for case in ("disk-demand-boot", "disk-demand-boot-low-memory", "disk-demand-boot-file-io-error"):
             command = qemu_command(args, case)
-            self.assertIn("name=opt/kutox/test-mode,string=disk-demand-run", command)
+            self.assertIn("name=opt/kutox/test-suite,string=disk-load", command)
             self.assertEqual(command[command.index("-cdrom") + 1], "build/kutox.iso")
             self.assertNotIn("module_path", command[command.index("-smbios") + 1])
             self.assertNotIn("-netdev", command)
-        self.assertNotIn("-smbios", qemu_command(args, "disk-demand-boot-module"))
+        module = qemu_command(args, "disk-demand-boot-module")
+        self.assertIn("module_string: kutox-rootfs", module[module.index("-smbios") + 1])
 
     def test_on_demand_boot_requires_bounded_reads_and_close_before_userspace(self):
         foundation = boot_log().split("BOOT_FS_OK")[0].splitlines()[2:]
-        foundation[2] = "BOOT_MODE mode=disk-demand-run source=fw_cfg"
+        foundation[2] = "BOOT_TEST suite=disk-load source=fw_cfg"
         fs = "BOOT_FS_OK source=moss-ext4plus format=ext2 image_bytes=2097152 path=/bin/init file_bytes=4744"
         demand = ("BOOT_DISK_DEMAND_OK driver=linux-virtio-blk image_bytes=2097152 "
                   "read_bytes=16384 requests=20 max_request=1024 buffer_bytes=512 module=absent")
@@ -143,7 +147,7 @@ class BootFilesystemTests(unittest.TestCase):
 
     def test_on_demand_admission_and_metadata_file_io_failures_balance_resources(self):
         foundation = boot_log().split("BOOT_FS_OK")[0].splitlines()[2:]
-        foundation[2] = "BOOT_MODE mode=disk-demand-run source=fw_cfg"
+        foundation[2] = "BOOT_TEST suite=disk-load source=fw_cfg"
         for case, error in DEMAND_FAILURES.items():
             evidence = "" if case.endswith(("-missing", "-module", "-unsupported")) else callbacks()
             if case.endswith("-unsupported"):
@@ -164,17 +168,18 @@ class BootFilesystemTests(unittest.TestCase):
         for case in ("disk-boot", "disk-boot-low-memory", "disk-boot-io-error"):
             command = qemu_command(args, case)
             self.assertEqual(command[command.index("-cdrom") + 1], "build/kutox.iso")
-            self.assertIn("name=opt/kutox/test-mode,string=disk-run", command)
+            self.assertIn("name=opt/kutox/test-suite,string=disk-snapshot", command)
             config = command[command.index("-smbios") + 1]
             self.assertIn("type=11,value=limine:config:", config)
             self.assertIn("kernel_path: odd(1:):/boot/kernel", config)
             self.assertNotIn("module_path", config)
             self.assertNotIn("-netdev", command)
-        self.assertNotIn("-smbios", qemu_command(args, "user-boot"))
+        ram = qemu_command(args, "user-boot")
+        self.assertIn("cmdline: root=ram init=/bin/init", ram[ram.index("-smbios") + 1])
 
     def test_disk_boot_requires_exact_disk_retirement_and_user_execution_order(self):
         foundation = boot_log().split("BOOT_FS_OK")[0].splitlines()[2:]
-        foundation[2] = "BOOT_MODE mode=disk-run source=fw_cfg"
+        foundation[2] = "BOOT_TEST suite=disk-snapshot source=fw_cfg"
         prefix = "\n".join(foundation) + "\n"
         fs = "BOOT_FS_OK source=moss-ext4plus format=ext2 image_bytes=2097152 path=/bin/init file_bytes=4744"
         proof = [READ, CLOSED, fs, "INIT: hello from /bin/init", SHUTDOWN, EXIT, "USER_BOOT_OK exit=0"]
@@ -203,7 +208,7 @@ class BootFilesystemTests(unittest.TestCase):
 
     def test_disk_boot_failures_require_balanced_teardown_and_no_success_fallback(self):
         foundation = boot_log().split("BOOT_FS_OK")[0].splitlines()[2:]
-        foundation[2] = "BOOT_MODE mode=disk-run source=fw_cfg"
+        foundation[2] = "BOOT_TEST suite=disk-snapshot source=fw_cfg"
         prefix = "\n".join(foundation) + "\n"
         for case, error in FAILURES.items():
             evidence = "" if case in ("disk-boot-missing", "disk-boot-module", "disk-boot-unsupported") else callbacks()
@@ -269,7 +274,7 @@ class BootFilesystemTests(unittest.TestCase):
     def test_user_boot_uses_shared_iso_without_a_hardware_disk_or_nic(self):
         for case in ("user-boot", "user-boot-low-memory"):
             command = qemu_command(SimpleNamespace(qemu="qemu", build_dir=Path("build")), case)
-            self.assertIn("name=opt/kutox/test-mode,string=user-run", command)
+            self.assertIn("cmdline: root=ram init=/bin/init", command[command.index("-smbios") + 1])
             self.assertEqual(command[command.index("-cdrom") + 1], "build/kutox.iso")
             self.assertNotIn("-netdev", command)
             self.assertNotIn("-drive", command)

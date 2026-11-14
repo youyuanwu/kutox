@@ -25,7 +25,7 @@ def callbacks():
 
 def journal():
     return (f"KUTOX_BOOT linux={REVISION}\n{FOUNDATION}"
-            "BOOT_MODE mode=storage-tests source=fw_cfg\nKTAP version 1\n1..2\n" +
+            "BOOT_TEST suite=storage-tests source=fw_cfg\nKTAP version 1\n1..2\n" +
             callbacks() +
             "# BLOCK_ERROR operation=read_range code=-22\n" +
             "# BLOCK_ERROR operation=transport_backpressure code=-11\n" * 3 +
@@ -35,6 +35,15 @@ def journal():
 
 
 class StorageAcceptanceTests(unittest.TestCase):
+    def test_raw_read_proof_requires_the_test_suite_namespace(self):
+        output = (f"KUTOX_BOOT linux={REVISION}\n{FOUNDATION}"
+                  "BOOT_TEST suite=storage-read source=fw_cfg\n"
+                  "STORAGE_SHUTDOWN_OK frames=balanced heap=balanced\n"
+                  "E1000_MAC_FAIL stage=storage_missing code=-19\n")
+        validate_storage("storage-missing", 3, output, SYMBOLS)
+        with self.assertRaises(AssertionError):
+            validate_storage("storage-missing", 3, output.replace("suite=storage-read", "suite=storage-run"), SYMBOLS)
+
     def test_exact_source_callbacks_reads_recovery_and_error_ledger_are_required(self):
         output = journal()
         validate_storage("storage-tests", 1, output, SYMBOLS)
@@ -53,7 +62,7 @@ class StorageAcceptanceTests(unittest.TestCase):
             output.replace("code=-5", "code=0"),
             output + "# BLOCK_ERROR operation=hidden code=-5\n",
             output + "# STORAGE_PROOF malformed\n",
-            output.replace("BOOT_MODE mode=storage-tests", "BOOT_MODE mode=run"),
+            output.replace("BOOT_TEST suite=storage-tests", "BOOT_TEST suite=run"),
             output.replace("# BLOCK_ERROR operation=read_range code=-22\n", "").replace(
                 IO, "# BLOCK_ERROR operation=read_range code=-22\n" + IO),
         ):
@@ -71,7 +80,8 @@ class StorageAcceptanceTests(unittest.TestCase):
             command = qemu_command(args, case)
             self.assertEqual(command[command.index("-cdrom") + 1], "build/kutox.iso")
             self.assertNotIn("-netdev", command)
-            self.assertIn(f"name=opt/kutox/test-mode,string={case.removesuffix('-low-memory')}", command)
+            suite = "storage-read" if case.startswith("storage-run") else case.removesuffix("-low-memory")
+            self.assertIn(f"name=opt/kutox/test-suite,string={suite}", command)
 
 
 if __name__ == "__main__":

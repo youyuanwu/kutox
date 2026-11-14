@@ -105,7 +105,7 @@ def validate_disk_boot(case, returncode, output, symbols):
         if raw and raw[0] == "limine: Loading executable `odd(1:):/boot/kernel`...":
             raw = raw[1:]
     lines = strip_limine_preamble(raw)
-    validate_boot_preamble(lines, "disk-demand-run" if demand else "disk-run")
+    validate_boot_preamble(lines, "disk-load" if demand else "disk-snapshot")
     validate_allocator(lines, 32 if case.endswith("low-memory") else 128)
     bindings = 0 if fixture in ("disk-boot-missing", "disk-boot-module", "disk-boot-unsupported") else 1
     validate_callbacks(lines, symbols, bindings)
@@ -150,7 +150,7 @@ def validate_disk_boot(case, returncode, output, symbols):
         if callbacks[-1] >= boundary:
             raise AssertionError("storage callback evidence follows disk retirement")
     if any(not line.startswith((
-        "KUTOX_BOOT ", "CPU_FOUNDATION_OK ", "BOOT_MODE ", "BOOT_MEMORY_OK ",
+        "KUTOX_BOOT ", "CPU_FOUNDATION_OK ", "BOOT_TEST ", "BOOT_MEMORY_OK ",
         "FRAME_ALLOCATOR_OK ", "HEAP_OK ", "TSC ", "# BLOCK_ERROR ", "# STORAGE_LINUX ",
         "BOOT_DISK_", "BOOT_FS_OK ", "# BOOT_FS_ERROR ", "INIT:", "BOOT_USER_EXIT ",
         "USER_BOOT_OK ", "E1000_MAC_FAIL ",

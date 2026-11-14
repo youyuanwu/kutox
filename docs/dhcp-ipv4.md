@@ -41,8 +41,8 @@ Opt into DHCP with:
 -fw_cfg name=opt/kutox/ipv4,string=dhcp
 ```
 
-No separate production boot mode is added. Normal `run`/absent mode and explicit
-`network-run` use the selected configuration. `driver-run` and probe modes
+No separate production boot mode is added. Default networking uses the
+selected configuration. The test-only `driver-only` and probe suites
 continue to ignore the IPv4 field. Duplicate, malformed, overlength, padded,
 uppercase or NUL-terminated values are rejected, not silently defaulted.
 

@@ -85,7 +85,7 @@ class GuestBuildTests(unittest.TestCase):
             validate_native_metadata(data, address, bounds, functions, False)
 
     def test_disabled_mode_rejects_before_initialization_and_never_falls_back(self):
-        output = f"KUTOX_BOOT linux={REVISION}\nE1000_MAC_FAIL stage=boot_mode code=-25\n"
+        output = f"KUTOX_BOOT linux={REVISION}\nE1000_MAC_FAIL stage=boot_test_suite code=-25\n"
         validate_result("guest-tests-disabled", 3, output)
         for changed in [
             output.replace("-25", "-23"), output + "E1000_MAC_OK mac=52:54:00:12:34:56\n",

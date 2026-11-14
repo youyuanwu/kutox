@@ -6,7 +6,7 @@ import struct
 import subprocess
 import network_packets as ip_packets
 from qemu_scenarios import *
-from qemu_scenarios import TEST_OPTIONS_FAILURES
+from qemu_scenarios import TEST_OPTIONS_FAILURES, BOOT_CONFIG_FAILURES, DISABLED_PROOFS, boot_banner
 from qemu_scenarios import UDP_CASES, DHCP_CASES, DHCP_LIVE_CASES, DNS_CASES, TCP_CASES, HTTP_CASES
 from qemu_protocols import *
 
@@ -390,9 +390,11 @@ def validate_pci_hierarchy(lines, case):
 
 
 def strip_limine_preamble(lines):
-    if lines and lines[0] == "limine: Loading executable `boot():/boot/kernel`...":
+    if lines and lines[0] in ("limine: Loading executable `boot():/boot/kernel`...",
+                            "limine: Loading executable `odd(1:):/boot/kernel`..."):
         lines = lines[1:]
-        if lines and lines[0] == "limine: Loading module `boot():/boot/rootfs.img`...":
+        if lines and lines[0] in ("limine: Loading module `boot():/boot/rootfs.img`...",
+                                "limine: Loading module `odd(1:):/boot/rootfs.img`..."):
             lines = lines[1:]
     return lines
 
@@ -402,8 +404,8 @@ def validate_boot_preamble(lines, mode, source="fw_cfg"):
         f"KUTOX_BOOT linux={REVISION}"
     ]:
         raise AssertionError("missing or duplicate pinned-source boot marker")
-    if [line for line in lines if line.startswith("BOOT_MODE")] != [
-        f"BOOT_MODE mode={mode} source={source}"
+    if [line for line in lines if line.startswith(("BOOT_TEST", "BOOT_CONFIG"))] != [
+        boot_banner(mode, source)
     ]:
         raise AssertionError("wrong guest test mode")
     if [line for line in lines if line.startswith("CPU_FOUNDATION")] != [
@@ -1133,25 +1135,48 @@ def validate_thread_guard(returncode, output):
 
 
 def validate_result(case, returncode, output):
+    if case in BOOT_CONFIG_FAILURES or case == "boot-legacy-selector":
+        expected = ("E1000_MAC_FAIL stage=boot_test_suite code=-38" if case == "boot-legacy-selector" else
+                    f"E1000_MAC_FAIL stage=boot_configuration code={BOOT_CONFIG_FAILURES[case][2]}")
+        if returncode != 3 or strip_limine_preamble(output.splitlines()) != [
+            f"KUTOX_BOOT linux={REVISION}",
+            "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled", expected,
+        ]:
+            raise AssertionError("invalid boot configuration did not fail before admission")
+        return
+    if case == "boot-init-missing":
+        lines = strip_limine_preamble(output.splitlines())
+        validate_boot_preamble(lines, "root=ram init=/bin/missing")
+        validate_allocator(lines, 128)
+        if returncode != 3 or lines[-3:] != [
+            "# BOOT_FS_ERROR error=Filesystem(NotFound)",
+            "BOOT_FILE_SHUTDOWN_OK frames=balanced heap=balanced",
+            "E1000_MAC_FAIL stage=boot_filesystem code=-406",
+        ] or any(line.startswith(("BOOT_FS_OK", "USER_BOOT", "INIT:", "FILE:")) for line in lines):
+            raise AssertionError("configured init was ignored or failed without reclamation")
+        return
     if case in ("user-boot", "user-boot-low-memory"):
         lines = strip_limine_preamble(output.splitlines())
-        validate_boot_preamble(lines, "user-run")
+        validate_boot_preamble(lines, "root=ram init=/bin/init")
         validate_allocator(lines, 32 if case.endswith("low-memory") else 128)
-        proofs = [line for line in lines if line.startswith(("BOOT_FS_", "INIT:", "BOOT_USER_", "USER_BOOT_"))]
-        if (returncode != 1 or len(proofs) != 4
+        proofs = [line for line in lines if line.startswith(("BOOT_FS_", "BOOT_FILE_", "BOOT_ROOT_", "INIT:", "BOOT_USER_", "USER_BOOT_"))]
+        if (returncode != 1 or len(proofs) != 7
                 or re.fullmatch(r"BOOT_FS_OK source=moss-ext4plus format=ext2 image_bytes=2097152 path=/bin/init file_bytes=([1-9]\d*)", proofs[0]) is None
                 or not 1 <= int(proofs[0].split("file_bytes=")[1]) <= 65536
                 or proofs[1:] != [
                     "INIT: hello from /bin/init",
+                    "BOOT_FILE_API_OK opens=0 reads=0 closes=0 errors=0 bytes=0 peak_files=0 closed_on_exit=0",
+                    "BOOT_ROOT_CLOSED root=ram files=retired irq=joined",
+                    "BOOT_FILE_SHUTDOWN_OK frames=balanced heap=balanced",
                     "BOOT_USER_EXIT status=0 calls=2 writes=1 bytes=27 frames=balanced heap=balanced",
                     "USER_BOOT_OK exit=0",
                 ] or lines[-1] != proofs[-1]):
             raise AssertionError("missing or malformed file-backed ELF execution/reclamation")
         if (len([line for line in lines if re.fullmatch(r"TSC ticks_per_us=[1-9]\d*", line)]) != 1
                 or any(not line.startswith((
-                    "KUTOX_BOOT ", "CPU_FOUNDATION_OK ", "BOOT_MODE ", "BOOT_MEMORY_OK ",
+                    "KUTOX_BOOT ", "CPU_FOUNDATION_OK ", "BOOT_CONFIG ", "BOOT_MEMORY_OK ",
                     "FRAME_ALLOCATOR_OK ", "HEAP_OK ", "TSC ", "BOOT_FS_OK ", "INIT:",
-                    "BOOT_USER_EXIT ", "USER_BOOT_OK ",
+                    "BOOT_FILE_", "BOOT_ROOT_", "BOOT_USER_EXIT ", "USER_BOOT_OK ",
                 )) for line in lines)):
             raise AssertionError("filesystem boot reached a failure, fixture or network runtime")
         return
@@ -1181,7 +1206,7 @@ def validate_result(case, returncode, output):
             raise AssertionError("rejected debug control reached allocation or admission")
         if case == "test-filter-dependencies":
             validate_boot_preamble(lines, "kernel-tests")
-        elif any(line.startswith("BOOT_MODE") for line in lines):
+        elif any(line.startswith(("BOOT_TEST", "BOOT_CONFIG", "BOOT_CONFIG")) for line in lines):
             raise AssertionError("feature-off debug control was admitted")
         return
     if case in LIVE_CASES:
@@ -1201,18 +1226,18 @@ def validate_result(case, returncode, output):
             raise AssertionError("network configuration did not fail explicitly before boot admission")
         if [line for line in lines if line.startswith("KUTOX_BOOT")] != [f"KUTOX_BOOT linux={REVISION}"]:
             raise AssertionError("configuration rejection lacks pinned boot provenance")
-        if any(line.startswith(("BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "# DRIVER_", "# KERNEL_SERVICES", "# NETWORK_STACK")) for line in lines):
+        if any(line.startswith(("BOOT_TEST", "BOOT_CONFIG", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "# DRIVER_", "# KERNEL_SERVICES", "# NETWORK_STACK")) for line in lines):
             raise AssertionError("invalid CIDR reached allocation or source admission")
         return
-    if case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled", "async-network-tests-disabled", "network-tests-disabled", "udp-tests-disabled", "dhcp-tests-disabled", "dns-tests-disabled", "tcp-tests-disabled", "http-tests-disabled", "async-hardening-tests-disabled", "storage-tests-disabled"):
+    if case in DISABLED_PROOFS or case in ("guest-tests-disabled", "driver-runtime-tests-disabled", "driver-network-tests-disabled", "driver-hardening-tests-disabled", "async-core-tests-disabled", "async-network-tests-disabled", "network-tests-disabled", "udp-tests-disabled", "dhcp-tests-disabled", "dns-tests-disabled", "tcp-tests-disabled", "http-tests-disabled", "async-hardening-tests-disabled", "storage-tests-disabled"):
         lines = output.splitlines()
-        expected = "E1000_MAC_FAIL stage=boot_mode code=-25"
+        expected = "E1000_MAC_FAIL stage=boot_test_suite code=-25"
         if returncode != 3 or not lines or lines[-1] != expected:
             raise AssertionError("feature-off kernel did not explicitly reject guest test mode")
         if [line for line in lines if line.startswith("KUTOX_BOOT")] != [f"KUTOX_BOOT linux={REVISION}"]:
             raise AssertionError("missing pinned-source feature-off boot marker")
         if [line for line in lines if line.startswith("E1000_")] != [expected] or any(
-            line.startswith(("BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "THREAD_", "Bail out!",
+            line.startswith(("BOOT_TEST", "BOOT_CONFIG", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "KTAP", "THREAD_", "Bail out!",
                              "# RUNTIME_", "# NATIVE_", "# LINUX_", "# ASYNC_", "# NET_IP_", "# NETWORK_STACK_", "# UDP_", "# DHCP_", "# DNS_", "# TCP_", "# HTTP_", "# USER_"))
             for line in lines
         ):
@@ -1267,7 +1292,7 @@ def validate_result(case, returncode, output):
     if case == "smp-unsupported":
         if results != ["E1000_MAC_FAIL stage=cpu_single_processor_required code=-1"]:
             raise AssertionError("unsupported SMP configuration was not rejected")
-        if any(line.startswith(("CPU_FOUNDATION", "BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "THREAD_", "E1000_MMIO")) for line in lines):
+        if any(line.startswith(("CPU_FOUNDATION", "BOOT_TEST", "BOOT_CONFIG", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "THREAD_", "E1000_MMIO")) for line in lines):
             raise AssertionError("unsupported SMP configuration reached initialization")
         return
     if [line for line in lines if line.startswith("CPU_FOUNDATION")] != [
@@ -1277,15 +1302,15 @@ def validate_result(case, returncode, output):
     if any(line.startswith(("CPU_EXCEPTION", "CPU_TEST_", "THREAD_", "KTAP", "HEAP_FAIL", "HEAP_OOM", "ok ", "not ok ", "# Totals", "DRIVER_", "# RUNTIME_", "# LINUX_CALLBACK")) for line in lines):
         raise AssertionError("unexpected exception or CPU test during MAC probe")
     if case == "invalid-mode":
-        if results != ["E1000_MAC_FAIL stage=boot_mode code=-23"]:
+        if results != ["E1000_MAC_FAIL stage=boot_test_suite code=-23"]:
             raise AssertionError("unknown runtime mode was not rejected explicitly")
-        if any(line.startswith(("BOOT_MODE", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "E1000_MMIO", "E1000_EEPROM")) for line in lines):
+        if any(line.startswith(("BOOT_TEST", "BOOT_CONFIG", "BOOT_MEMORY", "FRAME_ALLOCATOR", "HEAP_", "E1000_MMIO", "E1000_EEPROM")) for line in lines):
             raise AssertionError("invalid mode reached the probe or silently selected a default")
         return
     mode = "eeprom-timeout" if case == "eeprom-timeout" else "probe"
     source = "fw_cfg"
-    modes = [line for line in lines if line.startswith("BOOT_MODE")]
-    if modes != [f"BOOT_MODE mode={mode} source={source}"]:
+    modes = [line for line in lines if line.startswith(("BOOT_TEST", "BOOT_CONFIG", "BOOT_CONFIG"))]
+    if modes != [f"BOOT_TEST suite={mode} source={source}"]:
         raise AssertionError("unexpected runtime boot-mode selection")
     validate_allocator(lines, 32 if case == "low-memory" else 128)
     if mac:

@@ -11,7 +11,7 @@ def runtime_log():
     lines = [
         f"KUTOX_BOOT linux={REVISION}",
         "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled",
-        "BOOT_MODE mode=driver-runtime-tests source=fw_cfg",
+        "BOOT_TEST suite=driver-runtime-tests source=fw_cfg",
         "KTAP version 1", "1..5",
     ]
     for stage in range(1, 12):
@@ -55,7 +55,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertNotIn("-netdev", command)
             self.assertEqual(command[command.index("-cdrom") + 1], "build/kutox.iso")
             self.assertEqual(command[command.index("-fw_cfg") + 1],
-                             "name=opt/kutox/test-mode,string=driver-runtime-tests")
+                             "name=opt/kutox/test-suite,string=driver-runtime-tests")
             self.assertEqual(command[command.index("-m") + 1], "32M" if case.endswith("low-memory") else "128M")
 
     def test_both_ram_profiles_require_exact_common_runtime_tests(self):
@@ -63,7 +63,7 @@ class RuntimeTests(unittest.TestCase):
             validate_result(case, 1, runtime_log())
 
     def test_runtime_mode_is_omitted_and_rejected_by_feature_off_kernel(self):
-        output = f"KUTOX_BOOT linux={REVISION}\nE1000_MAC_FAIL stage=boot_mode code=-25\n"
+        output = f"KUTOX_BOOT linux={REVISION}\nE1000_MAC_FAIL stage=boot_test_suite code=-25\n"
         validate_result("driver-runtime-tests-disabled", 3, output)
         with self.assertRaises(AssertionError):
             validate_result("driver-runtime-tests-disabled", 3, output.replace("-25", "-23"))

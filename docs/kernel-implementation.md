@@ -199,7 +199,15 @@ or a process scheduler. Execution uses the bounded runner below.
 
 ## Read-only boot filesystem
 
-The explicit `user-run` mode follows pinned Moss's
+Production boot is configured by the Limine kernel command line:
+`root=ram|disk init=/bin/init`. `init` defaults to `/bin/init`; omitting both
+settings preserves default networking. Root and init are independent of the
+guest suite selected through `opt/kutox/test-suite`. Unknown/duplicate command
+line options, invalid roots/paths, init without a root, mixed root/test selection
+and the removed `opt/kutox/test-mode` interface fail explicitly before admission.
+Both root sources use the same filesystem/ELF/file-syscall dispatcher.
+
+`root=ram` follows pinned Moss's
 `src/main.rs::launch_init`: bootloader-supplied filesystem image, RAM-backed
 reader, filesystem lookup, then ELF loading and user entry. Its read-only
 [filesystem adaptation](../third_party/moss-libkernel/src/fs.rs) follows Moss's
@@ -238,7 +246,8 @@ The adapter exposes only immutable byte reads with checked conversion/addition
 and whole-range validation before copying. It supplies no `Ext4Write` backend.
 Unlike Moss's async filesystem adapter, these snapshot and RAM-module boot paths enable
 ext4plus's `sync` feature, disables its default multithreaded feature, and runs
-before kernel workers/CPL3. It needs no new executor, waker or scheduler.
+while the kernel owns control, including after file requests leave CPL3.
+It needs no new executor, waker or scheduler.
 The primitive Moss crate remains dependency-free without its optional `fs`
 feature; the kernel and filesystem host checks enable that feature explicitly.
 
@@ -248,13 +257,15 @@ directory sizes are bounded before iteration and regular-file size before open.
 Only nonempty regular files up to 64 KiB are loaded; fallible allocation and
 chunked reads retain short-I/O handling. Lookup, format, range, size and upstream
 filesystem errors are explicit, with upstream diagnostic detail logged.
-The [native boot service](../src/boot/fs.rs) reads the fixed `/bin/init` path,
-passes those bytes to the existing checked x86_64 static ELF loader, then drops
-the temporary file/filesystem before entry. All existing ELF/window/W^X/stack
+The [native boot service](../src/boot/fs.rs) reads the configured init path,
+passes those bytes to the existing checked x86_64 static ELF loader, drops
+the temporary ELF bytes and retains the mounted filesystem through task exit.
+All existing ELF/window/W^X/stack
 restrictions remain; this does not add Linux binary compatibility.
 
 The owned dispatcher gets a 100-ms cumulative active CPU budget and 5-ms
-quanta, with at most 128 dispatch steps. Input starts closed, so reads see EOF;
+quanta, with at most 128 dispatch steps. Descriptor-zero input starts closed,
+so input-channel reads see EOF;
 sleeping tasks use the existing timer/HLT deadline path. Faults, budget limits
 and missing wake sources fail explicitly. The sample writes its message and
 exits zero; the mode requires exact frame/heap reclamation before reporting
@@ -268,21 +279,21 @@ file using `debugfs`, and reject malformed/duplicate/reordered execution
 proofs. Portable tests mount a real generated ext2 image, verify cross-block
 file bytes, reject missing/directories/symlinks/empty/oversized files and bad paths,
 and exercise truncated/unsupported geometry and out-of-range RAM reads.
-The filesystem modes add no kernel cases. Partitions, writes,
-general VFS/file syscalls, dynamic ELF loading and init supervision are deferred.
+Both production roots attach the bounded file service described below.
+Partitions, writes, a general VFS, dynamic ELF loading and init supervision remain deferred.
 
 ## Read-only disk rootfs boot
 
-Explicit `disk-run` uses the existing owned Linux VirtIO disk scope to read one
+The test-only `disk-snapshot` suite uses the existing owned Linux VirtIO disk scope to read one
 exact 2-MiB volume (4096 sectors), with one retained request at a time.
-[The boot service](../src/boot/fs.rs) fallibly allocates a full-image snapshot
+[The guest proof](../src/guest_tests/boot_fs.rs) fallibly allocates a full-image snapshot
 and fills it in 4-KiB reads. The 100-ms deadline, IRQ completion, request
 ownership and reset/error behavior are those of the existing native disk API;
 no new descriptor algorithm or raw lifetime bridge is introduced.
 
 The disk session, DMA backing, IRQ and platform parents close before mounting
 the snapshot. Then the same ext2 admission, `/bin/init` lookup, ELF loader and
-bounded user dispatcher used by `user-run` execute the file. The filesystem,
+bounded user dispatcher executes the file. The filesystem,
 snapshot and temporary file are dropped before entering CPL3. All temporary
 frames and heap allocations must balance on both success and ordinary errors.
 This deliberately costs a temporary 2 MiB instead of adding a long-lived
@@ -299,15 +310,17 @@ that its bytes never change.
 
 `disk-boot` and `disk-boot-low-memory` prove original Linux callback identities,
 disk read/close before filesystem loading, actual `/bin/init` output/exit and
-balanced teardown in ON and OFF. Negative boots cover absent/unsupported
+balanced teardown in ON. Negative boots cover absent/unsupported
 devices, wrong capacity, malformed ext2/ELF, a real EIO at sector 64 and
 unexpected rootfs modules. Exact proofs and error ledgers are checked by
 [disk_boot_acceptance.py](../scripts/disk_boot_acceptance.py).
-Normal networking, RAM-rootfs boot and raw `storage-run` remain unchanged.
+This historical proof is not a production boot option. OFF builds omit its
+code and reject the suite. Production disk roots read on demand and retain the
+filesystem through task execution; default networking is unchanged.
 
 ## On-demand read-only disk boot
 
-Explicit `disk-demand-run` retains the same exact 2-MiB ext2 admission and
+The test-only `disk-load` suite retains the same exact 2-MiB ext2 admission and
 `/bin/init`/ELF bounds, but does not allocate or copy a full disk image.
 [The sector reader](../third_party/moss-libkernel/src/fs/disk.rs) validates the
 whole byte range before I/O, handles unaligned reads with a 512-byte scratch
@@ -331,18 +344,21 @@ must balance on success and ordinary errors. Native I/O errors retain their
 original stage/code rather than becoming a generic mount failure.
 
 `disk-demand-boot*` acceptance uses the same ISO/module-free configuration and
-temporary read-only disks in ON and OFF. It covers 128/32-MiB success, the same
+temporary read-only disks in ON. It covers 128/32-MiB success, the same
 admission failures as snapshot boot, real EIO during superblock and init-data
 reads, and successful boot with an EIO trap on the unused final disk sector.
-RAM `user-run`, snapshot `disk-run` and networking remain available.
+This close-before-CPL3 proof is omitted in OFF builds and is not a production
+loader choice. Both production roots instead retain their filesystem through
+task completion. Default networking remains unchanged.
 This is on-demand boot loading, not a persistent mounted root: writes,
 partitions, a general VFS and post-boot file I/O remain deferred.
-For task-bound file I/O, see [the separate file mode](#bounded-moss-derived-file-syscalls).
+For production root/file I/O, see [the shared file service](#bounded-moss-derived-file-syscalls).
 
 ## Bounded Moss-derived file syscalls
 
-Explicit `file-run` keeps one read-only disk filesystem mounted while its
-`/bin/init` task runs. The
+`root=ram|disk` keeps one read-only filesystem mounted while the configured
+init task runs. `root=disk` uses unchanged Linux VirtIO; RAM roots use the
+immutable Limine module. There is no separate file-access boot mode. The
 [inode/file/descriptor adaptation](../third_party/moss-libkernel/src/fs/files.rs)
 follows pinned Moss's `Ext4Inode::read_at`, `OpenFile`/`FileCtx`, `FileOps::read`
 and descriptor-table insertion/removal. Inodes expose stateless offset reads;
@@ -399,8 +415,8 @@ Successful execution emits file read/API counts after init output, then closes
 all filesystem/disk/timer/IRQ ownership and reports exact frame/heap balance
 before final user exit. Ordinary failures also require balanced teardown.
 This is a mounted root for one bounded task, not an indefinitely persistent root
-or simultaneous storage/network runtime. Existing `user-run`, `disk-run`,
-`disk-demand-run` and default networking remain unchanged.
+or simultaneous storage/network runtime. Default networking remains unchanged;
+historical snapshot/MAC/raw-read proofs now use the test-only suite entry.
 
 ## Bounded block services
 
@@ -577,7 +593,7 @@ mastering, and release mappings and frame guards. A reset that never
 acknowledges fails closed with a diagnostic after its own 100-ms budget;
 it never reports recovery or frees potentially live DMA backing.
 
-Explicit `storage-run` in both profiles reads sector zero and reports its
+The test-only `storage-read` suite in ON reads sector zero and reports its
 FNV-1a checksum, then verifies complete frame/heap reclamation. Guest-only
 `storage-tests` checks exact first/interior/final-sector data, 4096-byte reads,
 range rejection, all three streaming-map rollback points, real IRQ delivery,

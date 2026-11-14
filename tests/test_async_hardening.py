@@ -24,7 +24,7 @@ def fixture(case="async-hardening-tests"):
     lines = [
         f"KUTOX_BOOT linux={q.REVISION}",
         "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled",
-        "BOOT_MODE mode=async-hardening-tests source=fw_cfg",
+        "BOOT_TEST suite=async-hardening-tests source=fw_cfg",
         "KTAP version 1", "1..5",
     ]
     matrix = [(0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (10, 0), (6, 0), (7, 0), (8, 0), (9, 0)]
@@ -145,7 +145,7 @@ class AsyncHardeningTests(unittest.TestCase):
         args = SimpleNamespace(qemu="qemu-system-x86_64", build_dir=Path("build"))
         for case in q.ASYNC_HARD_CASES:
             command = q.qemu_command(args, case, net_fd=7)
-            self.assertIn("name=opt/kutox/test-mode,string=async-hardening-tests", command)
+            self.assertIn("name=opt/kutox/test-suite,string=async-hardening-tests", command)
             self.assertIn("socket,id=irqtest,fd=7", command)
             self.assertEqual(command[command.index("-cdrom") + 1], "build/kutox.iso")
-        q.validate_result("async-hardening-tests-disabled", 3, f"KUTOX_BOOT linux={q.REVISION}\nE1000_MAC_FAIL stage=boot_mode code=-25\n")
+        q.validate_result("async-hardening-tests-disabled", 3, f"KUTOX_BOOT linux={q.REVISION}\nE1000_MAC_FAIL stage=boot_test_suite code=-25\n")

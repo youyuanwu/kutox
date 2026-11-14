@@ -1,3 +1,4 @@
+pub mod config;
 pub mod fw_cfg;
 
 #[cfg(target_os = "none")]

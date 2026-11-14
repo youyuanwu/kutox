@@ -10,7 +10,7 @@ def oom_log():
     return (
         f"KUTOX_BOOT linux={REVISION}\n"
         "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled\n"
-        "BOOT_MODE mode=heap-oom source=fw_cfg\n"
+        "BOOT_TEST suite=heap-oom source=fw_cfg\n"
         "HEAP_OOM_BEGIN size=8388608 align=1\n"
         "E1000_MAC_FAIL stage=panic code=-1 detail=panicked at alloc.rs:1:1:\n"
         "memory allocation of 8388608 bytes failed\n"

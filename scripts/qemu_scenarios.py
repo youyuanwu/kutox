@@ -197,18 +197,18 @@ UNCLAIMED_CASES = {"driver-runtime-unsupported", "driver-runtime-unsupported-low
 
 
 LIVE_CASES = {
-    **{case: ("network-run", True) for case in DHCP_LIVE_CASES},
+    **{case: (None, True) for case in DHCP_LIVE_CASES},
     "driver-runtime-default": (None, True),
     "default-mode": (None, True),
-    "driver-runtime-run": ("run", True),
-    "driver-runtime-driver-run": ("driver-run", True),
-    "driver-runtime-driver-only": ("driver-run", True),
+    "driver-runtime-run": (None, True),
+    "driver-runtime-driver-run": ("driver-only", True),
+    "driver-runtime-driver-only": ("driver-only", True),
     "driver-runtime-default-no-nic": (None, False),
     "driver-runtime-default-unsupported": (None, False),
-    "network-run": ("network-run", True),
-    "network-run-low-memory": ("network-run", True),
-    "network-run-no-nic": ("network-run", False),
-    "network-run-unsupported": ("network-run", False),
+    "network-run": (None, True),
+    "network-run-low-memory": (None, True),
+    "network-run-no-nic": (None, False),
+    "network-run-unsupported": (None, False),
     "network-default": (None, True),
     "network-default-low-memory": (None, True),
     "network-default-no-nic": (None, False),
@@ -218,13 +218,24 @@ LIVE_CASES = {
 
 CONFIG_FAILURES = {
     "network-invalid-default": (None, "10.0.2.0/24", -28),
-    "network-invalid-run": ("run", "x" * 33, -27),
-    "network-invalid-explicit": ("network-run", "127.0.0.1/8", -28),
+    "network-invalid-run": (None, "x" * 33, -27),
+    "network-invalid-explicit": (None, "127.0.0.1/8", -28),
+}
+BOOT_CONFIG_FAILURES = {
+    "boot-config-root": ("root=other", None, -33),
+    "boot-config-init": ("root=ram init=relative", None, -34),
+    "boot-config-init-without-root": ("init=/bin/init", None, -35),
+    "boot-config-mixed": ("root=ram", "probe", -37),
+}
+DISABLED_PROOFS = {
+    "disk-snapshot-disabled": "disk-snapshot", "disk-load-disabled": "disk-load",
+    "storage-read-disabled": "storage-read", "probe-disabled": "probe",
+    "driver-only-disabled": "driver-only",
 }
 
 
 def live_network(case):
-    return LIVE_CASES[case][0] != "driver-run"
+    return LIVE_CASES[case][0] != "driver-only"
 
 
 HARDENING_CASES = {
@@ -255,20 +266,20 @@ CASES = {
     "ambiguous": (None, "ambiguous_device"),
     "eeprom-timeout": (None, "read_eeprom"),
     "low-memory": ("52:54:00:12:34:56", None),
-    "invalid-mode": (None, "boot_mode"),
-    "guest-tests-disabled": (None, "boot_mode"),
-    "driver-runtime-tests-disabled": (None, "boot_mode"),
-    "driver-network-tests-disabled": (None, "boot_mode"),
-    "driver-hardening-tests-disabled": (None, "boot_mode"),
-    "async-core-tests-disabled": (None, "boot_mode"),
-    "async-network-tests-disabled": (None, "boot_mode"),
-    "network-tests-disabled": (None, "boot_mode"),
-    "udp-tests-disabled": (None, "boot_mode"),
-    "dhcp-tests-disabled": (None, "boot_mode"),
-    "dns-tests-disabled": (None, "boot_mode"),
-    "tcp-tests-disabled": (None, "boot_mode"),
-    "http-tests-disabled": (None, "boot_mode"),
-    "async-hardening-tests-disabled": (None, "boot_mode"),
+    "invalid-mode": (None, "boot_test_suite"),
+    "guest-tests-disabled": (None, "boot_test_suite"),
+    "driver-runtime-tests-disabled": (None, "boot_test_suite"),
+    "driver-network-tests-disabled": (None, "boot_test_suite"),
+    "driver-hardening-tests-disabled": (None, "boot_test_suite"),
+    "async-core-tests-disabled": (None, "boot_test_suite"),
+    "async-network-tests-disabled": (None, "boot_test_suite"),
+    "network-tests-disabled": (None, "boot_test_suite"),
+    "udp-tests-disabled": (None, "boot_test_suite"),
+    "dhcp-tests-disabled": (None, "boot_test_suite"),
+    "dns-tests-disabled": (None, "boot_test_suite"),
+    "tcp-tests-disabled": (None, "boot_test_suite"),
+    "http-tests-disabled": (None, "boot_test_suite"),
+    "async-hardening-tests-disabled": (None, "boot_test_suite"),
     "network-default-ambiguous": (None, "runtime_e1000_inventory"),
     **{case: (None, "boot_ipv4") for case in CONFIG_FAILURES},
     **{case: (None, None) for case in FAULT_RESULTS},
@@ -295,7 +306,7 @@ CASES = {
     **{case: (None, None) for case in DISK_BOOT_CASES},
     **{case: (None, None) for case in DISK_DEMAND_CASES},
     **{case: (None, None) for case in FILE_BOOT_CASES},
-    "storage-tests-disabled": (None, "boot_mode"),
+    "storage-tests-disabled": (None, "boot_test_suite"),
 }
 
 
@@ -355,6 +366,14 @@ RX_TAILS = (255, 0, 1, 2, None, 4, 5, 6)
 NETWORK_LENGTHS = (14, 42, 60, 252, 253, 1514)
 
 
+def boot_banner(selection, source="fw_cfg"):
+    if selection == "run":
+        return f"BOOT_CONFIG root=none init=none source={source}"
+    if selection.startswith("root="):
+        return f"BOOT_CONFIG {selection} source=cmdline"
+    return f"BOOT_TEST suite={selection} source={source}"
+
+
 def qemu_command(args, case, capture=None, net_fd=None):
     scenario = SCENARIOS[case]
     debugging = getattr(args, "list_tests", False) or getattr(args, "filter", None)
@@ -367,9 +386,12 @@ def qemu_command(args, case, capture=None, net_fd=None):
         "-cdrom", str(args.build_dir / "kutox.iso"), "-nic", "none",
         "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
     ]
-    if case in DISK_BOOT_CASES | DISK_DEMAND_CASES | FILE_BOOT_CASES and not case.endswith("-module"):
+    if scenario.command_line or case in DISK_BOOT_CASES | DISK_DEMAND_CASES:
         config = ("limine:config:timeout: 0\nserial: yes\n\n/kutox disk boot\n"
-                  "    protocol: limine\n    kernel_path: odd(1:):/boot/kernel\n    cmdline:\n")
+                  "    protocol: limine\n    kernel_path: odd(1:):/boot/kernel\n"
+                  f"    cmdline: {scenario.command_line}\n")
+        if scenario.command_line.startswith("root=ram") or case.endswith("-module"):
+            config += "    module_path: odd(1:):/boot/rootfs.img\n    module_string: kutox-rootfs\n"
         command += ["-smbios", f"type=11,value={config}"]
     if case == "network-default-ambiguous":
         command += [
@@ -382,10 +404,12 @@ def qemu_command(args, case, capture=None, net_fd=None):
     if case in CONFIG_FAILURES:
         mode, cidr, _ = CONFIG_FAILURES[case]
         if mode is not None:
-            command += ["-fw_cfg", f"name=opt/kutox/test-mode,string={mode}"]
+            command += ["-fw_cfg", f"name=opt/kutox/test-suite,string={mode}"]
         command += ["-fw_cfg", f"name=opt/kutox/ipv4,string={cidr}"]
-    elif scenario.mode is not None:
-        command += ["-fw_cfg", f"name=opt/kutox/test-mode,string={scenario.mode}"]
+    elif scenario.suite is not None:
+        command += ["-fw_cfg", f"name=opt/kutox/test-suite,string={scenario.suite}"]
+    if case == "boot-legacy-selector":
+        command += ["-fw_cfg", "name=opt/kutox/test-mode,string=run"]
     if case in DHCP_CASES | DHCP_LIVE_CASES | DNS_CASES | TCP_CASES | HTTP_CASES:
         command += ["-fw_cfg", "name=opt/kutox/ipv4,string=dhcp"]
     if scenario.transport == "user":
@@ -435,7 +459,8 @@ def qemu_command(args, case, capture=None, net_fd=None):
 
 @dataclass(frozen=True)
 class Scenario:
-    mode: str | None
+    suite: str | None
+    command_line: str
     ram_mib: int
     nic: str | None
     transport: str | None
@@ -444,13 +469,16 @@ class Scenario:
 
 
 def _scenario(case):
-    mode = {
-        "user-boot": "user-run", "user-boot-low-memory": "user-run",
-        **{name: "disk-run" for name in DISK_BOOT_CASES},
-        **{name: "disk-demand-run" for name in DISK_DEMAND_CASES},
-        **{name: "file-run" for name in FILE_BOOT_CASES},
+    root = "ram" if case in ("user-boot", "user-boot-low-memory", "boot-init-missing") else "disk" if case in FILE_BOOT_CASES else None
+    suite = {
+        "user-boot": None, "user-boot-low-memory": None, "boot-init-missing": None,
+        "boot-legacy-selector": None,
+        **{name: "disk-snapshot" for name in DISK_BOOT_CASES},
+        **{name: "disk-load" for name in DISK_DEMAND_CASES},
+        **{name: None for name in FILE_BOOT_CASES},
         **{name: name.removesuffix("-low-memory") for name in STORAGE_CASES},
-        "storage-missing": "storage-run", "storage-unsupported": "storage-run",
+        "storage-run": "storage-read", "storage-run-low-memory": "storage-read",
+        "storage-missing": "storage-read", "storage-unsupported": "storage-read",
         **KERNEL_SUITE_CASES, **RUNTIME_SUITE_CASES, **NETWORK_SUITE_CASES,
         **RUNTIME_NETWORK_CASES, **HARDENING_CASES, **ASYNC_CORE_CASES,
         **ASYNC_NETWORK_CASES, **IP_SUITE_CASES, **ASYNC_HARD_CASES,
@@ -467,6 +495,8 @@ def _scenario(case):
         **{name: value[0] for name, value in TEST_OPTIONS_FAILURES.items()},
         **{name: "driver-runtime-tests" for name in UNCLAIMED_CASES},
         **{name: value[0] for name, value in LIVE_CASES.items()},
+        **DISABLED_PROOFS,
+        **{name: value[1] for name, value in BOOT_CONFIG_FAILURES.items()},
     }.get(case, "probe")
     protocol = next((kind for cases, kind in (
         (HTTP_CASES, "http"), (TCP_CASES, "tcp"), (DNS_CASES, "dns"), (DHCP_CASES, "dhcp"), (UDP_CASES, "udp"), (ASYNC_HARD_CASES, "async-hardening"), (IP_SUITE_CASES, "ip"),
@@ -481,18 +511,25 @@ def _scenario(case):
         CONFIG_FAILURES | FAULT_RESULTS | RUNTIME_SUITE_CASES | ASYNC_CORE_CASES
     ) and case not in LIVE_CASES:
         transport = "user"
-    if case in STORAGE_CASES | DISK_BOOT_CASES | DISK_DEMAND_CASES | FILE_BOOT_CASES:
+    if root or case in STORAGE_CASES | DISK_BOOT_CASES | DISK_DEMAND_CASES | FILE_BOOT_CASES | set(BOOT_CONFIG_FAILURES) or case == "boot-legacy-selector":
         transport = None
     nic = ("e1000e" if case == "unsupported" or case in UNCLAIMED_CASES or case.endswith("unsupported") else "e1000") if transport else None
     capture = protocol is not None or case in LIVE_CASES and live_network(case) and LIVE_CASES[case][1]
-    return Scenario(mode, 32 if case.endswith("low-memory") else 128, nic, transport, protocol, capture)
+    command_line = (BOOT_CONFIG_FAILURES[case][0] if case in BOOT_CONFIG_FAILURES else
+                    "root=ram init=/bin/missing" if case == "boot-init-missing" else
+                    f"root={root} init=/bin/init" if root else "")
+    return Scenario(suite, command_line,
+                    32 if case.endswith("low-memory") else 128, nic, transport, protocol, capture)
 
 
 TEST_OPTIONS_FAILURES = {
     "test-filter-dependencies": ("kernel-tests", "filter=linux.*", "Bail out! test_filter_dependencies"),
-    "test-options-disabled": ("run", "list", "E1000_MAC_FAIL stage=boot_test_options code=-25"),
+    "test-options-disabled": (None, "list", "E1000_MAC_FAIL stage=boot_test_options code=-25"),
 }
 CASES.update({case: (None, None) for case in TEST_OPTIONS_FAILURES})
+CASES.update({case: (None, None) for case in BOOT_CONFIG_FAILURES})
+CASES.update({case: (None, None) for case in DISABLED_PROOFS})
+CASES.update({"boot-init-missing": (None, None), "boot-legacy-selector": (None, None)})
 SCENARIOS = {case: _scenario(case) for case in CASES}
 
 __all__ = ['ROOT', 'REVISION', 'MOSS_REVISION', 'HEAP_RESULT', 'KERNEL_TEST_NAMES', 'KERNEL_SUITE_CASES', 'RUNTIME_SUITE_CASES', 'RUNTIME_TEST_NAMES', 'ASYNC_CORE_CASES', 'ASYNC_CORE_NAMES', 'ASYNC_NETWORK_CASES', 'ASYNC_NETWORK_NAMES', 'IP_SUITE_CASES', 'IP_TEST_NAMES', 'ASYNC_HARD_CASES', 'ASYNC_HARD_NAMES', 'NETWORK_SUITE_CASES', 'RUNTIME_NETWORK_CASES', 'UNCLAIMED_CASES', 'LIVE_CASES', 'CONFIG_FAILURES', 'live_network', 'HARDENING_CASES', 'HARDENING_NAMES', 'FAULT_RESULTS', 'CASES', 'pci_layout', 'DRIVER_WORK_CALLBACKS', 'DRIVER_CALLBACK_NAMES', 'LINUX_TX_LENGTHS', 'RX_LENGTHS', 'RX_BUFFER_SIZE', 'RX_FRAGMENT_SIZE', 'RX_ACTIONS', 'RX_RESIDENT', 'RX_MAPS', 'RX_TAILS', 'NETWORK_LENGTHS', 'qemu_command']

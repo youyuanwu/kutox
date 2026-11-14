@@ -1,22 +1,19 @@
-//! Bounded boot-mode discovery through QEMU's read-only fw_cfg interface.
+//! Bounded guest-suite discovery through QEMU's read-only fw_cfg interface.
 //! The caller supplies register access so parsing can also run in host tests.
 
 const FILE_DIRECTORY: u16 = 0x19;
 const MAX_FILES: u32 = 1024;
-const MAX_MODE_BYTES: usize = 32;
-const MODE_FILE: &[u8] = b"opt/kutox/test-mode";
+const MAX_SUITE_BYTES: usize = 32;
+const SUITE_FILE: &[u8] = b"opt/kutox/test-suite";
 const IPV4_FILE: &[u8] = b"opt/kutox/ipv4";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BootMode {
-    Run,
-    DriverRun,
-    NetworkRun,
-    UserRun,
-    DiskRun,
-    DiskDemandRun,
-    FileRun,
-    StorageRun,
+pub enum TestSuite {
+    None,
+    DriverOnly,
+    DiskSnapshot,
+    DiskLoad,
+    StorageRead,
     StorageTests,
     Probe,
     EepromTimeout,
@@ -42,41 +39,33 @@ pub enum BootMode {
     ThreadStackGuard,
 }
 
-impl BootMode {
-    pub const fn is_network_runtime(self) -> bool {
-        matches!(self, Self::Run | Self::NetworkRun)
-    }
-
+impl TestSuite {
     pub const fn uses_ipv4(self) -> bool {
-        self.is_network_runtime()
-            || matches!(
-                self,
-                Self::NetworkTests
-                    | Self::UdpTests
-                    | Self::DhcpTests
-                    | Self::DnsTests
-                    | Self::TcpTests
-                    | Self::HttpTests
-            )
+        matches!(
+            self,
+            Self::NetworkTests
+                | Self::UdpTests
+                | Self::DhcpTests
+                | Self::DnsTests
+                | Self::TcpTests
+                | Self::HttpTests
+        )
     }
 
     pub const fn selected(configured: Option<Self>) -> Self {
         match configured {
             Some(mode) => mode,
-            None => Self::Run,
+            None => Self::None,
         }
     }
 
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Run => "run",
-            Self::DriverRun => "driver-run",
-            Self::NetworkRun => "network-run",
-            Self::UserRun => "user-run",
-            Self::DiskRun => "disk-run",
-            Self::DiskDemandRun => "disk-demand-run",
-            Self::FileRun => "file-run",
-            Self::StorageRun => "storage-run",
+            Self::None => "none",
+            Self::DriverOnly => "driver-only",
+            Self::DiskSnapshot => "disk-snapshot",
+            Self::DiskLoad => "disk-load",
+            Self::StorageRead => "storage-read",
             Self::StorageTests => "storage-tests",
             Self::Probe => "probe",
             Self::EepromTimeout => "eeprom-timeout",
@@ -114,38 +103,14 @@ impl BootMode {
     }
 
     pub fn validate_build(self) -> Result<(), Error> {
-        if self.is_guest_test() && !cfg!(feature = "guest-tests") {
+        if self.is_selected() && !cfg!(feature = "guest-tests") {
             return Err(Error::TestsDisabled);
         }
         Ok(())
     }
 
-    pub const fn is_guest_test(self) -> bool {
-        matches!(
-            self,
-            Self::EepromTimeout
-                | Self::PageFault
-                | Self::GeneralProtection
-                | Self::DoubleFault
-                | Self::UnexpectedPageFault
-                | Self::KernelTests
-                | Self::KernelTestsFail
-                | Self::DriverRuntimeTests
-                | Self::DriverNetworkTests
-                | Self::DriverHardeningTests
-                | Self::AsyncCoreTests
-                | Self::AsyncNetworkTests
-                | Self::NetworkTests
-                | Self::UdpTests
-                | Self::DhcpTests
-                | Self::DnsTests
-                | Self::TcpTests
-                | Self::HttpTests
-                | Self::AsyncHardeningTests
-                | Self::StorageTests
-                | Self::HeapOom
-                | Self::ThreadStackGuard
-        )
+    pub const fn is_selected(self) -> bool {
+        !matches!(self, Self::None)
     }
 }
 
@@ -154,16 +119,17 @@ impl BootMode {
 pub enum Error {
     DirectoryTooLarge = -20,
     MalformedDirectory = -21,
-    InvalidModeLength = -22,
-    UnknownMode = -23,
-    DuplicateModeFile = -24,
+    InvalidSuiteLength = -22,
+    UnknownSuite = -23,
+    DuplicateSuiteFile = -24,
     TestsDisabled = -25,
     DuplicateIpv4File = -26,
     InvalidIpv4Length = -27,
     InvalidIpv4 = -28,
     DuplicateTestOptions = -29,
     InvalidTestOptions = -30,
-    TestOptionsMode = -31,
+    TestOptionsSuite = -31,
+    LegacySelector = -38,
 }
 
 fn read_bytes<const N: usize>(read: &mut impl FnMut() -> u8) -> [u8; N] {
@@ -175,54 +141,61 @@ fn read_bytes<const N: usize>(read: &mut impl FnMut() -> u8) -> [u8; N] {
 /// The caller must serialize selector/data access for the entire operation.
 /// Selectors use the I/O interface's native little-endian writes, while
 /// directory fields are explicitly decoded as big-endian.
-pub fn read_mode(
+pub fn read_test_suite(
     mut select: impl FnMut(u16),
     mut read: impl FnMut() -> u8,
-) -> Result<Option<BootMode>, Error> {
-    let Some((bytes, size)) = read_file::<MAX_MODE_BYTES>(
+) -> Result<Option<TestSuite>, Error> {
+    if read_file::<MAX_SUITE_BYTES>(
         &mut select,
         &mut read,
-        MODE_FILE,
-        Error::DuplicateModeFile,
-        Error::InvalidModeLength,
+        b"opt/kutox/test-mode",
+        Error::DuplicateSuiteFile,
+        Error::InvalidSuiteLength,
+    )?
+    .is_some()
+    {
+        return Err(Error::LegacySelector);
+    }
+    let Some((bytes, size)) = read_file::<MAX_SUITE_BYTES>(
+        &mut select,
+        &mut read,
+        SUITE_FILE,
+        Error::DuplicateSuiteFile,
+        Error::InvalidSuiteLength,
     )?
     else {
         return Ok(None);
     };
     let value = bytes[..size].strip_suffix(&[0]).unwrap_or(&bytes[..size]);
     match value {
-        b"run" => Ok(Some(BootMode::Run)),
-        b"driver-run" => Ok(Some(BootMode::DriverRun)),
-        b"network-run" => Ok(Some(BootMode::NetworkRun)),
-        b"user-run" => Ok(Some(BootMode::UserRun)),
-        b"disk-run" => Ok(Some(BootMode::DiskRun)),
-        b"disk-demand-run" => Ok(Some(BootMode::DiskDemandRun)),
-        b"file-run" => Ok(Some(BootMode::FileRun)),
-        b"storage-run" => Ok(Some(BootMode::StorageRun)),
-        b"storage-tests" => Ok(Some(BootMode::StorageTests)),
-        b"probe" => Ok(Some(BootMode::Probe)),
-        b"eeprom-timeout" => Ok(Some(BootMode::EepromTimeout)),
-        b"page-fault" => Ok(Some(BootMode::PageFault)),
-        b"general-protection" => Ok(Some(BootMode::GeneralProtection)),
-        b"double-fault" => Ok(Some(BootMode::DoubleFault)),
-        b"unexpected-page-fault" => Ok(Some(BootMode::UnexpectedPageFault)),
-        b"kernel-tests" => Ok(Some(BootMode::KernelTests)),
-        b"kernel-tests-fail" => Ok(Some(BootMode::KernelTestsFail)),
-        b"driver-runtime-tests" => Ok(Some(BootMode::DriverRuntimeTests)),
-        b"driver-network-tests" => Ok(Some(BootMode::DriverNetworkTests)),
-        b"driver-hardening-tests" => Ok(Some(BootMode::DriverHardeningTests)),
-        b"async-core-tests" => Ok(Some(BootMode::AsyncCoreTests)),
-        b"async-network-tests" => Ok(Some(BootMode::AsyncNetworkTests)),
-        b"network-tests" => Ok(Some(BootMode::NetworkTests)),
-        b"udp-tests" => Ok(Some(BootMode::UdpTests)),
-        b"dhcp-tests" => Ok(Some(BootMode::DhcpTests)),
-        b"dns-tests" => Ok(Some(BootMode::DnsTests)),
-        b"tcp-tests" => Ok(Some(BootMode::TcpTests)),
-        b"http-tests" => Ok(Some(BootMode::HttpTests)),
-        b"async-hardening-tests" => Ok(Some(BootMode::AsyncHardeningTests)),
-        b"heap-oom" => Ok(Some(BootMode::HeapOom)),
-        b"thread-stack-guard" => Ok(Some(BootMode::ThreadStackGuard)),
-        _ => Err(Error::UnknownMode),
+        b"driver-only" => Ok(Some(TestSuite::DriverOnly)),
+        b"disk-snapshot" => Ok(Some(TestSuite::DiskSnapshot)),
+        b"disk-load" => Ok(Some(TestSuite::DiskLoad)),
+        b"storage-read" => Ok(Some(TestSuite::StorageRead)),
+        b"storage-tests" => Ok(Some(TestSuite::StorageTests)),
+        b"probe" => Ok(Some(TestSuite::Probe)),
+        b"eeprom-timeout" => Ok(Some(TestSuite::EepromTimeout)),
+        b"page-fault" => Ok(Some(TestSuite::PageFault)),
+        b"general-protection" => Ok(Some(TestSuite::GeneralProtection)),
+        b"double-fault" => Ok(Some(TestSuite::DoubleFault)),
+        b"unexpected-page-fault" => Ok(Some(TestSuite::UnexpectedPageFault)),
+        b"kernel-tests" => Ok(Some(TestSuite::KernelTests)),
+        b"kernel-tests-fail" => Ok(Some(TestSuite::KernelTestsFail)),
+        b"driver-runtime-tests" => Ok(Some(TestSuite::DriverRuntimeTests)),
+        b"driver-network-tests" => Ok(Some(TestSuite::DriverNetworkTests)),
+        b"driver-hardening-tests" => Ok(Some(TestSuite::DriverHardeningTests)),
+        b"async-core-tests" => Ok(Some(TestSuite::AsyncCoreTests)),
+        b"async-network-tests" => Ok(Some(TestSuite::AsyncNetworkTests)),
+        b"network-tests" => Ok(Some(TestSuite::NetworkTests)),
+        b"udp-tests" => Ok(Some(TestSuite::UdpTests)),
+        b"dhcp-tests" => Ok(Some(TestSuite::DhcpTests)),
+        b"dns-tests" => Ok(Some(TestSuite::DnsTests)),
+        b"tcp-tests" => Ok(Some(TestSuite::TcpTests)),
+        b"http-tests" => Ok(Some(TestSuite::HttpTests)),
+        b"async-hardening-tests" => Ok(Some(TestSuite::AsyncHardeningTests)),
+        b"heap-oom" => Ok(Some(TestSuite::HeapOom)),
+        b"thread-stack-guard" => Ok(Some(TestSuite::ThreadStackGuard)),
+        _ => Err(Error::UnknownSuite),
     }
 }
 
@@ -230,7 +203,7 @@ pub fn read_ipv4(
     mut select: impl FnMut(u16),
     mut read: impl FnMut() -> u8,
 ) -> Result<crate::net::config::Mode, Error> {
-    let Some((bytes, size)) = read_file::<MAX_MODE_BYTES>(
+    let Some((bytes, size)) = read_file::<MAX_SUITE_BYTES>(
         &mut select,
         &mut read,
         IPV4_FILE,
@@ -246,7 +219,7 @@ pub fn read_ipv4(
 pub fn read_test_options(
     mut select: impl FnMut(u16),
     mut read: impl FnMut() -> u8,
-    mode: BootMode,
+    mode: TestSuite,
 ) -> Result<crate::testing::selection::Selection, Error> {
     let Some((bytes, size)) = read_file::<64>(
         &mut select,
@@ -261,8 +234,8 @@ pub fn read_test_options(
     if !cfg!(feature = "guest-tests") {
         return Err(Error::TestsDisabled);
     }
-    if mode != BootMode::KernelTests {
-        return Err(Error::TestOptionsMode);
+    if mode != TestSuite::KernelTests {
+        return Err(Error::TestOptionsSuite);
     }
     crate::testing::selection::Selection::parse(&bytes[..size]).ok_or(Error::InvalidTestOptions)
 }
@@ -344,9 +317,9 @@ mod tests {
         blobs
     }
 
-    fn run(blobs: &BTreeMap<u16, Vec<u8>>) -> Result<Option<BootMode>, Error> {
+    fn run(blobs: &BTreeMap<u16, Vec<u8>>) -> Result<Option<TestSuite>, Error> {
         let state = RefCell::new((0, 0));
-        read_mode(
+        read_test_suite(
             |selector| *state.borrow_mut() = (selector, 0),
             || {
                 let mut state = state.borrow_mut();
@@ -373,37 +346,39 @@ mod tests {
     #[test]
     fn selects_each_supported_mode() {
         for mode in [
-            BootMode::Run,
-            BootMode::DriverRun,
-            BootMode::NetworkRun,
-            BootMode::DiskRun,
-            BootMode::DiskDemandRun,
-            BootMode::FileRun,
-            BootMode::Probe,
-            BootMode::EepromTimeout,
-            BootMode::PageFault,
-            BootMode::GeneralProtection,
-            BootMode::DoubleFault,
-            BootMode::UnexpectedPageFault,
-            BootMode::KernelTests,
-            BootMode::KernelTestsFail,
-            BootMode::DriverRuntimeTests,
-            BootMode::DriverNetworkTests,
-            BootMode::DriverHardeningTests,
-            BootMode::AsyncCoreTests,
-            BootMode::AsyncNetworkTests,
-            BootMode::NetworkTests,
-            BootMode::UdpTests,
-            BootMode::DhcpTests,
-            BootMode::DnsTests,
-            BootMode::TcpTests,
-            BootMode::HttpTests,
-            BootMode::AsyncHardeningTests,
-            BootMode::HeapOom,
-            BootMode::ThreadStackGuard,
+            TestSuite::DriverOnly,
+            TestSuite::DiskSnapshot,
+            TestSuite::DiskLoad,
+            TestSuite::StorageRead,
+            TestSuite::StorageTests,
+            TestSuite::Probe,
+            TestSuite::EepromTimeout,
+            TestSuite::PageFault,
+            TestSuite::GeneralProtection,
+            TestSuite::DoubleFault,
+            TestSuite::UnexpectedPageFault,
+            TestSuite::KernelTests,
+            TestSuite::KernelTestsFail,
+            TestSuite::DriverRuntimeTests,
+            TestSuite::DriverNetworkTests,
+            TestSuite::DriverHardeningTests,
+            TestSuite::AsyncCoreTests,
+            TestSuite::AsyncNetworkTests,
+            TestSuite::NetworkTests,
+            TestSuite::UdpTests,
+            TestSuite::DhcpTests,
+            TestSuite::DnsTests,
+            TestSuite::TcpTests,
+            TestSuite::HttpTests,
+            TestSuite::AsyncHardeningTests,
+            TestSuite::HeapOom,
+            TestSuite::ThreadStackGuard,
         ] {
             assert_eq!(
-                run(&fixture(&[("opt/kutox/test-mode", mode.name().as_bytes())])),
+                run(&fixture(&[(
+                    "opt/kutox/test-suite",
+                    mode.name().as_bytes()
+                )])),
                 Ok(Some(mode))
             );
         }
@@ -412,8 +387,8 @@ mod tests {
     #[test]
     fn allows_one_trailing_nul() {
         assert_eq!(
-            run(&fixture(&[("opt/kutox/test-mode", b"kernel-tests\0")])),
-            Ok(Some(BootMode::KernelTests))
+            run(&fixture(&[("opt/kutox/test-suite", b"kernel-tests\0")])),
+            Ok(Some(TestSuite::KernelTests))
         );
     }
 
@@ -422,50 +397,76 @@ mod tests {
         assert_eq!(
             run(&fixture(&[
                 ("opt/other", b"unrelated"),
-                ("opt/kutox/test-mode", b"eeprom-timeout"),
+                ("opt/kutox/test-suite", b"eeprom-timeout"),
                 ("opt/last", b"ignored"),
             ])),
-            Ok(Some(BootMode::EepromTimeout))
+            Ok(Some(TestSuite::EepromTimeout))
         );
     }
 
     #[test]
-    fn user_boot_is_explicit_and_available_without_guest_fixtures() {
+    fn intermediate_proofs_require_guest_fixtures() {
         for mode in [
-            BootMode::UserRun,
-            BootMode::DiskRun,
-            BootMode::DiskDemandRun,
-            BootMode::FileRun,
+            TestSuite::DriverOnly,
+            TestSuite::DiskSnapshot,
+            TestSuite::DiskLoad,
+            TestSuite::StorageRead,
+            TestSuite::Probe,
         ] {
             assert_eq!(
-                run(&fixture(&[("opt/kutox/test-mode", mode.name().as_bytes())])),
+                run(&fixture(&[(
+                    "opt/kutox/test-suite",
+                    mode.name().as_bytes()
+                )])),
                 Ok(Some(mode))
             );
-            assert!(mode.validate_build().is_ok());
-            assert!(!mode.is_guest_test());
+            assert_eq!(
+                mode.validate_build(),
+                if cfg!(feature = "guest-tests") {
+                    Ok(())
+                } else {
+                    Err(Error::TestsDisabled)
+                }
+            );
+            assert!(mode.is_selected());
             assert!(!mode.uses_ipv4());
         }
-        assert_eq!(BootMode::selected(None), BootMode::Run);
+        assert_eq!(TestSuite::selected(None), TestSuite::None);
     }
 
     #[test]
     fn rejects_unknown_or_embedded_nul_modes() {
         for value in [b"invalid".as_slice(), b"probe\0junk", b"probe\0\0", b"\0"] {
             assert_eq!(
-                run(&fixture(&[("opt/kutox/test-mode", value)])),
-                Err(Error::UnknownMode)
+                run(&fixture(&[("opt/kutox/test-suite", value)])),
+                Err(Error::UnknownSuite)
             );
         }
     }
 
     #[test]
     fn rejects_removed_nonfatal_modes() {
-        for value in [b"boot-memory".as_slice(), b"cpu-locks", b"breakpoint"] {
+        for value in [
+            b"boot-memory".as_slice(),
+            b"cpu-locks",
+            b"breakpoint",
+            b"run",
+            b"network-run",
+            b"user-run",
+            b"file-run",
+            b"disk-run",
+            b"disk-demand-run",
+            b"storage-run",
+        ] {
             assert_eq!(
-                run(&fixture(&[("opt/kutox/test-mode", value)])),
-                Err(Error::UnknownMode)
+                run(&fixture(&[("opt/kutox/test-suite", value)])),
+                Err(Error::UnknownSuite)
             );
         }
+        assert_eq!(
+            run(&fixture(&[("opt/kutox/test-mode", b"run")])),
+            Err(Error::LegacySelector)
+        );
     }
 
     #[test]
@@ -477,17 +478,17 @@ mod tests {
 
     #[test]
     fn rejects_empty_or_oversized_values() {
-        for size in [0u32, MAX_MODE_BYTES as u32 + 1, u32::MAX] {
-            let mut blobs = fixture(&[("opt/kutox/test-mode", b"probe")]);
+        for size in [0u32, MAX_SUITE_BYTES as u32 + 1, u32::MAX] {
+            let mut blobs = fixture(&[("opt/kutox/test-suite", b"probe")]);
             blobs.get_mut(&FILE_DIRECTORY).unwrap()[4..8].copy_from_slice(&size.to_be_bytes());
-            assert_eq!(run(&blobs), Err(Error::InvalidModeLength));
+            assert_eq!(run(&blobs), Err(Error::InvalidSuiteLength));
         }
     }
 
     #[test]
     fn rejects_non_file_or_flagged_selectors() {
         for selector in [0x19u16, 0x4020, 0x8020] {
-            let mut blobs = fixture(&[("opt/kutox/test-mode", b"probe")]);
+            let mut blobs = fixture(&[("opt/kutox/test-suite", b"probe")]);
             blobs.get_mut(&FILE_DIRECTORY).unwrap()[8..10].copy_from_slice(&selector.to_be_bytes());
             assert_eq!(run(&blobs), Err(Error::MalformedDirectory));
         }
@@ -495,14 +496,14 @@ mod tests {
 
     #[test]
     fn rejects_unterminated_names() {
-        let mut blobs = fixture(&[("opt/kutox/test-mode", b"probe")]);
+        let mut blobs = fixture(&[("opt/kutox/test-suite", b"probe")]);
         blobs.get_mut(&FILE_DIRECTORY).unwrap()[12..68].fill(b'x');
         assert_eq!(run(&blobs), Err(Error::MalformedDirectory));
     }
 
     #[test]
     fn rejects_reserved_header_bits() {
-        let mut blobs = fixture(&[("opt/kutox/test-mode", b"probe")]);
+        let mut blobs = fixture(&[("opt/kutox/test-suite", b"probe")]);
         blobs.get_mut(&FILE_DIRECTORY).unwrap()[10] = 1;
         assert_eq!(run(&blobs), Err(Error::MalformedDirectory));
     }
@@ -511,10 +512,10 @@ mod tests {
     fn rejects_duplicate_mode_files() {
         assert_eq!(
             run(&fixture(&[
-                ("opt/kutox/test-mode", b"probe"),
-                ("opt/kutox/test-mode", b"kernel-tests"),
+                ("opt/kutox/test-suite", b"probe"),
+                ("opt/kutox/test-suite", b"kernel-tests"),
             ])),
-            Err(Error::DuplicateModeFile)
+            Err(Error::DuplicateSuiteFile)
         );
     }
 
@@ -536,7 +537,7 @@ mod tests {
     fn bounded_debug_controls_validate_profile_mode_and_directory() {
         fn options(
             files: &[(&str, &[u8])],
-            mode: BootMode,
+            mode: TestSuite,
         ) -> Result<crate::testing::selection::Selection, Error> {
             let blobs = fixture(files);
             let state = RefCell::new((0, 0));
@@ -553,9 +554,9 @@ mod tests {
         }
         use crate::testing::selection::Selection;
         const FILE: &str = "opt/kutox/test-options";
-        assert_eq!(options(&[], BootMode::Run), Ok(Selection::All));
+        assert_eq!(options(&[], TestSuite::None), Ok(Selection::All));
         assert_eq!(
-            options(&[(FILE, b"list")], BootMode::KernelTests),
+            options(&[(FILE, b"list")], TestSuite::KernelTests),
             if cfg!(feature = "guest-tests") {
                 Ok(Selection::List)
             } else {
@@ -563,32 +564,32 @@ mod tests {
             }
         );
         assert_eq!(
-            options(&[(FILE, b"list")], BootMode::Run),
+            options(&[(FILE, b"list")], TestSuite::None),
             Err(if cfg!(feature = "guest-tests") {
-                Error::TestOptionsMode
+                Error::TestOptionsSuite
             } else {
                 Error::TestsDisabled
             })
         );
         assert_eq!(
-            options(&[(FILE, b"list"), (FILE, b"list")], BootMode::KernelTests),
+            options(&[(FILE, b"list"), (FILE, b"list")], TestSuite::KernelTests),
             Err(Error::DuplicateTestOptions)
         );
         for value in [b"".as_slice(), &[b'x'; 65]] {
             assert_eq!(
-                options(&[(FILE, value)], BootMode::KernelTests),
+                options(&[(FILE, value)], TestSuite::KernelTests),
                 Err(Error::InvalidTestOptions)
             );
         }
         if cfg!(feature = "guest-tests") {
             for value in [b"filter=".as_slice(), b"filter=cpu.[ab]", b"list\0"] {
                 assert_eq!(
-                    options(&[(FILE, value)], BootMode::KernelTests),
+                    options(&[(FILE, value)], TestSuite::KernelTests),
                     Err(Error::InvalidTestOptions)
                 );
             }
             assert!(matches!(
-                options(&[(FILE, b"filter=cpu.*")], BootMode::KernelTests),
+                options(&[(FILE, b"filter=cpu.*")], TestSuite::KernelTests),
                 Ok(Selection::Filter(_))
             ));
         }
@@ -622,51 +623,55 @@ mod tests {
             ipv4(&[("opt/kutox/ipv4", b"10.0.2.0/24")]),
             Err(Error::InvalidIpv4)
         );
-        for mode in [BootMode::Run, BootMode::DriverRun, BootMode::Probe] {
+        for mode in [TestSuite::DriverOnly, TestSuite::Probe] {
             assert_eq!(
                 run(&fixture(&[
-                    ("opt/kutox/test-mode", mode.name().as_bytes()),
+                    ("opt/kutox/test-suite", mode.name().as_bytes()),
                     ("opt/kutox/ipv4", b"bad"),
                     ("opt/kutox/ipv4", b"also bad"),
                 ])),
                 Ok(Some(mode))
             );
-            assert_eq!(mode.validate_build(), Ok(()));
+            assert_eq!(
+                mode.validate_build(),
+                if cfg!(feature = "guest-tests") {
+                    Ok(())
+                } else {
+                    Err(Error::TestsDisabled)
+                }
+            );
         }
-        assert_eq!(BootMode::NetworkRun.validate_build(), Ok(()));
+        assert_eq!(TestSuite::None.validate_build(), Ok(()));
     }
 
     #[test]
     fn default_network_policy_and_reserved_hardening_rejection() {
-        assert!(BootMode::selected(None).is_network_runtime());
-        for mode in [BootMode::Run, BootMode::NetworkRun] {
-            assert!(mode.uses_ipv4());
-            assert_eq!(mode.validate_build(), Ok(()));
-        }
+        assert!(!TestSuite::selected(None).is_selected());
+        assert!(!TestSuite::None.uses_ipv4());
+        assert_eq!(TestSuite::None.validate_build(), Ok(()));
         for mode in [
-            BootMode::DriverRun,
-            BootMode::Probe,
-            BootMode::DriverRuntimeTests,
+            TestSuite::DriverOnly,
+            TestSuite::Probe,
+            TestSuite::DriverRuntimeTests,
         ] {
-            assert!(!mode.is_network_runtime());
+            assert!(mode.is_selected());
             assert!(!mode.uses_ipv4());
         }
-        assert!(BootMode::NetworkTests.uses_ipv4());
-        assert!(BootMode::UdpTests.uses_ipv4());
-        assert!(!BootMode::UdpTests.is_network_runtime());
+        assert!(TestSuite::NetworkTests.uses_ipv4());
+        assert!(TestSuite::UdpTests.uses_ipv4());
         assert_eq!(
-            run(&fixture(&[("opt/kutox/test-mode", b"udp-demo")])),
-            Err(Error::UnknownMode)
+            run(&fixture(&[("opt/kutox/test-suite", b"udp-demo")])),
+            Err(Error::UnknownSuite)
         );
         assert_eq!(
             run(&fixture(&[(
-                "opt/kutox/test-mode",
+                "opt/kutox/test-suite",
                 b"async-hardening-tests"
             )])),
-            Ok(Some(BootMode::AsyncHardeningTests))
+            Ok(Some(TestSuite::AsyncHardeningTests))
         );
         assert_eq!(
-            BootMode::AsyncHardeningTests.validate_build(),
+            TestSuite::AsyncHardeningTests.validate_build(),
             if cfg!(feature = "guest-tests") {
                 Ok(())
             } else {
@@ -676,34 +681,41 @@ mod tests {
     }
 }
 #[test]
-fn guest_modes_require_the_build_feature_without_changing_probe() {
-    assert_eq!(BootMode::selected(None), BootMode::Run);
-    assert_eq!(BootMode::selected(Some(BootMode::Probe)), BootMode::Probe);
-    assert_eq!(BootMode::Run.validate_build(), Ok(()));
-    assert!(!BootMode::Run.is_guest_test());
-    assert_eq!(BootMode::Probe.validate_build(), Ok(()));
+fn every_selected_suite_requires_the_build_feature() {
+    assert_eq!(TestSuite::selected(None), TestSuite::None);
+    assert_eq!(
+        TestSuite::selected(Some(TestSuite::Probe)),
+        TestSuite::Probe
+    );
+    assert_eq!(TestSuite::None.validate_build(), Ok(()));
+    assert!(!TestSuite::None.is_selected());
     for mode in [
-        BootMode::KernelTests,
-        BootMode::KernelTestsFail,
-        BootMode::DriverRuntimeTests,
-        BootMode::DriverNetworkTests,
-        BootMode::DriverHardeningTests,
-        BootMode::AsyncCoreTests,
-        BootMode::AsyncNetworkTests,
-        BootMode::NetworkTests,
-        BootMode::UdpTests,
-        BootMode::DhcpTests,
-        BootMode::DnsTests,
-        BootMode::TcpTests,
-        BootMode::HttpTests,
-        BootMode::AsyncHardeningTests,
-        BootMode::EepromTimeout,
-        BootMode::PageFault,
-        BootMode::GeneralProtection,
-        BootMode::DoubleFault,
-        BootMode::UnexpectedPageFault,
-        BootMode::HeapOom,
-        BootMode::ThreadStackGuard,
+        TestSuite::Probe,
+        TestSuite::DriverOnly,
+        TestSuite::DiskSnapshot,
+        TestSuite::DiskLoad,
+        TestSuite::StorageRead,
+        TestSuite::KernelTests,
+        TestSuite::KernelTestsFail,
+        TestSuite::DriverRuntimeTests,
+        TestSuite::DriverNetworkTests,
+        TestSuite::DriverHardeningTests,
+        TestSuite::AsyncCoreTests,
+        TestSuite::AsyncNetworkTests,
+        TestSuite::NetworkTests,
+        TestSuite::UdpTests,
+        TestSuite::DhcpTests,
+        TestSuite::DnsTests,
+        TestSuite::TcpTests,
+        TestSuite::HttpTests,
+        TestSuite::AsyncHardeningTests,
+        TestSuite::EepromTimeout,
+        TestSuite::PageFault,
+        TestSuite::GeneralProtection,
+        TestSuite::DoubleFault,
+        TestSuite::UnexpectedPageFault,
+        TestSuite::HeapOom,
+        TestSuite::ThreadStackGuard,
     ] {
         assert_eq!(
             mode.validate_build(),

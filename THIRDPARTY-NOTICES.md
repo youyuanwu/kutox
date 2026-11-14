@@ -577,8 +577,8 @@ PHY, IRQ/NAPI and cleanup algorithms. Native frame/receipt ownership, source
 statistics snapshots, persistent service admission and managed guest hardening
 are kutox code; no Linux device core, IP stack or vendor-private algorithms
 are copied into Rust. Default boot and feature-off builds do not change those
-source/license boundaries. The earlier finite MAC helper remains a distinct
-explicit boot mode, not the current default or a fallback packet driver.
+source/license boundaries. The earlier finite MAC helper is now a test-only
+suite, omitted in test-free builds, not the default or a fallback packet driver.
 
 ## Other dependencies and references
 

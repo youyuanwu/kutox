@@ -20,7 +20,7 @@ def transcript():
     lines = [
         f"KUTOX_BOOT linux={REVISION}",
         "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled",
-        "BOOT_MODE mode=http-tests source=fw_cfg", "KTAP version 1", "1..1",
+        "BOOT_TEST suite=http-tests source=fw_cfg", "KTAP version 1", "1..1",
     ]
     for epoch in (1, 2):
         server = "1.1.1.1" if epoch == 1 else "8.8.8.8"
@@ -247,14 +247,14 @@ class HttpTests(unittest.TestCase):
         for case in HTTP_CASES:
             args = SimpleNamespace(qemu="qemu", build_dir=Path("build"))
             command = qemu_command(args, case, net_fd=42)
-            self.assertIn("name=opt/kutox/test-mode,string=http-tests", command)
+            self.assertIn("name=opt/kutox/test-suite,string=http-tests", command)
             self.assertIn("name=opt/kutox/ipv4,string=dhcp", command)
             self.assertIn("build/kutox.iso", command)
             self.assertEqual(SCENARIOS[case].protocol, "http")
             self.assertEqual(next(check for check in GUEST_CHECKS if check.name == case).profiles, ("ON",))
         self.assertIn("smoke", next(check for check in GUEST_CHECKS if check.name == "http-tests-low-memory").tiers)
         self.assertEqual(next(check for check in GUEST_CHECKS if check.name == "http-tests-disabled").profiles, ("OFF",))
-        text = f"KUTOX_BOOT linux={REVISION}\nE1000_MAC_FAIL stage=boot_mode code=-25\n"
+        text = f"KUTOX_BOOT linux={REVISION}\nE1000_MAC_FAIL stage=boot_test_suite code=-25\n"
         validate_result("http-tests-disabled", 3, text)
         with self.assertRaises(AssertionError):
             validate_result("http-tests-disabled", 3, "# HTTP_TEST_EPOCH epoch=1\n" + text)

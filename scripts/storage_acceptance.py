@@ -67,8 +67,8 @@ def validate_callbacks(lines, symbols, expected):
 def validate_storage(case, returncode, output, symbols):
     from qemu_validation import strip_limine_preamble, validate_boot_preamble, validate_ktap, validate_allocator
     lines = strip_limine_preamble(output.splitlines())
-    mode = "storage-run" if case in ("storage-missing", "storage-unsupported") else case.removesuffix("-low-memory")
-    validate_boot_preamble(lines, mode)
+    suite = "storage-read" if case in ("storage-missing", "storage-unsupported") or case.startswith("storage-run") else case.removesuffix("-low-memory")
+    validate_boot_preamble(lines, suite)
     if case in ("storage-missing", "storage-unsupported"):
         expected = ("E1000_MAC_FAIL stage=storage_missing code=-19" if case == "storage-missing"
                     else "E1000_MAC_FAIL stage=storage_probe code=-95")
@@ -82,12 +82,12 @@ def validate_storage(case, returncode, output, symbols):
         return
     if returncode != 1 or any(line.startswith(("E1000_", "Bail out!", "CPU_EXCEPTION", "not ok")) for line in lines):
         raise AssertionError("storage runtime did not complete successfully")
-    expected = 3 if mode == "storage-tests" else 1
+    expected = 3 if suite == "storage-tests" else 1
     validate_callbacks(lines, symbols, expected)
     msix = "# BLOCK_ERROR operation=storage_msix_not_admitted code=-95"
     errors = Counter(line for line in lines if line.startswith("# BLOCK"))
     allowed = Counter({msix: 3 * expected})
-    if mode == "storage-tests":
+    if suite == "storage-tests":
         start = lines.index("1..2")
         first = lines.index("ok 1 storage.linux_disk")
         last = lines.index("ok 2 storage.io_error")
