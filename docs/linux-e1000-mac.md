@@ -25,11 +25,12 @@ helper using the current shared image:
 python3 scripts/qemu_test.py --case known --build-dir build
 ```
 
-That runner explicitly supplies `opt/kutox/test-mode=probe`. A manual QEMU boot
+That runner explicitly supplies `opt/kutox/test-suite=probe` and requires a
+guest-enabled image. A manual QEMU boot
 selects the same path with:
 
 ```text
--fw_cfg name=opt/kutox/test-mode,string=probe
+-fw_cfg name=opt/kutox/test-suite,string=probe
 ```
 
 Successful `probe` still ends with `E1000_MAC_OK`; it never runs original module

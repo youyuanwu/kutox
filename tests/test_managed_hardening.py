@@ -12,7 +12,7 @@ def hard_log():
     lines = [
         f"KUTOX_BOOT linux={q.REVISION}",
         "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled",
-        "BOOT_MODE mode=driver-hardening-tests source=fw_cfg", "KTAP version 1", "1..5",
+        "BOOT_TEST suite=driver-hardening-tests source=fw_cfg", "KTAP version 1", "1..5",
     ]
     def cb(event, result=0):
         function = SYMBOLS[q.DRIVER_CALLBACK_NAMES[event][0]] if event in q.DRIVER_CALLBACK_NAMES else 0
@@ -214,9 +214,9 @@ class ManagedHardeningTests(unittest.TestCase):
         for case in q.HARDENING_CASES:
             command = q.qemu_command(args, case, net_fd=17)
             self.assertIn("socket,id=irqtest,fd=17", command)
-            self.assertIn("name=opt/kutox/test-mode,string=driver-hardening-tests", command)
+            self.assertIn("name=opt/kutox/test-suite,string=driver-hardening-tests", command)
             self.assertEqual(command[command.index("-cdrom") + 1], "build/kutox.iso")
-        q.validate_result("driver-hardening-tests-disabled", 3, f"KUTOX_BOOT linux={q.REVISION}\nE1000_MAC_FAIL stage=boot_mode code=-25\n")
+        q.validate_result("driver-hardening-tests-disabled", 3, f"KUTOX_BOOT linux={q.REVISION}\nE1000_MAC_FAIL stage=boot_test_suite code=-25\n")
 
 
 if __name__ == "__main__":

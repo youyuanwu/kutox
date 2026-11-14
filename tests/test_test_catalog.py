@@ -114,10 +114,17 @@ sys.exit(subprocess.call(sys.argv[2:]))
 
     def test_guest_inventory_preserves_both_profiles_and_names_are_unique(self):
         self.assertEqual(len({item.name for item in CHECKS}), len(CHECKS))
-        for profile, count in (("ON", 130), ("OFF", 81)):
+        for profile, count in (("ON", 136), ("OFF", 58)):
             cases = [item for item in GUEST_CHECKS if profile in item.profiles and "full" in item.tiers]
             self.assertEqual(len(cases), count)
         names = {item.name for item in GUEST_CHECKS}
+        for item in GUEST_CHECKS:
+            if item.name.startswith(("disk-boot", "disk-demand-boot")) or item.name in (
+                "mac-known", "mac-alternate", "mac-missing", "mac-unsupported", "mac-ambiguous",
+                "mac-low-memory", "mac-repeat", "mac-provenance", "storage-run", "storage-run-low-memory",
+                "storage-missing", "storage-unsupported", "driver-runtime-driver-run", "driver-runtime-driver-only",
+            ):
+                self.assertEqual(item.profiles, ("ON",))
         self.assertTrue({"kernel-suite", "kernel-suite-rejection", "kernel-suite-nested-low-memory",
                          "async-hardening-tests-nested-low-memory", "test-options-disabled",
                          "guest-test-isolated", "network-soak-low-memory"} <= names)

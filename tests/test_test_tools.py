@@ -20,7 +20,7 @@ def preamble():
     return (
         f"KUTOX_BOOT linux={runner.REVISION}\n"
         "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled\n"
-        "BOOT_MODE mode=kernel-tests source=fw_cfg\n"
+        "BOOT_TEST suite=kernel-tests source=fw_cfg\n"
     )
 
 
@@ -97,7 +97,7 @@ class SelectionTests(unittest.TestCase):
             ("test-filter-dependencies", "Bail out! test_filter_dependencies"),
             ("test-options-disabled", "E1000_MAC_FAIL stage=boot_test_options code=-25"),
         ]:
-            output = preamble() if case == "test-filter-dependencies" else preamble().split("BOOT_MODE")[0]
+            output = preamble() if case == "test-filter-dependencies" else preamble().split("BOOT_TEST")[0]
             output += terminal + "\n"
             runner.validate_result(case, 3, output)
             with self.assertRaises(AssertionError):

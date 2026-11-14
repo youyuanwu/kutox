@@ -4,6 +4,8 @@ pub(crate) mod async_hardening;
 pub(crate) mod async_network;
 mod async_runtime;
 mod block_services;
+pub(crate) mod boot;
+mod boot_fs;
 mod device_irq;
 mod dhcp;
 mod dns;
@@ -26,7 +28,7 @@ use self::{
     driver_services as driver_service_tests, linux_e1000 as linux_driver,
     linux_execution as linux_driver_tests,
 };
-use crate::boot::fw_cfg::BootMode;
+use crate::boot::fw_cfg::TestSuite;
 use crate::{
     Failure, arch::x86_64::cpu, arch::x86_64::cpu::X86Cpu, arch::x86_64::exceptions,
     arch::x86_64::io, arch::x86_64::irq, arch::x86_64::serial, boot::limine::BootInfo,
@@ -387,7 +389,7 @@ fn bail(stage: &str) -> ! {
 }
 
 pub fn run(boot: &BootInfo) -> ! {
-    let inject = boot.mode == BootMode::KernelTestsFail;
+    let inject = boot.test_suite == TestSuite::KernelTestsFail;
     if cpu::interrupts_enabled() || !support::quiescent(boot) {
         bail("invalid_suite_entry_state");
     }
@@ -437,7 +439,7 @@ pub fn run(boot: &BootInfo) -> ! {
             bail("heap_initialization");
         }
     };
-    let tests = if boot.mode == BootMode::DriverRuntimeTests {
+    let tests = if boot.test_suite == TestSuite::DriverRuntimeTests {
         match crate::runtime::kernel_runtime::tests::suite() {
             Ok(tests) => tests,
             Err(error) => {
@@ -448,29 +450,29 @@ pub fn run(boot: &BootInfo) -> ! {
                 bail("runtime_suite_selection");
             }
         }
-    } else if boot.mode == BootMode::DriverNetworkTests {
+    } else if boot.test_suite == TestSuite::DriverNetworkTests {
         crate::drivers::linux_driver::tests::TESTS
-    } else if boot.mode == BootMode::DriverHardeningTests {
+    } else if boot.test_suite == TestSuite::DriverHardeningTests {
         crate::drivers::linux_driver::hardening::TESTS
-    } else if boot.mode == BootMode::AsyncCoreTests {
+    } else if boot.test_suite == TestSuite::AsyncCoreTests {
         async_runtime::TESTS
-    } else if boot.mode == BootMode::AsyncNetworkTests {
+    } else if boot.test_suite == TestSuite::AsyncNetworkTests {
         async_network::TESTS
-    } else if boot.mode == BootMode::NetworkTests {
+    } else if boot.test_suite == TestSuite::NetworkTests {
         network_stack::TESTS
-    } else if boot.mode == BootMode::UdpTests {
+    } else if boot.test_suite == TestSuite::UdpTests {
         udp::TESTS
-    } else if boot.mode == BootMode::DhcpTests {
+    } else if boot.test_suite == TestSuite::DhcpTests {
         dhcp::TESTS
-    } else if boot.mode == BootMode::DnsTests {
+    } else if boot.test_suite == TestSuite::DnsTests {
         dns::TESTS
-    } else if boot.mode == BootMode::TcpTests {
+    } else if boot.test_suite == TestSuite::TcpTests {
         tcp::TESTS
-    } else if boot.mode == BootMode::HttpTests {
+    } else if boot.test_suite == TestSuite::HttpTests {
         http::TESTS
-    } else if boot.mode == BootMode::StorageTests {
+    } else if boot.test_suite == TestSuite::StorageTests {
         crate::storage::tests::TESTS
-    } else if boot.mode == BootMode::AsyncHardeningTests {
+    } else if boot.test_suite == TestSuite::AsyncHardeningTests {
         async_hardening::TESTS
     } else {
         TESTS

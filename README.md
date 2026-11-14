@@ -67,16 +67,15 @@ An opt-in [filesystem boot](docs/kernel-implementation.md#read-only-boot-filesys
 now reads `/bin/init` from a 2-MiB ext2 Limine module using Moss's `ext4plus`
 baseline, then executes it with the existing ELF loader. The separately linked
 [init program](userspace/init.S) is packaged as a file, not embedded in the
-kernel. Explicit [disk boot](docs/kernel-implementation.md#read-only-disk-rootfs-boot)
-can instead read the bounded image through unchanged Linux VirtIO, close the disk,
-then mount the snapshot and execute `/bin/init` without a Limine rootfs module.
-Explicit [on-demand disk boot](docs/kernel-implementation.md#on-demand-read-only-disk-boot)
-instead reads just the requested metadata/file blocks, with bounded requests
-and an owned reader, then closes storage before entering userspace.
+kernel. Production boot uses `root=ram|disk init=/bin/init` in the Limine command
+line. Both roots use one [filesystem/file-service path](docs/kernel-implementation.md#bounded-moss-derived-file-syscalls);
+disk roots read on demand through unchanged Linux VirtIO and retain their owned
+reader through init execution. Snapshot and close-before-CPL3 milestones are
+now [test-only proofs](src/guest_tests/boot_fs.rs), not production modes.
 Normal boot still starts networking without running userspace.
 General file/socket I/O and a full process runtime remain absent.
-An explicit [Moss-derived file run](docs/kernel-implementation.md#bounded-moss-derived-file-syscalls)
-now keeps the read-only root mounted for one bounded init task, supporting
+The [Moss-derived file service](docs/kernel-implementation.md#bounded-moss-derived-file-syscalls)
+keeps either read-only root mounted for one bounded init task, supporting
 absolute-path `openat`, 256-byte reads and close with four file descriptors.
 It reuses the Linux disk's timer and existing user dispatcher; writes and a
 general VFS remain outside this subset.
@@ -208,10 +207,9 @@ The implemented [async-kernel and IPv4 service](docs/async-kernel-networking.md)
 Linux workers and adds Moss-inspired futures plus a native packet bridge.
 The bounded executor, async event/timer/yield core and owned Ethernet broker
 are implemented and guest-tested through explicit service paths, including
-Linux-backed timeout/cancellation and rebind. Explicit `network-run` now adds a
-bounded smoltcp ARP/static-IPv4/ICMP echo service in both build profiles.
-Normal `run`/absent boot now uses the same network-enabled path; explicit
-`driver-run` retains the driver-only service.
+Linux-backed timeout/cancellation and rebind. Default boot includes a bounded
+smoltcp ARP/static-IPv4/ICMP echo service in both build profiles.
+The test-only `driver-only` suite retains the historical no-protocol proof.
 The separate IP acceptance now passes exact ARP/16 echoes per epoch, seven
 directed protocol rejections and balanced shutdown across two source lifetimes.
 Normal network boot also passes real exchange followed by sustained uptime in
@@ -315,30 +313,31 @@ python3 scripts/check.py full --profiles both --scope guest \
 ```
 
 The host creates temporary project-owned read-only disks; no host disk device
-is used. `storage-run` works in both profiles; `storage-tests` adds exact bytes,
+is used. `storage-run` selects the test-only `storage-read` suite in ON;
+`storage-tests` adds exact bytes,
 real device EIO, DMA-map rollback, lost-IRQ timeout/reset/reprobe and balanced
 teardown. Both run at 128/32 MiB. Default network boot remains unchanged.
-`user-run` preserves Limine RAM-rootfs boot. `disk-run` instead requires an exact
-2-MiB ext2 read-only disk and no rootfs module; it takes a fallibly allocated
-snapshot in 4-KiB reads, retires the disk, then uses the same filesystem/ELF loader.
-This is bounded snapshot boot, not on-demand disk filesystem I/O.
-`disk-demand-run` keeps the same admitted image/file bounds but reads blocks on
-demand: no full-image allocation, at most 256 KiB/512 requests and 4096 bytes per
-request. The filesystem owns the disk resources and retires them before CPL3.
+`root=ram init=/bin/init` selects the immutable Limine root module.
+`root=disk init=/bin/init` instead requires an exact 2-MiB read-only ext2 disk
+and no rootfs module. Both run the same bounded file-service dispatcher and
+retire their filesystem on task completion. Disk I/O is on demand, with at most
+256 KiB/512 requests and 4096 bytes per request.
+The historical full-image snapshot and close-before-CPL3 paths select the
+test-only `disk-snapshot` and `disk-load` suites.
 
 ```sh
-python3 scripts/check.py full --profiles both --scope guest \
+python3 scripts/check.py full --profiles ON --scope guest \
   --select 'disk-boot*' --select 'disk-demand-boot*'
 ```
 
 The runner reuses the same ISO with a Limine SMBIOS configuration override that
 loads only `odd(1:):/boot/kernel`, and attaches a temporary read-only root disk.
 Missing/unsupported devices, wrong image size, malformed filesystem/ELF, real
-EIO, unexpected modules and 32-MiB cleanup are checked in both profiles.
+EIO, unexpected modules and 32-MiB cleanup are checked in ON.
 On-demand cases also trap init-data reads and prove the unused final sector
 is never read. Neither mode provides a persistent mounted root or write access.
 
-`file-run` instead retains the root while init reads `/etc/message`, then
+Production `root=disk` retains the root while init reads `/etc/message`, then
 retires all files and disk resources on task exit or timeout. Its separately
 linked program and read-only `file-rootfs.img` do not replace the original init.
 The whole mount/load/task shares the 256-KiB/512-request I/O budget.
@@ -363,7 +362,7 @@ packet fixtures, fault controls and stale-handle assertions are separate.
 
 Portable Rust unit tests use `#[cfg(test)]`. Guest tests instead use
 `#[cfg(feature = "guest-tests")]`, because ordinary freestanding builds do not
-set Rust's `cfg(test)`. The existing fw_cfg modes select execution within one
+set Rust's `cfg(test)`. The separate fw_cfg suites select execution within one
 test-enabled ISO; the feature controls whether fixture code is included at all.
 
 For a feature-off build of the same image:
@@ -400,19 +399,19 @@ CARGO_BUILD_JOBS=1 python3 scripts/check.py full --profiles both --scope guest \
   --select 'user-boot*'
 ```
 
-For a manual boot after building the image:
+For a manual RAM-root boot, put these settings in the Limine entry:
 
-```sh
-qemu-system-x86_64 -machine pc -accel tcg -cpu qemu64 -m 32M -smp 1 \
-  -cdrom build/kutox.iso -boot d -nic none -display none -serial stdio \
-  -no-reboot -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-  -fw_cfg name=opt/kutox/test-mode,string=user-run
+```text
+    cmdline: root=ram init=/bin/init
+    module_path: boot():/boot/rootfs.img
+    module_string: kutox-rootfs
 ```
 
 The sample prints `INIT: hello from /bin/init`, exits zero, and checks reclamation.
 QEMU's debug-exit success status is 1. This mode needs neither a NIC nor disk
 hardware. The image is RAM-backed, not persistent storage; normal boot remains
-the default when the explicit selector is absent.
+the default when root/init configuration is absent. Unknown or duplicate
+command-line settings and mixed root/test selection fail explicitly.
 
 The [source script](scripts/linux_source.sh) uses Git 2.36+ to fetch the staged submodule pin
 with shallow, blob-filtered history and sparse checkout of e1000, `include`,
@@ -460,14 +459,20 @@ Run one case without rebuilding:
 python3 scripts/qemu_test.py --case known --build-dir build
 ```
 
-The runner selects a mode at launch through QEMU's `fw_cfg` file
-`opt/kutox/test-mode`, without modifying or rebuilding the ISO:
+Production has no boot-mode selector: an empty command line retains networking;
+`root=ram|disk` and optional `init=/bin/init` select filesystem boot. The runner
+uses Limine SMBIOS configuration to keep one ISO.
+
+Guest tests have one separate entry selected through QEMU's `fw_cfg` file
+`opt/kutox/test-suite`. Every selected suite requires `guest-tests`; test-free
+images reject it before memory or device admission:
 
 | Value | Behavior |
 |-------|----------|
-| `run` | Persistent Linux-driver, executor, packet-broker and ARP/static-IPv4/ICMP service; also the default when the optional file is absent. No NIC is not a fatal boot condition. |
-| `network-run` | Same network-enabled service as `run`. |
-| `driver-run` | Retain Linux e1000 and its workers without the Rust protocol service. |
+| `driver-only` | Test-only retained Linux e1000/workers without the Rust protocol service. |
+| `storage-read` | Test-only raw Linux VirtIO read proof. |
+| `disk-snapshot` | Test-only 2-MiB snapshot followed by init execution. |
+| `disk-load` | Test-only on-demand ELF loading with disk retirement before CPL3. |
 | `probe` | Explicit finite MAC proof, ending with `E1000_MAC_OK`; no original module startup. |
 | `eeprom-timeout` | Withhold the EEPROM grant to exercise the upstream retry/error path. |
 | `kernel-tests` | Run all registered nonfatal kernel tests in one boot and emit KTAP results. |
@@ -488,13 +493,14 @@ The runner selects a mode at launch through QEMU's `fw_cfg` file
 For example, the nonfatal suite adds this QEMU argument:
 
 ```text
--fw_cfg name=opt/kutox/test-mode,string=kernel-tests
+-fw_cfg name=opt/kutox/test-suite,string=kernel-tests
 ```
 
-Unknown modes and malformed configuration fail explicitly before memory
-initialization or device access. Guest logs report the selected mode and whether
-it came from `fw_cfg` or the default. The former Limine `test=...` command-line
-selection and per-mode ISOs are no longer used.
+Unknown suites and malformed configuration fail explicitly before memory
+initialization or device access. Logs report `BOOT_CONFIG` for root/init/default
+networking or `BOOT_TEST` for a suite, never a mixed entry. The removed
+`opt/kutox/test-mode` interface is explicitly rejected; old production aliases
+are not retained. Test suites do not share production root configuration.
 
 Portable boot/ACPI parsers, IRQ-route/DMA/run-queue/completion/mutex policies, and allocator tests need no ISO or QEMU:
 
@@ -616,9 +622,8 @@ The runtime stays in the dispatcher; use Ctrl+C to end this owned manual session
 It passively answers ARP/ICMP. There is no shell, userspace application or TCP
 service. Static boot does not run DHCP or install a default gateway.
 
-No mode flag is needed for IPv4. Explicit
-`-fw_cfg name=opt/kutox/test-mode,string=network-run` uses the same service;
-`-fw_cfg name=opt/kutox/test-mode,string=driver-run` retains driver-only behavior.
+No mode flag is needed for IPv4. The `driver-only` guest suite provides the
+historical no-protocol proof without adding a production mode.
 The default address is `10.0.2.15/24`; override it with
 `-fw_cfg name=opt/kutox/ipv4,string=10.0.2.16/24`.
 Alternatively, set `-fw_cfg name=opt/kutox/ipv4,string=dhcp` to acquire an
@@ -670,8 +675,8 @@ truncated and fragmented IPv4. Exact bytes are checked on the socket and TX PCAP
 Bounded production callback records prove original Linux IRQ/NAPI and packet
 ownership without guest-only source tracing. Retained CPU copies, stale handles
 and exact frame/heap/future/task cleanup are checked separately.
-The guest-free image rejects `network-tests` early; production `network-run`
-is also the normal `run`/absent boot path.
+The guest-free image rejects `network-tests` early; an empty production command
+line keeps the normal networking path.
 
 ### Async/network hardening
 

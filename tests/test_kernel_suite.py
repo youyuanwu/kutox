@@ -422,7 +422,7 @@ def suite_log(case="kernel-tests"):
     lines = [
         f"KUTOX_BOOT linux={REVISION}",
         FOUNDATION,
-        f"BOOT_MODE mode={KERNEL_SUITE_CASES[case]} source=fw_cfg",
+        f"BOOT_TEST suite={KERNEL_SUITE_CASES[case]} source=fw_cfg",
         "KTAP version 1",
         f"1..{len(names)}",
         "# linux format=-7/0000002A/4294967296/12:34:56:78:9a:bc/end",
@@ -1011,7 +1011,7 @@ class KernelSuiteTests(unittest.TestCase):
         self.assertEqual(command[command.index("-m") + 1], "32M")
         self.assertEqual(
             command[command.index("-fw_cfg") + 1],
-            "name=opt/kutox/test-mode,string=kernel-tests",
+            "name=opt/kutox/test-suite,string=kernel-tests",
         )
 
     def test_expect_failure_only_catches_complete_suite_failure(self):

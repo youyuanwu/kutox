@@ -19,7 +19,7 @@ def managed_log():
     lines = [
         f"KUTOX_BOOT linux={REVISION}",
         "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled",
-        "BOOT_MODE mode=driver-network-tests source=fw_cfg",
+        "BOOT_TEST suite=driver-network-tests source=fw_cfg",
         "KTAP version 1", "1..1",
     ]
 
@@ -174,9 +174,9 @@ class ManagedNetworkTests(unittest.TestCase):
             command = qemu_command(args, case, net_fd=7)
             self.assertIn("socket,id=irqtest,fd=7", command)
             self.assertEqual(command[command.index("-cdrom") + 1], "build/kutox.iso")
-            self.assertEqual(command[command.index("-fw_cfg") + 1], "name=opt/kutox/test-mode,string=driver-network-tests")
+            self.assertEqual(command[command.index("-fw_cfg") + 1], "name=opt/kutox/test-suite,string=driver-network-tests")
         validate_result("driver-network-tests-disabled", 3,
-                        f"KUTOX_BOOT linux={REVISION}\nE1000_MAC_FAIL stage=boot_mode code=-25\n")
+                        f"KUTOX_BOOT linux={REVISION}\nE1000_MAC_FAIL stage=boot_test_suite code=-25\n")
 
 
 if __name__ == "__main__":

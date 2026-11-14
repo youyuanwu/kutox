@@ -18,7 +18,7 @@ from test_reports import accepted_results
 def transcript():
     lines = [f"KUTOX_BOOT linux={REVISION}",
              "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled",
-             "BOOT_MODE mode=dhcp-tests source=fw_cfg", "KTAP version 1", "1..1"]
+             "BOOT_TEST suite=dhcp-tests source=fw_cfg", "KTAP version 1", "1..1"]
     for epoch in (1, 2):
         lines += [f"# DHCP_TEST_EPOCH epoch={epoch}", "# DHCP_STORAGE charged=0 limit=32768 sockets=1 dns=2",
                   f"# DHCP_TEST_IDLE epoch={epoch} polls=3 lease=none fallback=none",
@@ -163,7 +163,7 @@ class DhcpTests(unittest.TestCase):
             item = next(item for item in GUEST_CHECKS if item.name == case)
             self.assertEqual(item.profiles, ("ON",) if case in DHCP_CASES else ("ON", "OFF"))
         boot = f"KUTOX_BOOT linux={REVISION}\n"
-        error = "E1000_MAC_FAIL stage=boot_mode code=-25\n"
+        error = "E1000_MAC_FAIL stage=boot_test_suite code=-25\n"
         validate_result("dhcp-tests-disabled", 3, boot + error)
         with self.assertRaises(AssertionError):
             validate_result("dhcp-tests-disabled", 3, boot + "# DHCP_TEST_EPOCH epoch=1\n" + error)

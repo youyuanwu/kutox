@@ -339,9 +339,9 @@ pub(crate) enum Stage {
     Manager,
 }
 
-fn checkpoint(_stage: Stage, _mode: crate::boot::fw_cfg::BootMode) -> Result<(), Failure> {
+fn checkpoint(_stage: Stage, _mode: crate::boot::fw_cfg::TestSuite) -> Result<(), Failure> {
     #[cfg(feature = "guest-tests")]
-    if _mode.is_guest_test() {
+    if _mode.is_selected() {
         tests::checkpoint(_stage)?;
     }
     Ok(())
@@ -380,12 +380,11 @@ const _: () =
 impl<'a> Resources<'a> {
     fn reporting(&self) -> bool {
         matches!(
-            self.boot.mode,
-            crate::boot::fw_cfg::BootMode::Run
-                | crate::boot::fw_cfg::BootMode::DriverRun
-                | crate::boot::fw_cfg::BootMode::NetworkRun
-                | crate::boot::fw_cfg::BootMode::NetworkTests
-                | crate::boot::fw_cfg::BootMode::DriverRuntimeTests
+            self.boot.test_suite,
+            crate::boot::fw_cfg::TestSuite::None
+                | crate::boot::fw_cfg::TestSuite::DriverOnly
+                | crate::boot::fw_cfg::TestSuite::NetworkTests
+                | crate::boot::fw_cfg::TestSuite::DriverRuntimeTests
         )
     }
     pub fn start(
@@ -437,22 +436,22 @@ impl<'a> Resources<'a> {
         CONTROL.probe_pending.store(false, Ordering::Release);
         CONTROL.probe_running.store(false, Ordering::Release);
         CONTROL.probe_error.store(0, Ordering::Release);
-        checkpoint(Stage::Claim, boot.mode)?;
+        checkpoint(Stage::Claim, boot.test_suite)?;
         let topology = crate::arch::x86_64::platform::discover(boot, frames)?;
-        checkpoint(Stage::Platform, boot.mode)?;
+        checkpoint(Stage::Platform, boot.test_suite)?;
         let inventory = pci::enumerate()?;
         inventory
             .e1000()
             .map_err(|error| Failure::new("runtime_e1000_inventory", error as i32))?;
-        checkpoint(Stage::Inventory, boot.mode)?;
+        checkpoint(Stage::Inventory, boot.test_suite)?;
         let apic = LocalApic::start(boot, frames)?;
-        checkpoint(Stage::Apic, boot.mode)?;
+        checkpoint(Stage::Apic, boot.test_suite)?;
         let controller = IoApic::start(boot, frames, &apic, &topology)?;
-        checkpoint(Stage::Controller, boot.mode)?;
+        checkpoint(Stage::Controller, boot.test_suite)?;
         let timer = irq::Timer::attach(&apic)?;
-        checkpoint(Stage::Timer, boot.mode)?;
+        checkpoint(Stage::Timer, boot.test_suite)?;
         let space = memory::StackSpace::new(boot, frames)?;
-        checkpoint(Stage::StackSpace, boot.mode)?;
+        checkpoint(Stage::StackSpace, boot.test_suite)?;
         Ok(Self {
             space,
             timer,
@@ -603,10 +602,10 @@ impl<'a> Resources<'a> {
         let mut asynchronous_service = None;
         let mut network_service = None;
         let admission = (|| {
-            checkpoint(Stage::Workers, self.boot.mode)?;
+            checkpoint(Stage::Workers, self.boot.test_suite)?;
             // The shared owner and client entries stay in this scope until every stack joins.
             scheduler.spawn(coordinator, self as *const Self as usize)?;
-            checkpoint(Stage::Coordinator, self.boot.mode)?;
+            checkpoint(Stage::Coordinator, self.boot.test_suite)?;
             if asynchronous {
                 asynchronous_service = Some(crate::runtime::async_runtime::start_owned(
                     &mut scheduler,
@@ -619,7 +618,7 @@ impl<'a> Resources<'a> {
             for entry in clients.entries.iter().flatten() {
                 scheduler.spawn(client_entry, entry as *const Client as usize)?;
             }
-            checkpoint(Stage::Clients, self.boot.mode)
+            checkpoint(Stage::Clients, self.boot.test_suite)
         })();
         if let Err(error) = admission {
             if let Some(service) = &network_service {
@@ -634,15 +633,13 @@ impl<'a> Resources<'a> {
         }
         self.network.set(network);
         if matches!(
-            self.boot.mode,
-            crate::boot::fw_cfg::BootMode::Run
-                | crate::boot::fw_cfg::BootMode::NetworkRun
-                | crate::boot::fw_cfg::BootMode::DriverRun
+            self.boot.test_suite,
+            crate::boot::fw_cfg::TestSuite::None | crate::boot::fw_cfg::TestSuite::DriverOnly
         ) {
             serial::print(format_args!(
                 "# KERNEL_SERVICES epoch={} mode={} tasks={} clients={} async={} network={}\n",
                 CONTROL.epoch.load(Ordering::Acquire),
-                self.boot.mode.name(),
+                self.boot.runtime_name(),
                 scheduler.task_count(),
                 clients.entries.iter().flatten().count(),
                 u8::from(asynchronous),
@@ -677,8 +674,8 @@ impl<'a> Resources<'a> {
         }
         drop(binding);
         drop(platform);
-        if self.boot.mode.is_network_runtime()
-            || self.boot.mode == crate::boot::fw_cfg::BootMode::DriverRun
+        if self.boot.is_network_runtime()
+            || self.boot.test_suite == crate::boot::fw_cfg::TestSuite::DriverOnly
         {
             serial::print(format_args!(
                 "# KERNEL_SERVICES_CLOSED epoch={} tasks={}\n",
@@ -751,8 +748,8 @@ fn initialize(resources: &Resources<'_>) -> Result<(), Failure> {
         ));
     }
     refresh_ready(resources, true)?;
-    checkpoint(Stage::Manager, resources.boot.mode)?;
-    if resources.boot.mode.is_network_runtime() && resources.network.get() {
+    checkpoint(Stage::Manager, resources.boot.test_suite)?;
+    if resources.boot.is_network_runtime() && resources.network.get() {
         crate::net::stack::kutox_ipv4_service(resources.boot.ipv4)?;
     }
     Ok(())
@@ -824,7 +821,7 @@ fn coordinator(address: usize) {
         {
             CONTROL.probe_running.store(true, Ordering::Release);
             #[cfg(feature = "guest-tests")]
-            if resources.boot.mode.is_guest_test() {
+            if resources.boot.test_suite.is_selected() {
                 tests::check_control_waits(true);
             }
             if let Err(error) = refresh_ready(resources, false).and_then(|()| {

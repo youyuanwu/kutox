@@ -22,7 +22,7 @@ EVENTS = (1, 2, 3, 5, 6, 7, 17, 34)
 def journal():
     lines = [f"KUTOX_BOOT linux={REVISION}",
              "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled",
-             "BOOT_MODE mode=udp-tests source=fw_cfg", "KTAP version 1", "1..1"]
+             "BOOT_TEST suite=udp-tests source=fw_cfg", "KTAP version 1", "1..1"]
     for epoch in (1, 2):
         lines += ["Intel(R) PRO/1000 Network Driver", "Copyright (c) 1999-2006 Intel Corporation.",
                   "eth0 NIC Link is Up 1000 Mbps Full Duplex, Flow Control: RX"]
@@ -138,7 +138,7 @@ class UdpTests(unittest.TestCase):
         for case in UDP_CASES:
             self.assertEqual(SCENARIOS[case].protocol, "udp")
             command = qemu_command(args, case, net_fd=5)
-            self.assertIn("name=opt/kutox/test-mode,string=udp-tests", command)
+            self.assertIn("name=opt/kutox/test-suite,string=udp-tests", command)
             self.assertIn("socket,id=irqtest,fd=5", command)
             item = next(item for item in GUEST_CHECKS if item.name == case)
             self.assertEqual(item.profiles, ("ON",))
@@ -150,13 +150,13 @@ class UdpTests(unittest.TestCase):
         self.assertEqual(disabled.profiles, ("OFF",))
         self.assertIn("smoke", disabled.tiers)
         command = qemu_command(args, "udp-tests-disabled")
-        self.assertIn("name=opt/kutox/test-mode,string=udp-tests", command)
+        self.assertIn("name=opt/kutox/test-suite,string=udp-tests", command)
 
     def test_disabled_udp_selector_is_rejected_before_any_admission(self):
         boot = f"KUTOX_BOOT linux={REVISION}\n"
-        error = "E1000_MAC_FAIL stage=boot_mode code=-25\n"
+        error = "E1000_MAC_FAIL stage=boot_test_suite code=-25\n"
         validate_result("udp-tests-disabled", 3, boot + error)
-        for marker in ("BOOT_MODE mode=udp-tests source=fw_cfg", "KTAP version 1",
+        for marker in ("BOOT_TEST suite=udp-tests source=fw_cfg", "KTAP version 1",
                        "# UDP_STORAGE epoch=1", "# NETWORK_STACK_READY"):
             with self.subTest(marker=marker), self.assertRaises(AssertionError):
                 validate_result("udp-tests-disabled", 3, boot + marker + "\n" + error)

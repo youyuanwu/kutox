@@ -13,7 +13,7 @@ def guard_log():
     return (
         f"KUTOX_BOOT linux={REVISION}\n"
         "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled\n"
-        "BOOT_MODE mode=thread-stack-guard source=fw_cfg\n"
+        "BOOT_TEST suite=thread-stack-guard source=fw_cfg\n"
         f"{FAULT}\n{RESULT}\n"
     )
 
@@ -58,7 +58,7 @@ class ThreadGuardTests(unittest.TestCase):
                 ))
         with self.assertRaises(AssertionError):
             validate_result("thread-stack-guard", 1, guard_log().replace(
-                "mode=thread-stack-guard", "mode=probe",
+                "suite=thread-stack-guard", "suite=probe",
             ))
 
 

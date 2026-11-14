@@ -177,8 +177,8 @@ rejects block acceptance/error evidence. This fixture is not the hardware driver
 python3 scripts/check.py full --profiles both --scope guest --select 'storage-*'
 ```
 
-`storage-run` and `storage-run-low-memory` exercise the production native read
-API in ON/OFF. `storage-tests` and `storage-tests-low-memory` run two guest-only
+`storage-run` and `storage-run-low-memory` select the test-only `storage-read`
+suite in ON. `storage-tests` and `storage-tests-low-memory` run two guest-only
 cases independently of the 76-case kernel registry:
 
 - `storage.linux_disk`: exact sector/4096-byte reads, capacity/range rejection,
@@ -378,7 +378,7 @@ out-of-case/epoch proofs; OFF and production boot still reject guest evidence.
 
 [Filesystem boot acceptance](kernel-implementation.md#read-only-boot-filesystem)
 adds `user-boot` and `user-boot-low-memory` in both profiles, without changing
-the kernel registry or creating per-mode ISOs. These ordinary boot modes
+the kernel registry or creating per-mode ISOs. These production `root=ram` boots
 read `/bin/init` from the actual Limine ext2 module, execute it in CPL3 and require
 its write/exit plus exact frame/heap balance. They need no NIC or disk device.
 Default network boot must reject any filesystem/program-execution proof.
@@ -387,7 +387,7 @@ remain absent. `mke2fs`/`debugfs` from e2fsprogs are required for filesystem fas
 tests; no privileged filesystem mounts are performed.
 
 [Disk-rootfs boot](kernel-implementation.md#read-only-disk-rootfs-boot) adds
-`disk-boot*` acceptance in both profiles. All cases use the same ISO; a Limine
+`disk-boot*` test-only snapshot acceptance in ON. All cases use the same ISO; a Limine
 SMBIOS configuration loads only the kernel, without a rootfs module.
 The runner attaches a temporary read-only ext2 disk, verifies it remains
 unchanged, and requires original Linux callback identities plus the exact
@@ -395,10 +395,10 @@ read/close/filesystem/user/cleanup ordering. Both 128- and 32-MiB success boots
 reclaim the temporary 2-MiB snapshot. Negative boots require exact missing-device,
 unsupported-feature, wrong-capacity, malformed-ext2/ELF, actual EIO and unexpected
 module errors, with balanced frame/heap teardown and no success-shaped fallback.
-These are production `disk-run` boots, not additional guest registry cases.
+These select `opt/kutox/test-suite=disk-snapshot`, not a production loader option.
 
-`disk-demand-boot*` adds production `disk-demand-run` acceptance in both
-profiles, using the same ISO and read-only ext2 fixtures. Exact proofs require
+`disk-demand-boot*` selects test-only `disk-load` acceptance in ON,
+using the same ISO and read-only ext2 fixtures. Exact proofs require
 filesystem loading, bounded on-demand read counts (at most 256 KiB/512 requests,
 4096 bytes per request, a 512-byte scratch buffer), storage close before init
 output, and balanced final teardown. Superblock and init-data EIO traps test
@@ -408,7 +408,7 @@ retain exact rejection ledgers. Portable tests cover unaligned/chunked reads,
 range rejection without I/O, byte/request budget exhaustion and device errors.
 The kernel IRQ test also drops the original controller before using its claim.
 
-`file-boot*` exercises the production `file-run` mode in both profiles.
+`file-boot*` exercises production `root=disk init=/bin/init` in both profiles.
 The separately linked file init and `/etc/message` are formatted into a
 temporary read-only ext2 disk; the original RAM/snapshot init is unchanged.
 Exact API ledgers prove openat/read/close, four descriptor slots, independent
@@ -419,6 +419,15 @@ wrong capacity, malformed filesystem/ELF and unexpected modules require exact
 failures and balanced teardown. Driver callbacks can occur during file I/O,
 but none may follow disk close. Portable real-image tests prove offset reads,
 reader retention by open files, failed-read cursor preservation and final release.
+
+Production command-line configuration and guest suite selection are separate.
+`BOOT_CONFIG` records root/init or default networking; `BOOT_TEST` records the
+selected suite. `boot-config-*`, `boot-init-missing` and `boot-legacy-selector`
+prove strict configuration/path handling and rejection without fallback.
+OFF omits snapshot, close-before-CPL3, raw-read, MAC and driver-only proof code,
+and dedicated `*-disabled` cases require early `-25` rejection. Those proofs
+retain all ON scenarios; production RAM/disk/network cases retain ON/OFF coverage.
+The full-tier inventory is 136 ON cases and 58 OFF cases.
 
 ## Validation tiers
 

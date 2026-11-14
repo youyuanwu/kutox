@@ -16,12 +16,12 @@ The [owned Ethernet broker](../src/net/async_service.rs) and its
 [portable policy](../src/net/async_state.rs) now pass real Linux-backed
 exchange, timeout/cancellation and rebind acceptance. Phase 4 adds a bounded
 [smoltcp token adapter](../src/net/stack_state.rs), [protocol future](../src/net/stack.rs)
-and [static CIDR configuration](../src/net/config.rs) in explicit `network-run`.
+and [static CIDR configuration](../src/net/config.rs) in default networking.
 Phase 5 proves exact ARP/ICMP, rejection and balanced epochs with a separate
 [guest fixture](../src/guest_tests/network_stack.rs) and
 [isolated stdlib peer](../scripts/network_packets.py).
-Normal `run`/absent boot now selects this same network-enabled service in both
-build profiles; `driver-run` preserves the previous driver-only path.
+An empty production command line selects this network-enabled service in both
+build profiles; the test-only `driver-only` suite preserves the no-protocol proof.
 
 The milestone adds a bounded Moss-inspired Rust async runtime and
 ARP/static IPv4/ICMP echo over the existing unchanged Linux e1000. Explicit-mode
@@ -290,8 +290,8 @@ Raw async acceptance runs without the IP service.
 `Resources::run_network(Clients)` adds the broker alongside the executor and
 three existing services. It accepts one additional native actor: six guarded
 stacks during acceptance, five service stacks without that actor. This explicit
-Ethernet path is available in both build profiles. Normal `run`/`network-run`
-also admits the protocol future; `driver-run` plus an explicit `run_network`
+Ethernet path is available in both build profiles. Default networking
+also admits the protocol future; a test-only `driver-only` plus explicit `run_network`
 client scope provides the raw async Ethernet path without that protocol.
 Use one RX consumer per session: a raw client must not steal the protocol
 service's FIFO input. This API exposes no Linux structs or application sockets.
@@ -389,7 +389,7 @@ become a separate ARP/IP/echo implementation.
 
 ### As-built Phase 4 integration
 
-The production `network-run` path is present with or without guest fixtures.
+Default production networking is present with or without guest fixtures.
 The coordinator admits one protocol future after manager initialization, using
 the existing five service stacks; no stack is added for IP. The future owns one
 fallibly allocated bounded interface state and borrows empty socket storage.
@@ -422,8 +422,8 @@ performed by application code inside a future are not covered.
 `NETWORK_STACK_WAIT`, `NETWORK_STACK_CONFIGURED` and `NETWORK_STACK_READY`
 distinguish missing source, configured subnet and actual source/link readiness.
 The shared fw_cfg parser reads a strict non-NUL ASCII host CIDR only for
-`run`/absent, `network-run` and explicit IP acceptance; `driver-run` and probe
-modes ignore that file.
+default networking and explicit IP acceptance; `driver-only`/probe suites and
+filesystem-root boots ignore that file.
 Loopback, current-network/unspecified, link-local, multicast/reserved and
 documentation/benchmark-only address ranges are excluded. No default route or
 application socket is created.
@@ -477,12 +477,12 @@ An OFF image rejects `network-tests` before admission while retaining the
 production stack. This is not direct host ping through restricted QEMU user
 networking; the stdlib peer is an isolated test endpoint, not guest protocol code.
 
-| Mode/configuration | Intended behavior |
+| Configuration/suite | Intended behavior |
 | --- | --- |
-| `network-run` | Explicit persistent async/network service, identical to normal boot. |
+| Empty command line | Network-enabled boot with five guarded service stacks and one protocol future. |
 | `udp-tests` | Subsequent guest-only UDP echo/client acceptance; the OFF build rejects it before initialization. |
-| `driver-run` | Persistent driver/services only, preserving the previous driver-only boot. |
-| `run` or absent mode | Network-enabled boot with five guarded service stacks and one protocol future. |
+| `driver-only` suite | Test-only retained driver/services without the protocol. |
+| `root=ram|disk init=/bin/init` | Bounded filesystem/init boot, separate from networking. |
 | `probe` / existing guest modes | Preserve explicit finite MAC and existing source/native test semantics. |
 | `opt/kutox/ipv4` | Optional ASCII host CIDR, default `10.0.2.15/24`, read only for network modes. |
 
@@ -511,15 +511,15 @@ normal services; only deliberate shutdown returns `KERNEL_RUNTIME_STOPPED`.
 
 ### As-built Phase 6 normal boot
 
-`BootMode` owns the shared network/IPv4 selection policy; `run` and absent mode
-have identical behavior to `network-run`. The coordinator admits the protocol
+Production root/init configuration is separate from `TestSuite`; an empty
+command line preserves default networking. The coordinator admits the protocol
 only after the actual network service has been admitted. Explicit native
 `Resources::run`/`run_async` client APIs retain their driver-only/async-only
 semantics; normal boot calls `run_network` with no native clients.
 
 `KERNEL_SERVICES` records the checked epoch, mode, actual scheduler task count
 and service/client admission flags. It reports five stacks for normal networking
-or three for `driver-run`, with zero native clients. Source `DRIVER_READY` reports
+or three for the `driver-only` suite, with zero native clients. Source `DRIVER_READY` reports
 real BDF/MAC/link state; matching protocol identity/CIDR markers cannot invent
 NIC readiness. Joined shutdown reports `KERNEL_SERVICES_CLOSED`.
 

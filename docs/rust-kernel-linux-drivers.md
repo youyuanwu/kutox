@@ -665,16 +665,14 @@ The runtime implementation should proceed in separately validated stages:
 2. Reuse original Linux VirtIO core/ring/modern PCI and block callbacks. Adapt
    PCI resources, coherent DMA and INTx; prove negotiation, an actual disk read,
    error/timeout handling and reset/IRQ/DMA teardown before recycling memory.
-3. The owned block-read interface now supplies a bounded 2-MiB snapshot to the
-   existing filesystem adaptation, retaining RAM-backed boot and its current
-   bounds. The disk closes before mounting/ELF execution. An explicit
-   `disk-demand-run` also reads filesystem metadata and `/bin/init` on demand
-   through an owned bounded reader, retiring the disk before CPL3.
-   A separate `file-run` retains that reader for bounded native file syscalls,
-   using Moss-derived inode/cursor/descriptor ownership and the disk's shared
-   timer, then retires all files and storage on task completion.
+3. Production `root=ram|disk init=/bin/init` uses one bounded filesystem/file
+   service. Disk roots read on demand through the owned Linux interface;
+   Moss-derived inodes/cursors/descriptors and the shared disk timer remain
+   live through task completion. Full-image snapshot and close-before-CPL3
+   milestones remain test-only `disk-snapshot`/`disk-load` proofs, omitted in OFF.
 4. `disk-boot*` now proves `/bin/init` execution with no rootfs Limine module,
-   using only a project-owned read-only QEMU disk. Both image profiles cover
+   using only a project-owned read-only QEMU disk in ON. Production root/file
+   acceptance in both image profiles covers
    absent/unsupported devices, wrong capacity, malformed media/ELF, actual I/O
    failure, unexpected modules and low-memory cleanup.
 
@@ -1070,7 +1068,8 @@ authoritative even on one cooperative CPU.
 The [next milestone design](async-kernel-networking.md) applies this separation
 to a bounded executor and Linux-backed ARP/static IPv4/ICMP service. Its
 network-enabled default boot now retains five service stacks and one protocol
-future over unchanged Linux e1000. Explicit `driver-run` remains driver-only;
+future over unchanged Linux e1000. The test-only `driver-only` suite retains
+the no-protocol proof;
 no userspace/socket application environment or Linux IP stack is imported.
 
 The main execution-model mismatch is sleeping C code. A Linux driver can

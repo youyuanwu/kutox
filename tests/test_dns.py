@@ -18,7 +18,7 @@ def transcript():
     lines = [
         f"KUTOX_BOOT linux={REVISION}",
         "CPU_FOUNDATION_OK id=0 gdt=owned tss=owned idt=256 pic=masked lapic=disabled",
-        "BOOT_MODE mode=dns-tests source=fw_cfg", "KTAP version 1", "1..1",
+        "BOOT_TEST suite=dns-tests source=fw_cfg", "KTAP version 1", "1..1",
     ]
     for epoch in (1, 2):
         lines += [
@@ -142,7 +142,7 @@ class DnsTests(unittest.TestCase):
 
     def test_zero_frame_growth_is_valid_and_off_rejects_before_initialization(self):
         validate_dns_suite("dns-tests", 1, transcript().replace("charged=16384", "charged=0"))
-        text = f"KUTOX_BOOT linux={REVISION}\nE1000_MAC_FAIL stage=boot_mode code=-25\n"
+        text = f"KUTOX_BOOT linux={REVISION}\nE1000_MAC_FAIL stage=boot_test_suite code=-25\n"
         validate_result("dns-tests-disabled", 3, text)
         with self.assertRaises(AssertionError):
             validate_result("dns-tests-disabled", 3, "# DNS_STORAGE charged=0\n" + text)
@@ -151,7 +151,7 @@ class DnsTests(unittest.TestCase):
         for case in DNS_CASES:
             args = SimpleNamespace(qemu="qemu", build_dir=Path("build"))
             command = qemu_command(args, case, net_fd=42)
-            self.assertIn("name=opt/kutox/test-mode,string=dns-tests", command)
+            self.assertIn("name=opt/kutox/test-suite,string=dns-tests", command)
             self.assertIn("name=opt/kutox/ipv4,string=dhcp", command)
             self.assertIn("build/kutox.iso", command)
             self.assertEqual(SCENARIOS[case].protocol, "dns")

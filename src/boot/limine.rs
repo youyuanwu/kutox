@@ -1,5 +1,5 @@
 use crate::{Failure, arch::x86_64::io};
-use crate::{boot::fw_cfg, boot::fw_cfg::BootMode};
+use crate::{boot::fw_cfg, boot::fw_cfg::TestSuite};
 use limine::{
     BaseRevision,
     request::{
@@ -49,8 +49,8 @@ pub struct BootInfo {
     pub kernel_physical_start: u64,
     pub kernel_size: u64,
     pub memory_map: &'static [&'static limine::memory_map::Entry],
-    pub mode: BootMode,
-    pub mode_configured: bool,
+    pub config: crate::boot::config::Config<'static>,
+    pub test_suite: TestSuite,
     pub ipv4: crate::net::config::Mode,
     pub rsdp_physical: Option<u64>,
     pub rootfs: Option<&'static [u8]>,
@@ -77,22 +77,25 @@ pub fn collect() -> Result<BootInfo, Failure> {
         .cmdline()
         .to_str()
         .expect("non-UTF-8 command line");
-    if !cmdline.is_empty() {
-        return Err(Failure::new("boot_command_line", -1));
-    }
+    let config = crate::boot::config::Config::parse(cmdline)
+        .map_err(|error| Failure::new("boot_configuration", error as i32))?;
     let configured =
-        fw_cfg::read_mode(|selector| io::write16(0x510, selector), || io::read8(0x511))
-            .map_err(|error| Failure::new("boot_mode", error as i32))?;
-    let mode = BootMode::selected(configured);
-    mode.validate_build()
-        .map_err(|error| Failure::new("boot_mode", error as i32))?;
+        fw_cfg::read_test_suite(|selector| io::write16(0x510, selector), || io::read8(0x511))
+            .map_err(|error| Failure::new("boot_test_suite", error as i32))?;
+    let test_suite = TestSuite::selected(configured);
+    config
+        .validate_test(test_suite.is_selected())
+        .map_err(|error| Failure::new("boot_configuration", error as i32))?;
+    test_suite
+        .validate_build()
+        .map_err(|error| Failure::new("boot_test_suite", error as i32))?;
     let _test_selection = fw_cfg::read_test_options(
         |selector| io::write16(0x510, selector),
         || io::read8(0x511),
-        mode,
+        test_suite,
     )
     .map_err(|error| Failure::new("boot_test_options", error as i32))?;
-    let ipv4 = if mode.uses_ipv4() {
+    let ipv4 = if (config.root.is_none() && !test_suite.is_selected()) || test_suite.uses_ipv4() {
         fw_cfg::read_ipv4(|selector| io::write16(0x510, selector), || io::read8(0x511))
             .map_err(|error| Failure::new("boot_ipv4", error as i32))?
     } else {
@@ -153,8 +156,8 @@ pub fn collect() -> Result<BootInfo, Failure> {
             .expect("invalid kernel start"),
         kernel_size: end.checked_sub(start).expect("invalid kernel bounds"),
         memory_map,
-        mode,
-        mode_configured: configured.is_some(),
+        config,
+        test_suite,
         #[cfg(feature = "guest-tests")]
         test_selection: _test_selection,
         ipv4,
@@ -163,4 +166,18 @@ pub fn collect() -> Result<BootInfo, Failure> {
             .map(|response| response.address() as u64),
         rootfs,
     })
+}
+
+impl BootInfo {
+    pub fn is_network_runtime(&self) -> bool {
+        self.config.root.is_none() && !self.test_suite.is_selected()
+    }
+
+    pub fn runtime_name(&self) -> &'static str {
+        if self.is_network_runtime() {
+            "run"
+        } else {
+            self.test_suite.name()
+        }
+    }
 }

@@ -1,7 +1,7 @@
 //! Guest-only acceptance fixtures; not production driver code.
 
 use super::*;
-use crate::boot::fw_cfg::BootMode;
+use crate::boot::fw_cfg::TestSuite;
 use core::arch::asm;
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 
@@ -25,10 +25,10 @@ pub fn expect_thread_guard(guard: u64, bottom: u64, top: u64) {
     EXPECTED_VECTOR.store(14, Ordering::Release);
 }
 
-pub fn run_fault_test(mode: BootMode) -> Result<core::convert::Infallible, Failure> {
+pub fn run_fault_test(mode: TestSuite) -> Result<core::convert::Infallible, Failure> {
     match mode {
-        BootMode::PageFault | BootMode::UnexpectedPageFault => {
-            if mode == BootMode::PageFault {
+        TestSuite::PageFault | TestSuite::UnexpectedPageFault => {
+            if mode == TestSuite::PageFault {
                 EXPECTED_VECTOR.store(14, Ordering::Release);
             }
             unsafe {
@@ -36,14 +36,14 @@ pub fn run_fault_test(mode: BootMode) -> Result<core::convert::Infallible, Failu
             }
             Err(Failure::new("page_fault_did_not_fire", -1))
         }
-        BootMode::GeneralProtection => {
+        TestSuite::GeneralProtection => {
             EXPECTED_VECTOR.store(13, Ordering::Release);
             unsafe {
                 asm!("mov ds, ax", in("ax") GP_SELECTOR as u16, options(nostack));
             }
             Err(Failure::new("general_protection_did_not_fire", -1))
         }
-        BootMode::DoubleFault => {
+        TestSuite::DoubleFault => {
             EXPECTED_VECTOR.store(8, Ordering::Release);
             // A page fault with an unmapped current stack cannot construct its
             // exception frame. The processor must deliver #DF on the TSS IST.
