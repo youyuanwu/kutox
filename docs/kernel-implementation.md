@@ -536,6 +536,12 @@ C pointer validity, lifetime, capacity and alignment remain caller obligations;
 null checks do not establish those properties. The safe block-request service
 separately owns request/completion transitions; raw packet/block callbacks and
 other compatibility providers still contain unsafe code.
+Raw bus and IRQ registration are explicitly unsafe Rust entry points: callers
+retain address-stable bus tables and callback backing until unregistering, or
+masking/synchronizing/freeing the IRQ. Their Linux C signatures are unchanged.
+The native coherent-allocation backend returns a Rust `Result` containing the
+CPU/DMA addresses; raw output-pointer writes remain only at the actual C
+allocation boundary, which preserves unchanged outputs on failure.
 Native Rust-only helpers such as [net_device::wake](../src/net_device.rs) may
 inline out of the optimized kernel; guest acceptance checks their wake behavior
 rather than requiring a standalone helper symbol. Original driver callback and

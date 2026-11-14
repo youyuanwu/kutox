@@ -485,7 +485,10 @@ pub(super) unsafe fn destroy_completion(p: *mut Completion) {
     }
 }
 #[unsafe(no_mangle)]
-pub extern "C" fn request_irq(
+/// # Safety
+/// The handler must support IRQ context. Its device backing must remain valid
+/// and address-stable until free_irq masks, synchronizes and unregisters it.
+pub unsafe extern "C" fn request_irq(
     irq: u32,
     handler: Option<unsafe extern "C" fn(i32, *mut c_void) -> i32>,
     flags: usize,

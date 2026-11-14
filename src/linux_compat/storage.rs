@@ -61,7 +61,10 @@ pub fn quiescent() -> bool {
 #[unsafe(no_mangle)]
 pub static mut kutox_storage_module: usize = 0;
 #[unsafe(no_mangle)]
-pub extern "C" fn bus_register(bus: *const Bus) -> i32 {
+/// # Safety
+/// A non-null bus must be readable. On success it and its callback backing must
+/// remain valid and address-stable until all children retire and it is unregistered.
+pub unsafe extern "C" fn bus_register(bus: *const Bus) -> i32 {
     context();
     if bus.is_null()
         || unsafe {

@@ -63,36 +63,14 @@ pub(crate) fn unregister(key: usize) -> i32 {
     .unwrap_or_else(|err| error("unregister", err))
 }
 
-/// # Safety
-/// Outputs must be valid, aligned, writable and non-overlapping.
-pub(crate) unsafe fn allocate(
-    key: usize,
-    size: usize,
-    flags: u32,
-    cpu: *mut usize,
-    address: *mut u64,
-) -> i32 {
+pub(crate) fn allocate(key: usize, size: usize, flags: u32) -> Result<(usize, u64), i32> {
     if crate::driver_platform::check_device(key).is_ok() {
-        if cpu.is_null() || address.is_null() {
-            return -22;
-        }
-        let result = crate::driver_memory::coherent_allocate(size, flags);
-        return match result {
-            Ok((pointer, dma)) => {
-                unsafe {
-                    cpu.write(pointer);
-                    address.write(dma);
-                }
-                0
-            }
-            Err(code) => {
-                serial::print(format_args!("# driver coherent_alloc code={code}\n"));
-                code
-            }
-        };
+        return crate::driver_memory::coherent_allocate(size, flags).inspect_err(|code| {
+            serial::print(format_args!("# driver coherent_alloc code={code}\n"));
+        });
     }
-    let result = with_registry(|state| {
-        if flags != kutox::linux_abi::GFP_KERNEL || cpu.is_null() || address.is_null() {
+    with_registry(|state| {
+        if flags != kutox::linux_abi::GFP_KERNEL {
             return Err(dma_state::Error::Layout.into());
         }
         dma_state::Layout::new(size, 4096)?;
@@ -106,15 +84,9 @@ pub(crate) unsafe fn allocate(
         let pointer = buffer.cpu_address()?.as_ptr() as usize;
         let dma = buffer.address().value();
         state.buffers[index] = Some(buffer);
-        unsafe {
-            cpu.write(pointer);
-            address.write(dma);
-        }
-        Ok(())
-    });
-    result
-        .map(|()| 0)
-        .unwrap_or_else(|err| error("allocate", err))
+        Ok((pointer, dma))
+    })
+    .map_err(|err| error("allocate", err))
 }
 
 fn find(state: &mut State, key: usize, cpu: usize) -> Result<usize, Error> {
