@@ -5,6 +5,7 @@ pub(crate) mod abi;
 pub(crate) mod block;
 #[path = "../block_abi.rs"]
 mod block_abi;
+pub(crate) mod block_request;
 mod diagnostics;
 mod execution;
 pub(crate) mod lifecycle;

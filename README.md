@@ -278,7 +278,10 @@ native-service ABI or alternate Rust provider root.
 The [bounded block services](docs/kernel-implementation.md#bounded-block-services)
 now provide one owned read request, tag/PDU/payload storage, read-only limits,
 backpressure, deferred completion and joined cancellation. Their real kernel
-providers participate in the profile-level check. Synthetic transport tests
+providers participate in the profile-level check. Native reads use
+[owned Rust requests and completions](src/linux_compat/block_request.rs), with
+retained failures and exact reset witnesses instead of raw tickets/pointers.
+Synthetic transport tests
 remain separate from the new
 [real disk acceptance](docs/kernel-implementation.md#linux-virtio-blk-runtime):
 

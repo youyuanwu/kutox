@@ -156,6 +156,12 @@ epochs cover tags, ranges/metadata, limits, backpressure, cancellation, stale
 tickets, copy/error results and joined teardown; four failures cover allocation
 rollback. The host checks exact bounded/IRQ evidence and the expected rejection
 ledger inside that case, and rejects missing/duplicate/moved/changed proofs.
+The scenarios use the owned Rust request/completion API. A separate pair of
+synthetic reset completions checks exact-generation witnesses, failed-reset
+ownership retention, in-flight abort rejection and unchanged cancelled outputs.
+The proof must include `owners=retained completion=owned reset=bound`; the
+rejection ledger requires the wrong-generation reset failure and exact retained
+capacity/cancellation counts, rather than accepting arbitrary extra diagnostics.
 Fixture guards require exact frame/heap balance and no retained block objects.
 Rust owns the transport scenarios and real IRQ orchestration; C exercises the
 request/PDU/scatterlist boundary only. The fixture and fault injection are absent from OFF; default network boot

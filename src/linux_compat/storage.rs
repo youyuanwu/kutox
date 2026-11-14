@@ -8,8 +8,6 @@ struct State {
     references: u32,
     added: bool,
     loaded: bool,
-    request: *mut block_abi::Request,
-    ticket: u64,
     queue_live: bool,
     pending: *mut Work,
     running: bool,
@@ -22,8 +20,6 @@ impl State {
         references: 0,
         added: false,
         loaded: false,
-        request: ptr::null_mut(),
-        ticket: 0,
         queue_live: false,
         pending: ptr::null_mut(),
         running: false,
@@ -57,7 +53,6 @@ pub fn quiescent() -> bool {
             && s.device.is_null()
             && s.references == 0
             && !s.added
-            && s.request.is_null()
             && !s.queue_live
             && s.pending.is_null()
             && !s.running
@@ -432,74 +427,53 @@ pub(crate) fn capacity() -> u64 {
     context();
     block::get_capacity(block::registered_disk())
 }
-pub(crate) fn prepare(sector: u64, bytes: usize) -> Result<u64, i32> {
+pub(crate) fn prepare(sector: u64, bytes: usize) -> Result<block_request::Request, i32> {
     context();
-    if unsafe { !(*state()).loaded || !(*state()).request.is_null() } {
-        return Err(-16);
+    if unsafe { !(*state()).loaded } || !block::idle() {
+        return Err(diagnostic(c"storage_prepare_busy", -16));
     }
-    let request = block::blk_mq_alloc_request(block::registered_queue(), 0, 0);
-    if request as usize >= usize::MAX - 4094 {
-        return Err(request as isize as i32);
-    }
-    let mut ticket = 0;
-    let result = unsafe { block::prepare(request, sector, bytes, &mut ticket) };
-    if result != 0 {
-        block::blk_mq_free_request(request);
-        return Err(result);
-    }
-    unsafe {
-        (*state()).request = request;
-        (*state()).ticket = ticket;
-    }
-    Ok(ticket)
+    block_request::Request::read(sector, bytes)
 }
-pub(crate) fn submit(ticket: u64) -> i32 {
-    block::submit(ticket)
-}
-pub(crate) fn poll(ticket: u64) -> i32 {
-    block::pump();
-    block::ready(ticket)
-}
-pub(crate) fn result(ticket: u64, output: &mut [u8]) -> i32 {
-    block::pump();
-    unsafe { block::result(ticket, output.as_mut_ptr().cast(), output.len()) }
-}
-pub(crate) fn release(ticket: u64) -> i32 {
-    let result = block::release(ticket);
-    if result == 0 {
-        unsafe {
-            (*state()).request = ptr::null_mut();
-            (*state()).ticket = 0;
+pub(crate) fn reset_request(
+    mut request: block_request::Request,
+) -> Result<block_request::Completed, memory::Failure<block_request::Request>> {
+    context();
+    let outcome = (|| {
+        let raw_request = block::request_pointer(&request)?;
+        let device = unsafe { (*state()).device };
+        if device.is_null() || unsafe { !(*state()).loaded } {
+            return Err(diagnostic(c"storage_reset_ticket", -116));
         }
+        reset();
+        let pdu = unsafe { kutox_storage_detach(device) };
+        if !pdu.is_null() {
+            require(
+                pdu == block::blk_mq_rq_to_pdu(raw_request),
+                c"storage_reset_pdu",
+            );
+            unsafe {
+                crate::storage::dma(4, 0, 0, 0);
+                block::reset_proof(&request).map(Some)
+            }
+        } else {
+            request.poll()?;
+            request.cancel()?;
+            Ok(None)
+        }
+    })();
+    match outcome {
+        Ok(Some(proof)) => request.after_reset(proof),
+        Ok(None) => request.finish(),
+        Err(code) => Err(memory::Failure {
+            code,
+            retained: request,
+        }),
     }
-    result
-}
-pub(crate) fn reset_request(ticket: u64) -> i32 {
-    context();
-    let (request, current, device) = unsafe {
-        let s = &*state();
-        (s.request, s.ticket, s.device)
-    };
-    if request.is_null() || ticket != current {
-        return diagnostic(c"storage_reset_ticket", -116);
-    }
-    reset();
-    let pdu = unsafe { kutox_storage_detach(device) };
-    if !pdu.is_null() {
-        require(
-            pdu == block::blk_mq_rq_to_pdu(request),
-            c"storage_reset_pdu",
-        );
-        unsafe { block::reset_complete(request, 2) };
-    } else {
-        block::pump();
-    }
-    block::cancel(ticket)
 }
 pub(crate) fn stop() {
     context();
     require(
-        unsafe { (*state()).loaded && (*state()).request.is_null() },
+        unsafe { (*state()).loaded } && block::idle(),
         c"storage_stop_live",
     );
     reset();

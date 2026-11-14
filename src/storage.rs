@@ -268,31 +268,33 @@ impl Disk<'_, '_> {
         lose_irq: bool,
     ) -> Result<(), Failure> {
         let deadline = time::deadline_after_us(100_000)?;
-        let ticket = driver_services::prepare(sector, output.len())
+        let mut request = driver_services::prepare(sector, output.len())
             .map_err(|code| Failure::new("storage_prepare", code))?;
         if lose_irq && let Err(error) = linux_irq::gate() {
-            checked(
-                driver_services::release(ticket),
-                "storage_release_before_submit",
-            )?;
+            request.abort().expect("storage release before submit");
             return Err(error);
         }
-        let submit = { driver_services::submit(ticket) };
-        if submit < 0 {
-            checked(
-                driver_services::release(ticket),
-                "storage_release_failed_submit",
-            )?;
+        if let Err(code) = request.submit() {
+            request
+                .cancel()
+                .expect("storage failed-submit cancellation");
+            request
+                .finish()
+                .expect("storage failed-submit completion")
+                .release()
+                .expect("storage failed-submit release");
             if lose_irq {
                 linux_irq::resume()?;
             }
-            return Err(Failure::new("storage_submit", submit));
+            return Err(Failure::new("storage_submit", code));
         }
         let waited = (|| {
             loop {
-                let ready = { driver_services::poll(ticket) };
-                if ready != 0 {
-                    return checked(ready, "storage_poll");
+                if request
+                    .poll()
+                    .map_err(|code| Failure::new("storage_poll", code))?
+                {
+                    return Ok(());
                 }
                 if time::now_ticks() >= deadline {
                     return Err(Failure::new("storage_deadline", -110));
@@ -304,18 +306,20 @@ impl Disk<'_, '_> {
         })();
         if let Err(error) = waited {
             self.timer.stop()?;
-            checked(
-                driver_services::reset_request(ticket),
-                "storage_timeout_reset",
-            )?;
-            checked(driver_services::release(ticket), "storage_timeout_release")?;
+            driver_services::reset_request(request)
+                .expect("storage timeout reset proof")
+                .release()
+                .expect("storage timeout release");
             self.driver.restart(self.gsi)?;
             return Err(error);
         }
-        let result = driver_services::result(ticket, output);
-        checked(driver_services::release(ticket), "storage_release")?;
-        checked(result, "storage_read")?;
-        if result as usize != output.len() {
+        let completed = request.finish().expect("storage observed completion");
+        let result = completed.copy_into(output);
+        completed
+            .release()
+            .expect("storage completed request release");
+        let bytes = result.map_err(|code| Failure::new("storage_read", code))?;
+        if bytes != output.len() {
             return Err(Failure::new("storage_short_read", -5));
         }
         Ok(())

@@ -263,19 +263,30 @@ same request/PDU/payload and generation; stop/restart controls retry admission.
 Requeue is permitted only during the dispatch callback, before it returns an
 accepted publication. Released requests zero private/payload bytes before reuse.
 
-Native clients use generation-bearing tickets for prepare/submit/result/cancel/
-release. Old tickets cannot affect a replacement request or a recreated queue.
-The C/Linux raw pointer APIs remain internal lifetime-bound interfaces; stale
-raw pointers are not a supported native handle. Result copying occurs only
-after completion, validates destination capacity before copying and never copies
-cancelled or failed I/O. Destinations are trusted kernel buffers, not user
-pointers.
+Native clients use the unsafe-free [owned request API](../src/linux_compat/block_request.rs),
+not numeric tickets or request pointers. A non-cloneable, BSP-local `Request`
+owns one generation; allocation and preparation failures cannot publish it.
+`read` rolls back a failed preparation, while `submit` and backpressure retain
+the same owner for retry. `poll` validates its generation before pumping any
+completion, so stale requests cannot affect a replacement or recreated queue.
+
+`finish` consumes a request only after off-IRQ completion and produces a
+non-cloneable `Completed` owner. Only this owner permits slice-based result
+copying and consuming release. Copying validates destination capacity first
+and never copies cancelled or failed I/O. `abort` consumes only an unpublished
+request. Failed finish/abort/release operations return `Failure<T>` with the
+original owner retained. Neither request nor completion owners automatically
+free backing on `Drop`; losing a token retains registered backing rather than
+freeing memory still reachable from C or DMA.
+The C/Linux raw pointer APIs remain lifetime-bound interfaces; stale pointers
+are not supported native handles. Destinations are kernel slices, not user
+pointers, and no borrowed view into the payload/PDU is exposed.
 
 On the single BSP, lifecycle/admission/pump calls require IF clear in an
 off-lock boot/thread context. Completion signaling may run in IRQ/locked
 context but only marks the existing request pending: it neither allocates,
 invokes the completion callback nor releases memory. The native owner calls
-`kutox_block_pump` off IRQ, which invokes the registered completion callback.
+`Request::poll` off IRQ, which invokes the registered completion callback.
 Only that callback may end the request. Batched/polling completion and remote
 CPU completion are not admitted; the batch helper declines the optional
 optimization rather than manufacturing completion.
@@ -286,6 +297,11 @@ and off-IRQ callback acknowledgment. There is no force-free/reset shortcut.
 The standalone block service does not implement a deadline or hardware reset:
 without a transport completion/reset proof the request stays owned and busy.
 The Linux storage adapter below adds that protocol-specific boundary.
+It creates a non-cloneable, generation-bound reset witness only at the unsafe
+transport boundary, after reset acknowledgment and descriptor/DMA drain.
+Consuming that witness can produce a `Completed` owner for the exact request;
+a witness from a released generation is rejected while retaining the current
+owner. Numeric equality and bus-master disable alone are not reset proofs.
 Deleting a disk closes admission while an outstanding completion can still
 drain; tag/disk destruction requires the request released. Quiesce is nonblocking;
 freeze/limit changes are admitted only when idle, with an exact unfreeze cookie.
@@ -302,7 +318,10 @@ The new `storage.block_services` case makes the kernel registry 76 cases. A
 guest-only Rust transport fixture exercises four allocation rollback points,
 sixteen request/teardown epochs, invalid ranges/metadata, tags, read-only and
 limit rejection, retained backpressure, stale tickets, successful/error result
-bytes and cancellation before/after publication. A real timer IRQ then marks a
+bytes and cancellation before/after publication. Additional owned-request
+checks reject a stale reset witness, retain the in-flight owner after failed
+abort/reset, and require valid reset completion before releasing backing.
+A real timer IRQ then marks a
 request pending after disk admission closes; only the off-IRQ pump completes
 it. Existing fixture guards require exact heap/frame balance and block allocator
 quiescence. A small C fixture checks the request/PDU/scatterlist interface.
@@ -356,8 +375,11 @@ Native reads have a 100-ms TSC deadline and use returning timer/INTx interrupts
 with off-IRQ completion pumping. On deadline, the adapter invokes upstream's
 `virtio_reset_device`, requires acknowledged status zero and joined IRQs, then
 uses upstream `virtqueue_detach_unused_buf` to unmap the retained request.
-Only after that proof may the internal block reset-completion boundary mark
-the request failed/cancelled and release its PDU/payload. Recovery removes and
+The native adapter also checks that streaming DMA leases have all retired.
+Only after that proof may it construct the exact request's reset witness and
+mark the owned request failed/cancelled. The resulting completion owner then
+releases the PDU/payload. Native reads keep their request owner on the stack,
+not duplicated in a global raw pointer/ticket slot. Recovery removes and
 reprobes the original driver with a fresh queue before the next read.
 All removals reset before freeing tags, join the original IRQ handler, clear
 mastering, and release mappings and frame guards. A reset that never
@@ -408,8 +430,11 @@ Linux-facing C ABI using `#[unsafe(no_mangle)] extern "C"` exports:
   pins and reset proofs stay with each device's existing Rust owner.
 - `storage.rs`: bus/driver/device references, local config-work queue, native
   read tickets, admission checks and reset/remove/reprobe sequencing. Rust
-  controls return owned tickets and copy results into borrowed slices, using
-  actual shared block types rather than opaque-pointer extern declarations.
+  controls return owned requests and consume exact reset witnesses; the
+  completion owner copies into borrowed slices and releases backing.
+- `block_request.rs`: unsafe-free non-cloneable request/completion owners,
+  retained failures, unpublished abort and generation-bound reset witnesses.
+  The existing `block.rs` retains raw state, callbacks and genuine Linux C APIs.
 - `packet.rs`: network-device lifecycle/queues, linear sk_buffs, fragment
   provenance, TX ownership/completion and native Ethernet ingress.
 - `lifecycle.rs`: safe module bind/open/close/remove services, generation-bearing
