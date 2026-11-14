@@ -69,6 +69,11 @@ PROFILE_CHECKS = (
 
 GUEST_CHECKS = (
     *(guest(case, case, 60, 65, ('ON', 'OFF')) for case in (
+        'file-boot', 'file-boot-low-memory', 'file-boot-io-error', 'file-boot-timeout',
+        'file-boot-missing', 'file-boot-unsupported', 'file-boot-size', 'file-boot-module',
+        'file-boot-invalid-fs', 'file-boot-invalid-elf',
+    )),
+    *(guest(case, case, 60, 65, ('ON', 'OFF')) for case in (
         'disk-demand-boot', 'disk-demand-boot-low-memory', 'disk-demand-boot-missing',
         'disk-demand-boot-unsupported', 'disk-demand-boot-size', 'disk-demand-boot-invalid-fs',
         'disk-demand-boot-invalid-elf', 'disk-demand-boot-io-error', 'disk-demand-boot-module',

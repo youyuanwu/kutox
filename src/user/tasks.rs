@@ -20,6 +20,8 @@ struct Task<'a, 'storage> {
     started: bool,
     input: Input,
     read: Option<ReadRequest>,
+    files: Option<crate::user::files::Service>,
+    file_request: Option<crate::user::state::FileRequest>,
 }
 
 pub struct Dispatcher<'a, 'storage> {
@@ -87,6 +89,8 @@ impl<'a, 'storage> Dispatcher<'a, 'storage> {
             started: false,
             input: Input::new(),
             read: None,
+            files: None,
+            file_request: None,
         });
         Ok(handle)
     }
@@ -126,6 +130,43 @@ impl<'a, 'storage> Dispatcher<'a, 'storage> {
         self.input_task(handle)?.input.close();
         self.queue.wake_one(WaitKey(handle.slot()));
         Ok(())
+    }
+
+    pub(crate) fn enable_files(
+        &mut self,
+        handle: TaskHandle,
+        filesystem: moss_libkernel::fs::Filesystem,
+    ) -> Result<(), Failure> {
+        let task = self.input_task(handle)?;
+        if task.started || task.files.is_some() {
+            return Err(Failure::new("user_file_bound", -16));
+        }
+        task.files = Some(crate::user::files::Service::new(filesystem));
+        Ok(())
+    }
+
+    pub(crate) fn complete_file(
+        &mut self,
+        handle: TaskHandle,
+    ) -> Result<crate::user::files::Statistics, Failure> {
+        let task = self.input_task(handle)?;
+        let request = task
+            .file_request
+            .ok_or(Failure::new("user_file_request", -22))?;
+        let files = task
+            .files
+            .as_mut()
+            .ok_or(Failure::new("user_file_service", -19))?;
+        let result = files.complete(&task.space, request)?;
+        let statistics = files.statistics();
+        let mut frame = task.context.restore_user_ctx();
+        frame.registers[14] = result as u64;
+        task.context.save_user_ctx(&frame);
+        task.file_request = None;
+        if self.queue.wake_one(WaitKey(CAPACITY + handle.slot())) != Some(TaskId(handle.slot())) {
+            return Err(Failure::new("user_file_wake", -1));
+        }
+        Ok(statistics)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -218,6 +259,7 @@ pub fn kutox_user_dispatch_next(
             initial: !task.started,
             resumable: true,
             wake_deadline,
+            files: task.files.is_some(),
         },
         &mut entered,
     );
@@ -244,6 +286,13 @@ pub fn kutox_user_dispatch_next(
     if report.stop.resumable() {
         task.context.save_user_ctx(&frame);
         match report.stop {
+            Stop::File(request) => {
+                task.file_request = Some(request);
+                dispatcher
+                    .queue
+                    .block_running(Some(WaitKey(CAPACITY + id.0)), None)
+                    .map_err(|error| Failure::new("user_task_file", error as i32))?;
+            }
             Stop::Reading(request) => {
                 task.read = Some(request);
                 let key = WaitKey(id.0);

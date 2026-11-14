@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 
 from make_rootfs import build_image, IMAGE_BYTES
-from qemu_scenarios import qemu_command, DISK_DEMAND_CASES
+from qemu_scenarios import qemu_command, DISK_DEMAND_CASES, FILE_BOOT_CASES, ROOT
 from storage_acceptance import disk_options, validate_callbacks
 
 READ = "BOOT_DISK_READ_OK driver=linux-virtio-blk image_bytes=2097152 sectors=4096 module=absent"
@@ -29,26 +29,30 @@ DEMAND_FAILURES = {
 }
 
 
-def init_sector(image):
-    completed = subprocess.run(["debugfs", "-R", "blocks /bin/init", str(image)],
+def file_sector(image, path):
+    completed = subprocess.run(["debugfs", "-R", f"blocks {path}", str(image)],
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, text=True)
     blocks = completed.stdout.split()
     if not blocks or any(not block.isdecimal() for block in blocks):
-        raise AssertionError("cannot locate init data blocks for real disk EIO")
+        raise AssertionError("cannot locate file data blocks for real disk EIO")
     return int(blocks[0]) * 2
 
 
 def execute_disk_boot(args, case):
-    fixture = case.replace("disk-demand-boot", "disk-boot")
+    fixture = case.replace("disk-demand-boot", "disk-boot").replace("file-boot", "disk-boot")
     with tempfile.TemporaryDirectory(prefix="kutox-disk-boot-") as directory:
         root = Path(directory)
         image = root / "rootfs.raw"
-        data = (args.build_dir / "rootfs.img").read_bytes()
+        data = (args.build_dir / ("file-rootfs.img" if case in FILE_BOOT_CASES else "rootfs.img")).read_bytes()
         if fixture == "disk-boot-size":
             data = data[:-512]
         elif fixture == "disk-boot-invalid-fs":
             data = bytes(IMAGE_BYTES)
         image.write_bytes(data)
+        if case == "file-boot-timeout":
+            build_image(args.build_dir / "file-init-timeout.elf", image, "mke2fs",
+                        message=ROOT / "userspace/message.txt")
+            data = image.read_bytes()
         if fixture == "disk-boot-invalid-elf":
             program = root / "bad-init"
             program.write_bytes(b"not an ELF program")
@@ -58,7 +62,8 @@ def execute_disk_boot(args, case):
         if fixture == "disk-boot-unsupported":
             options[-1] = options[-1].replace("iommu_platform=on", "iommu_platform=off")
         if fixture in ("disk-boot-io-error", "disk-boot-file-io-error", "disk-boot-unused-io-error"):
-            sector = (init_sector(image) if fixture == "disk-boot-file-io-error" else
+            sector = (file_sector(image, "/etc/message") if case in FILE_BOOT_CASES else
+                      file_sector(image, "/bin/init") if fixture == "disk-boot-file-io-error" else
                       4095 if fixture == "disk-boot-unused-io-error" else
                       2 if case in DISK_DEMAND_CASES else 64)
             config = root / "errors.conf"
@@ -73,6 +78,19 @@ def execute_disk_boot(args, case):
         if image.read_bytes() != data:
             raise AssertionError("read-only disk rootfs was modified")
         return completed
+
+
+def validate_read_statistics(line, prefix):
+    stats = re.fullmatch(
+        re.escape(prefix) + r" driver=linux-virtio-blk image_bytes=2097152 "
+        r"read_bytes=(\d+) requests=(\d+) max_request=(\d+) buffer_bytes=512 module=absent", line)
+    if stats is None:
+        raise AssertionError("invalid on-demand disk reader proof")
+    read_bytes, requests, maximum = map(int, stats.groups())
+    if not (1 <= requests <= 512 and 512 <= maximum <= 4096 and maximum % 512 == 0
+            and 512 <= read_bytes <= 262144 and read_bytes % 512 == 0
+            and maximum <= read_bytes <= requests * maximum and requests * 512 <= read_bytes):
+        raise AssertionError("on-demand disk reads exceeded their bounds")
 
 
 def validate_disk_boot(case, returncode, output, symbols):
@@ -114,16 +132,7 @@ def validate_disk_boot(case, returncode, output, symbols):
         if demand:
             if len(proofs) < 3:
                 raise AssertionError("missing on-demand read evidence")
-            stats = re.fullmatch(
-                r"BOOT_DISK_DEMAND_OK driver=linux-virtio-blk image_bytes=2097152 "
-                r"read_bytes=(\d+) requests=(\d+) max_request=(\d+) buffer_bytes=512 module=absent", proofs[1])
-            if stats is None:
-                raise AssertionError("invalid on-demand disk reader proof")
-            read_bytes, requests, maximum = map(int, stats.groups())
-            if not (1 <= requests <= 512 and 512 <= maximum <= 4096 and maximum % 512 == 0
-                    and 512 <= read_bytes <= 262144 and read_bytes % 512 == 0
-                    and maximum <= read_bytes <= requests * maximum and requests * 512 <= read_bytes):
-                raise AssertionError("on-demand disk reads exceeded their bounds")
+            validate_read_statistics(proofs[1], "BOOT_DISK_DEMAND_OK")
         filesystem = proofs[0] if demand else proofs[2] if len(proofs) > 2 else ""
         if (returncode != 1 or len(proofs) != 7
                 or (proofs[2] != CLOSED if demand else proofs[:2] != [READ, CLOSED])

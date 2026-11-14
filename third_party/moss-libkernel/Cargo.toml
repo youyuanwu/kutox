@@ -30,4 +30,12 @@ sources = [
     "libkernel/src/fs/blk/ramdisk.rs",
     "libkernel/src/fs/blk/buffer.rs",
     "libkernel/src/fs/filesystems/ext4/mod.rs",
+    "libkernel/src/fs/mod.rs",
+    "src/fs/open_file.rs",
+    "src/fs/fops.rs",
+    "src/fs/reg.rs",
+    "src/process/fd_table.rs",
+    "src/fs/syscalls/at/open.rs",
+    "src/fs/syscalls/rw.rs",
+    "src/fs/syscalls/close.rs",
 ]

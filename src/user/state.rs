@@ -14,6 +14,8 @@ pub const MAX_SYSCALLS: usize = 32;
 pub const MAX_RUN_US: u64 = 1_000_000;
 pub const SYS_READ: u64 = 0;
 pub const SYS_WRITE: u64 = 1;
+pub const SYS_CLOSE: u64 = 3;
+pub const SYS_OPENAT: u64 = 257;
 pub const SYS_YIELD: u64 = 24;
 pub const SYS_SLEEP: u64 = 35;
 pub const SYS_EXIT: u64 = 60;
@@ -23,6 +25,13 @@ pub const MAX_SLEEP_US: u64 = 1_000_000;
 pub struct ReadRequest {
     pub address: u64,
     pub length: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileRequest {
+    Open { dirfd: u64, path: u64, flags: u64 },
+    Read { fd: u64, request: ReadRequest },
+    Close { fd: u64 },
 }
 
 pub struct Input {

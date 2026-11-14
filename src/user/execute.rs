@@ -46,13 +46,18 @@ pub enum Stop {
         deadline: u64,
     },
     Reading(ReadRequest),
+    File(crate::user::state::FileRequest),
 }
 
 impl Stop {
     pub(crate) fn resumable(self) -> bool {
         matches!(
             self,
-            Self::QuantumExpired | Self::Yielded | Self::Sleeping { .. } | Self::Reading(_)
+            Self::QuantumExpired
+                | Self::Yielded
+                | Self::Sleeping { .. }
+                | Self::Reading(_)
+                | Self::File(_)
         )
     }
 }
@@ -62,6 +67,7 @@ pub(crate) struct RunOptions {
     pub initial: bool,
     pub resumable: bool,
     pub wake_deadline: Option<u64>,
+    pub files: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -140,6 +146,7 @@ struct Run {
     ended: u64,
     kernel_dispatch: bool,
     resumable: bool,
+    files: bool,
 }
 
 static mut ACTIVE: *mut Run = core::ptr::null_mut();
@@ -228,10 +235,14 @@ pub(crate) fn complete_read(
         Ok(length) => length,
         Err(error) => return Err(Failure::new("user_read_not_ready", error as i32)),
     };
+    copy_output(space, &plan, &bytes[..length]);
+    Ok(length as i64)
+}
+
+fn copy_output(space: &AddressSpace<'_, '_>, plan: &crate::user::state::CopyPlan, bytes: &[u8]) {
     let mut offset = 0;
     for segment in plan.segments() {
-        let count = segment.length.min(length - offset);
-        // The task owns these frames; validation precedes consuming any input.
+        let count = segment.length.min(bytes.len() - offset);
         unsafe {
             core::ptr::copy_nonoverlapping(
                 bytes[offset..].as_ptr(),
@@ -240,11 +251,61 @@ pub(crate) fn complete_read(
             );
         }
         offset += count;
-        if offset == length {
+        if offset == bytes.len() {
             break;
         }
     }
-    Ok(length as i64)
+}
+
+pub(crate) fn complete_file_read(
+    space: &AddressSpace<'_, '_>,
+    file: &mut moss_libkernel::fs::files::OpenFile,
+    request: ReadRequest,
+) -> Result<Result<usize, i64>, Failure> {
+    let pages = page_snapshot(space)?;
+    let plan = match plan_copy_to_user(request.address, request.length, |page| {
+        pages[((page - USER_BASE) / PAGE_SIZE as u64) as usize]
+    }) {
+        Ok(plan) => plan,
+        Err(error) => return Ok(Err(error as i64)),
+    };
+    let mut bytes = [0; MAX_READ];
+    let length = match file.read(&mut bytes[..request.length as usize]) {
+        Ok(length) => length,
+        Err(error) => return Ok(Err(crate::user::files::filesystem_errno(error))),
+    };
+    copy_output(space, &plan, &bytes[..length]);
+    Ok(Ok(length))
+}
+
+pub(crate) fn copy_file_path(
+    space: &AddressSpace<'_, '_>,
+    address: u64,
+    output: &mut [u8; 128],
+) -> Result<Result<usize, i64>, Failure> {
+    let pages = page_snapshot(space)?;
+    for index in 0..=output.len() {
+        let Some(address) = address.checked_add(index as u64) else {
+            return Ok(Err(-14));
+        };
+        let plan = match plan_copy(address, 1, |page| {
+            pages[((page - USER_BASE) / PAGE_SIZE as u64) as usize]
+        }) {
+            Ok(plan) => plan,
+            Err(error) => return Ok(Err(error as i64)),
+        };
+        let byte = unsafe {
+            ((plan.segments()[0].physical_address + space.hhdm_offset()) as *const u8).read()
+        };
+        if byte == 0 {
+            return Ok(Ok(index));
+        }
+        if index == output.len() {
+            return Ok(Err(-36));
+        }
+        output[index] = byte;
+    }
+    unreachable!("bounded path copy returns at its final byte")
 }
 
 pub(crate) fn run_context(
@@ -319,6 +380,7 @@ pub(crate) fn run_context(
             ended: 0,
             kernel_dispatch: crate::runtime::threads::is_dispatcher_context(),
             resumable: options.resumable,
+            files: options.files,
         };
         space.with_user_active(|| {
             let segments = (DS::get_reg(), ES::get_reg(), FS::get_reg(), GS::get_reg());
@@ -500,7 +562,15 @@ pub(crate) fn kutox_user_dispatch(frame: &mut ExceptionFrame) -> Result<bool, Fa
                     address: frame.registers[9],
                     length: frame.registers[12],
                 };
-                if frame.registers[8] != 0 {
+                if frame.registers[8] != 0 && state.files {
+                    state.finish(
+                        frame,
+                        Stop::File(crate::user::state::FileRequest::Read {
+                            fd: frame.registers[8],
+                            request,
+                        }),
+                    );
+                } else if frame.registers[8] != 0 {
                     frame.registers[14] = (-9i64) as u64;
                 } else {
                     match plan_copy_to_user(request.address, request.length, |page| {
@@ -511,6 +581,24 @@ pub(crate) fn kutox_user_dispatch(frame: &mut ExceptionFrame) -> Result<bool, Fa
                         Ok(_) => state.finish(frame, Stop::Reading(request)),
                     }
                 }
+            }
+            crate::user::state::SYS_OPENAT if state.files => {
+                state.finish(
+                    frame,
+                    Stop::File(crate::user::state::FileRequest::Open {
+                        dirfd: frame.registers[8],
+                        path: frame.registers[9],
+                        flags: frame.registers[12],
+                    }),
+                );
+            }
+            crate::user::state::SYS_CLOSE if state.files => {
+                state.finish(
+                    frame,
+                    Stop::File(crate::user::state::FileRequest::Close {
+                        fd: frame.registers[8],
+                    }),
+                );
             }
             SYS_YIELD if state.resumable => {
                 frame.registers[14] = 0;

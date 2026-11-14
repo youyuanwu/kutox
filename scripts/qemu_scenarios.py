@@ -165,6 +165,11 @@ DISK_DEMAND_CASES = {
     "disk-demand-boot-invalid-elf", "disk-demand-boot-io-error", "disk-demand-boot-module",
     "disk-demand-boot-file-io-error", "disk-demand-boot-unused-io-error",
 }
+FILE_BOOT_CASES = {
+    "file-boot", "file-boot-low-memory", "file-boot-io-error", "file-boot-timeout",
+    "file-boot-missing", "file-boot-unsupported", "file-boot-size", "file-boot-module",
+    "file-boot-invalid-fs", "file-boot-invalid-elf",
+}
 DHCP_LIVE_CASES = {"network-dhcp", "network-dhcp-low-memory"}
 
 ASYNC_HARD_CASES = {case: "async-hardening-tests" for case in (
@@ -289,6 +294,7 @@ CASES = {
     **{case: (None, None) for case in STORAGE_CASES},
     **{case: (None, None) for case in DISK_BOOT_CASES},
     **{case: (None, None) for case in DISK_DEMAND_CASES},
+    **{case: (None, None) for case in FILE_BOOT_CASES},
     "storage-tests-disabled": (None, "boot_mode"),
 }
 
@@ -361,7 +367,7 @@ def qemu_command(args, case, capture=None, net_fd=None):
         "-cdrom", str(args.build_dir / "kutox.iso"), "-nic", "none",
         "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
     ]
-    if case in DISK_BOOT_CASES | DISK_DEMAND_CASES and not case.endswith("-module"):
+    if case in DISK_BOOT_CASES | DISK_DEMAND_CASES | FILE_BOOT_CASES and not case.endswith("-module"):
         config = ("limine:config:timeout: 0\nserial: yes\n\n/kutox disk boot\n"
                   "    protocol: limine\n    kernel_path: odd(1:):/boot/kernel\n    cmdline:\n")
         command += ["-smbios", f"type=11,value={config}"]
@@ -442,6 +448,7 @@ def _scenario(case):
         "user-boot": "user-run", "user-boot-low-memory": "user-run",
         **{name: "disk-run" for name in DISK_BOOT_CASES},
         **{name: "disk-demand-run" for name in DISK_DEMAND_CASES},
+        **{name: "file-run" for name in FILE_BOOT_CASES},
         **{name: name.removesuffix("-low-memory") for name in STORAGE_CASES},
         "storage-missing": "storage-run", "storage-unsupported": "storage-run",
         **KERNEL_SUITE_CASES, **RUNTIME_SUITE_CASES, **NETWORK_SUITE_CASES,
@@ -474,7 +481,7 @@ def _scenario(case):
         CONFIG_FAILURES | FAULT_RESULTS | RUNTIME_SUITE_CASES | ASYNC_CORE_CASES
     ) and case not in LIVE_CASES:
         transport = "user"
-    if case in STORAGE_CASES | DISK_BOOT_CASES | DISK_DEMAND_CASES:
+    if case in STORAGE_CASES | DISK_BOOT_CASES | DISK_DEMAND_CASES | FILE_BOOT_CASES:
         transport = None
     nic = ("e1000e" if case == "unsupported" or case in UNCLAIMED_CASES or case.endswith("unsupported") else "e1000") if transport else None
     capture = protocol is not None or case in LIVE_CASES and live_network(case) and LIVE_CASES[case][1]

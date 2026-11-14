@@ -408,6 +408,18 @@ retain exact rejection ledgers. Portable tests cover unaligned/chunked reads,
 range rejection without I/O, byte/request budget exhaustion and device errors.
 The kernel IRQ test also drops the original controller before using its claim.
 
+`file-boot*` exercises the production `file-run` mode in both profiles.
+The separately linked file init and `/etc/message` are formatted into a
+temporary read-only ext2 disk; the original RAM/snapshot init is unchanged.
+Exact API ledgers prove openat/read/close, four descriptor slots, independent
+cursors, lowest-fd reuse, EOF, cross-page copies, bad pointers/descriptors,
+path/flag/write rejection and automatic close on exit. Tests trap actual message
+data EIO and time out an init with an open descriptor. Missing/unsupported disks,
+wrong capacity, malformed filesystem/ELF and unexpected modules require exact
+failures and balanced teardown. Driver callbacks can occur during file I/O,
+but none may follow disk close. Portable real-image tests prove offset reads,
+reader retention by open files, failed-read cursor preservation and final release.
+
 ## Validation tiers
 
 ```sh

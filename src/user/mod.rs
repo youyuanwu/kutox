@@ -19,3 +19,6 @@ pub(crate) mod tasks;
     )
 )]
 pub(crate) mod execute;
+
+#[cfg(target_os = "none")]
+pub(crate) mod files;
