@@ -9,6 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import make_rootfs
 from qemu_scenarios import HEAP_RESULT, MOSS_REVISION, REVISION, qemu_command
 from qemu_validation import validate_result
+from disk_boot_acceptance import validate_disk_boot, READ, CLOSED, SHUTDOWN, EXIT, FAILURES
+from test_storage_acceptance import callbacks, SYMBOLS
 
 
 def boot_log():
@@ -30,6 +32,73 @@ def boot_log():
 
 
 class BootFilesystemTests(unittest.TestCase):
+    def test_disk_boot_uses_same_iso_without_a_limine_rootfs_module(self):
+        args = SimpleNamespace(qemu="qemu", build_dir=Path("build"))
+        for case in ("disk-boot", "disk-boot-low-memory", "disk-boot-io-error"):
+            command = qemu_command(args, case)
+            self.assertEqual(command[command.index("-cdrom") + 1], "build/kutox.iso")
+            self.assertIn("name=opt/kutox/test-mode,string=disk-run", command)
+            config = command[command.index("-smbios") + 1]
+            self.assertIn("type=11,value=limine:config:", config)
+            self.assertIn("kernel_path: odd(1:):/boot/kernel", config)
+            self.assertNotIn("module_path", config)
+            self.assertNotIn("-netdev", command)
+        self.assertNotIn("-smbios", qemu_command(args, "user-boot"))
+
+    def test_disk_boot_requires_exact_disk_retirement_and_user_execution_order(self):
+        foundation = boot_log().split("BOOT_FS_OK")[0].splitlines()[2:]
+        foundation[2] = "BOOT_MODE mode=disk-run source=fw_cfg"
+        prefix = "\n".join(foundation) + "\n"
+        fs = "BOOT_FS_OK source=moss-ext4plus format=ext2 image_bytes=2097152 path=/bin/init file_bytes=4744"
+        proof = [READ, CLOSED, fs, "INIT: hello from /bin/init", SHUTDOWN, EXIT, "USER_BOOT_OK exit=0"]
+        output = prefix + callbacks() + "\n".join(proof) + "\n"
+        for case in ("disk-boot", "disk-boot-low-memory"):
+            validate_disk_boot(case, 1, output, SYMBOLS)
+        for marker in proof:
+            for changed in (output.replace(marker + "\n", ""),
+                            output.replace(marker, marker + "\n" + marker)):
+                with self.subTest(marker=marker), self.assertRaises(AssertionError):
+                    validate_disk_boot("disk-boot", 1, changed, SYMBOLS)
+        for changed in (
+            output.replace("module=absent", "module=present"),
+            output.replace("driver=linux-virtio-blk", "driver=native"),
+            output.replace("file_bytes=4744", "file_bytes=65537"),
+            output.replace("address=100", "address=999"),
+            output.replace("frames=balanced", "frames=leaked"),
+            output.replace(CLOSED + "\n", "").replace(SHUTDOWN, SHUTDOWN + "\n" + CLOSED),
+            output + "# BLOCK_ERROR operation=result_io code=-5\n",
+            "limine: Loading module `boot():/boot/rootfs.img`...\n" + output,
+        ):
+            with self.subTest(changed=changed), self.assertRaises(AssertionError):
+                validate_disk_boot("disk-boot", 1, changed, SYMBOLS)
+        with self.assertRaises(AssertionError):
+            validate_disk_boot("disk-boot", 3, output, SYMBOLS)
+
+    def test_disk_boot_failures_require_balanced_teardown_and_no_success_fallback(self):
+        foundation = boot_log().split("BOOT_FS_OK")[0].splitlines()[2:]
+        foundation[2] = "BOOT_MODE mode=disk-run source=fw_cfg"
+        prefix = "\n".join(foundation) + "\n"
+        for case, error in FAILURES.items():
+            evidence = "" if case in ("disk-boot-missing", "disk-boot-module", "disk-boot-unsupported") else callbacks()
+            if case == "disk-boot-unsupported":
+                evidence += "# BLOCK_ERROR operation=storage_device_features code=-95\n"
+            elif case == "disk-boot-io-error":
+                evidence += "# BLOCK_ERROR operation=result_io code=-5\n"
+            elif case in ("disk-boot-invalid-fs", "disk-boot-invalid-elf"):
+                evidence += READ + "\n" + CLOSED + "\n"
+            if case == "disk-boot-invalid-fs":
+                evidence += "# BOOT_FS_ERROR error=Image\n"
+            output = prefix + evidence + SHUTDOWN + "\nE1000_MAC_FAIL stage=" + error + "\n"
+            validate_disk_boot(case, 3, output, SYMBOLS)
+            for changed in (
+                output.replace(SHUTDOWN + "\n", ""),
+                output.replace(SHUTDOWN, SHUTDOWN + "\n" + SHUTDOWN),
+                output + "USER_BOOT_OK exit=0\n",
+                output.replace("code=-", "code=0"),
+            ):
+                with self.subTest(case=case), self.assertRaises(AssertionError):
+                    validate_disk_boot(case, 3, changed, SYMBOLS)
+
     def test_real_image_contains_the_requested_file(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

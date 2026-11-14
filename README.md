@@ -67,7 +67,10 @@ An opt-in [filesystem boot](docs/kernel-implementation.md#read-only-boot-filesys
 now reads `/bin/init` from a 2-MiB ext2 Limine module using Moss's `ext4plus`
 baseline, then executes it with the existing ELF loader. The separately linked
 [init program](userspace/init.S) is packaged as a file, not embedded in the
-kernel. Normal boot still starts networking without running userspace.
+kernel. Explicit [disk boot](docs/kernel-implementation.md#read-only-disk-rootfs-boot)
+can instead read the bounded image through unchanged Linux VirtIO, close the disk,
+then mount the snapshot and execute `/bin/init` without a Limine rootfs module.
+Normal boot still starts networking without running userspace.
 General file/socket I/O and a full process runtime remain absent.
 
 The scoped [kernel runtime](src/runtime/kernel_runtime.rs) now retains the dispatcher,
@@ -307,8 +310,20 @@ The host creates temporary project-owned read-only disks; no host disk device
 is used. `storage-run` works in both profiles; `storage-tests` adds exact bytes,
 real device EIO, DMA-map rollback, lost-IRQ timeout/reset/reprobe and balanced
 teardown. Both run at 128/32 MiB. Default network boot remains unchanged.
-Filesystem/program loading still uses the Limine RAM module: disk-backed
-`/bin/init` boot is the next, separate milestone.
+`user-run` preserves Limine RAM-rootfs boot. `disk-run` instead requires an exact
+2-MiB ext2 read-only disk and no rootfs module; it takes a fallibly allocated
+snapshot in 4-KiB reads, retires the disk, then uses the same filesystem/ELF loader.
+This is bounded snapshot boot, not on-demand disk filesystem I/O.
+
+```sh
+python3 scripts/check.py full --profiles both --scope guest \
+  --select 'disk-boot*'
+```
+
+The runner reuses the same ISO with a Limine SMBIOS configuration override that
+loads only `odd(1:):/boot/kernel`, and attaches a temporary read-only root disk.
+Missing/unsupported devices, wrong image size, malformed filesystem/ELF, real
+EIO, unexpected modules and 32-MiB cleanup are checked in both profiles.
 
 ### Test code and build profiles
 

@@ -68,6 +68,11 @@ PROFILE_CHECKS = (
 
 
 GUEST_CHECKS = (
+    *(guest(case, case, 60, 65, ('ON', 'OFF')) for case in (
+        'disk-boot', 'disk-boot-low-memory', 'disk-boot-missing', 'disk-boot-unsupported',
+        'disk-boot-size', 'disk-boot-invalid-fs', 'disk-boot-invalid-elf',
+        'disk-boot-io-error', 'disk-boot-module',
+    )),
     guest('storage-run', 'storage-run', 30, 35, ('ON', 'OFF')),
     guest('storage-run-low-memory', 'storage-run-low-memory', 30, 35, ('ON', 'OFF')),
     guest('storage-tests', 'storage-tests', 30, 35, ('ON',)),

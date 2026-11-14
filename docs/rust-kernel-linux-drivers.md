@@ -526,7 +526,8 @@ The selected storage driver is Linux `virtio-blk` at the same pinned
 device, one split virtqueue and one outstanding read against a read-only raw
 disk, with INTx rather than a new MSI-X implementation. There are no partitions,
 writes or general file syscalls. **The dependency audit, bounded block services
-and real Linux storage-driver reads are implemented; disk-backed boot is not.**
+and real Linux storage-driver reads are implemented, including bounded
+read-only disk-rootfs snapshot boot.**
 
 [linux_storage_check.py](../scripts/linux_storage_check.py) follows the e1000
 compile-only boundary: direct Clang compilation for `x86_64-unknown-none` using
@@ -664,11 +665,14 @@ The runtime implementation should proceed in separately validated stages:
 2. Reuse original Linux VirtIO core/ring/modern PCI and block callbacks. Adapt
    PCI resources, coherent DMA and INTx; prove negotiation, an actual disk read,
    error/timeout handling and reset/IRQ/DMA teardown before recycling memory.
-3. Expose a narrow owned block-read interface to the existing filesystem
-   adaptation, retaining RAM-backed boot and its current bounds.
-4. Prove `/bin/init` execution with no rootfs Limine module, using only a
-   project-owned read-only QEMU disk. Cover absent/unsupported devices, invalid
-   ranges/media, I/O failure and low-memory cleanup in both image profiles.
+3. The owned block-read interface now supplies a bounded 2-MiB snapshot to the
+   existing filesystem adaptation, retaining RAM-backed boot and its current
+   bounds. The disk closes before mounting/ELF execution; on-demand filesystem
+   reads remain deferred.
+4. `disk-boot*` now proves `/bin/init` execution with no rootfs Limine module,
+   using only a project-owned read-only QEMU disk. Both image profiles cover
+   absent/unsupported devices, wrong capacity, malformed media/ELF, actual I/O
+   failure, unexpected modules and low-memory cleanup.
 
 Ginux remains a design/test reference, not copied driver implementation.
 No new native Rust descriptor loop substitutes for the Linux storage driver.

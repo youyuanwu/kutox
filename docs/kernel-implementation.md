@@ -230,13 +230,13 @@ The existing whole-ISO/kernel/profile identity manifest still protects packaging
 checks its exact size and its whole physical span against Limine
 EXECUTABLE_AND_MODULES memory, then borrows the mapped bytes immutably. Those
 frames are not USABLE and are never handed to the physical allocator. The
-module is permanent boot storage: every image boot reserves these 2 MiB,
+module is permanent boot storage: boots using the default Limine configuration reserve these 2 MiB,
 but default networking and other modes do not mount it or start a user program.
 There is no full-image allocation/copy or bootloader-memory reclamation.
 
 The adapter exposes only immutable byte reads with checked conversion/addition
 and whole-range validation before copying. It supplies no `Ext4Write` backend.
-Unlike Moss's async filesystem adapter, this RAM-only boot path enables
+Unlike Moss's async filesystem adapter, these snapshot and RAM-module boot paths enable
 ext4plus's `sync` feature, disables its default multithreaded feature, and runs
 before kernel workers/CPL3. It needs no new executor, waker or scheduler.
 The primitive Moss crate remains dependency-free without its optional `fs`
@@ -268,8 +268,42 @@ file using `debugfs`, and reject malformed/duplicate/reordered execution
 proofs. Portable tests mount a real generated ext2 image, verify cross-block
 file bytes, reject missing/directories/symlinks/empty/oversized files and bad paths,
 and exercise truncated/unsupported geometry and out-of-range RAM reads.
-The filesystem modes add no kernel cases. Disk hardware, partitions, writes,
+The filesystem modes add no kernel cases. Partitions, writes,
 general VFS/file syscalls, dynamic ELF loading and init supervision are deferred.
+
+## Read-only disk rootfs boot
+
+Explicit `disk-run` uses the existing owned Linux VirtIO disk scope to read one
+exact 2-MiB volume (4096 sectors), with one retained request at a time.
+[The boot service](../src/boot/fs.rs) fallibly allocates a full-image snapshot
+and fills it in 4-KiB reads. The 100-ms deadline, IRQ completion, request
+ownership and reset/error behavior are those of the existing native disk API;
+no new descriptor algorithm or raw lifetime bridge is introduced.
+
+The disk session, DMA backing, IRQ and platform parents close before mounting
+the snapshot. Then the same ext2 admission, `/bin/init` lookup, ELF loader and
+bounded user dispatcher used by `user-run` execute the file. The filesystem,
+snapshot and temporary file are dropped before entering CPL3. All temporary
+frames and heap allocations must balance on both success and ordinary errors.
+This deliberately costs a temporary 2 MiB instead of adding a long-lived
+filesystem reader or changing the upstream reader's `'static` ownership.
+It is not on-demand disk filesystem I/O.
+
+Any Limine rootfs module is rejected in disk mode; there is no RAM fallback.
+The QEMU runner keeps the shared ISO but supplies a
+[Limine SMBIOS OEM-string configuration](https://github.com/Limine-Bootloader/Limine/blob/v12.0.2/CONFIG.md#config-via-smbios)
+which loads only `odd(1:):/boot/kernel`. This explicit optical path is necessary
+because BIOS SMBIOS configurations have no `boot():` drive. The host attaches
+the generated ext2 image as a project-owned read-only VirtIO disk and checks
+that its bytes never change.
+
+`disk-boot` and `disk-boot-low-memory` prove original Linux callback identities,
+disk read/close before filesystem loading, actual `/bin/init` output/exit and
+balanced teardown in ON and OFF. Negative boots cover absent/unsupported
+devices, wrong capacity, malformed ext2/ELF, a real EIO at sector 64 and
+unexpected rootfs modules. Exact proofs and error ledgers are checked by
+[disk_boot_acceptance.py](../scripts/disk_boot_acceptance.py).
+Normal networking, RAM-rootfs boot and raw `storage-run` remain unchanged.
 
 ## Bounded block services
 
@@ -456,8 +490,8 @@ heap/frame balance and all storage/IRQ/MMIO owners. The host checks original
 callback addresses, exact proof placement, the complete rejection ledger,
 read-only backing and production/fixture separation at 128/32 MiB.
 
-This is native kernel disk I/O, not disk-backed boot. The existing filesystem
-and `/bin/init` loader continue to use the immutable Limine RAM module.
+This scoped disk API also supplies the bounded snapshot used by
+[disk-rootfs boot](#read-only-disk-rootfs-boot). RAM-rootfs boot remains available.
 
 ## Shared Linux compatibility boundary
 
