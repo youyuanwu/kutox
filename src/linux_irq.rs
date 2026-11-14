@@ -21,10 +21,12 @@ struct Registration {
     number: u32,
     handler: Option<Handler>,
     device: usize,
+    generation: u64,
     running: bool,
 }
 
 static BINDING: SpinLockIrq<Option<Registration>, X86Cpu> = SpinLockIrq::new(None);
+static GENERATION: AtomicU64 = AtomicU64::new(0);
 static HANDLED: AtomicU64 = AtomicU64::new(0);
 static UNHANDLED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "guest-tests")]
@@ -56,6 +58,7 @@ impl<'controller, 'a, 'storage> BoundIrq<'controller, 'a, 'storage> {
             number: gsi,
             handler: None,
             device: 0,
+            generation: 0,
             running: false,
         });
         Ok(Self { claim })
@@ -167,8 +170,15 @@ pub(crate) unsafe fn request_irq(
         if binding.handler.is_some() {
             return -16;
         }
+        let generation = match GENERATION.try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+            value.checked_add(1)
+        }) {
+            Ok(previous) => previous + 1,
+            Err(_) => return -75,
+        };
         binding.handler = handler;
         binding.device = device;
+        binding.generation = generation;
         crate::linux_driver::trace(8, handler.expect("IRQ handler missing") as usize, device, 0);
         binding.token
     };
@@ -177,6 +187,26 @@ pub(crate) unsafe fn request_irq(
 }
 
 pub(crate) fn operation(number: u32, device: usize, free: u32) -> i32 {
+    operate(number, device, free, None)
+}
+
+pub(crate) fn registration_generation(number: u32, device: usize) -> Result<u64, i32> {
+    let binding = BINDING.lock_save_irq();
+    let binding = binding
+        .as_ref()
+        .filter(|binding| binding.number == number && binding.handler.is_some())
+        .ok_or(-6)?;
+    if binding.device != device {
+        return Err(-22);
+    }
+    Ok(binding.generation)
+}
+
+pub(crate) fn registered_operation(number: u32, device: usize, generation: u64, free: bool) -> i32 {
+    operate(number, device, u32::from(free), Some(generation))
+}
+
+fn operate(number: u32, device: usize, free: u32, generation: Option<u64>) -> i32 {
     if threads::check_boot_or_thread_context().is_err() {
         return -106;
     }
@@ -185,12 +215,16 @@ pub(crate) fn operation(number: u32, device: usize, free: u32) -> i32 {
     }
     let registration = {
         let binding = BINDING.lock_save_irq();
-        let Some(binding) = binding
-            .as_ref()
-            .filter(|binding| binding.number == number && (free == 0 || binding.handler.is_some()))
-        else {
+        let Some(binding) = binding.as_ref().filter(|binding| binding.number == number) else {
             return -6;
         };
+        if generation.is_some_and(|generation| generation == 0 || generation != binding.generation)
+        {
+            return -116;
+        }
+        if free == 1 && binding.handler.is_none() {
+            return -6;
+        }
         if free == 1 && binding.device != device {
             return -22;
         }
@@ -210,6 +244,7 @@ pub(crate) fn operation(number: u32, device: usize, free: u32) -> i32 {
         assert!(!binding.running);
         binding.handler = None;
         binding.device = 0;
+        binding.generation = 0;
     }
     0
 }

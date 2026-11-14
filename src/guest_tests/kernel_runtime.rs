@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::{cpu::X86Cpu, guest_tests::TestCase, time};
-use core::{ffi::c_void, sync::atomic::AtomicUsize};
+use core::sync::atomic::AtomicUsize;
 use kutox::driver_registry::ServiceId;
 use moss_libkernel::CpuOps;
 
@@ -250,8 +250,7 @@ fn idle(timer: &irq::Timer<'_, '_>) -> Result<(), Failure> {
     Ok(())
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn kutox_guest_runtime_work(_: *mut c_void) {
+fn runtime_work() {
     threads::tests::check_current_stack().unwrap();
     assert_eq!(X86Cpu::irq_lock_depth(), 0);
     assert_eq!(linux_deferred::worker_count(), 2);
@@ -295,21 +294,20 @@ fn client(_: usize) {
     serial::print(format_args!(
         "# RUNTIME_WAKE irq=1 published=1 functions=5 bound=0 context=thread\n"
     ));
-    let object = alloc::boxed::Box::new([0usize; 1]);
-    let address = object.as_ptr() as usize;
-    let key =
-        unsafe { crate::linux_deferred::register_work(address, Some(kutox_guest_runtime_work)) };
-    assert!(key > 0);
+    let mut work = crate::linux_compat::callbacks::Work::new(runtime_work).unwrap();
     let count = if MODE.load(Ordering::Relaxed) == 2 {
         2
     } else {
         1
     };
     for expected in 1..=count {
-        assert_eq!(
-            { crate::linux_deferred::work_operation(address, key as u64, 0, 0) },
-            1
-        );
+        assert!(work.schedule(0).unwrap());
+        if expected == 1 {
+            let failure = work.close().unwrap_err();
+            assert_eq!(failure.code, -103);
+            work = failure.retained;
+            assert!(!work.schedule(0).unwrap());
+        }
         loop {
             let token = WORK_WAKE.prepare();
             if WORK.load(Ordering::Acquire) == expected {
@@ -327,15 +325,8 @@ fn client(_: usize) {
             ));
         }
     }
-    assert_eq!(
-        { crate::linux_deferred::work_operation(address, key as u64, 1, 0) },
-        0
-    );
-    assert_eq!(
-        { crate::linux_deferred::work_operation(address, key as u64, 2, 0) },
-        0
-    );
-    drop(object);
+    assert!(!work.cancel_and_join().unwrap());
+    work.close().unwrap();
     serial::print(format_args!(
         "# RUNTIME_WORK callbacks={count} workers_retained=2 objects_retired=1\n"
     ));

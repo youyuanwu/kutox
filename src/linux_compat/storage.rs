@@ -319,7 +319,9 @@ pub unsafe extern "C" fn queue_work(queue: *mut c_void, work: *mut Work) -> bool
         c"storage_work_capacity",
     );
     let queued = checked(
-        crate::linux_deferred::local_work(work as usize, generation, 0),
+        unsafe { callbacks_raw::work(work as usize, generation) }
+            .and_then(|registration| registration.queue_local())
+            .map_or_else(|code| code, i32::from),
         c"local_work_enqueue",
     ) != 0;
     if queued {
@@ -342,7 +344,9 @@ pub unsafe extern "C" fn flush_work(work: *mut Work) -> bool {
         (*state()).running = true;
     }
     let result = checked(
-        crate::linux_deferred::local_work(work as usize, generation, 1),
+        unsafe { callbacks_raw::work(work as usize, generation) }
+            .and_then(|registration| registration.flush_local())
+            .map_or_else(|code| code, i32::from),
         c"local_work_flush",
     ) != 0;
     unsafe {

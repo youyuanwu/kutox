@@ -428,6 +428,9 @@ from the selected Linux-facing C ABI providers. Genuine C providers use
 
 - `execution.rs`: scalar atomics/barriers, mutex/spinlock/completion wrappers,
   sleep/IRQ/work entry points, reusing existing native registries and waiters.
+- `callbacks.rs`: unsafe-free work/NAPI/IRQ registration handles, typed operations,
+  explicit join/retirement and retained failures. `callbacks_raw.rs` attaches
+  Linux-owned backing and supplies address-stable backing for native Rust work.
 - `pci.rs`: stable owned endpoint objects, matching/probe/remove, driver data,
   resource/config access and MMIO dispatch for both original drivers.
 - `memory.rs`: unsafe-free owned allocations, checked ranges and typed device,
@@ -542,6 +545,19 @@ masking/synchronizing/freeing the IRQ. Their Linux C signatures are unchanged.
 The native coherent-allocation backend returns a Rust `Result` containing the
 CPU/DMA addresses; raw output-pointer writes remain only at the actual C
 allocation boundary, which preserves unchanged outputs on failure.
+Callback registration handles are non-cloneable and BSP-local. Native Rust work
+accepts a plain Rust function and owns its stable callback metadata; failed
+registration frees only unpublished metadata. Cancel/join and consuming close
+are separate operations, and a failed close returns the retained owner. Dropping
+an owner never unregisters or frees backing still reachable by a callback.
+Linux-owned work, ABI NAPI objects and IRQ data enter through explicit unsafe
+attachment/adoption contracts; C retains their backing until retirement.
+NAPI queue-association checks remain in the Linux adapter. Original Linux
+callback pointers and signatures are unchanged, and no state borrow spans a
+callback. IRQ owner operations validate a monotonic registration generation
+before masking or synchronizing, so a stale owner cannot retire a replacement
+at the same IRQ/data address. Legacy C IRQ synchronization without a handler
+remains supported. No second registration registry is introduced.
 Native Rust-only helpers such as [net_device::wake](../src/net_device.rs) may
 inline out of the optimized kernel; guest acceptance checks their wake behavior
 rather than requiring a standalone helper symbol. Original driver callback and

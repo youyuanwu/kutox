@@ -315,8 +315,13 @@ variadic services. Keep independent C fixtures for those real boundaries and
 their output/failure contracts.
 
 Keep C-typed callback slots even without a named C relocation. For example,
-[kutox_guest_runtime_work](../src/guest_tests/kernel_runtime.rs) is passed
-by address into a C-compatible work callback slot.
+the original-signature callbacks in the
+[execution fixtures](../src/guest_tests/compat_execution.rs) are passed by
+address into work/NAPI/IRQ slots. Native runtime work now uses an owned
+[safe work registration](../src/linux_compat/callbacks.rs) with a plain Rust
+function; its raw callback trampoline is confined to the attachment adapter.
+The former `kutox_guest_runtime_work` export and symbol requirement are removed,
+not preserved solely for a name check.
 
 Keep the boot entry in [linker.ld](../linker.ld), exception and thread assembly
 calls, and the guest thread-probe calling convention. Stable Rust-only labels

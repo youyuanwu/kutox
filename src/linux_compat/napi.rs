@@ -15,15 +15,23 @@ fn state() -> *mut Bindings {
 }
 unsafe fn call(napi: *mut Napi, operation: u32, done: i32) -> i32 {
     require(!napi.is_null(), c"napi_null");
-    checked(
-        unsafe {
-            crate::linux_deferred::napi_operation(
-                napi as usize,
-                (*napi).generation,
-                operation,
-                done,
-            )
+    let result = unsafe { callbacks_raw::napi(napi as usize, (*napi).generation) }.and_then(
+        |mut registration| match operation {
+            0 => registration.enable().map(|()| false),
+            1 => registration.prepare(),
+            2 => registration.schedule().map(|()| false),
+            3 => registration.complete(done),
+            4 => registration.disable_and_join().map(|()| false),
+            5 => registration
+                .close()
+                .map(|()| false)
+                .map_err(|failure| failure.code),
+            6 => registration.validate().map(|()| false),
+            _ => Err(-100),
         },
+    );
+    checked(
+        result.map_or_else(|code| code, i32::from),
         c"napi_operation",
     )
 }
@@ -40,11 +48,13 @@ pub unsafe extern "C" fn netif_napi_add(
             Some(slot) => slot,
             None => crate::platform_fail(c"napi_capacity"),
         };
-        let generation = crate::linux_deferred::register_napi(napi as usize, poll);
-        require(generation > 0, c"napi_init");
+        let generation = match callbacks_raw::attach_napi(napi as usize, poll) {
+            Ok(registration) => registration.into_abi(),
+            Err(_) => crate::platform_fail(c"napi_init"),
+        };
         napi.write(Napi {
             poll,
-            generation: generation as u64,
+            generation,
             device,
             irq: 0,
         });

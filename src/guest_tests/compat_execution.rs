@@ -1,4 +1,4 @@
-use super::{abi::*, execution::*, napi::*};
+use super::{abi::*, callbacks, callbacks_raw, execution::*, napi::*};
 use crate::{linux_deferred as deferred, linux_irq, linux_runtime as native};
 use core::{
     ffi::c_void,
@@ -66,18 +66,17 @@ pub(crate) fn work() {
         let mut fixture: WorkFixture = core::mem::zeroed();
         let f = ptr::addr_of_mut!(fixture);
         WORK.store(f, Ordering::Release);
-        let mut capacity: [Work; 33] = core::mem::zeroed();
-        for item in &mut capacity[..32] {
+        let mut capacity: [Work; 32] = core::mem::zeroed();
+        for item in &mut capacity {
             init_work(item, Some(never_callback));
         }
+        let before = crate::heap::global().stats();
         assert_eq!(
-            deferred::register_work(
-                ptr::addr_of_mut!(capacity[32]) as usize,
-                Some(never_callback)
-            ),
+            callbacks::Work::new(|| panic!("unregistered work executed")).unwrap_err(),
             -101
         );
-        for item in &mut capacity[..32] {
+        assert_eq!(crate::heap::global().stats(), before);
+        for item in &mut capacity {
             destroy_work(item);
         }
         let work = ptr::addr_of_mut!((*f).work);
@@ -228,6 +227,22 @@ pub(crate) fn napi() {
             -102
         );
         netif_napi_del(napi);
+        let owner = callbacks_raw::attach_napi(napi as usize, Some(poll_callback)).unwrap();
+        owner.enable().unwrap();
+        let failure = owner.close().unwrap_err();
+        assert_eq!(failure.code, -103);
+        let mut owner = failure.retained;
+        owner.disable_and_join().unwrap();
+        let stale_generation = owner.generation.get();
+        owner.close().unwrap();
+        let mut replacement =
+            callbacks_raw::attach_napi(napi as usize, Some(poll_callback)).unwrap();
+        let stale = callbacks_raw::napi(napi as usize, stale_generation).unwrap();
+        assert_eq!(stale.prepare(), Err(-102));
+        assert_eq!(stale.close().unwrap_err().code, -102);
+        replacement.enable().unwrap();
+        replacement.disable_and_join().unwrap();
+        replacement.close().unwrap();
         POLL.store(ptr::null_mut(), Ordering::Release);
         deferred::stop_workers();
     }
@@ -271,6 +286,12 @@ unsafe extern "C" fn irq_handler(irq: i32, device: *mut c_void) -> i32 {
         assert_eq!(device, f.cast());
         assert_eq!(native::context_code(), -57);
         assert_eq!(linux_irq::operation(number, device as usize, 1), -106);
+        let failure = callbacks_raw::irq(number, device as usize)
+            .unwrap()
+            .close()
+            .unwrap_err();
+        assert_eq!(failure.code, -106);
+        assert_eq!(failure.retained.synchronize(), Err(-106));
         let mut lock = Spinlock { held: 0, owner: 0 };
         let flags = kutox_spin_lock_irqsave(&mut lock);
         assert_eq!(flags, 0);
@@ -336,6 +357,7 @@ pub(crate) fn irq() {
             -16
         );
         assert_eq!(linux_irq::operation(number, 1, 1), -22);
+        let stale = callbacks_raw::irq(number, f as usize).unwrap();
         nic_write(0xd0, 0x10);
         nic_write(0xc8, 0x10);
         synchronize_irq(number);
@@ -359,6 +381,21 @@ pub(crate) fn irq() {
         free_irq(number, f.cast());
         assert_eq!((*f).calls, 3);
         assert_eq!(linux_irq::operation(number, 0, 0), 0);
+        assert_eq!(
+            request_irq(
+                number,
+                Some(irq_handler),
+                128,
+                c"replacement".as_ptr(),
+                f.cast()
+            ),
+            0
+        );
+        let replacement = callbacks_raw::irq(number, f as usize).unwrap();
+        assert_eq!(stale.synchronize(), Err(-116));
+        assert_eq!(stale.close().unwrap_err().code, -116);
+        replacement.synchronize().unwrap();
+        replacement.close().unwrap();
         cancel_work_sync(work);
         napi_disable(napi);
         destroy_work(work);
