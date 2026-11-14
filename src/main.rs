@@ -33,7 +33,7 @@ use arch::x86_64::{exceptions, io, serial};
 use boot::fs as boot_fs;
 use core::{arch::asm, ffi::CStr, panic::PanicInfo};
 use drivers::{init as driver_init, linux_driver, pci};
-use kutox::fw_cfg::BootMode;
+use kutox::boot::fw_cfg::BootMode;
 use memory::heap;
 use runtime::{kernel_runtime, threads, time};
 use storage::block_services;
@@ -249,27 +249,29 @@ fn probe() -> Result<BootOutcome, Failure> {
         return Err(Failure::new("heap_cleanup", -1));
     }
     println!("BOOT_MEMORY_TABLES allocated={table_count} released={table_count}");
-    result.permanent_mac().map(BootOutcome::Mac)
+    permanent_mac(&result).map(BootOutcome::Mac)
 }
 
-impl ProbeResult {
-    fn permanent_mac(&self) -> Result<[u8; 6], Failure> {
-        let stage = match self.stage {
-            0 => "bridge_validate",
-            1 => "mac_type",
-            2 => "eeprom_params",
-            3 => "read_eeprom",
-            4 => "complete",
-            _ => return Err(Failure::new("bridge_stage", -1)),
-        };
-        if self.code != 0 {
-            return Err(Failure::new(stage, self.code));
-        }
-        if self.stage != 4 || self.mac == [0; 6] || self.mac[0] & 1 != 0 || self.eeprom_reads == 0 {
-            return Err(Failure::new("mac_validation", -1));
-        }
-        Ok(self.mac)
+fn permanent_mac(result: &ProbeResult) -> Result<[u8; 6], Failure> {
+    let stage = match result.stage {
+        0 => "bridge_validate",
+        1 => "mac_type",
+        2 => "eeprom_params",
+        3 => "read_eeprom",
+        4 => "complete",
+        _ => return Err(Failure::new("bridge_stage", -1)),
+    };
+    if result.code != 0 {
+        return Err(Failure::new(stage, result.code));
     }
+    if result.stage != 4
+        || result.mac == [0; 6]
+        || result.mac[0] & 1 != 0
+        || result.eeprom_reads == 0
+    {
+        return Err(Failure::new("mac_validation", -1));
+    }
+    Ok(result.mac)
 }
 
 pub(crate) fn check_boot_context() {
