@@ -1,24 +1,14 @@
 //! Guest-only acceptance fixtures; not production driver code.
 
 use crate::{
-    Failure,
-    arch::x86_64::irq::{self, LocalApic, external::IoApic},
-    arch::x86_64::platform,
-    arch::x86_64::serial,
-    boot::BootInfo,
-    drivers::linux_deferred,
-    drivers::linux_driver::{self, DriverHandle, control},
-    drivers::linux_irq::BoundIrq,
-    drivers::linux_runtime,
-    drivers::memory as driver_memory,
-    drivers::pci,
-    drivers::platform as driver_platform,
-    linux_compat::{
-        lifecycle::Handle as LifecycleHandle,
-        packet_tx::{self, State as PacketState, Submission, Tx},
-    },
-    memory,
-    runtime::threads,
+    Failure, arch::x86_64::irq, arch::x86_64::irq::LocalApic, arch::x86_64::irq::external::IoApic,
+    arch::x86_64::platform, arch::x86_64::serial, boot::limine::BootInfo, drivers::linux_deferred,
+    drivers::linux_driver, drivers::linux_driver::DriverHandle, drivers::linux_driver::control,
+    drivers::linux_irq::BoundIrq, drivers::linux_runtime, drivers::memory as driver_memory,
+    drivers::pci, drivers::platform as driver_platform,
+    linux_compat::lifecycle::Handle as LifecycleHandle, linux_compat::packet_tx,
+    linux_compat::packet_tx::State as PacketState, linux_compat::packet_tx::Submission,
+    linux_compat::packet_tx::Tx, memory::paging as memory, runtime::threads,
 };
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use moss_libkernel::CpuOps;

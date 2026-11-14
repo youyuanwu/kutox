@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::{
-    Failure, arch::x86_64::cpu, arch::x86_64::irq, boot::BootInfo, memory,
-    runtime::threads::Scheduler, runtime::time,
+    Failure, arch::x86_64::cpu, arch::x86_64::irq, boot::limine::BootInfo,
+    memory::paging as memory, runtime::threads::Scheduler, runtime::time,
 };
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

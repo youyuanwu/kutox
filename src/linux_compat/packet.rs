@@ -1110,7 +1110,7 @@ fn fragment_slot(pointer: *const c_void) -> usize {
                 return slot;
             }
         }
-        crate::platform_fail(c"fragment_provenance")
+        crate::boot::entry::platform_fail(c"fragment_provenance")
     }
 }
 #[unsafe(no_mangle)]

@@ -66,7 +66,7 @@ affect a replacement request.
 
 ## Protocol ownership and response admission
 
-The [portable control and owner state](../src/portable/net/dns_state.rs) retain four
+The [portable control and owner state](../src/net/dns_state.rs) retain four
 one-query smoltcp DNS sockets. Each has one socket-storage entry and one query
 slot; only the protocol owner starts or cancels that query. The query vector
 never needs to grow. Separate socket sets let the staged device record each

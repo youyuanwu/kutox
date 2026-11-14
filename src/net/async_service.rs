@@ -1,16 +1,17 @@
 //! Owned packet queues around one guarded caller of the Linux-backed native API.
 
 use crate::{
-    Failure,
-    arch::x86_64::cpu::{self, X86Cpu},
-    arch::x86_64::exceptions,
-    arch::x86_64::serial,
-    net::device as net_device,
-    runtime::async_runtime,
-    runtime::async_sync,
-    runtime::kernel_runtime,
-    runtime::threads,
+    Failure, arch::x86_64::cpu, arch::x86_64::cpu::X86Cpu, arch::x86_64::exceptions,
+    arch::x86_64::serial, net::device as net_device, runtime::async_runtime, runtime::async_sync,
+    runtime::kernel_runtime, runtime::threads,
 };
+use crate::{
+    net::async_state::MAX_PACKETS, net::async_state::MAX_REQUESTS, net::async_state::PacketId,
+    net::async_state::PacketPool, net::async_state::Phase, net::async_state::RX_CAPACITY,
+    net::async_state::RequestId, net::async_state::Requests, net::async_state::RxQueue,
+    net::async_state::SessionKey,
+};
+pub use crate::{net::state::Error, net::state::Info};
 use alloc::alloc::{alloc_zeroed, dealloc};
 use core::{
     alloc::Layout,
@@ -22,11 +23,6 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll},
 };
-use kutox::net::async_state::{
-    MAX_PACKETS, MAX_REQUESTS, PacketId, PacketPool, Phase, RX_CAPACITY, RequestId, Requests,
-    RxQueue, SessionKey,
-};
-pub use kutox::net::state::{Error, Info};
 use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
 
 struct Control {
@@ -224,7 +220,7 @@ impl Packet {
         allow(dead_code, reason = "Native client packet construction")
     )]
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
-        kutox::net::state::Frame::validate(bytes)?;
+        crate::net::state::Frame::validate(bytes)?;
         let mut packet = Self::empty()?;
         packet.buffer_mut()[..bytes.len()].copy_from_slice(bytes);
         packet.length = bytes.len();
@@ -241,7 +237,7 @@ impl Packet {
         if length > 1514 {
             return Err(Error::Unsupported);
         }
-        kutox::net::state::Frame::validate(&self.buffer_mut()[..length])?;
+        crate::net::state::Frame::validate(&self.buffer_mut()[..length])?;
         self.length = length;
         Ok(())
     }
@@ -351,7 +347,7 @@ impl Session {
     pub fn submit(self, packet: Packet) -> Result<TxFuture, (Error, Packet)> {
         if let Err(error) = copy_context().and_then(|()| {
             self.check()
-                .and_then(|()| kutox::net::state::Frame::validate(packet.bytes()))
+                .and_then(|()| crate::net::state::Frame::validate(packet.bytes()))
         }) {
             report("admit", error);
             return Err((error, packet));
@@ -915,7 +911,7 @@ pub fn kutox_packet_broker(_: usize) {
 }
 
 pub(crate) struct Service {
-    task: kutox::runtime::run_queue::TaskHandle,
+    task: crate::runtime::run_queue::TaskHandle,
 }
 pub(crate) fn start_owned(
     scheduler: &mut threads::Scheduler<'_, '_, '_>,

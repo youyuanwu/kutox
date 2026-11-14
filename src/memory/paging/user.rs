@@ -10,7 +10,7 @@ use x86_64::registers::{
     model_specific::{Efer, EferFlags},
 };
 
-pub use kutox::user::state::{MAX_PAGES, USER_BASE, USER_END};
+pub use crate::{user::state::MAX_PAGES, user::state::USER_BASE, user::state::USER_END};
 const _: () = assert!(USER_BASE / 0x20_0000 == (USER_END - 1) / 0x20_0000);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
@@ -398,5 +398,5 @@ pub fn quiescent() -> bool {
 }
 
 #[cfg(feature = "guest-tests")]
-#[path = "../guest_tests/user_memory.rs"]
+#[path = "../../guest_tests/user_memory.rs"]
 pub mod tests;

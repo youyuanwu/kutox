@@ -1,10 +1,7 @@
 use crate::{
-    Failure,
-    arch::x86_64::cpu::X86Cpu,
-    arch::x86_64::io,
-    arch::x86_64::irq::external::{self, ClaimedIrq, IoApic, Token},
-    arch::x86_64::serial,
-    runtime::threads,
+    Failure, arch::x86_64::cpu::X86Cpu, arch::x86_64::io, arch::x86_64::irq::external,
+    arch::x86_64::irq::external::ClaimedIrq, arch::x86_64::irq::external::IoApic,
+    arch::x86_64::irq::external::Token, arch::x86_64::serial, runtime::threads,
 };
 #[cfg(feature = "guest-tests")]
 use core::sync::atomic::AtomicBool;

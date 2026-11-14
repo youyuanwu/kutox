@@ -1,18 +1,12 @@
 //! Guest-only UDP socket, wire and lifecycle acceptance.
 
 use super::TestCase;
+use crate::runtime::async_state::Outcome;
 use crate::{
-    Failure,
-    arch::x86_64::serial,
-    boot::BootInfo,
-    memory,
-    memory::heap,
-    net::stack as net_stack,
-    net::udp::{self as net_udp, Endpoint, Error, Socket},
-    runtime::async_runtime,
-    runtime::async_sync,
-    runtime::kernel_runtime::{self, Clients, Resources},
-    runtime::time,
+    Failure, arch::x86_64::serial, boot::limine::BootInfo, memory::heap, memory::paging as memory,
+    net::stack as net_stack, net::udp as net_udp, net::udp::Endpoint, net::udp::Error,
+    net::udp::Socket, runtime::async_runtime, runtime::async_sync, runtime::kernel_runtime,
+    runtime::kernel_runtime::Clients, runtime::kernel_runtime::Resources, runtime::time,
 };
 use alloc::vec::Vec;
 use core::{
@@ -21,7 +15,6 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
     task::Poll,
 };
-use kutox::runtime::async_state::Outcome;
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 
 const TIMEOUT: u64 = 3_000_000;
@@ -261,7 +254,7 @@ async fn exercise() -> Result<(), async_runtime::TaskFailure> {
 
 #[unsafe(no_mangle)]
 pub fn kutox_guest_udp_client(_: usize) {
-    let protocol = net_stack::start(kutox::net::config::Config::default()).unwrap();
+    let protocol = net_stack::start(crate::net::config::Config::default()).unwrap();
     let task = async_runtime::spawn(exercise()).unwrap();
     assert_eq!(task.wait(), Ok(Outcome::Complete));
     drop(task);
@@ -275,7 +268,7 @@ fn exchange(
     boot: &BootInfo,
     frames: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
-    if boot.ipv4 != kutox::net::config::Mode::default() {
+    if boot.ipv4 != crate::net::config::Mode::default() {
         return Err(Failure::new("udp_test_config", -291));
     }
     time::calibrate()?;

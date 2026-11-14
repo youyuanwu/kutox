@@ -1,11 +1,6 @@
 use crate::{
-    Failure,
-    arch::x86_64::cpu::{self, X86Cpu},
-    arch::x86_64::exceptions,
-    boot::BootInfo,
-    memory,
-    runtime::threads,
-    runtime::time,
+    Failure, arch::x86_64::cpu, arch::x86_64::cpu::X86Cpu, arch::x86_64::exceptions,
+    boot::limine::BootInfo, memory::paging as memory, runtime::threads, runtime::time,
 };
 use alloc::rc::Rc;
 use core::{

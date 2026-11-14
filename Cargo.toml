@@ -5,9 +5,6 @@ edition = "2024"
 license = "GPL-2.0-only"
 build = "build.rs"
 
-[lib]
-path = "src/portable/lib.rs"
-
 [workspace]
 members = ["third_party/moss-libkernel"]
 default-members = ["."]

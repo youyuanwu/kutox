@@ -3,6 +3,7 @@ import argparse
 import json
 import struct
 import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -86,7 +87,7 @@ def inputs():
         Path(__file__).resolve(), ROOT / "rust-toolchain.toml",
         ROOT / "compat/audit/common/abi_probe.rs", ROOT / "compat/audit/common/common_layout.c",
         ROOT / "compat/include/common/base_types.h", ROOT / "compat/include/common/device_types.h",
-        ROOT / "src/portable/linux_compat/abi.rs", ROOT / "src/linux_compat/block_abi.rs", ROOT / "src/drivers/memory.rs",
+        ROOT / "src/linux_compat/abi.rs", ROOT / "src/linux_compat/block_abi.rs", ROOT / "src/drivers/memory.rs",
         ROOT / "src/drivers/linux_dma.rs", ROOT / "src/memory/dma.rs", ROOT / "src/storage/block_services.rs",
         ROOT / "src/storage/mod.rs",
         ROOT / "src/drivers/linux_runtime.rs", ROOT / "src/drivers/linux_deferred.rs", ROOT / "src/drivers/linux_irq.rs",
@@ -144,8 +145,43 @@ def kernel_object(kernel):
     return objects[0]
 
 
-def kernel_build_evidence(kernel):
+def cargo_library(output, kernel):
+    libraries = set()
+    executables = set()
+    for line in output.splitlines():
+        message = json.loads(line)
+        if message.get("reason") != "compiler-artifact":
+            continue
+        source = Path(message["target"]["src_path"]).resolve()
+        if source == ROOT / "src/lib.rs":
+            libraries.update(Path(name).resolve() for name in message["filenames"] if name.endswith(".rlib"))
+        if source == ROOT / "src/main.rs" and message.get("executable"):
+            executables.add(Path(message["executable"]).resolve())
+    if len(libraries) != 1 or executables != {kernel.resolve()}:
+        raise ValueError("missing or ambiguous Cargo library/kernel artifacts")
+    return libraries.pop()
+
+
+def build_kernel(kernel, cargo, guest_tests):
+    command = [cargo, "rustc", "--locked", "--release", "--jobs", "1", "--bin", "kutox",
+               "--message-format=json",
+               *(["--features", "guest-tests"] if guest_tests == "ON" else ["--no-default-features"]),
+               "--", "--emit=obj,link"]
+    completed = subprocess.run(command, cwd=ROOT, text=True, stdout=subprocess.PIPE, check=False)
+    for line in completed.stdout.splitlines():
+        message = json.loads(line)
+        if message.get("reason") == "compiler-message" and message["message"].get("rendered"):
+            print(message["message"]["rendered"], end="", file=sys.stderr)
+    if completed.returncode:
+        raise subprocess.CalledProcessError(completed.returncode, command)
+    record_kernel(kernel, cargo_library(completed.stdout, kernel))
+
+
+def kernel_build_evidence(kernel, library):
     from linux_driver_check import digest
+    library = library.resolve()
+    if not library.is_relative_to(kernel.parent.resolve() / "deps") or not library.name.startswith("libkutox-"):
+        raise ValueError("library is not a Cargo kernel dependency artifact")
     object_path = kernel_object(kernel)
     dependency = kernel.with_suffix(".d")
     dependencies = rust_dependencies(dependency)
@@ -159,15 +195,16 @@ def kernel_build_evidence(kernel):
                    if path.is_file() and not path.is_relative_to(ROOT / "compat/audit"))
     sources.update(ROOT / source for source, _ in UNITS)
     return {
-        "schema": 2, "kernel": str(kernel.resolve()), "kernel_sha256": digest(kernel),
+        "schema": 3, "kernel": str(kernel.resolve()), "kernel_sha256": digest(kernel),
         "object": str(object_path.resolve()), "object_sha256": digest(object_path),
+        "library": str(library), "library_sha256": digest(library),
         "dependencies_sha256": digest(dependency),
         "sources": [{"path": str(path), "sha256": digest(path)} for path in sorted(sources)],
     }
 
 
-def record_kernel(kernel):
-    evidence = kernel_build_evidence(kernel)
+def record_kernel(kernel, library):
+    evidence = kernel_build_evidence(kernel, library)
     kernel.with_suffix(".build.json").write_text(json.dumps(evidence, indent=2) + "\n")
 
 
@@ -176,9 +213,31 @@ def kernel_provenance(kernel):
     if not path.is_file():
         raise ValueError("missing kernel build evidence; build the CMake kernel target first")
     saved = json.loads(path.read_text())
-    if saved != kernel_build_evidence(kernel):
+    if (not isinstance(saved, dict) or saved.get("schema") != 3 or not isinstance(saved.get("library"), str)
+            or saved != kernel_build_evidence(kernel, Path(saved["library"]))):
         raise ValueError("stale kernel build evidence; rebuild the CMake kernel target")
     return saved
+
+
+def kernel_rust_objects(kernel, output, *, extract=False):
+    library = Path(kernel_provenance(kernel)["library"])
+    members = subprocess.check_output(["ar", "t", str(library)], text=True).splitlines()
+    members = [name for name in members if name.endswith(".rcgu.o")]
+    if not members or any(Path(name).name != name for name in members):
+        raise ValueError("missing or invalid Rust codegen members in Cargo library")
+    directory = output / "rust"
+    if extract:
+        directory.mkdir(parents=True, exist_ok=True)
+    paths = [kernel_object(kernel)]
+    for index, name in enumerate(members):
+        data = subprocess.check_output(["ar", "p", str(library), name])
+        path = directory / f"library-{index}.o"
+        if extract:
+            path.write_bytes(data)
+        elif path.read_bytes() != data:
+            raise ValueError("stale Cargo library codegen object")
+        paths.append(path)
+    return paths
 
 
 def runtime_rust_sources(dependencies):
@@ -186,7 +245,7 @@ def runtime_rust_sources(dependencies):
     for path in sources:
         if path.is_relative_to(ROOT / "compat/audit"):
             raise ValueError(f"kernel runtime depends on an audit source: {path}")
-    if not {ROOT / "src/main.rs", ROOT / "src/drivers/memory.rs"} <= sources:
+    if not {ROOT / "src/main.rs", ROOT / "src/lib.rs", ROOT / "src/drivers/memory.rs"} <= sources:
         raise ValueError("missing native kernel Rust dependency evidence")
     return sorted(str(path) for path in sources if path.suffix == ".rs")
 
@@ -215,10 +274,12 @@ def inventory(paths, linked, kernel):
                     functions.add(symbol["name"])
             elif symbol["name"]:
                 undefined.add(symbol["name"])
-    rust = Elf(kernel_object(kernel), **KERNEL_ELF_LIMITS)
-    if ".kutox.compile_only" in rust.by_name:
-        raise ValueError("compile-only Rust provider in kernel build")
-    symbols = rust.symbols()
+    symbols = []
+    for path in kernel_rust_objects(kernel, linked.parent):
+        rust = Elf(path, **KERNEL_ELF_LIMITS)
+        if ".kutox.compile_only" in rust.by_name:
+            raise ValueError("compile-only Rust provider in kernel build")
+        symbols.extend(rust.symbols())
     providers = rust_providers(symbols)
     rust_defined = {s["name"] for s in symbols if s["owner"] and s["binding"] in (1, 2)}
     missing = undefined - defined - rust_defined - RUNTIME_PRIMITIVES
@@ -327,7 +388,7 @@ def audit(args, output, kernel):
         command = c_command(args, output, source, profile)
         paths.append(command[-1])
         run(command, Path(command[-1]).with_suffix(".log"))
-    paths.append(str(kernel_object(kernel)))
+    paths.extend(map(str, kernel_rust_objects(kernel, output, extract=True)))
     run([args.ld, "-r", "-o", str(output / "shared-runtime.o"), *paths], output / "shared-link.log")
     run(rust_command(output), output / "abi-rust.log")
     for profile in ("boot", "net", "storage"):
@@ -349,9 +410,11 @@ def verify(args, output, saved, kernel):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--record-kernel", type=Path, required=True)
+    parser.add_argument("--build-kernel", type=Path, required=True)
+    parser.add_argument("--guest-tests", choices=("ON", "OFF"), required=True)
+    parser.add_argument("--cargo", default="cargo")
     arguments = parser.parse_args()
     try:
-        record_kernel(arguments.record_kernel)
-    except (OSError, ValueError) as error:
+        build_kernel(arguments.build_kernel, arguments.cargo, arguments.guest_tests)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
         parser.exit(1, f"Kernel build evidence failed: {error}\n")

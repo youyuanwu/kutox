@@ -1,20 +1,18 @@
 //! Guest-only acceptance fixtures; not production driver code.
 
-use crate::guest_tests::e1000_irq::{self, E1000IrqFixture, ICR, ICS, read, write};
+use crate::runtime::completion_state::CompletionState;
 use crate::{
-    Failure,
-    arch::x86_64::cpu::{self, X86Cpu},
-    arch::x86_64::irq::{self, LocalApic, external::IoApic},
-    arch::x86_64::platform,
-    boot::BootInfo,
-    drivers::pci,
-    memory,
-    runtime::completion::{Completion, WaitResult},
-    runtime::threads::Scheduler,
+    Failure, arch::x86_64::cpu, arch::x86_64::cpu::X86Cpu, arch::x86_64::irq,
+    arch::x86_64::irq::LocalApic, arch::x86_64::irq::external::IoApic, arch::x86_64::platform,
+    boot::limine::BootInfo, drivers::pci, memory::paging as memory,
+    runtime::completion::Completion, runtime::completion::WaitResult, runtime::threads::Scheduler,
     runtime::time,
 };
+use crate::{
+    guest_tests::e1000_irq, guest_tests::e1000_irq::E1000IrqFixture, guest_tests::e1000_irq::ICR,
+    guest_tests::e1000_irq::ICS, guest_tests::e1000_irq::read, guest_tests::e1000_irq::write,
+};
 use core::sync::atomic::{AtomicUsize, Ordering};
-use kutox::runtime::completion_state::CompletionState;
 use moss_libkernel::CpuOps;
 
 const CAUSE: u32 = 0x10;

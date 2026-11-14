@@ -1,18 +1,16 @@
 use crate::{
-    Failure,
-    arch::x86_64::cpu::{self, X86Cpu},
-    arch::x86_64::exceptions,
-    arch::x86_64::io,
-    arch::x86_64::serial,
-    drivers::linux_runtime,
-    runtime::threads,
+    Failure, arch::x86_64::cpu, arch::x86_64::cpu::X86Cpu, arch::x86_64::exceptions,
+    arch::x86_64::io, arch::x86_64::serial, drivers::linux_runtime, runtime::threads,
     runtime::time,
+};
+use crate::{
+    drivers::deferred_state::Error, drivers::deferred_state::Invocation,
+    drivers::deferred_state::Key, drivers::deferred_state::Kind, drivers::deferred_state::Registry,
 };
 use core::{
     ffi::c_void,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
-use kutox::drivers::deferred_state::{Error, Invocation, Key, Kind, Registry};
 use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
 
 const CAPACITY: usize = 32;
@@ -399,7 +397,7 @@ fn napi(address: usize, key: Key, operation: u32, done: i32) -> Result<bool, Err
 }
 
 pub struct WorkerTasks {
-    handles: [kutox::runtime::run_queue::TaskHandle; 2],
+    handles: [crate::runtime::run_queue::TaskHandle; 2],
 }
 
 impl WorkerTasks {

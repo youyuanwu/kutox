@@ -2,14 +2,11 @@
 
 use super::*;
 use crate::{
-    arch::x86_64::cpu::{self, X86Cpu},
-    arch::x86_64::serial,
-    boot::BootInfo,
-    guest_tests::{support::assert_eq, user_elf::ELF},
-    memory,
+    arch::x86_64::cpu, arch::x86_64::cpu::X86Cpu, arch::x86_64::serial, boot::limine::BootInfo,
+    guest_tests::support::assert_eq, guest_tests::user_elf::ELF, memory::paging as memory,
 };
+use crate::{user::state::MAX_SYSCALLS, user::state::USER_BASE, user::state::USER_END};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use kutox::user::state::{MAX_SYSCALLS, USER_BASE, USER_END};
 use moss_libkernel::{CpuOps, memory::address_space::UserAddressSpace};
 use x86_64::registers::control::{Cr0, Cr3};
 
@@ -1071,7 +1068,10 @@ pub fn runtime_cleanup(
     boot: &BootInfo,
     frames: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
-    use crate::runtime::kernel_runtime::{Clients, Resources, Stage, tests};
+    use crate::{
+        runtime::kernel_runtime::Clients, runtime::kernel_runtime::Resources,
+        runtime::kernel_runtime::Stage, runtime::kernel_runtime::tests,
+    };
     serial::print(format_args!("# USER_RUNTIME_ERRORS_BEGIN\n"));
     time::calibrate()?;
     runtime_sleep_idle(boot, frames)?;
@@ -1154,7 +1154,7 @@ fn runtime_sleep_idle(
     boot: &BootInfo,
     frames: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
-    use crate::runtime::kernel_runtime::{Clients, Resources};
+    use crate::{runtime::kernel_runtime::Clients, runtime::kernel_runtime::Resources};
     let before = memory::allocation_snapshot(frames);
     let heap_before = crate::memory::heap::global().stats();
     IDLE_DONE.store(false, Ordering::Release);
@@ -1258,7 +1258,7 @@ fn runtime_input_idle(
     boot: &BootInfo,
     frames: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
-    use crate::runtime::kernel_runtime::{Clients, Resources};
+    use crate::{runtime::kernel_runtime::Clients, runtime::kernel_runtime::Resources};
     let before = memory::allocation_snapshot(frames);
     let heap_before = crate::memory::heap::global().stats();
     IDLE_DONE.store(false, Ordering::Release);

@@ -1,7 +1,7 @@
 //! Guest-only acceptance fixtures; not production driver code.
 
 use super::*;
-use crate::{Failure, boot::BootInfo, memory, runtime::threads};
+use crate::{Failure, boot::limine::BootInfo, memory::paging as memory, runtime::threads};
 
 unsafe extern "C" {
     fn kutox_c_dma_boundary(device: *mut crate::linux_compat::abi::Device, exhausted: bool)

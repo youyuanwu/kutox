@@ -1,7 +1,7 @@
 use crate::{
     Failure, arch::x86_64::cpu, arch::x86_64::io, arch::x86_64::platform, arch::x86_64::serial,
-    boot::BootInfo, drivers::linux_deferred, drivers::linux_irq, drivers::memory as driver_memory,
-    drivers::pci, memory, runtime::time,
+    boot::limine::BootInfo, drivers::linux_deferred, drivers::linux_irq,
+    drivers::memory as driver_memory, drivers::pci, memory::paging as memory, runtime::time,
 };
 #[cfg(feature = "guest-tests")]
 use core::sync::atomic::AtomicU32;
@@ -39,7 +39,7 @@ pub struct Owner;
 impl Owner {
     pub fn report_path(
         &self,
-        topology: &kutox::arch::x86_64::irq_platform::Topology,
+        topology: &crate::arch::x86_64::irq_platform::Topology,
     ) -> Result<(), Failure> {
         driver_memory::context(false)
             .map_err(|error| Failure::new("driver_path_context", error))?;

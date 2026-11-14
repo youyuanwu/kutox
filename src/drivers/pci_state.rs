@@ -1,9 +1,8 @@
 //! Read-only, bounded discovery of firmware-configured conventional PCI bridges.
 
 use crate::{
-    arch::x86_64::irq_platform,
-    drivers::manager::{INIT_METADATA_BYTES, MANAGER_METADATA_BYTES},
-    drivers::registry::PciAddress,
+    arch::x86_64::irq_platform, drivers::manager::INIT_METADATA_BYTES,
+    drivers::manager::MANAGER_METADATA_BYTES, drivers::registry::PciAddress,
 };
 use alloc::vec::Vec;
 

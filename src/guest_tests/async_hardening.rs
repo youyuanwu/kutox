@@ -2,24 +2,16 @@
 
 use super::TestCase;
 use crate::{
-    Failure,
-    arch::x86_64::cpu::X86Cpu,
-    arch::x86_64::serial,
-    boot::BootInfo,
-    drivers::linux_deferred,
-    drivers::linux_driver,
-    drivers::linux_irq,
-    drivers::memory as driver_memory,
-    memory,
-    memory::heap,
-    net::async_service as net_async,
-    net::device as net_device,
-    net::stack as net_stack,
-    runtime::async_runtime as runtime,
-    runtime::async_sync,
-    runtime::kernel_runtime::{self, Clients, Resources, Stage},
-    runtime::threads,
-    runtime::time,
+    Failure, arch::x86_64::cpu::X86Cpu, arch::x86_64::serial, boot::limine::BootInfo,
+    drivers::linux_deferred, drivers::linux_driver, drivers::linux_irq,
+    drivers::memory as driver_memory, memory::heap, memory::paging as memory,
+    net::async_service as net_async, net::device as net_device, net::stack as net_stack,
+    runtime::async_runtime as runtime, runtime::async_sync, runtime::kernel_runtime,
+    runtime::kernel_runtime::Clients, runtime::kernel_runtime::Resources,
+    runtime::kernel_runtime::Stage, runtime::threads, runtime::time,
+};
+use crate::{
+    net::config::Config, runtime::async_state::Error as StateError, runtime::async_state::Outcome,
 };
 use core::{
     future::Future,
@@ -27,10 +19,6 @@ use core::{
     pin::Pin,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     task::{Context, Poll, Waker},
-};
-use kutox::{
-    net::config::Config,
-    runtime::async_state::{Error as StateError, Outcome},
 };
 use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
 
@@ -258,9 +246,9 @@ fn acquire() -> net_async::Session {
     ));
     session
 }
-fn native(session: net_async::Session) -> kutox::drivers::registry::DeviceHandle {
+fn native(session: net_async::Session) -> crate::drivers::registry::DeviceHandle {
     let manager = current().manager().unwrap();
-    (0..kutox::drivers::registry::MAX_DEVICES)
+    (0..crate::drivers::registry::MAX_DEVICES)
         .filter_map(|index| manager.device_at(index).unwrap())
         .find(|(handle, _)| handle.identity() == session.identity())
         .unwrap()
@@ -364,7 +352,7 @@ fn capacity(session: net_async::Session) {
     let protocol = net_stack::start(Config::default()).unwrap();
     wait(|| net_stack::snapshot().ready);
     let protocol_bytes = runtime::stats().payload_bytes;
-    assert!(protocol_bytes > 0 && protocol_bytes <= kutox::runtime::async_state::MAX_FUTURE_BYTES);
+    assert!(protocol_bytes > 0 && protocol_bytes <= crate::runtime::async_state::MAX_FUTURE_BYTES);
     PIN_REPOLLS.store(0, Ordering::Release);
     for (index, task) in tasks[..15].iter_mut().enumerate() {
         ADDRESSES[index].store(0, Ordering::Release);
@@ -478,7 +466,7 @@ fn cancellation(session: net_async::Session) {
     let held = manager.operation(device).unwrap();
     assert_eq!(
         manager.stop(device),
-        Err(kutox::drivers::registry::Error::Busy)
+        Err(crate::drivers::registry::Error::Busy)
     );
     assert_eq!(driver_memory::snapshot(), mapped);
     drop(held);
@@ -593,7 +581,7 @@ fn retirement(session: net_async::Session) {
     let held = manager.operation(device).unwrap();
     assert_eq!(
         manager.stop(device),
-        Err(kutox::drivers::registry::Error::Busy)
+        Err(crate::drivers::registry::Error::Busy)
     );
     assert_eq!(driver_memory::snapshot(), after_cancel);
     assert_eq!(session.info(), Err(net_async::Error::Closed));
@@ -794,7 +782,7 @@ fn scope(
     assert_eq!(heap::global().stats(), heap_before);
     serial::print(format_args!(
         "# ASYNC_HARD_JOIN scope={scope} result={expected} frames=balanced heap=balanced requests=0 packets=0 futures=0 tasks=0 workers=0 metadata={} future_storage=32768 packet_storage=32768\n",
-        kutox::drivers::pci_state::INFRASTRUCTURE_METADATA_BYTES + kernel_runtime::METADATA_BYTES
+        crate::drivers::pci_state::INFRASTRUCTURE_METADATA_BYTES + kernel_runtime::METADATA_BYTES
     ));
     Ok(())
 }

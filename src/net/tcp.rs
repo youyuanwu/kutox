@@ -4,18 +4,18 @@ use crate::{
     arch::x86_64::cpu, arch::x86_64::exceptions, arch::x86_64::serial, runtime::async_runtime,
     runtime::async_sync, runtime::threads,
 };
+use crate::{
+    net::config::Config, net::config::Settings, net::tcp_state::Buffers, net::tcp_state::Control,
+    net::tcp_state::Engine, net::tcp_state::Key,
+};
+pub use crate::{net::tcp_state::Endpoint, net::tcp_state::Error};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::{future::poll_fn, pin::Pin, task::Poll};
-pub use kutox::net::tcp_state::{Endpoint, Error};
-use kutox::{
-    net::config::{Config, Settings},
-    net::tcp_state::{Buffers, Control, Engine, Key},
-};
 use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
 use smoltcp::iface::Interface;
 
-pub const MAX_CONNECTIONS: usize = kutox::net::tcp_state::MAX_CONNECTIONS;
-pub const BUFFER_BYTES: usize = kutox::net::tcp_state::BUFFER_BYTES;
+pub const MAX_CONNECTIONS: usize = crate::net::tcp_state::MAX_CONNECTIONS;
+pub const BUFFER_BYTES: usize = crate::net::tcp_state::BUFFER_BYTES;
 static CONTROL: SpinLockIrq<Control, cpu::X86Cpu> = SpinLockIrq::new(Control::new());
 static WORK: async_sync::Event = async_sync::Event::new();
 static PROGRESS: async_sync::Event = async_sync::Event::new();

@@ -3,17 +3,17 @@
 //! Stackful adaptation of Moss's mutex data/RAII-guard layout.
 
 use crate::{
-    arch::x86_64::cpu::X86Cpu,
-    runtime::threads::{self, SwitchError, WaitQueue, WakeReason},
+    arch::x86_64::cpu::X86Cpu, runtime::threads, runtime::threads::SwitchError,
+    runtime::threads::WaitQueue, runtime::threads::WakeReason,
+};
+use crate::{
+    runtime::mutex_state::Error as StateError, runtime::mutex_state::MutexState,
+    runtime::run_queue::TaskHandle,
 };
 use core::{
     cell::UnsafeCell,
     marker::PhantomData,
     ops::{Deref, DerefMut},
-};
-use kutox::{
-    runtime::mutex_state::{Error as StateError, MutexState},
-    runtime::run_queue::TaskHandle,
 };
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 

@@ -3,9 +3,9 @@
 use crate::drivers::linux_deferred;
 use crate::linux_compat::tests::driver as fixture;
 use crate::{
-    Failure, arch::x86_64::irq, arch::x86_64::platform, boot::BootInfo,
-    drivers::memory as driver_memory, drivers::pci, drivers::platform as driver_platform, memory,
-    runtime::threads,
+    Failure, arch::x86_64::irq, arch::x86_64::platform, boot::limine::BootInfo,
+    drivers::memory as driver_memory, drivers::pci, drivers::platform as driver_platform,
+    memory::paging as memory, runtime::threads,
 };
 fn worker(which: usize) {
     match which {

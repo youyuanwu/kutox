@@ -1,19 +1,14 @@
 use crate::{
-    arch::x86_64::cpu::{self, X86Cpu},
-    arch::x86_64::exceptions,
-    arch::x86_64::io,
-    arch::x86_64::serial,
-    runtime::completion::{self, Completion},
-    runtime::mutex::{self, Mutex, MutexGuard},
-    runtime::threads,
-    runtime::time,
+    arch::x86_64::cpu, arch::x86_64::cpu::X86Cpu, arch::x86_64::exceptions, arch::x86_64::io,
+    arch::x86_64::serial, runtime::completion, runtime::completion::Completion, runtime::mutex,
+    runtime::mutex::Mutex, runtime::mutex::MutexGuard, runtime::threads, runtime::time,
 };
+use crate::{runtime::completion_state::CompletionState, runtime::mutex_state::MutexState};
 use core::{
     arch::asm,
     cell::UnsafeCell,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
 };
-use kutox::{runtime::completion_state::CompletionState, runtime::mutex_state::MutexState};
 use moss_libkernel::CpuOps;
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 
@@ -258,7 +253,7 @@ fn mutex_operation(key: usize, operation: u32) -> Result<i32, i32> {
         UNLOCK => {
             let current = threads::current_task_handle().map_err(|error| error as i32)?;
             if slot.object.snapshot().owner() != Some(current) {
-                return Err(kutox::runtime::mutex_state::Error::NotOwner as i32);
+                return Err(crate::runtime::mutex_state::Error::NotOwner as i32);
             }
             let guard = unsafe { slot.guard.get().replace(None) }.ok_or(INVALID)?;
             drop(guard);
@@ -481,9 +476,9 @@ pub fn can_retire_range(base: usize, size: usize) -> Result<(), i32> {
             continue;
         }
         if key
-            .checked_add(core::mem::size_of::<kutox::linux_compat::abi::Mutex>())
+            .checked_add(core::mem::size_of::<crate::linux_compat::abi::Mutex>())
             .is_none_or(|last| last > end)
-            || unsafe { (*(key as *const kutox::linux_compat::abi::Mutex)).boot_held } != 0
+            || unsafe { (*(key as *const crate::linux_compat::abi::Mutex)).boot_held } != 0
         {
             return Err(BUSY);
         }
@@ -537,7 +532,7 @@ pub(crate) fn retire_static_objects() {
         let key = slot.key.swap(0, Ordering::AcqRel);
         if key != 0 {
             unsafe {
-                (*(key as *mut kutox::linux_compat::abi::Mutex)).generation = 0;
+                (*(key as *mut crate::linux_compat::abi::Mutex)).generation = 0;
             }
         }
     }
@@ -545,7 +540,7 @@ pub(crate) fn retire_static_objects() {
         let key = slot.key.swap(0, Ordering::AcqRel);
         if key != 0 {
             unsafe {
-                (*(key as *mut kutox::linux_compat::abi::Completion)).generation = 0;
+                (*(key as *mut crate::linux_compat::abi::Completion)).generation = 0;
             }
         }
     }

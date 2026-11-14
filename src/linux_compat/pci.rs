@@ -43,7 +43,7 @@ fn owner(p: *const PciDevice) -> *mut Endpoint {
     if p == storage_pointer() && unsafe { (*storage()).bound } {
         return storage();
     }
-    crate::platform_fail(c"pci_device_identity")
+    crate::boot::entry::platform_fail(c"pci_device_identity")
 }
 fn is_storage(p: *const PciDevice) -> bool {
     owner(p) == storage()
@@ -218,7 +218,7 @@ pub unsafe extern "C" fn pci_register_driver(candidate: *mut PciDriver) -> i32 {
         }
         return result;
     }
-    crate::platform_fail(c"pci_id_table_bound")
+    crate::boot::entry::platform_fail(c"pci_id_table_bound")
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pci_unregister_driver(candidate: *mut PciDriver) {
@@ -236,7 +236,7 @@ pub unsafe extern "C" fn pci_unregister_driver(candidate: *mut PciDriver) {
         let p = unsafe { ptr::addr_of_mut!((*e).device) };
         let remove = match unsafe { (*candidate).remove } {
             Some(f) => f,
-            None => crate::platform_fail(c"pci_remove_missing"),
+            None => crate::boot::entry::platform_fail(c"pci_remove_missing"),
         };
         if e == net() {
             crate::drivers::linux_driver::trace(5, remove as usize, p as usize, 0)
@@ -469,7 +469,7 @@ unsafe fn read_config(p: *mut PciDevice, offset: i32, width: u64, out: *mut c_vo
             1 => out.cast::<u8>().write(value as u8),
             2 => out.cast::<u16>().write(value as u16),
             4 => out.cast::<u32>().write(value as u32),
-            _ => crate::platform_fail(c"pci_config_width"),
+            _ => crate::boot::entry::platform_fail(c"pci_config_width"),
         }
     }
     0
@@ -633,7 +633,7 @@ pub extern "C" fn pci_alloc_irq_vectors_affinity(
 #[unsafe(no_mangle)]
 pub extern "C" fn pci_free_irq_vectors(p: *mut PciDevice) {
     owner(p);
-    crate::platform_fail(c"storage_msix_free")
+    crate::boot::entry::platform_fail(c"storage_msix_free")
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn pci_irq_vector(p: *mut PciDevice, _v: u32) -> i32 {

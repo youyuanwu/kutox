@@ -1,7 +1,7 @@
 //! Guest-only acceptance fixtures; not production driver code.
 
 use super::*;
-use crate::{arch::x86_64::platform, boot::BootInfo, memory};
+use crate::{arch::x86_64::platform, boot::limine::BootInfo, memory::paging as memory};
 
 pub fn test_hierarchy(
     boot: &BootInfo,

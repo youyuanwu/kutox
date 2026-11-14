@@ -1,20 +1,18 @@
+pub use crate::runtime::run_queue::WakeReason;
 use crate::{
-    Failure,
-    arch::x86_64::cpu::{self, X86Cpu},
-    arch::x86_64::exceptions,
-    arch::x86_64::io,
-    arch::x86_64::irq,
-    arch::x86_64::serial,
-    memory,
+    Failure, arch::x86_64::cpu, arch::x86_64::cpu::X86Cpu, arch::x86_64::exceptions,
+    arch::x86_64::io, arch::x86_64::irq, arch::x86_64::serial, memory::paging as memory,
     runtime::time,
+};
+use crate::{
+    runtime::run_queue::IdleAction, runtime::run_queue::IdleMode, runtime::run_queue::RunQueue,
+    runtime::run_queue::TaskHandle, runtime::run_queue::WaitKey, runtime::run_queue::idle_action,
 };
 use core::{
     arch::global_asm,
     ptr::{addr_of, addr_of_mut},
     sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
 };
-pub use kutox::runtime::run_queue::WakeReason;
-use kutox::runtime::run_queue::{IdleAction, IdleMode, RunQueue, TaskHandle, WaitKey, idle_action};
 use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
 
 global_asm!(include_str!("../arch/x86_64/context_switch.S"));
@@ -615,7 +613,7 @@ impl<'space, 'a, 'storage> Scheduler<'space, 'a, 'storage> {
             if self.tasks[slot].is_some() {
                 let handle = self
                     .queue
-                    .handle(kutox::runtime::run_queue::TaskId(slot))
+                    .handle(crate::runtime::run_queue::TaskId(slot))
                     .map_err(|error| Failure::new("thread_discard_handle", error as i32))?;
                 self.discard_unstarted(handle)?;
             }

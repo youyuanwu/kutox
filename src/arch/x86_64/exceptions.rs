@@ -1,8 +1,5 @@
 use crate::{
-    Failure,
-    arch::x86_64::cpu::{self, X86Cpu},
-    arch::x86_64::io,
-    arch::x86_64::irq,
+    Failure, arch::x86_64::cpu, arch::x86_64::cpu::X86Cpu, arch::x86_64::io, arch::x86_64::irq,
     arch::x86_64::serial,
 };
 #[cfg(feature = "guest-tests")]
@@ -190,7 +187,7 @@ pub fn initialize() -> Result<(), Failure> {
                 _ => 0,
             };
             *entry = Gate::new(kutox_exception_entries[vector], code.0, ist);
-            if vector == crate::user::SYSCALL_VECTOR {
+            if vector == crate::user::execute::SYSCALL_VECTOR {
                 entry.attributes = 0xee;
             }
         }
@@ -220,7 +217,7 @@ extern "C" fn kutox_exception_dispatch(frame: &mut ExceptionFrame) {
     ) {
         HARDWARE_IRQ.store(true, Ordering::Release);
         let result = irq::dispatch(vector, frame.flags).and_then(|()| {
-            if frame.code_segment & 3 == 3 && !crate::user::kutox_user_dispatch(frame)? {
+            if frame.code_segment & 3 == 3 && !crate::user::execute::kutox_user_dispatch(frame)? {
                 return Err(Failure::new("user_irq_context", -1));
             }
             Ok(())
@@ -240,7 +237,7 @@ extern "C" fn kutox_exception_dispatch(frame: &mut ExceptionFrame) {
             }
         }
     }
-    let handled = crate::user::kutox_user_dispatch(frame).unwrap_or_else(|error| {
+    let handled = crate::user::execute::kutox_user_dispatch(frame).unwrap_or_else(|error| {
         serial::print(format_args!(
             "{FAILURE_PREFIX} stage={} code={} vector={vector}\n",
             error.stage, error.code

@@ -1,5 +1,5 @@
 //! Guest-only acceptance fixtures; not production driver code.
-use crate::boot::BootInfo;
+use crate::boot::limine::BootInfo;
 
 use super::*;
 use alloc::{boxed::Box, vec::Vec};
@@ -245,7 +245,7 @@ pub fn cancellation(
         }
     }
     scheduler.cancel_wait(old)?;
-    if !matches!(scheduler.cancel_wait(old), Err(error) if error.code == kutox::runtime::run_queue::Error::InvalidState as i32)
+    if !matches!(scheduler.cancel_wait(old), Err(error) if error.code == crate::runtime::run_queue::Error::InvalidState as i32)
         || scheduler.run()?.finished != 1
         || DROPPED.load(Ordering::Relaxed) != 1
     {
@@ -255,7 +255,7 @@ pub fn cancellation(
     if old.slot() != new.slot()
         || old == new
         || !matches!(scheduler.run(), Err(error) if error.stage == "thread_timer_required")
-        || !matches!(scheduler.cancel_wait(old), Err(error) if error.code == kutox::runtime::run_queue::Error::StaleTask as i32)
+        || !matches!(scheduler.cancel_wait(old), Err(error) if error.code == crate::runtime::run_queue::Error::StaleTask as i32)
     {
         fatal("thread_wait_reuse", -1);
     }

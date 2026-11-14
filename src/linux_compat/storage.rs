@@ -245,7 +245,7 @@ pub unsafe extern "C" fn device_add(d: *mut Device) -> i32 {
     }
     let matches = match unsafe { (*bus).matches } {
         Some(f) => f,
-        None => crate::platform_fail(c"bus_match_missing"),
+        None => crate::boot::entry::platform_fail(c"bus_match_missing"),
     };
     if unsafe { matches(d, driver) } == 0 {
         return diagnostic(c"device_add_match", -19);
@@ -265,7 +265,7 @@ pub unsafe extern "C" fn device_add(d: *mut Device) -> i32 {
     }
     let probe = match unsafe { (*bus).probe } {
         Some(f) => f,
-        None => crate::platform_fail(c"bus_probe_missing"),
+        None => crate::boot::entry::platform_fail(c"bus_probe_missing"),
     };
     let result = unsafe { probe(d) };
     if result != 0 {
@@ -307,7 +307,7 @@ pub unsafe extern "C" fn put_device(d: *mut Device) {
     require(unsafe { !(*state()).added }, c"storage_device_added");
     let release = match unsafe { (*d).release } {
         Some(f) => f,
-        None => crate::platform_fail(c"device_release_missing"),
+        None => crate::boot::entry::platform_fail(c"device_release_missing"),
     };
     unsafe {
         (*state()).device = ptr::null_mut();
@@ -323,7 +323,7 @@ pub unsafe extern "C" fn device_unregister(d: *mut Device) {
     );
     let remove = match unsafe { (*(*state()).bus).remove } {
         Some(f) => f,
-        None => crate::platform_fail(c"bus_remove_missing"),
+        None => crate::boot::entry::platform_fail(c"bus_remove_missing"),
     };
     unsafe {
         remove(d);
@@ -353,7 +353,7 @@ pub(super) fn device_name(d: *mut Device) -> *mut c_char {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn kobj_to_dev(_k: *mut c_void) -> *mut Device {
-    crate::platform_fail(c"storage_sysfs_not_admitted")
+    crate::boot::entry::platform_fail(c"storage_sysfs_not_admitted")
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn dev_of_node(d: *mut Device) -> *mut c_void {
@@ -365,14 +365,14 @@ pub unsafe extern "C" fn dev_of_node(d: *mut Device) -> *mut c_void {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn of_get_available_child_count(_node: *const c_void) -> u32 {
-    crate::platform_fail(c"storage_device_tree_children")
+    crate::boot::entry::platform_fail(c"storage_device_tree_children")
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn of_get_next_available_child(
     _node: *const c_void,
     _previous: *mut c_void,
 ) -> *mut c_void {
-    crate::platform_fail(c"storage_device_tree_next")
+    crate::boot::entry::platform_fail(c"storage_device_tree_next")
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn of_node_put(node: *mut c_void) {
@@ -380,7 +380,7 @@ pub extern "C" fn of_node_put(node: *mut c_void) {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn of_device_is_compatible(_node: *const c_void, _name: *const c_char) -> bool {
-    crate::platform_fail(c"storage_device_tree_compatible")
+    crate::boot::entry::platform_fail(c"storage_device_tree_compatible")
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn dev_num_vf(d: *mut Device) -> i32 {

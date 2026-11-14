@@ -1,9 +1,14 @@
 //! Owned native driver boundary. Callbacks run after releasing Moss IRQ locks.
 
-use crate::drivers::registry::{
-    Dependency, DependencyStatus, DeviceHandle, DeviceInfo, DeviceSnapshot, DeviceState, DriverId,
-    DriverSpec, Error, Invocation, MAX_BOUND, MAX_DEVICES, MAX_DRIVERS, METADATA_BUDGET,
-    Operation as OperationKey, Phase, ProbeOutcome, Registry, Scope, ServiceId, Snapshot,
+use crate::{
+    drivers::registry::Dependency, drivers::registry::DependencyStatus,
+    drivers::registry::DeviceHandle, drivers::registry::DeviceInfo,
+    drivers::registry::DeviceSnapshot, drivers::registry::DeviceState, drivers::registry::DriverId,
+    drivers::registry::DriverSpec, drivers::registry::Error, drivers::registry::Invocation,
+    drivers::registry::MAX_BOUND, drivers::registry::MAX_DEVICES, drivers::registry::MAX_DRIVERS,
+    drivers::registry::METADATA_BUDGET, drivers::registry::Operation as OperationKey,
+    drivers::registry::Phase, drivers::registry::ProbeOutcome, drivers::registry::Registry,
+    drivers::registry::Scope, drivers::registry::ServiceId, drivers::registry::Snapshot,
 };
 use alloc::sync::Arc;
 use core::marker::PhantomData;

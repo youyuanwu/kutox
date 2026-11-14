@@ -1,6 +1,6 @@
 //! Copy-only ownership policy for the guarded native packet broker.
 
-use crate::net::state::{Error, TxTicket};
+use crate::{net::state::Error, net::state::TxTicket};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 pub const MAX_REQUESTS: usize = 4;

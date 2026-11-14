@@ -1,3 +1,9 @@
+pub mod deferred_state;
+pub mod manager;
+pub mod pci_state;
+pub mod registry;
+
+#[cfg(target_os = "none")]
 pub(crate) mod init;
 #[cfg_attr(
     not(feature = "guest-tests"),
@@ -6,6 +12,7 @@ pub(crate) mod init;
         reason = "Additional kernel service APIs are available to native clients"
     )
 )]
+#[cfg(target_os = "none")]
 pub(crate) mod linux_deferred;
 #[cfg_attr(
     not(feature = "guest-tests"),
@@ -14,6 +21,7 @@ pub(crate) mod linux_deferred;
         reason = "Additional kernel service APIs are available to native clients"
     )
 )]
+#[cfg(target_os = "none")]
 pub(crate) mod linux_dma;
 #[cfg_attr(
     not(feature = "guest-tests"),
@@ -22,6 +30,7 @@ pub(crate) mod linux_dma;
         reason = "Additional kernel service APIs are available to native clients"
     )
 )]
+#[cfg(target_os = "none")]
 pub(crate) mod linux_driver;
 #[cfg_attr(
     not(feature = "guest-tests"),
@@ -30,6 +39,7 @@ pub(crate) mod linux_driver;
         reason = "Additional kernel service APIs are available to native clients"
     )
 )]
+#[cfg(target_os = "none")]
 pub(crate) mod linux_irq;
 #[cfg_attr(
     not(feature = "guest-tests"),
@@ -38,6 +48,7 @@ pub(crate) mod linux_irq;
         reason = "Additional kernel service APIs are available to native clients"
     )
 )]
+#[cfg(target_os = "none")]
 pub(crate) mod linux_runtime;
 #[cfg_attr(
     not(feature = "guest-tests"),
@@ -46,6 +57,7 @@ pub(crate) mod linux_runtime;
         reason = "Additional kernel service APIs are available to native clients"
     )
 )]
+#[cfg(target_os = "none")]
 pub(crate) mod memory;
 #[cfg_attr(
     not(feature = "guest-tests"),
@@ -54,6 +66,7 @@ pub(crate) mod memory;
         reason = "Additional kernel service APIs are available to native clients"
     )
 )]
+#[cfg(target_os = "none")]
 pub(crate) mod pci;
 #[cfg_attr(
     not(feature = "guest-tests"),
@@ -62,4 +75,5 @@ pub(crate) mod pci;
         reason = "Additional kernel service APIs are available to native clients"
     )
 )]
+#[cfg(target_os = "none")]
 pub(crate) mod platform;

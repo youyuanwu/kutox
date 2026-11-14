@@ -1,9 +1,9 @@
 //! Bounded tests of the production service scope, not a replacement NIC driver.
 
 use super::*;
+use crate::drivers::registry::ServiceId;
 use crate::{arch::x86_64::cpu::X86Cpu, guest_tests::TestCase, runtime::time};
 use core::sync::atomic::AtomicUsize;
-use kutox::drivers::registry::ServiceId;
 use moss_libkernel::CpuOps;
 
 pub(crate) static TESTS: &[TestCase] = &[
@@ -377,7 +377,7 @@ fn exercise(
         stats.finished,
         stats.peak_tasks,
         stats.persistent_idles,
-        kutox::drivers::pci_state::INFRASTRUCTURE_METADATA_BYTES + METADATA_BYTES,
+        crate::drivers::pci_state::INFRASTRUCTURE_METADATA_BYTES + METADATA_BYTES,
     ));
     Ok(())
 }

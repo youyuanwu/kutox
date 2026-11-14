@@ -1,8 +1,16 @@
 //! One guarded executor. Only metadata and static wake tags cross IRQ boundaries.
 
+pub use crate::runtime::async_state::TaskFailure;
 use crate::{
-    Failure, arch::x86_64::cpu::X86Cpu, arch::x86_64::serial, memory, runtime::threads,
-    runtime::time,
+    Failure, arch::x86_64::cpu::X86Cpu, arch::x86_64::serial, memory::paging as memory,
+    runtime::threads, runtime::time,
+};
+use crate::{
+    runtime::async_state::AsyncState, runtime::async_state::Epoch,
+    runtime::async_state::Error as StateError, runtime::async_state::MAX_POLLS_PER_TURN,
+    runtime::async_state::MAX_TASKS, runtime::async_state::Outcome,
+    runtime::async_state::TaskHandle, runtime::async_state::WakerRecord,
+    runtime::run_queue::TaskHandle as ThreadHandle,
 };
 use core::{
     alloc::Layout,
@@ -12,14 +20,6 @@ use core::{
     ptr::NonNull,
     sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
-};
-pub use kutox::runtime::async_state::TaskFailure;
-use kutox::{
-    runtime::async_state::{
-        AsyncState, Epoch, Error as StateError, MAX_POLLS_PER_TURN, MAX_TASKS, Outcome, TaskHandle,
-        WakerRecord,
-    },
-    runtime::run_queue::TaskHandle as ThreadHandle,
 };
 use moss_libkernel::{sync::spinlock::SpinLockIrq, task::async_state::State};
 
@@ -132,7 +132,7 @@ struct Storage(UnsafeCell<Option<Arena>>);
 // BSP, IF clear; no storage borrow crosses a poll, destructor or switch.
 unsafe impl Sync for Storage {}
 static ARENA: Storage = Storage(UnsafeCell::new(None));
-pub const FUTURE_STORAGE_BYTES: usize = MAX_TASKS * kutox::runtime::async_state::MAX_FUTURE_BYTES;
+pub const FUTURE_STORAGE_BYTES: usize = MAX_TASKS * crate::runtime::async_state::MAX_FUTURE_BYTES;
 struct Payload {
     task: TaskHandle,
     future: Work,
@@ -189,7 +189,7 @@ pub(crate) fn with_state<R>(
     call(control.state.as_mut().ok_or(Error::Closed)?, task).map_err(Error::State)
 }
 
-pub(crate) fn signal_event(event: &mut kutox::runtime::async_state::Event) -> Result<usize, Error> {
+pub(crate) fn signal_event(event: &mut crate::runtime::async_state::Event) -> Result<usize, Error> {
     let count = {
         let mut control = CONTROL.lock_save_irq();
         control
@@ -214,7 +214,7 @@ pub(crate) fn event_epoch() -> Result<Epoch, Error> {
     Ok(state.epoch())
 }
 
-pub(crate) fn new_event() -> Result<kutox::runtime::async_state::Event, Error> {
+pub(crate) fn new_event() -> Result<crate::runtime::async_state::Event, Error> {
     CONTROL
         .lock_save_irq()
         .state
@@ -233,7 +233,7 @@ pub(crate) fn unregister_event(id: moss_libkernel::sync::waker_set::Registration
         .unregister_event(id);
 }
 
-pub(crate) fn remove_deadline(id: kutox::runtime::async_state::DeadlineId) {
+pub(crate) fn remove_deadline(id: crate::runtime::async_state::DeadlineId) {
     CONTROL
         .lock_save_irq()
         .state
@@ -421,7 +421,7 @@ where
 {
     context()?;
     let layout = Layout::new::<F>();
-    if layout.align() > kutox::runtime::async_state::MAX_FUTURE_BYTES {
+    if layout.align() > crate::runtime::async_state::MAX_FUTURE_BYTES {
         return Err(Error::State(StateError::PayloadTooLarge));
     }
     let (task, lease) = {
@@ -440,7 +440,7 @@ where
             .expect("admitted future arena")
             .pointer
             .as_ptr()
-            .add(task.slot() * kutox::runtime::async_state::MAX_FUTURE_BYTES)
+            .add(task.slot() * crate::runtime::async_state::MAX_FUTURE_BYTES)
             .cast::<F>()
     };
     let future = unsafe {
@@ -806,7 +806,7 @@ pub(crate) fn start_owned(
         let end = address
             .checked_add(FUTURE_STORAGE_BYTES as u64 - 1)
             .ok_or(Failure::new("async_storage_address", -1))?;
-        if !address.is_multiple_of(kutox::runtime::async_state::MAX_FUTURE_BYTES as u64)
+        if !address.is_multiple_of(crate::runtime::async_state::MAX_FUTURE_BYTES as u64)
             || x86_64::VirtAddr::try_new(address).is_err()
             || x86_64::VirtAddr::try_new(end).is_err()
         {

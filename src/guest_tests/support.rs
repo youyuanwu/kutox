@@ -77,7 +77,7 @@ pub(crate) fn quiescent(boot: &BootInfo) -> bool {
         && memory::stack_window_unused(boot)
         && memory::mmio_window_unused(boot)
         && memory::user::quiescent()
-        && crate::user::quiescent()
+        && crate::user::execute::quiescent()
         && user_interrupts::quiescent()
 }
 

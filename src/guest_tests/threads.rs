@@ -1,7 +1,7 @@
 //! Guest-only acceptance fixtures; not production driver code.
 
 use super::*;
-use crate::boot::BootInfo;
+use crate::boot::limine::BootInfo;
 use core::arch::asm;
 
 pub type IdleHook = fn(&irq::Timer<'_, '_>) -> Result<(), Failure>;

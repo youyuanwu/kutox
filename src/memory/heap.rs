@@ -1,5 +1,6 @@
 use crate::{
-    Failure, arch::x86_64::cpu, arch::x86_64::io, arch::x86_64::serial, boot::BootInfo, memory,
+    Failure, arch::x86_64::cpu, arch::x86_64::io, arch::x86_64::serial, boot::limine::BootInfo,
+    memory::paging as memory,
 };
 use core::{
     alloc::{GlobalAlloc, Layout},

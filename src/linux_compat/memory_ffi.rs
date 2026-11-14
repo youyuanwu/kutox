@@ -8,7 +8,7 @@ use core::ptr;
 fn checked_direction(value: u32, operation: &'static core::ffi::CStr) -> Direction {
     match Direction::try_from(value) {
         Ok(direction) => direction,
-        Err(_) => crate::platform_fail(operation),
+        Err(_) => crate::boot::entry::platform_fail(operation),
     }
 }
 fn allocate(storage: bool, size: usize, flags: u32) -> *mut c_void {
@@ -118,7 +118,7 @@ pub unsafe extern "C" fn strcpy(dst: *mut u8, src: *const u8) -> *mut u8 {
             return dst;
         }
     }
-    crate::platform_fail(c"strcpy_bound")
+    crate::boot::entry::platform_fail(c"strcpy_bound")
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn strscpy(dst: *mut u8, src: *const u8, capacity: usize) -> isize {
@@ -339,7 +339,7 @@ pub extern "C" fn dma_sync_single_range_for_cpu(
     _n: usize,
     _direction: u32,
 ) {
-    crate::platform_fail(c"storage_premapped_dma_not_admitted")
+    crate::boot::entry::platform_fail(c"storage_premapped_dma_not_admitted")
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn dma_sync_single_range_for_device(
@@ -358,7 +358,7 @@ pub extern "C" fn alloc_pages_exact(_n: usize, _g: u32) -> *mut c_void {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn free_pages_exact(_p: *mut c_void, _n: usize) {
-    crate::platform_fail(c"storage_identity_dma_free")
+    crate::boot::entry::platform_fail(c"storage_identity_dma_free")
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn is_vmalloc_addr(_p: *const c_void) -> bool {
@@ -370,11 +370,11 @@ pub extern "C" fn is_power_of_2(n: usize) -> bool {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn virt_to_page(_p: *const c_void) -> *mut c_void {
-    crate::platform_fail(c"storage_indirect_dma_not_admitted")
+    crate::boot::entry::platform_fail(c"storage_indirect_dma_not_admitted")
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn virt_to_phys(_p: *const c_void) -> usize {
-    crate::platform_fail(c"storage_identity_dma_not_admitted")
+    crate::boot::entry::platform_fail(c"storage_identity_dma_not_admitted")
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn offset_in_page(p: *const c_void) -> usize {
@@ -382,11 +382,11 @@ pub extern "C" fn offset_in_page(p: *const c_void) -> usize {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn sg_phys(_p: *const c_void) -> u64 {
-    crate::platform_fail(c"storage_identity_sg_not_admitted")
+    crate::boot::entry::platform_fail(c"storage_identity_sg_not_admitted")
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn kmsan_handle_dma(_address: u64, _n: usize, _direction: u32) {
-    crate::platform_fail(c"storage_identity_kmsan_not_admitted")
+    crate::boot::entry::platform_fail(c"storage_identity_kmsan_not_admitted")
 }
 
 unsafe fn insert(n: *mut List, prev: *mut List, next: *mut List) {

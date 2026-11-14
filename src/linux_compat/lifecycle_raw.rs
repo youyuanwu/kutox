@@ -309,7 +309,7 @@ pub(crate) mod tests {
         })();
         match snapshot {
             Ok(seen) => seen,
-            Err(_) => crate::platform_fail(c"linux_rx_snapshot_handle"),
+            Err(_) => crate::boot::entry::platform_fail(c"linux_rx_snapshot_handle"),
         }
     }
 

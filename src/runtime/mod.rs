@@ -1,5 +1,13 @@
+pub mod async_state;
+pub mod completion_state;
+pub mod mutex_state;
+pub mod run_queue;
+
+#[cfg(target_os = "none")]
 pub(crate) mod async_runtime;
+#[cfg(target_os = "none")]
 pub(crate) mod async_sync;
+#[cfg(target_os = "none")]
 pub(crate) mod completion;
 #[cfg_attr(
     not(feature = "guest-tests"),
@@ -8,6 +16,7 @@ pub(crate) mod completion;
         reason = "Additional native runtime APIs are available to kernel clients"
     )
 )]
+#[cfg(target_os = "none")]
 pub(crate) mod kernel_runtime;
 #[cfg_attr(
     not(feature = "guest-tests"),
@@ -16,6 +25,7 @@ pub(crate) mod kernel_runtime;
         reason = "Additional kernel service APIs are available to native clients"
     )
 )]
+#[cfg(target_os = "none")]
 pub(crate) mod mutex;
 #[cfg_attr(
     not(feature = "guest-tests"),
@@ -24,5 +34,7 @@ pub(crate) mod mutex;
         reason = "Additional kernel service APIs are available to native clients"
     )
 )]
+#[cfg(target_os = "none")]
 pub(crate) mod threads;
+#[cfg(target_os = "none")]
 pub(crate) mod time;

@@ -1,18 +1,12 @@
 use crate::{
-    Failure,
-    arch::x86_64::cpu::{self, X86Cpu},
-    arch::x86_64::exceptions,
-    arch::x86_64::serial,
-    boot::BootInfo,
-    drivers::linux_deferred,
-    drivers::linux_runtime,
-    memory,
-    runtime::threads,
+    Failure, arch::x86_64::cpu, arch::x86_64::cpu::X86Cpu, arch::x86_64::exceptions,
+    arch::x86_64::serial, boot::limine::BootInfo, drivers::linux_deferred, drivers::linux_runtime,
+    memory::paging as memory, runtime::threads,
 };
+use crate::{linux_compat::abi::GFP_ATOMIC, linux_compat::abi::GFP_KERNEL};
 use core::cell::UnsafeCell;
 #[cfg(feature = "guest-tests")]
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use kutox::linux_compat::abi::{GFP_ATOMIC, GFP_KERNEL};
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 use moss_libkernel::{CpuOps, memory::allocators::phys::PageAllocation};
 

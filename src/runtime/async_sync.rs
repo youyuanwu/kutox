@@ -1,16 +1,17 @@
 //! Async waits register metadata; they never block the executor's kernel stack.
 
 use crate::{
-    arch::x86_64::cpu::X86Cpu,
-    runtime::async_runtime::{self, Error},
-    runtime::time,
+    arch::x86_64::cpu::X86Cpu, runtime::async_runtime, runtime::async_runtime::Error, runtime::time,
+};
+use crate::{
+    runtime::async_state::DeadlineId, runtime::async_state::Event as PolicyEvent,
+    runtime::async_state::EventToken, runtime::async_state::EventWait,
 };
 use core::{
     future::Future,
     pin::Pin,
     task::{Context, Poll},
 };
-use kutox::runtime::async_state::{DeadlineId, Event as PolicyEvent, EventToken, EventWait};
 use moss_libkernel::sync::{spinlock::SpinLockIrq, waker_set::RegistrationId};
 
 pub struct Event {
@@ -64,7 +65,7 @@ impl Future for EventFuture {
             let epoch = async_runtime::event_epoch()?;
             let token = this.token?;
             if token.epoch() != epoch {
-                return Err(Error::State(kutox::runtime::async_state::Error::Stale));
+                return Err(Error::State(crate::runtime::async_state::Error::Stale));
             }
             let mut event = this.event.state.lock_save_irq();
             if event.as_ref().is_none_or(|event| event.epoch() != epoch) {

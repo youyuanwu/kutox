@@ -2,16 +2,9 @@
 
 use super::*;
 use crate::{
-    Failure,
-    arch::x86_64::cpu::X86Cpu,
-    boot::BootInfo,
-    drivers::memory as driver_memory,
-    drivers::pci,
-    guest_tests::TestCase,
-    memory,
-    net::device as net_device,
-    runtime::kernel_runtime::{Clients, Resources},
-    runtime::threads,
+    Failure, arch::x86_64::cpu::X86Cpu, boot::limine::BootInfo, drivers::memory as driver_memory,
+    drivers::pci, guest_tests::TestCase, memory::paging as memory, net::device as net_device,
+    runtime::kernel_runtime::Clients, runtime::kernel_runtime::Resources, runtime::threads,
 };
 use core::sync::atomic::AtomicUsize;
 use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
@@ -133,13 +126,13 @@ pub(crate) fn kutox_guest_network_client(_: usize) {
             assert!(info.link);
             runtime.wait_probes().unwrap();
             let manager = runtime.manager().unwrap();
-            let native = (0..kutox::drivers::registry::MAX_DEVICES)
+            let native = (0..crate::drivers::registry::MAX_DEVICES)
                 .filter_map(|index| manager.device_at(index).unwrap())
                 .find(|(handle, _)| handle.identity() == device.identity())
                 .unwrap();
             assert!(matches!(
                 native.1.state,
-                kutox::drivers::registry::DeviceState::Bound { ready: true, .. }
+                crate::drivers::registry::DeviceState::Bound { ready: true, .. }
             ));
             serial::print(format_args!(
                 "# NETWORK_DEVICE epoch={} identity={} bdf=0000:{:02x}:{:02x}.{} mac=52:54:00:12:34:56 mtu=1500 link=1 registry_ready=1 workers=2\n",
@@ -282,11 +275,11 @@ fn integration(
     boot: &BootInfo,
     frames: &'static memory::PhysicalFrames<'static>,
 ) -> Result<(), Failure> {
-    if boot.mode == kutox::boot::fw_cfg::BootMode::DriverRuntimeTests {
+    if boot.mode == crate::boot::fw_cfg::BootMode::DriverRuntimeTests {
         pci::tests::reject_bad_runtime_topology(boot, frames)?;
     }
     let inventory = pci::enumerate()?;
-    if inventory.e1000() == Err(kutox::drivers::pci_state::Error::Ambiguous) {
+    if inventory.e1000() == Err(crate::drivers::pci_state::Error::Ambiguous) {
         let before = memory::allocation_snapshot(frames);
         let heap_before = crate::memory::heap::global().stats();
         let result = Resources::start(boot, frames);
@@ -327,7 +320,7 @@ fn integration(
         assert_eq!(stats.peak_tasks, 6);
         serial::print(format_args!(
             "# NETWORK_JOIN epoch={epoch} finished=6 peak=6 workers=0 stale=1 balanced=1 metadata={}\n",
-            kutox::drivers::pci_state::INFRASTRUCTURE_METADATA_BYTES
+            crate::drivers::pci_state::INFRASTRUCTURE_METADATA_BYTES
                 + crate::runtime::kernel_runtime::METADATA_BYTES
         ));
     }

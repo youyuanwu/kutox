@@ -172,7 +172,7 @@ class GuestBuildTests(unittest.TestCase):
             dependencies = kernel.with_suffix(".d")
             with self.assertRaises(FileNotFoundError):
                 validate_runtime_dependencies(kernel)
-            native = [ROOT / "src/main.rs", ROOT / "src/drivers/memory.rs"]
+            native = [ROOT / "src/main.rs", ROOT / "src/lib.rs", ROOT / "src/drivers/memory.rs"]
             dependencies.write_text("kutox: " + " ".join(map(str, native)) + "\n")
             self.assertEqual(validate_runtime_dependencies(kernel), sorted(map(str, native)))
             alias = Path(directory) / "backend.rs"

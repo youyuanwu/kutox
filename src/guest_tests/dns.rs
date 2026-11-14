@@ -2,20 +2,13 @@
 
 use super::TestCase;
 use crate::{
-    Failure,
-    arch::x86_64::serial,
-    boot::BootInfo,
-    memory,
-    memory::heap,
-    net::async_service as net_async,
-    net::dns::{self as net_dns, Error},
-    net::stack as net_stack,
-    runtime::async_runtime,
-    runtime::async_sync,
-    runtime::kernel_runtime::{self, Clients, Resources},
-    runtime::threads,
+    Failure, arch::x86_64::serial, boot::limine::BootInfo, memory::heap, memory::paging as memory,
+    net::async_service as net_async, net::dns as net_dns, net::dns::Error, net::stack as net_stack,
+    runtime::async_runtime, runtime::async_sync, runtime::kernel_runtime,
+    runtime::kernel_runtime::Clients, runtime::kernel_runtime::Resources, runtime::threads,
     runtime::time,
 };
+use crate::{net::config::Mode, runtime::async_state::Outcome};
 use alloc::boxed::Box;
 use core::{
     future::{Future, poll_fn},
@@ -23,7 +16,6 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     task::Poll,
 };
-use kutox::{net::config::Mode, runtime::async_state::Outcome};
 
 pub(crate) static TESTS: &[TestCase] = &[TestCase {
     name: "dns.lifecycle",

@@ -2,23 +2,14 @@
 
 use super::TestCase;
 use crate::{
-    Failure,
-    arch::x86_64::serial,
-    boot::BootInfo,
-    drivers::linux_driver,
-    drivers::memory as driver_memory,
-    memory,
-    memory::heap,
-    net::async_service as net_async,
-    net::device as net_device,
-    net::stack as net_stack,
-    runtime::async_runtime,
-    runtime::kernel_runtime::{self, Clients, Resources},
-    runtime::threads,
-    runtime::time,
+    Failure, arch::x86_64::serial, boot::limine::BootInfo, drivers::linux_driver,
+    drivers::memory as driver_memory, memory::heap, memory::paging as memory,
+    net::async_service as net_async, net::device as net_device, net::stack as net_stack,
+    runtime::async_runtime, runtime::kernel_runtime, runtime::kernel_runtime::Clients,
+    runtime::kernel_runtime::Resources, runtime::threads, runtime::time,
 };
+use crate::{net::config::Config, runtime::async_state::Outcome};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use kutox::{net::config::Config, runtime::async_state::Outcome};
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 use smoltcp::wire::{
     ArpOperation, ArpPacket, ArpRepr, EthernetAddress, EthernetFrame, EthernetProtocol, Ipv4Address,
@@ -278,7 +269,7 @@ fn exchange(
         assert_eq!((stats.finished, stats.peak_tasks), (6, 6));
         serial::print(format_args!(
             "# NET_IP_JOIN epoch={epoch} finished=6 peak=6 frame=balanced heap=balanced sessions=0 requests=0 packets=0 futures=0 tasks=0 workers=0 copied_after_remove=1 source_unchanged=1 metadata={}\n",
-            kutox::drivers::pci_state::INFRASTRUCTURE_METADATA_BYTES
+            crate::drivers::pci_state::INFRASTRUCTURE_METADATA_BYTES
                 + kernel_runtime::METADATA_BYTES,
         ));
     }

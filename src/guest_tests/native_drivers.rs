@@ -1,25 +1,21 @@
 //! Synthetic initcall/probe fixtures; never a production PCI/NIC fallback.
 
 use crate::{
-    Failure,
-    arch::x86_64::cpu::X86Cpu,
-    arch::x86_64::irq,
-    arch::x86_64::serial,
-    boot::BootInfo,
-    drivers::init::{self as driver_init, KernelManager},
-    drivers::pci,
-    memory,
-    runtime::threads,
+    Failure, arch::x86_64::cpu::X86Cpu, arch::x86_64::irq, arch::x86_64::serial,
+    boot::limine::BootInfo, drivers::init as driver_init, drivers::init::KernelManager,
+    drivers::pci, memory::paging as memory, runtime::threads,
+};
+use crate::{
+    drivers::manager::InitRecord, drivers::manager::NativeDevice, drivers::manager::NativeDriver,
+    drivers::manager::ProbeDiagnostic, drivers::manager::ProbeResult,
+    drivers::registry::Dependency, drivers::registry::DependencyStatus,
+    drivers::registry::DeviceHandle, drivers::registry::DeviceInfo, drivers::registry::DriverId,
+    drivers::registry::DriverSpec, drivers::registry::Error, drivers::registry::MAX_DEPENDENCIES,
+    drivers::registry::Matcher, drivers::registry::Phase, drivers::registry::Scope,
+    drivers::registry::ServiceId,
 };
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use kutox::{
-    drivers::manager::{InitRecord, NativeDevice, NativeDriver, ProbeDiagnostic, ProbeResult},
-    drivers::registry::{
-        Dependency, DependencyStatus, DeviceHandle, DeviceInfo, DriverId, DriverSpec, Error,
-        MAX_DEPENDENCIES, Matcher, Phase, Scope, ServiceId,
-    },
-};
 use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
 
 static MANAGER: KernelManager = KernelManager::new(Scope::Test, driver_init::HOOKS);
@@ -65,14 +61,14 @@ pub(crate) fn hardening(
                 priority: 50,
                 scope: Scope::Test,
                 matcher: Matcher::Synthetic(50),
-                max_instances: kutox::drivers::registry::MAX_BOUND,
+                max_instances: crate::drivers::registry::MAX_BOUND,
                 dependencies: [None; MAX_DEPENDENCIES],
             };
             MANAGER
                 .initialize(|manager| manager.register(Arc::new(CapacityDriver(spec, false))))
                 .unwrap();
             let mut first = None;
-            for index in 0..kutox::drivers::registry::MAX_DEVICES {
+            for index in 0..crate::drivers::registry::MAX_DEVICES {
                 let handle = MANAGER
                     .discover(DeviceInfo::Synthetic {
                         identity: index as u64 + 1,
@@ -102,7 +98,7 @@ pub(crate) fn hardening(
             assert_eq!((summary.bound, summary.failed), (32, 224));
             let first = first.unwrap();
             let mut held = alloc::vec::Vec::new();
-            for _ in 0..kutox::drivers::registry::MAX_OPERATIONS {
+            for _ in 0..crate::drivers::registry::MAX_OPERATIONS {
                 held.push(MANAGER.operation(first).unwrap());
             }
             assert!(matches!(MANAGER.operation(first), Err(Error::Capacity)));
@@ -436,7 +432,7 @@ pub fn initializers(
     let inventory = pci::enumerate()?;
     serial::print(format_args!(
         "# NATIVE_TABLE production=1 test=4 record_bytes={} functions={}\n",
-        kutox::drivers::manager::INIT_RECORD_BYTES,
+        crate::drivers::manager::INIT_RECORD_BYTES,
         inventory.functions().len(),
     ));
     // The inventory owner stays on the boot stack until the guarded worker joins.
@@ -449,7 +445,7 @@ pub fn initializers(
 }
 
 fn initializer_worker(inventory: usize) {
-    let inventory = unsafe { &*(inventory as *const kutox::drivers::pci_state::Inventory) };
+    let inventory = unsafe { &*(inventory as *const crate::drivers::pci_state::Inventory) };
     reset(&MANAGER);
     reset(&PRODUCTION);
     clear_counts(0, 0);

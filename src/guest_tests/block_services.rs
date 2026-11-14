@@ -1,6 +1,7 @@
 use crate::linux_compat::tests::block_tests as fixture;
 use crate::{
-    Failure, arch::x86_64::irq, arch::x86_64::serial, boot::BootInfo, memory, runtime::time,
+    Failure, arch::x86_64::irq, arch::x86_64::serial, boot::limine::BootInfo,
+    memory::paging as memory, runtime::time,
 };
 use core::sync::atomic::{AtomicBool, Ordering};
 

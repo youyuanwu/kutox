@@ -1,13 +1,16 @@
 use crate::{
-    Failure, arch::x86_64::cpu::X86Cpu, arch::x86_64::platform, boot::BootInfo, drivers::pci,
-    memory, runtime::threads,
+    Failure, arch::x86_64::cpu::X86Cpu, arch::x86_64::platform, boot::limine::BootInfo,
+    drivers::pci, memory::paging as memory, runtime::threads,
+};
+use crate::{
+    memory::dma_state, memory::dma_state::Layout, memory::dma_state::Ownership,
+    memory::dma_state::State,
 };
 use alloc::rc::Rc;
 use core::{
     ptr::NonNull,
     sync::atomic::{Ordering, compiler_fence},
 };
-use kutox::memory::dma_state::{self, Layout, Ownership, State};
 use moss_libkernel::{
     memory::{Error as FrameError, allocators::phys::PageAllocation},
     sync::spinlock::SpinLockIrq,

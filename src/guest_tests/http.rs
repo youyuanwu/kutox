@@ -2,23 +2,15 @@
 
 use super::TestCase;
 use crate::{
-    Failure,
-    arch::x86_64::serial,
-    boot::BootInfo,
-    memory,
-    memory::heap,
-    net::async_service as net_async,
-    net::dns as net_dns,
-    net::stack as net_stack,
-    net::tcp::{self as net_tcp, Endpoint, Error},
-    runtime::async_runtime,
-    runtime::async_sync,
-    runtime::kernel_runtime::{self, Clients, Resources},
-    runtime::time,
-    user::tasks::{Dispatcher, tests as user_tasks},
+    Failure, arch::x86_64::serial, boot::limine::BootInfo, memory::heap, memory::paging as memory,
+    net::async_service as net_async, net::dns as net_dns, net::stack as net_stack,
+    net::tcp as net_tcp, net::tcp::Endpoint, net::tcp::Error, runtime::async_runtime,
+    runtime::async_sync, runtime::kernel_runtime, runtime::kernel_runtime::Clients,
+    runtime::kernel_runtime::Resources, runtime::time, user::tasks::Dispatcher,
+    user::tasks::tests as user_tasks,
 };
+use crate::{net::config::Mode, runtime::async_state::Outcome};
 use core::sync::atomic::{AtomicUsize, Ordering};
-use kutox::{net::config::Mode, runtime::async_state::Outcome};
 
 pub(crate) static TESTS: &[TestCase] = &[TestCase {
     name: "http.exchange",

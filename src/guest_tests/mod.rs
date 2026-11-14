@@ -26,28 +26,15 @@ use self::{
     driver_services as driver_service_tests, linux_e1000 as linux_driver,
     linux_execution as linux_driver_tests,
 };
+use crate::boot::fw_cfg::BootMode;
 use crate::{
-    Failure,
-    arch::x86_64::cpu::{self, X86Cpu},
-    arch::x86_64::exceptions,
-    arch::x86_64::io,
-    arch::x86_64::irq,
-    arch::x86_64::serial,
-    boot::BootInfo,
-    drivers::linux_deferred,
-    drivers::linux_dma,
-    drivers::linux_irq,
-    drivers::linux_runtime,
-    drivers::pci,
-    memory,
-    memory::dma,
-    memory::heap,
-    runtime::completion,
-    runtime::mutex,
-    runtime::threads,
+    Failure, arch::x86_64::cpu, arch::x86_64::cpu::X86Cpu, arch::x86_64::exceptions,
+    arch::x86_64::io, arch::x86_64::irq, arch::x86_64::serial, boot::limine::BootInfo,
+    drivers::linux_deferred, drivers::linux_dma, drivers::linux_irq, drivers::linux_runtime,
+    drivers::pci, memory::dma, memory::heap, memory::paging as memory, runtime::completion,
+    runtime::mutex, runtime::threads,
 };
 use crate::{drivers::memory as driver_memory, drivers::platform as driver_platform};
-use kutox::boot::fw_cfg::BootMode;
 use moss_libkernel::CpuOps;
 
 pub(crate) struct TestCase {
@@ -385,7 +372,7 @@ static INTENTIONAL_FAILURE: TestCase = TestCase {
         context.expect_eq(false, true, file!(), line!());
         support::assert_eq!(context.finish().err().map(|error| error.code), Some(-320));
         let mut cleanup =
-            kutox::testing::cleanup::Cleanup::<_, Failure, 1>::new((), support::cleanup_error);
+            crate::testing::cleanup::Cleanup::<_, Failure, 1>::new((), support::cleanup_error);
         cleanup
             .add(|_| Err(Failure::new("intentional_cleanup", -321)))
             .map_err(|_| Failure::new("test_cleanup_capacity", -321))?;
@@ -404,7 +391,7 @@ pub fn run(boot: &BootInfo) -> ! {
     if cpu::interrupts_enabled() || !support::quiescent(boot) {
         bail("invalid_suite_entry_state");
     }
-    use kutox::testing::selection::Selection;
+    use crate::testing::selection::Selection;
     if boot.test_selection == Selection::List {
         for test in TESTS {
             serial::print(format_args!(

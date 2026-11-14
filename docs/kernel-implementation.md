@@ -19,31 +19,30 @@ each service:
 | [`storage/`](../src/storage/) | Scoped native disk access and block resource services. |
 | [`user/`](../src/user/) | CPL3 execution and resumable tasks. |
 | [`linux_compat/`](../src/linux_compat/) | Linux C ABI providers, safe native ownership frontends and private raw adapters. |
-| [`portable/`](../src/portable/) | The library's subsystem modules: state machines, driver manager, firmware configuration, shared ABI types, syscall policy and test accounting. |
+| [`testing/`](../src/testing/) | Portable test selection and cleanup accounting. |
 | [`guest_tests/`](../src/guest_tests/) | Feature-gated guest acceptance fixtures. |
 
-[The kernel entry point](../src/main.rs) wires these subsystems together.
-Implementation modules are crate-private; service ownership contracts remain
-unchanged. In particular, raw compatibility adapters
-stay private to `linux_compat`, and no additional registry or forwarding service
-layer is introduced.
+[The library root](../src/lib.rs) owns one subsystem tree. Portable state
+machines live beside their native implementations, such as networking state
+and device services or runtime policy and the executor. Native modules use
+`#[cfg(target_os = "none")]`; host builds compile only their portable siblings.
+Public names follow this tree, with no flat compatibility aliases.
 
-[The library root](../src/portable/lib.rs) has its own source tree so ordinary
-module declarations select only host-testable code, not native kernel services.
-Public names follow that tree, such as `kutox::runtime::async_state`,
-`kutox::net::state` and `kutox::testing::cleanup`; there are no flat compatibility
-aliases. The cleanup module remains gated by `guest-tests`.
+[The binary entry point](../src/main.rs) only delegates kernel entry and panic
+handling to [boot orchestration](../src/boot/entry.rs). Limine collection,
+physical paging and CPL3 execution live in their named subsystem modules.
+Native implementation modules are crate-private, and raw compatibility adapters
+remain private to `linux_compat`. Service ownership contracts are unchanged.
 
-The kernel consumes the library's shared Linux ABI types directly, rather than
-compiling a second copy. Native-private guest fixtures still use explicit source
-paths where they need to be children of their original service, only when
-`guest-tests` is enabled. Standalone C/Rust layout probes also select the actual
-ABI source explicitly. These paths express fixture access and shared-source
-testing, not public API compatibility.
+Guest fixtures require both the freestanding target and `guest-tests`. The
+portable cleanup module only requires `guest-tests`. Fixtures that need private
+service state and standalone C/Rust layout probes retain explicit source paths;
+these express test access, not public API compatibility. Shared ABI definitions
+and native services are compiled once in the library.
 
 ## Owned user address spaces
 
-[The native memory service](../src/memory/user.rs) adapts Moss's
+[The native memory service](../src/memory/paging/user.rs) adapts Moss's
 [permission types](../third_party/moss-libkernel/src/memory/permissions.rs) and
 [reduced address-space contract](../third_party/moss-libkernel/src/memory/address_space.rs).
 It keeps the existing `x86_64` mapper and exclusive Moss-derived frame guards;
@@ -227,7 +226,7 @@ and a named Limine module. Both ON and OFF package the same ordinary program;
 it is not a guest fixture or an `include_bytes!` payload in the kernel.
 The existing whole-ISO/kernel/profile identity manifest still protects packaging.
 
-[Boot collection](../src/boot/mod.rs) accepts at most one `kutox-rootfs` module,
+[Boot collection](../src/boot/limine.rs) accepts at most one `kutox-rootfs` module,
 checks its exact size and its whole physical span against Limine
 EXECUTABLE_AND_MODULES memory, then borrows the mapped bytes immutably. Those
 frames are not USABLE and are never handed to the physical allocator. The
@@ -357,7 +356,7 @@ There is no general blocking Linux freeze or synchronous I/O executor yet.
 
 The runtime provider archive builds in both profiles; normal boot merely checks
 its cold quiescent state and starts no storage queue. Provider checks inspect
-the actual Cargo-produced kernel Rust object; there is no isolated provider
+the actual Cargo-produced library Rust objects and kernel entry object; there is no isolated provider
 wrapper or synthetic allocation/context/diagnostic ABI. The independent
 source-only storage audit retains all 203 dependencies and runtime exclusion.
 
@@ -474,7 +473,7 @@ C macro/formatting bridges only; their former native and packet/PCI/block
 control shims are removed.
 The historical cleanup accounts for all 77 baseline native C-ABI definitions.
 Its synthetic audit-native bindings and 62-dependency ledger have since been
-retired. Provider evidence now uses the actual kernel object and linked ELF;
+retired. Provider evidence now uses actual Cargo Rust objects and the linked ELF;
 native calls are type-checked through their real Rust definitions.
 
 [The common Rust modules](../src/linux_compat/) separate safe native services
@@ -527,7 +526,7 @@ from the selected Linux-facing C ABI providers. Genuine C providers use
   forwarding APIs clone the caller's cursor before formatting.
 
 [Shared base/device headers](../compat/include/common/device_types.h) and
-[Rust `repr(C)` contracts](../src/portable/linux_compat/abi.rs) replace the former incompatible
+[Rust `repr(C)` contracts](../src/linux_compat/abi.rs) replace the former incompatible
 minimal/e1000/storage device and PCI declarations. A freestanding Rust probe
 and actual C probes in all three profiles compare 37 layout/offset/GFP values.
 The network profile additionally compares 122 packet/device/NAPI layout and
@@ -536,7 +535,7 @@ and callback-table slot. An additional 135 block values cover all owned block
 types, callback slots, statuses and selected VirtIO feature masks; 41 values
 cover the original-header accessor snapshot, MAC result and selected constants.
 The whole-object audit requires migrated service exports
-to come from the Rust object, not a C replacement or declaration-only mock.
+to come from Rust codegen objects, not a C replacement or declaration-only mock.
 The early synthetic `GFP_KERNEL=0` declaration is gone: boot fixtures and both
 driver paths now use the pinned Linux header's actual GFP values.
 
@@ -661,7 +660,7 @@ while guest guards still verify complete resource retirement.
 
 ## Timer-bounded ring-3 runs
 
-[The native service](../src/user/mod.rs), explicitly named `kutox_user_bringup`,
+[The native service](../src/user/execute.rs), explicitly named `kutox_user_bringup`,
 runs one program synchronously in an exclusively borrowed owned address space.
 It now requires a calibrated, stopped `irq::Timer` and a budget of
 1..=1,000,000 microseconds. The current bring-up caller is quiescent boot context,
@@ -736,7 +735,7 @@ user return and always builds the kernel continuation frame.
 The same bounds/flag gate protects returning hardware IRQs. Deadline checks
 also occur before syscall work and before resuming after that work.
 
-The [portable user-copy planner](../src/portable/user/state.rs) checks the entire range
+The [portable user-copy planner](../src/user/state.rs) checks the entire range
 against a snapshot of owned, effectively readable user mappings before copying
 at most two physical segments through the kernel direct map. The exclusive
 address-space borrow pins these frames throughout the run; no raw user pointer
@@ -790,7 +789,7 @@ and saved user contexts. Its [context port](../third_party/moss-libkernel/src/ta
 adapts pinned Moss's `src/process/ctx.rs`: `from_user_ctx`, user access, save
 and restore retain owned snapshot semantics, but typed `Copy` values replace
 raw-pointer copies and no signal/kernel futures are imported. The existing
-[FIFO](../src/portable/runtime/run_queue.rs), already built on ported Moss `TaskState`, supplies
+[FIFO](../src/runtime/run_queue.rs), already built on ported Moss `TaskState`, supplies
 runnable/running/finished transitions, generation-bearing handles and reaping.
 There is no second ready-queue or task-state implementation.
 
@@ -1079,7 +1078,7 @@ both builds, with all images and acceptance code ON-only.
   reference. Final controller release disables the local APIC, restores its
   original base MSR, then releases all mapping frames.
 - [ACPI discovery](../src/arch/x86_64/platform.rs) uses bounded, checksum-validated
-  [parsers and route policy](../src/portable/arch/x86_64/irq_platform.rs). Firmware tables are copied
+  [parsers and route policy](../src/arch/x86_64/irq_platform.rs). Firmware tables are copied
   through owned read-only WB mappings, including SeaBIOS reserved RAM after
   validating QEMU/PIIX identity and RAM bounds. The supported profile has one
   xAPIC CPU, one I/O APIC, at most 1 GiB RAM, and a root or conventionally bridged
@@ -1147,7 +1146,7 @@ both builds, with all images and acceptance code ON-only.
   IRQ-guard acquisition/release/depth hooks; the single-CPU backend counts all
   guards and rejects a cooperative switch until every guard is released.
 - [Cooperative threads](../src/runtime/threads.rs) use a bounded, allocation-free
-  [FIFO policy](../src/portable/runtime/run_queue.rs), with eight task slots and one kernel address
+  [FIFO policy](../src/runtime/run_queue.rs), with eight task slots and one kernel address
   space. `spawn` takes a function pointer and integer argument; `yield_now`
   resumes the same call stack on a later turn. `run` returns when all tasks have
   exited. Threads exit by returning normally, so Rust locals are dropped before
@@ -1196,7 +1195,7 @@ both builds, with all images and acceptance code ON-only.
   thread termination or stack unwinding. Dropping never-run tasks remains
   supported; discarding any started, suspended Rust stack is explicitly rejected.
 - [Native completions](../src/runtime/completion.rs) combine the existing Moss IRQ lock
-  and native wait queue with a [portable counting policy](../src/portable/runtime/completion_state.rs).
+  and native wait queue with a [portable counting policy](../src/runtime/completion_state.rs).
   `complete()` adds one remembered credit and notifies one blocked FIFO waiter.
   `try_wait()` consumes one available credit without sleeping; `wait(timeout_us)`
   returns `Completed`, `TimedOut`, or `Cancelled`. Woken tasks recheck the credit
@@ -1308,7 +1307,7 @@ both builds, with all images and acceptance code ON-only.
   disabled, no held IRQ guards, no interrupt/exception dispatch, and no nested dispatcher. There is no timer
   preemption, migration, user-task scheduling, or FPU/SIMD state switch.
   A thread that never yields can monopolize the CPU. Panics abort the guest.
-- [Stack mappings](../src/memory/mod.rs) provide each thread a 16 KiB writable/NX
+- [Stack mappings](../src/memory/paging.rs) provide each thread a 16 KiB writable/NX
   supervisor stack between unmapped lower and upper guards in a private virtual
   window. The physical backing remains owned by a buddy guard. Page-table access
   is scoped under an IRQ lock rather than retained across yields; stack and MMIO
@@ -1316,7 +1315,7 @@ both builds, with all images and acceptance code ON-only.
   release, with shared intermediate tables released when the final stack leaves.
   The isolated guard test is a deliberate guard read, not stack-overflow recovery.
   Boot and exception IST stacks retain their existing unguarded storage.
-- [Boot configuration](../src/portable/boot/fw_cfg.rs) reads the optional mode file through
+- [Boot configuration](../src/boot/fw_cfg.rs) reads the optional mode file through
   the QEMU I/O selector/data interface during interrupt-disabled boot. Directory
   scanning and payload sizes are bounded; host tests exercise the same parser.
 - [Moss bootstrap memory](../third_party/moss-libkernel/src/memory) is a dependency-free,

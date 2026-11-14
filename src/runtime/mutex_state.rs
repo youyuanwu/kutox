@@ -70,7 +70,7 @@ impl MutexState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::run_queue::{RunQueue, TaskId};
+    use crate::{runtime::run_queue::RunQueue, runtime::run_queue::TaskId};
 
     fn handles() -> [TaskHandle; 3] {
         let mut queue = RunQueue::<3>::new();

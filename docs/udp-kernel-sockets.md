@@ -84,7 +84,7 @@ one socket; different sockets may have independent pending operations.
 
 Errors are typed and logged as `UDP_ERROR`. Internal `WouldBlock` only means a
 wait must register; it is not returned as success. The portable
-[control/engine](../src/portable/net/udp_state.rs) contains no kernel waits or Linux calls.
+[control/engine](../src/net/udp_state.rs) contains no kernel waits or Linux calls.
 Only the protocol future touches smoltcp Interface/SocketSet state.
 
 ## Bounds and storage

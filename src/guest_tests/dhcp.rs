@@ -2,21 +2,14 @@
 
 use super::TestCase;
 use crate::{
-    Failure,
-    arch::x86_64::serial,
-    boot::BootInfo,
-    memory,
-    memory::heap,
-    net::async_service as net_async,
-    net::stack as net_stack,
-    net::udp::{self as net_udp, Endpoint, Error, Socket},
-    runtime::async_runtime,
-    runtime::async_sync,
-    runtime::kernel_runtime::{self, Clients, Resources},
-    runtime::time,
+    Failure, arch::x86_64::serial, boot::limine::BootInfo, memory::heap, memory::paging as memory,
+    net::async_service as net_async, net::stack as net_stack, net::udp as net_udp,
+    net::udp::Endpoint, net::udp::Error, net::udp::Socket, runtime::async_runtime,
+    runtime::async_sync, runtime::kernel_runtime, runtime::kernel_runtime::Clients,
+    runtime::kernel_runtime::Resources, runtime::time,
 };
+use crate::{net::config::Mode, runtime::async_state::Outcome};
 use core::sync::atomic::{AtomicUsize, Ordering};
-use kutox::{net::config::Mode, runtime::async_state::Outcome};
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 use smoltcp::wire::Ipv4Address;
 

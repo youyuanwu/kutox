@@ -1,14 +1,9 @@
 use crate::{
-    Failure,
-    arch::x86_64::cpu::{self, X86Cpu},
-    arch::x86_64::exceptions,
-    arch::x86_64::io,
-    boot::BootInfo,
-    drivers::pci,
-    memory,
+    Failure, arch::x86_64::cpu, arch::x86_64::cpu::X86Cpu, arch::x86_64::exceptions,
+    arch::x86_64::io, boot::limine::BootInfo, drivers::pci, memory::paging as memory,
 };
+use crate::{arch::x86_64::irq_platform, arch::x86_64::irq_platform::Topology};
 use alloc::vec::Vec;
-use kutox::arch::x86_64::irq_platform::{self, Topology};
 use moss_libkernel::{CpuOps, memory::PAGE_SIZE};
 
 fn failure(error: irq_platform::Error) -> Failure {

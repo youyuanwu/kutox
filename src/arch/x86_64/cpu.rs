@@ -26,7 +26,7 @@ pub fn prepare() -> Result<(), Failure> {
     if interrupts_enabled() || READY.load(Ordering::Acquire) {
         return Err(Failure::new("cpu_init_state", -1));
     }
-    if crate::boot::processor_count()? != 1 {
+    if crate::boot::limine::processor_count()? != 1 {
         return Err(Failure::new("cpu_single_processor_required", -1));
     }
     let features = __cpuid(1);

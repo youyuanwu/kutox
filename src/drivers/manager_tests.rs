@@ -1,5 +1,5 @@
 use super::*;
-use crate::drivers::registry::{MAX_DEPENDENCIES, Matcher};
+use crate::{drivers::registry::MAX_DEPENDENCIES, drivers::registry::Matcher};
 use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::{sync::Weak, vec::Vec};

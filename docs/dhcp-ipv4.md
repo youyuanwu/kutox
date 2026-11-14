@@ -52,7 +52,7 @@ fallback. No/unsupported NIC retains the existing source-waiting behavior.
 
 ## Configuration and socket policy
 
-[Boot mode and settings](../src/portable/net/config.rs) distinguish static
+[Boot mode and settings](../src/net/config.rs) distinguish static
 configuration from DHCP and validate every offered configuration before applying:
 
 - One IPv4 address, prefix 1-30, excluding reserved, network and broadcast

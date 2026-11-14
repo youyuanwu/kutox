@@ -127,7 +127,7 @@ hardware, parameter and ethtool units. It records original registration/callback
 parameter arrays, layouts, headers and **209 unresolved runtime dependencies**.
 These objects are explicitly rejected by the runtime linker. A separate
 combined relocatable closure checks both drivers against fifteen C objects and
-the actual Cargo-produced kernel Rust object. It records unresolved dependencies
+the actual Cargo-produced library Rust objects and kernel entry object. It records unresolved dependencies
 and verifies real providers without synthetic native-service declarations,
 success stubs or a fixed backend-symbol ledger.
 The marked check objects remain excluded from the runtime image. Runtime
@@ -135,7 +135,7 @@ objects are compiled separately against the same selected source profile.
 
 The [shared compatibility implementation](src/linux_compat/) exports Linux-facing
 C ABI functions from Rust. Both drivers share checked
-[device/PCI/execution contracts](src/portable/linux_compat/abi.rs), synchronization, allocation
+[device/PCI/execution contracts](src/linux_compat/abi.rs), synchronization, allocation
 adapters, PCI registration/access and DMA dispatch. Storage device references,
 work tracking and lifecycle/recovery orchestration also live in Rust.
 [Network packet services](src/linux_compat/packet.rs) own network-device
@@ -155,7 +155,7 @@ Each file explains why that boundary remains C.
 Variadic definitions and argument extraction also live in Rust, using stable
 `core::ffi::VaList` (Rust 1.99+) for the actual C ABI, including copied cursors;
 there is no C variadic bridge or handwritten `va_list` layout.
-The profile-level driver check uses that real kernel Rust object and compares
+The profile-level driver check uses those real Cargo Rust objects and compares
 all three C profiles with Rust layouts and GFP flags, plus 122 packet, 135 block
 and 41 header-accessor/MAC contract values. The independent storage host audit
 checks unchanged C sources and their dependency contracts; it does not compile
@@ -281,7 +281,7 @@ source/header/object hashes, original callbacks and classified unresolved APIs.
 Compilation and independent `--verify` run through the coordinator; the existing
 kernel linker rejects declaration-only objects. The profile-level
 `linux-driver-compile-check` separately links unchanged driver objects against
-the actual Cargo-produced kernel Rust object, retaining all sections and checking
+the actual Cargo-produced Rust objects, retaining all sections and checking
 real providers, layouts and kernel build provenance. There is no synthetic
 native-service ABI or alternate Rust provider root.
 

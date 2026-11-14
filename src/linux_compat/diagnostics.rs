@@ -114,7 +114,7 @@ unsafe fn length(text: *const u8) -> usize {
             return i;
         }
     }
-    crate::platform_fail(c"diagnostic_string_length")
+    crate::boot::entry::platform_fail(c"diagnostic_string_length")
 }
 unsafe fn format_message(
     buffer: *mut u8,
@@ -253,7 +253,7 @@ unsafe fn format_message(
                     1 => args.next_arg::<c_ulong>(),
                     _ => u64::from(args.next_arg::<c_uint>()),
                 },
-                _ => crate::platform_fail(c"diagnostic_format"),
+                _ => crate::boot::entry::platform_fail(c"diagnostic_format"),
             };
             out.number(
                 value,
@@ -348,7 +348,7 @@ unsafe fn log_prefix(
         });
         let bit = match bit {
             Some(bit) => bit,
-            None => crate::platform_fail(c"diagnostic_message_level"),
+            None => crate::boot::entry::platform_fail(c"diagnostic_message_level"),
         };
         if mask & (1 << bit) == 0 {
             return false;
@@ -387,7 +387,7 @@ pub unsafe extern "C" fn warn_on(condition: bool, expression: *const u8) -> bool
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn bug() -> ! {
-    crate::platform_fail(c"linux_bug")
+    crate::boot::entry::platform_fail(c"linux_bug")
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn bug_on(condition: bool) {
@@ -667,7 +667,7 @@ pub unsafe extern "C" fn storage_dev_printk(
 pub unsafe extern "C" fn panic(format: *const c_char, mut args: ...) -> ! {
     unsafe {
         storage_log(format, &mut args);
-        crate::platform_fail(c"storage_linux_panic")
+        crate::boot::entry::platform_fail(c"storage_linux_panic")
     }
 }
 #[unsafe(no_mangle)]

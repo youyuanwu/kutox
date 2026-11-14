@@ -1,10 +1,16 @@
 //! Guest-only acceptance fixtures; not production driver code.
-use crate::boot::BootInfo;
+use crate::boot::limine::BootInfo;
 
 use super::*;
-use crate::runtime::completion::{Completion, Error as CompletionError, WaitResult};
+use crate::{
+    runtime::completion::Completion, runtime::completion::Error as CompletionError,
+    runtime::completion::WaitResult,
+};
+use crate::{
+    runtime::completion_state::CompletionState,
+    runtime::completion_state::Error as CompletionStateError,
+};
 use core::sync::atomic::AtomicUsize;
-use kutox::runtime::completion_state::{CompletionState, Error as CompletionStateError};
 
 static SIGNAL: Completion = Completion::new();
 static QUEUE: WaitQueue = WaitQueue::new();

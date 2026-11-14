@@ -1,13 +1,10 @@
 //! Guest-only acceptance fixtures; not production driver code.
 
 use crate::{
-    arch::x86_64::serial,
-    drivers::linux_deferred,
-    drivers::linux_driver::{DriverHandle, control},
-    drivers::memory as driver_memory,
-    linux_compat::packet_tx::{State as PacketState, Submission},
-    runtime::threads,
-    runtime::time,
+    arch::x86_64::serial, drivers::linux_deferred, drivers::linux_driver::DriverHandle,
+    drivers::linux_driver::control, drivers::memory as driver_memory,
+    linux_compat::packet_tx::State as PacketState, linux_compat::packet_tx::Submission,
+    runtime::threads, runtime::time,
 };
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};

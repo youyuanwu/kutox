@@ -2,7 +2,7 @@
 
 use crate::{
     Failure, arch::x86_64::irq::external::ClaimedIrq, arch::x86_64::irq::external::IoApic,
-    arch::x86_64::serial, boot::BootInfo, drivers::pci, memory,
+    arch::x86_64::serial, boot::limine::BootInfo, drivers::pci, memory::paging as memory,
 };
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -41,7 +41,7 @@ impl<'a, 'storage> E1000IrqFixture<'a, 'storage> {
     pub fn start(
         boot: &BootInfo,
         frames: &'a memory::PhysicalFrames<'storage>,
-        topology: &kutox::arch::x86_64::irq_platform::Topology,
+        topology: &crate::arch::x86_64::irq_platform::Topology,
     ) -> Result<Self, Failure> {
         let device = pci::discover()?;
         let gsi = device.interrupt_route(topology)?;

@@ -1,9 +1,8 @@
 use crate::{Failure, arch::x86_64::cpu::X86Cpu, arch::x86_64::serial, runtime::threads};
-use kutox::{
-    drivers::manager::{
-        Hooks, INIT_ABI, INIT_MAGIC, INIT_RECORD_BYTES, InitRecord, InitTable, Manager,
-    },
-    drivers::registry::{Error, Scope},
+use crate::{
+    drivers::manager::Hooks, drivers::manager::INIT_ABI, drivers::manager::INIT_MAGIC,
+    drivers::manager::INIT_RECORD_BYTES, drivers::manager::InitRecord, drivers::manager::InitTable,
+    drivers::manager::Manager, drivers::registry::Error, drivers::registry::Scope,
 };
 
 pub type KernelManager = Manager<X86Cpu>;
@@ -50,7 +49,7 @@ pub fn linked(scope: Scope) -> Result<&'static [InitRecord], Error> {
     if start == 0
         || !start.is_multiple_of(core::mem::align_of::<InitRecord>())
         || !bytes.is_multiple_of(INIT_RECORD_BYTES)
-        || bytes / INIT_RECORD_BYTES > kutox::drivers::registry::MAX_DRIVERS
+        || bytes / INIT_RECORD_BYTES > crate::drivers::registry::MAX_DRIVERS
     {
         return Err(Error::Invalid);
     }

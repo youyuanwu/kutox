@@ -1,9 +1,9 @@
 use crate::arch::x86_64::cpu::X86Cpu;
+use crate::drivers::registry::PciAddress;
 use crate::{Failure, arch::x86_64::io, arch::x86_64::serial};
+use crate::{arch::x86_64::irq_platform, arch::x86_64::irq_platform::Topology};
+use crate::{drivers::pci_state, drivers::pci_state::Inventory};
 use alloc::sync::Arc;
-use kutox::arch::x86_64::irq_platform::{self, Topology};
-use kutox::drivers::pci_state::{self, Inventory};
-use kutox::drivers::registry::PciAddress;
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 
 static CONFIG: SpinLockIrq<(), X86Cpu> = SpinLockIrq::new(());
@@ -75,7 +75,7 @@ impl Device {
             let length = (!mask).wrapping_add(1);
             let base = u64::from(low & !15);
             if !length.is_power_of_two()
-                || !(4096..=crate::memory::MMIO_LENGTH as u64).contains(&length)
+                || !(4096..=crate::memory::paging::MMIO_LENGTH as u64).contains(&length)
                 || base & (length - 1) != 0
                 || base + length > 0x1_0000_0000
             {

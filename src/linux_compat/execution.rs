@@ -17,7 +17,7 @@ unsafe fn load(p: *const c_void, width: usize, order: Ordering) -> u64 {
             2 => AtomicU16::from_ptr(p.cast_mut().cast()).load(order) as u64,
             4 => AtomicU32::from_ptr(p.cast_mut().cast()).load(order) as u64,
             8 => AtomicU64::from_ptr(p.cast_mut().cast()).load(order),
-            _ => crate::platform_fail(c"atomic_width"),
+            _ => crate::boot::entry::platform_fail(c"atomic_width"),
         }
     }
 }
@@ -29,7 +29,7 @@ unsafe fn store(p: *mut c_void, value: u64, width: usize, order: Ordering) {
             2 => AtomicU16::from_ptr(p.cast()).store(value as u16, order),
             4 => AtomicU32::from_ptr(p.cast()).store(value as u32, order),
             8 => AtomicU64::from_ptr(p.cast()).store(value, order),
-            _ => crate::platform_fail(c"atomic_width"),
+            _ => crate::boot::entry::platform_fail(c"atomic_width"),
         }
     }
 }
@@ -187,7 +187,7 @@ pub extern "C" fn usleep_range(minimum: usize, maximum: usize) {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn msleep_interruptible(_ms: u32) -> usize {
-    crate::platform_fail(c"interruptible_sleep_unsupported")
+    crate::boot::entry::platform_fail(c"interruptible_sleep_unsupported")
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn cond_resched() -> i32 {
@@ -549,7 +549,7 @@ pub unsafe extern "C" fn init_work(p: *mut Work, f: Option<unsafe extern "C" fn(
     validate(p);
     let generation = match unsafe { callbacks_raw::attach_work(p as usize, f) } {
         Ok(registration) => registration.into_abi(),
-        Err(_) => crate::platform_fail(c"work_init"),
+        Err(_) => crate::boot::entry::platform_fail(c"work_init"),
     };
     unsafe {
         (*p).function = f;

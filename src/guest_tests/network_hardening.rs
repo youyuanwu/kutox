@@ -3,19 +3,13 @@
 use super::*;
 use crate::arch::x86_64::cpu::X86Cpu;
 use crate::{
-    Failure,
-    arch::x86_64::serial,
-    boot::BootInfo,
-    drivers::memory as driver_memory,
-    drivers::platform as driver_platform,
-    guest_tests::{TestCase, linux_hardening},
-    memory,
-    net::device as net_device,
-    runtime::kernel_runtime::{Clients, Resources, Stage},
-    runtime::threads,
+    Failure, arch::x86_64::serial, boot::limine::BootInfo, drivers::memory as driver_memory,
+    drivers::platform as driver_platform, guest_tests::TestCase, guest_tests::linux_hardening,
+    memory::paging as memory, net::device as net_device, runtime::kernel_runtime::Clients,
+    runtime::kernel_runtime::Resources, runtime::kernel_runtime::Stage, runtime::threads,
 };
+use crate::{drivers::registry::DeviceHandle, drivers::registry::DeviceState};
 use core::sync::atomic::AtomicUsize;
-use kutox::drivers::registry::{DeviceHandle, DeviceState};
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 
 pub(crate) static TESTS: &[TestCase] = &[
@@ -135,7 +129,7 @@ fn opened() -> net_device::Handle {
     assert_eq!(devices.len(), 1);
     let device = devices[0];
     let manager = runtime.manager().unwrap();
-    let handle = (0..kutox::drivers::registry::MAX_DEVICES)
+    let handle = (0..crate::drivers::registry::MAX_DEVICES)
         .filter_map(|index| manager.device_at(index).unwrap())
         .find(|(handle, _)| handle.identity() == device.identity())
         .unwrap()
@@ -423,7 +417,7 @@ fn companion(_: usize) {
         let before = driver_memory::snapshot();
         assert_eq!(
             runtime().manager().unwrap().stop(native()),
-            Err(kutox::drivers::registry::Error::Busy)
+            Err(crate::drivers::registry::Error::Busy)
         );
         assert_eq!(driver_memory::snapshot(), before);
         assert_eq!(device().submit(&packet(2, false)), Err(Error::Closed));
@@ -512,7 +506,7 @@ fn exercise(
         "# MANAGED_HARD_JOIN mode={mode} finished={} peak={} balanced=1 workers=0 metadata={}\n",
         stats.finished,
         stats.peak_tasks,
-        kutox::drivers::pci_state::INFRASTRUCTURE_METADATA_BYTES
+        crate::drivers::pci_state::INFRASTRUCTURE_METADATA_BYTES
             + crate::runtime::kernel_runtime::METADATA_BYTES
     ));
     Ok(())

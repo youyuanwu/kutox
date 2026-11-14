@@ -140,7 +140,7 @@ pub(crate) unsafe fn read_mac(
         {
             return out;
         }
-        crate::check_boot_context();
+        crate::boot::entry::check_boot_context();
         #[cfg(not(feature = "guest-tests"))]
         if deny != 0 {
             out.code = -95;

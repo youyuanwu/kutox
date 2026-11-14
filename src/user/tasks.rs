@@ -1,14 +1,12 @@
 use crate::{
-    Failure,
-    arch::x86_64::irq::Timer,
-    memory::user::AddressSpace,
-    runtime::threads,
-    runtime::time,
-    user::{self, Counts, Report, RunOptions, Stop, UserContext},
+    Failure, arch::x86_64::irq::Timer, memory::paging::user::AddressSpace, runtime::threads,
+    runtime::time, user::execute as user, user::execute::Counts, user::execute::Report,
+    user::execute::RunOptions, user::execute::Stop, user::execute::UserContext,
 };
-use kutox::{
-    runtime::run_queue::{RunQueue, TaskHandle, TaskId, WaitKey},
-    user::state::{ExecutionBudget, Input, MAX_RUN_US, ReadRequest},
+use crate::{
+    runtime::run_queue::RunQueue, runtime::run_queue::TaskHandle, runtime::run_queue::TaskId,
+    runtime::run_queue::WaitKey, user::state::ExecutionBudget, user::state::Input,
+    user::state::MAX_RUN_US, user::state::ReadRequest,
 };
 use moss_libkernel::task::{context::Context, elf::Loaded};
 

@@ -4,7 +4,7 @@ Status: implemented, including the Rust guest-fixture migration and final
 documentation/accounting. Guest-fixture implementation checkpoint: `62f4a1e`.
 The subsequent audit retirement removes synthetic native-service bindings,
 alternate provider roots and their dependency ledgers. Current provider checks
-use the actual Cargo-produced kernel object and linked ELF.
+use actual Cargo-produced Rust objects and the linked ELF.
 
 Audit baseline: `829ec3217f9cccf6415737a27bc995b86ae4146e`.
 Baseline inventory counts below describe that revision. Native-definition
@@ -37,7 +37,7 @@ ownership are unchanged; genuine Linux allocation exports remain C ABI.
 The former standalone provider roots and audit-native binding adapter have
 also been removed. There is no remaining `kutox_driver_alloc` declaration or
 substitute allocation API for audits. Provider checks inspect the kernel's
-actual compiled Rust object; native calls are checked against real Rust
+actual compiled Rust objects; native calls are checked against real Rust
 definitions. Kernel profile checks reject audit-source dependencies,
 compile-only markers and obsolete native exports.
 
@@ -51,7 +51,7 @@ authoritative; no allocation or DMA policy was moved into an adapter.
 Execution, work/NAPI, IRQ registration, PCI/MMIO/ports, tracing, diagnostics,
 delays and network wake now call native Rust APIs directly too. Work and IRQ
 callback backing remains an unsafe registration contract. Native NAPI callbacks
-use the actual [ABI NAPI type](../src/portable/linux_compat/abi.rs), not a cast or trampoline,
+use the actual [ABI NAPI type](../src/linux_compat/abi.rs), not a cast or trampoline,
 so original callback identities remain unchanged. Static-object retirement is
 now a module-level Rust function with the same live-object and context guards.
 
@@ -284,16 +284,18 @@ exports are forbidden in both profiles. All Rust/C fixtures remain absent in OFF
 
 ### Actual-kernel provider checks
 
-CMake's kernel target emits both the linked ELF and its hashed Rust object from
-the same `cargo rustc` invocation. The object must be the sibling of Cargo's
-active executable, identified by file identity. A shared explicit object
-filename is not safe across cached ON/OFF profile switches.
-Adjacent `kutox.build.json` evidence binds their
-hashes to Cargo's dependency file, Rust/native/C sources and build inputs.
-Provider verification rejects missing, stale or mixed evidence.
+CMake's kernel target captures Cargo's JSON build artifacts while producing the
+linked ELF and binary object. The object must be the sibling of Cargo's active
+executable, identified by file identity. The library archive is selected from
+that build's artifact messages, not guessed from cached filenames. Its actual
+Rust codegen members supply the kernel implementation to the provider check.
+Adjacent schema-3 `kutox.build.json` evidence binds the ELF, entry object and
+library archive hashes to Cargo's dependency file, Rust/native/C sources and
+build inputs. Verification also compares extracted members with the archive
+and rejects missing, stale or mixed evidence.
 
 [The provider check](../scripts/linux_compat_check.py) links all fifteen
-unchanged-driver/header-access C objects with this real kernel Rust object,
+unchanged-driver/header-access C objects with these real Cargo Rust objects,
 without garbage collection. It requires genuine global Rust definitions for
 reviewed Linux providers and checks that every C dependency is supplied by
 the inputs or an explicit compiler/libc primitive. Remaining foreign references
@@ -316,7 +318,7 @@ definition directly instead of redeclaring it through an external C block.
 | --- | --- |
 | Keep native C exports for all Rust callers | Smallest edit, but preserves the issue |
 | Direct runtime Rust calls plus audit-root bindings | Used during migration; synthetic audit interfaces subsequently retired |
-| Actual kernel object and linked ELF | Current implementation; no duplicate native API surface |
+| Actual Cargo Rust objects and linked ELF | Current implementation; no duplicate native API surface |
 | New backend trait/crate or selectable runtime backend | Unnecessary abstraction/configuration for this bounded cleanup |
 
 ## Proof obligations

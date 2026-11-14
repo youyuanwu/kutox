@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::guest_tests::support::assert_eq;
-use crate::{arch::x86_64::cpu, memory};
+use crate::{arch::x86_64::cpu, memory::paging as memory};
 use moss_libkernel::memory::{PhysMemoryRegion, allocators::frame::Frame};
 
 fn error<T>(result: Result<T, Failure>, stage: &str) -> Result<(), Failure> {

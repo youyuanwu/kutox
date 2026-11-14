@@ -1,6 +1,6 @@
 //! Bounded DNS requests; only the protocol owner accesses smoltcp sockets.
 
-use crate::net::config::{Settings, valid_unicast};
+use crate::{net::config::Settings, net::config::valid_unicast};
 use alloc::vec::Vec;
 use smoltcp::{
     iface::{Interface, PollIngressSingleResult, SocketHandle, SocketSet, SocketStorage},

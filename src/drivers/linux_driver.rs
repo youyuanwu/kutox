@@ -1,13 +1,10 @@
 //! Runtime control and packet tickets for unchanged Linux e1000, not guest fixtures.
 
 use crate::{
-    arch::x86_64::serial,
-    drivers::linux_deferred,
-    linux_compat::{
-        lifecycle::{self, Handle as LifecycleHandle},
-        packet_tx::{State as PacketState, Submission, Tx},
-    },
-    runtime::threads,
+    arch::x86_64::serial, drivers::linux_deferred, linux_compat::lifecycle,
+    linux_compat::lifecycle::Handle as LifecycleHandle,
+    linux_compat::packet_tx::State as PacketState, linux_compat::packet_tx::Submission,
+    linux_compat::packet_tx::Tx, runtime::threads,
 };
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -114,7 +111,7 @@ pub(crate) fn set_tracing(enabled: bool) {
 }
 
 pub(crate) fn quiescent() -> bool {
-    CONTROL.snapshot() == kutox::runtime::mutex_state::MutexState::new()
+    CONTROL.snapshot() == crate::runtime::mutex_state::MutexState::new()
 }
 pub(crate) fn trace(event: u32, function: usize, object: usize, result: i32) {
     {
@@ -148,15 +145,16 @@ pub(crate) fn trace(event: u32, function: usize, object: usize, result: i32) {
     }
 }
 
+use crate::{
+    drivers::manager::InitRecord, drivers::manager::NativeDevice, drivers::manager::NativeDriver,
+    drivers::manager::ProbeResult, drivers::registry::Dependency, drivers::registry::DeviceInfo,
+    drivers::registry::DriverId, drivers::registry::DriverSpec, drivers::registry::Matcher,
+    drivers::registry::PciAddress, drivers::registry::Scope, drivers::registry::ServiceId,
+    net::state::Error, net::state::Frame, net::state::Info, net::state::NetworkDevice,
+    net::state::TxStatus, net::state::TxTicket,
+};
 use alloc::sync::Arc;
 use core::sync::atomic::AtomicU64;
-use kutox::{
-    drivers::manager::{InitRecord, NativeDevice, NativeDriver, ProbeResult},
-    drivers::registry::{
-        Dependency, DeviceInfo, DriverId, DriverSpec, Matcher, PciAddress, Scope, ServiceId,
-    },
-    net::state::{Error, Frame, Info, NetworkDevice, TxStatus, TxTicket},
-};
 
 pub const DRIVER_ID: DriverId = match DriverId::new(1) {
     Ok(id) => id,
@@ -177,7 +175,7 @@ static INITIALIZER: InitRecord =
     InitRecord::new(DRIVER_ID, 10, Scope::Production, kutox_e1000_init);
 
 #[unsafe(no_mangle)]
-pub fn kutox_e1000_init() -> Result<Arc<dyn NativeDriver>, kutox::drivers::registry::Error> {
+pub fn kutox_e1000_init() -> Result<Arc<dyn NativeDriver>, crate::drivers::registry::Error> {
     Ok(Arc::new(E1000))
 }
 
@@ -245,7 +243,7 @@ pub const METADATA_BYTES: usize = core::mem::size_of::<
 
 pub fn managed_quiescent() -> bool {
     MANAGED_TICKET.load(Ordering::Acquire) == 0
-        && MANAGED.snapshot() == kutox::runtime::mutex_state::MutexState::new()
+        && MANAGED.snapshot() == crate::runtime::mutex_state::MutexState::new()
         && quiescent()
         && lifecycle::empty()
 }

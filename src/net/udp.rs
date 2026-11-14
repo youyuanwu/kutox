@@ -4,16 +4,16 @@ use crate::{
     arch::x86_64::cpu, arch::x86_64::exceptions, arch::x86_64::serial, runtime::async_runtime,
     runtime::async_sync, runtime::threads,
 };
-use core::{future::poll_fn, pin::Pin, task::Poll};
-pub use kutox::net::udp_state::{Endpoint, Error};
-use kutox::{
-    net::config::{Config, Settings},
-    net::udp_state::{Buffers, Control, Engine, Key},
+use crate::{
+    net::config::Config, net::config::Settings, net::udp_state::Buffers, net::udp_state::Control,
+    net::udp_state::Engine, net::udp_state::Key,
 };
+pub use crate::{net::udp_state::Endpoint, net::udp_state::Error};
+use core::{future::poll_fn, pin::Pin, task::Poll};
 use moss_libkernel::{CpuOps, sync::spinlock::SpinLockIrq};
 
-pub const MAX_DATAGRAM: usize = kutox::net::udp_state::MAX_DATAGRAM;
-pub const MAX_SOCKETS: usize = kutox::net::udp_state::MAX_SOCKETS;
+pub const MAX_DATAGRAM: usize = crate::net::udp_state::MAX_DATAGRAM;
+pub const MAX_SOCKETS: usize = crate::net::udp_state::MAX_SOCKETS;
 
 static CONTROL: SpinLockIrq<Control, cpu::X86Cpu> = SpinLockIrq::new(Control::new());
 static WORK: async_sync::Event = async_sync::Event::new();

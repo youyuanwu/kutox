@@ -1,6 +1,6 @@
 #![no_std]
 #![allow(dead_code)]
-#[path = "../../../src/portable/linux_compat/abi.rs"]
+#[path = "../../../src/linux_compat/abi.rs"]
 mod abi;
 #[path = "../../../src/linux_compat/block_abi.rs"]
 mod block_abi;

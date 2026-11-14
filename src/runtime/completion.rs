@@ -1,8 +1,10 @@
 use crate::{
-    arch::x86_64::cpu::X86Cpu,
-    runtime::threads::{self, SwitchError, WaitQueue, WakeReason},
+    arch::x86_64::cpu::X86Cpu, runtime::threads, runtime::threads::SwitchError,
+    runtime::threads::WaitQueue, runtime::threads::WakeReason,
 };
-use kutox::runtime::completion_state::{CompletionState, Error as StateError};
+use crate::{
+    runtime::completion_state::CompletionState, runtime::completion_state::Error as StateError,
+};
 use moss_libkernel::sync::spinlock::SpinLockIrq;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
