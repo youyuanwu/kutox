@@ -41,7 +41,7 @@ layouts and actual runtime-link rejection pass. No fake service providers or
 garbage collection hide dependencies. Failed builds invalidate an earlier
 success report. The separate `runtime/` subdirectory now contains the complete
 unmarked combined e1000/VirtIO/Rust-provider closure, with all sections retained
-and exactly 68 backend/libc entry points in one shared allowlist. Both inventories
+and exactly 62 backend/libc entry points in one shared allowlist. Both inventories
 and their source/header/command/object provenance are independently verified.
 
 Both driver audits use [linux_compat_check.py](../scripts/linux_compat_check.py)
@@ -51,13 +51,57 @@ Real Rust and boot/e1000/storage C probes must agree on all 37 shared
 device/PCI/execution-layout and GFP values. Rust and the network C profile also
 compare 122 network-device, skb, fragment, NAPI, callback-slot and constant
 values. Another 135 block and 41 original-header-accessor/MAC values check the
-migrated block services and retained C bridge. Migrated lifecycle, NAPI, optional,
+migrated block services and retained C bridge. Genuine NAPI, optional,
 MMIO, diagnostic and block entry points must be functions in the actual Rust
-object, not C/local/data definitions. Existing native Rust-only stop/quiescence
-helpers may inline in the optimized kernel ELF without losing provider proof.
+object, not C/local/data definitions. Private lifecycle, storage and boot control
+paths use real kernel compilation and guest behavior instead of artificial C
+exports. Rust-only helpers may inline without losing that proof.
 Independent `--verify` checks
 stored objects and provenance without compiling. Source-only dependency
 inventories remain 209/203 and retain actual kernel-link exclusion.
+
+The shared and isolated block Rust roots use
+[audit-only native bindings](../compat/audit/common/native_backend.rs) for
+memory/DMA, execution/platform, block backing and native storage APIs.
+Reports hash their actual compiler dependencies and record every native role's
+Rust API or retained C-provider disposition against the exact dependency ledger.
+Boot-context, lifecycle-retirement, storage-reset setup and Rust-only coherent
+DMA publication/reclaim/device teardown are explicitly
+recorded private Rust control roles, not unexplained removals from the provider
+closure. Missing, live, unknown or reasonless exclusions are rejected.
+Kernel profile checks require
+the adjacent Cargo `.d` file, reject audit sources and compile-only ELF markers,
+and reject obsolete Rust-only native exports. Required C boundary fixtures,
+failure reporting and the assembly thread probe must be present in ON and
+absent in OFF. Deleted native helpers, lifecycle/packet/PCI/block controls and
+fixture-only DMA/lifecycle extensions are rejected in both profiles.
+Production C jiffies and genuine Linux providers remain independently verified.
+
+Guest service scenarios are Rust: they call existing Rust APIs for fault
+injection, context/ownership checks and teardown, rather than test-only C
+backend exports. The small [C fixtures](../compat/guest_tests/) exercise the
+driver-facing Linux ABI, C macros/inline helpers, variadics and C netdev
+callbacks. The profile gate inspects undefined references in the four fixture
+archives selected by the current kernel's Cargo dependencies/build output,
+rejecting native backend/control calls and unreviewed project C bridges.
+Host regressions cover forbidden calls and stale/missing archive evidence.
+
+For changes to these boundaries, use the existing coordinator and both
+independently verified provider audits:
+
+```sh
+python3 scripts/check.py fast --scope host --select rustfmt --select harness-unit
+python3 scripts/linux_driver_check.py --build-dir build
+python3 scripts/linux_driver_check.py --build-dir build --verify
+python3 scripts/linux_storage_check.py --build-dir build
+python3 scripts/linux_storage_check.py --build-dir build --verify
+```
+
+Select affected kernel/driver/storage guests from the catalog in both profiles,
+including `kernel-clippy` and a low-memory kernel suite for service changes.
+Run builds and QEMU serially with one build job. After documentation-only
+changes, check links and whitespace; do not rebuild guests merely to update
+prose or mistake historical baseline counts for current acceptance limits.
 
 Runtime declarations and header-forwarding manifests live under
 [compat/include/](../compat/include/), not audit directories. Audit-only
@@ -107,7 +151,8 @@ tickets, copy/error results and joined teardown; four failures cover allocation
 rollback. The host checks exact bounded/IRQ evidence and the expected rejection
 ledger inside that case, and rejects missing/duplicate/moved/changed proofs.
 Fixture guards require exact frame/heap balance and no retained block objects.
-The C/Rust fixture and fault injection are absent from OFF; default network boot
+Rust owns the transport scenarios and real IRQ orchestration; C exercises the
+request/PDU/scatterlist boundary only. The fixture and fault injection are absent from OFF; default network boot
 rejects block acceptance/error evidence. This fixture is not the hardware driver.
 
 ### Real storage acceptance

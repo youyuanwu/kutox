@@ -41,18 +41,16 @@ fn device(state: &State, key: usize) -> Result<&Device<'static, 'static>, Error>
         .ok_or(dma_state::Error::Device.into())
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_dma_mask(key: usize, mask: u64) -> i32 {
+pub(crate) fn set_mask(key: usize, mask: u64) -> i32 {
     if crate::driver_platform::check_device(key).is_ok() {
-        return crate::driver_platform::kutox_driver_pci(8, mask, 0);
+        return crate::driver_platform::pci_operation(8, mask, 0);
     }
     with_registry(|state| device(state, key)?.set_mask(mask))
         .map(|()| 0)
         .unwrap_or_else(|err| error("mask", err))
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_dma_unregister(key: usize) -> i32 {
+pub(crate) fn unregister(key: usize) -> i32 {
     with_registry(|state| {
         if device(state, key)?.snapshot().buffers != 0 || state.buffers.iter().any(Option::is_some)
         {
@@ -67,8 +65,7 @@ extern "C" fn kutox_linux_dma_unregister(key: usize) -> i32 {
 
 /// # Safety
 /// Outputs must be valid, aligned, writable and non-overlapping.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn kutox_linux_dma_alloc(
+pub(crate) unsafe fn allocate(
     key: usize,
     size: usize,
     flags: u32,
@@ -134,10 +131,11 @@ fn find(state: &mut State, key: usize, cpu: usize) -> Result<usize, Error> {
         .ok_or(dma_state::Error::Released.into())
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_dma_free(key: usize, size: usize, cpu: usize, address: u64) -> i32 {
+/// # Safety
+/// On success all CPU aliases are relinquished; native DMA lifetime guards still apply.
+pub(crate) unsafe fn free(key: usize, size: usize, cpu: usize, address: u64) -> i32 {
     if crate::driver_platform::check_device(key).is_ok() {
-        return crate::driver_memory::coherent_free(cpu, size, address).map_or_else(
+        return unsafe { crate::driver_memory::coherent_free(cpu, size, address) }.map_or_else(
             |code| {
                 serial::print(format_args!("# driver coherent_free code={code}\n"));
                 code
@@ -161,8 +159,9 @@ extern "C" fn kutox_linux_dma_free(key: usize, size: usize, cpu: usize, address:
     .unwrap_or_else(|err| error("free", err))
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_dma_publish(key: usize, cpu: usize) -> i32 {
+/// # Safety
+/// The caller relinquishes CPU access until completion and reclaim.
+pub(crate) unsafe fn publish(key: usize, cpu: usize) -> i32 {
     with_registry(|state| {
         let index = find(state, key, cpu)?;
         state.buffers[index]
@@ -175,9 +174,8 @@ extern "C" fn kutox_linux_dma_publish(key: usize, cpu: usize) -> i32 {
 }
 
 /// # Safety
-/// The C caller must stop all device DMA and descriptor/IRQ paths before reclaim.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn kutox_linux_dma_reclaim(key: usize, cpu: usize) -> i32 {
+/// The caller must stop all device DMA and descriptor/IRQ paths before reclaim.
+pub(crate) unsafe fn reclaim(key: usize, cpu: usize) -> i32 {
     with_registry(|state| {
         let index = find(state, key, cpu)?;
         let witness = unsafe { device(state, key)?.quiesced() }?;
@@ -188,15 +186,6 @@ unsafe extern "C" fn kutox_linux_dma_reclaim(key: usize, cpu: usize) -> i32 {
     })
     .map(|()| 0)
     .unwrap_or_else(|err| error("reclaim", err))
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_dma_wmb() {
-    dma::write_barrier();
-}
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_dma_rmb() {
-    dma::read_barrier();
 }
 
 pub fn quiescent() -> bool {

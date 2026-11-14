@@ -28,10 +28,6 @@ static WAITING: AtomicBool = AtomicBool::new(false);
 static WAIT_WAKE: threads::WaitQueue = threads::WaitQueue::new();
 const LENGTHS: [usize; 6] = [14, 42, 60, 252, 253, 1514];
 
-unsafe extern "C" {
-    fn kutox_c_linux_queue(ticket: u64, stopped: bool) -> i32;
-}
-
 fn packet(epoch: usize, sequence: usize, length: usize, incoming: bool) -> Frame {
     let mut bytes = [0; 1514];
     for (index, byte) in bytes[..length].iter_mut().enumerate() {
@@ -56,8 +52,11 @@ fn exchange(device: net_device::Handle, sequence: usize) {
         let baseline = driver_memory::snapshot();
         assert_eq!(device.submit(&frame), Err(Error::Busy));
         assert_eq!(
-            control("test-queue", || unsafe {
-                kutox_c_linux_queue(MANAGED_TICKET.load(Ordering::Acquire), true)
+            control("test-queue", || {
+                crate::linux_compat::lifecycle::tests::queue(
+                    MANAGED_TICKET.load(Ordering::Acquire),
+                    true,
+                )
             }),
             0
         );
@@ -65,8 +64,11 @@ fn exchange(device: net_device::Handle, sequence: usize) {
         assert_eq!(driver_memory::snapshot(), baseline);
         assert_eq!(device.finish(ticket), Err(Error::Busy));
         assert_eq!(
-            control("test-queue", || unsafe {
-                kutox_c_linux_queue(MANAGED_TICKET.load(Ordering::Acquire), false)
+            control("test-queue", || {
+                crate::linux_compat::lifecycle::tests::queue(
+                    MANAGED_TICKET.load(Ordering::Acquire),
+                    false,
+                )
             }),
             0
         );
@@ -97,9 +99,7 @@ fn exchange(device: net_device::Handle, sequence: usize) {
     ));
     let received = device.wait_receive(3_000_000).unwrap();
     assert_eq!(received, packet(epoch, sequence, length, true));
-    let path = control("rx-path", || unsafe {
-        kutox_c_linux_rx_path(MANAGED_TICKET.load(Ordering::Acquire))
-    });
+    let path = DriverHandle(MANAGED_TICKET.load(Ordering::Acquire)).rx_path();
     assert_eq!(path, if length <= 252 { 1 } else { 2 });
     serial::print(format_args!(
         "# NETWORK_RX epoch={epoch} seq={sequence} bytes={length} path={} data=",
@@ -192,8 +192,11 @@ fn second(_: usize) {
     let frame = packet(1, 1, 60, false);
     let before = driver_memory::snapshot();
     assert_eq!(
-        control("test-queue", || unsafe {
-            kutox_c_linux_queue(MANAGED_TICKET.load(Ordering::Acquire), true)
+        control("test-queue", || {
+            crate::linux_compat::lifecycle::tests::queue(
+                MANAGED_TICKET.load(Ordering::Acquire),
+                true,
+            )
         }),
         0
     );
@@ -201,8 +204,11 @@ fn second(_: usize) {
     assert_eq!(driver_memory::snapshot(), before);
     assert_eq!(frame, packet(1, 1, 60, false));
     assert_eq!(
-        control("test-queue", || unsafe {
-            kutox_c_linux_queue(MANAGED_TICKET.load(Ordering::Acquire), false)
+        control("test-queue", || {
+            crate::linux_compat::lifecycle::tests::queue(
+                MANAGED_TICKET.load(Ordering::Acquire),
+                false,
+            )
         }),
         0
     );

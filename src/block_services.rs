@@ -17,18 +17,13 @@ static ALLOCATIONS: Allocations = Allocations(UnsafeCell::new([None; 4]));
 #[cfg(feature = "guest-tests")]
 static FAIL_AFTER: AtomicUsize = AtomicUsize::new(usize::MAX);
 
-unsafe extern "C" {
-    fn kutox_block_quiescent() -> bool;
-}
-
 pub fn quiescent() -> bool {
     !cpu::interrupts_enabled()
-        && unsafe { kutox_block_quiescent() }
+        && crate::linux_compat::block::quiescent()
         && unsafe { &*ALLOCATIONS.0.get() }.iter().all(Option::is_none)
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_block_context(completion: u32) -> i32 {
+pub(crate) fn context(completion: u32) -> i32 {
     match completion {
         0 => driver_memory::context(false).map_or_else(|error| error, |()| 0),
         1 if !cpu::interrupts_enabled() => 0,
@@ -42,25 +37,18 @@ fn diagnostic(operation: &str, code: i32) {
     ));
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn kutox_block_diag(operation: *const core::ffi::c_char, code: i32) {
-    let operation = unsafe { CStr::from_ptr(operation) }
-        .to_str()
-        .expect("block operation is not ASCII");
+pub(crate) fn diag(operation: &CStr, code: i32) {
+    let operation = operation.to_str().expect("block operation is not ASCII");
     diagnostic(operation, code);
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn kutox_block_fail(operation: *const core::ffi::c_char) -> ! {
-    let operation = unsafe { CStr::from_ptr(operation) }
-        .to_str()
-        .expect("block operation is not ASCII");
+pub(crate) fn fail(operation: &CStr) -> ! {
+    let operation = operation.to_str().expect("block operation is not ASCII");
     panic!("block service invariant: {operation}");
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_block_allocate(size: usize, alignment: usize) -> usize {
-    if kutox_block_context(0) != 0 {
+pub(crate) fn allocate(size: usize, alignment: usize) -> usize {
+    if context(0) != 0 {
         diagnostic("allocate_context", -106);
         return 0;
     }
@@ -95,9 +83,10 @@ extern "C" fn kutox_block_allocate(size: usize, alignment: usize) -> usize {
     pointer
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_block_deallocate(pointer: usize, size: usize, alignment: usize) {
-    assert_eq!(kutox_block_context(0), 0, "block free context");
+/// # Safety
+/// The caller relinquishes this allocation and all aliases after off-IRQ completion.
+pub(crate) unsafe fn deallocate(pointer: usize, size: usize, alignment: usize) {
+    assert_eq!(context(0), 0, "block free context");
     let allocations = unsafe { &mut *ALLOCATIONS.0.get() };
     let slot = allocations
         .iter_mut()
@@ -114,8 +103,7 @@ extern "C" fn kutox_block_deallocate(pointer: usize, size: usize, alignment: usi
 }
 
 #[cfg(feature = "guest-tests")]
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_block_fail_after(remaining: usize) {
-    assert_eq!(kutox_block_context(0), 0, "block fault injection context");
+pub(crate) fn fail_after(remaining: usize) {
+    assert_eq!(context(0), 0, "block fault injection context");
     FAIL_AFTER.store(remaining, Ordering::Relaxed);
 }

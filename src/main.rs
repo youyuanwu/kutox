@@ -214,30 +214,7 @@ impl Failure {
     }
 }
 
-#[repr(C)]
-#[derive(Default)]
-struct ProbeResult {
-    code: i32,
-    stage: u32,
-    denied_grants: u32,
-    eeprom_reads: u32,
-    mac: [u8; 6],
-}
-
-const _: () = assert!(core::mem::size_of::<ProbeResult>() == 24);
-const _: () = assert!(core::mem::offset_of!(ProbeResult, mac) == 16);
-
-unsafe extern "C" {
-    fn kutox_read_mac(
-        base: usize,
-        length: usize,
-        vendor: u16,
-        device: u16,
-        revision: u8,
-        deny_grant: u8,
-        result: *mut ProbeResult,
-    );
-}
+use linux_compat::abi::MacResult as ProbeResult;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn kmain() -> ! {
@@ -392,9 +369,9 @@ fn probe() -> Result<BootOutcome, Failure> {
         bar.base,
         memory::MMIO_LENGTH
     );
-    let mut result = ProbeResult::default();
-    unsafe {
-        kutox_read_mac(
+    // The owned device mapping remains live throughout the original C probe.
+    let result = unsafe {
+        linux_compat::mmio::read_mac(
             mapping.address(),
             memory::MMIO_LENGTH,
             device.vendor,
@@ -410,9 +387,8 @@ fn probe() -> Result<BootOutcome, Failure> {
                     0
                 }
             },
-            &mut result,
-        );
-    }
+        )
+    };
     println!(
         "E1000_EEPROM reads={} denied_grants={}",
         result.eeprom_reads, result.denied_grants
@@ -456,18 +432,7 @@ impl ProbeResult {
     }
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_serial_byte(byte: u8) {
-    serial::byte(byte);
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn kutox_delay_us(usec: u64) {
-    time::delay_us(usec);
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn kutox_check_boot_context() {
+pub(crate) fn check_boot_context() {
     let flags: u64;
     unsafe { asm!("pushfq; pop {}", out(reg) flags, options(preserves_flags)) };
     assert!(flags & (1 << 9) == 0, "probe requires interrupts disabled");
@@ -477,13 +442,16 @@ extern "C" fn kutox_check_boot_context() {
     );
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn kutox_platform_fail(operation: *const core::ffi::c_char) -> ! {
-    let operation = unsafe { CStr::from_ptr(operation) }
-        .to_str()
-        .expect("invalid platform failure string");
+pub(crate) fn platform_fail(operation: &CStr) -> ! {
+    let operation = operation.to_str().expect("invalid platform failure string");
     println!("E1000_MAC_FAIL stage=platform operation={operation} code=-1");
     io::finish(false);
+}
+
+#[cfg(feature = "guest-tests")]
+#[unsafe(no_mangle)]
+unsafe extern "C" fn kutox_platform_fail(operation: *const core::ffi::c_char) -> ! {
+    platform_fail(unsafe { CStr::from_ptr(operation) })
 }
 
 #[panic_handler]

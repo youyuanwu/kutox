@@ -1,20 +1,26 @@
 //! C ABI implementations; all policy and ownership here are Rust, not driver code.
 #![allow(dead_code)]
 #[path = "../linux_abi.rs"]
-mod abi;
-mod block;
+pub(crate) mod abi;
+pub(crate) mod block;
 #[path = "../block_abi.rs"]
 mod block_abi;
 mod diagnostics;
 mod execution;
-mod lifecycle;
-mod memory;
-mod mmio;
-mod napi;
+pub(crate) mod lifecycle;
+mod lifecycle_raw;
+pub(crate) mod memory;
+mod memory_ffi;
+mod memory_raw;
+pub(crate) mod mmio;
+pub(crate) mod napi;
 mod optional;
-mod packet;
-mod pci;
-mod storage;
+pub(crate) mod packet;
+pub(crate) mod pci;
+pub(crate) mod storage;
+#[cfg(feature = "guest-tests")]
+#[path = "../guest_tests/compat_services.rs"]
+pub(crate) mod tests;
 use abi::*;
 use core::{
     cell::UnsafeCell,
@@ -25,18 +31,9 @@ struct Bsp<T>(UnsafeCell<T>);
 // Native entry points validate context. No mutable borrow spans a callback.
 unsafe impl<T> Sync for Bsp<T> {}
 
-unsafe extern "C" {
-    fn kutox_platform_fail(operation: *const c_char) -> !;
-    fn kutox_driver_diag(operation: *const c_char, code: i32);
-    fn kutox_block_diag(operation: *const c_char, code: i32);
-    fn kutox_linux_context() -> i32;
-    fn kutox_driver_trace(event: u32, function: usize, object: usize, result: i32);
-    fn kutox_driver_device() -> usize;
-    fn kutox_driver_gate();
-}
 fn require(valid: bool, message: &'static core::ffi::CStr) {
     if !valid {
-        unsafe { kutox_platform_fail(message.as_ptr()) }
+        crate::platform_fail(message)
     }
 }
 fn checked(value: i32, message: &'static core::ffi::CStr) -> i32 {
@@ -46,18 +43,18 @@ fn checked(value: i32, message: &'static core::ffi::CStr) -> i32 {
 fn callback<T>(function: Option<T>, operation: &'static core::ffi::CStr) -> T {
     match function {
         Some(function) => function,
-        None => unsafe { kutox_platform_fail(operation.as_ptr()) },
+        None => crate::platform_fail(operation),
     }
 }
 fn context() {
-    checked(unsafe { kutox_linux_context() }, c"compat_context");
+    checked(crate::linux_runtime::context_code(), c"compat_context");
 }
 fn diagnostic(operation: &'static core::ffi::CStr, code: i32) -> i32 {
-    unsafe { kutox_driver_diag(operation.as_ptr(), code) };
+    crate::driver_memory::diag(operation, code);
     code
 }
 fn rejected(operation: &'static core::ffi::CStr) -> i32 {
-    unsafe { kutox_block_diag(operation.as_ptr(), -95) };
+    crate::block_services::diag(operation, -95);
     -95
 }
 fn validate<T>(p: *mut T) {

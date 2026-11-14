@@ -10,20 +10,20 @@ static BINDINGS: Bsp<Bindings> = Bsp(UnsafeCell::new(Bindings {
     napi: [ptr::null_mut(); 4],
     queues: [[ptr::null_mut(); 2]; 4],
 }));
-unsafe extern "C" {
-    fn kutox_linux_napi_init(
-        key: usize,
-        poll: Option<unsafe extern "C" fn(*mut Napi, i32) -> i32>,
-    ) -> i64;
-    fn kutox_linux_napi(key: usize, generation: u64, operation: u32, done: i32) -> i32;
-}
 fn state() -> *mut Bindings {
     BINDINGS.0.get()
 }
 unsafe fn call(napi: *mut Napi, operation: u32, done: i32) -> i32 {
     require(!napi.is_null(), c"napi_null");
     checked(
-        unsafe { kutox_linux_napi(napi as usize, (*napi).generation, operation, done) },
+        unsafe {
+            crate::linux_deferred::napi_operation(
+                napi as usize,
+                (*napi).generation,
+                operation,
+                done,
+            )
+        },
         c"napi_operation",
     )
 }
@@ -38,9 +38,9 @@ pub unsafe extern "C" fn netif_napi_add(
         let slot = (0..4).find(|&slot| (*state()).napi[slot].is_null());
         let slot = match slot {
             Some(slot) => slot,
-            None => kutox_platform_fail(c"napi_capacity".as_ptr()),
+            None => crate::platform_fail(c"napi_capacity"),
         };
-        let generation = kutox_linux_napi_init(napi as usize, poll);
+        let generation = crate::linux_deferred::register_napi(napi as usize, poll);
         require(generation > 0, c"napi_init");
         napi.write(Napi {
             poll,
@@ -49,7 +49,7 @@ pub unsafe extern "C" fn netif_napi_add(
             irq: 0,
         });
         (*state()).napi[slot] = napi;
-        kutox_driver_trace(12, poll.map_or(0, |f| f as usize), napi as usize, 0);
+        crate::linux_driver::trace(12, poll.map_or(0, |f| f as usize), napi as usize, 0);
     }
 }
 #[unsafe(no_mangle)]
@@ -133,8 +133,7 @@ pub unsafe extern "C" fn netif_napi_del(napi: *mut Napi) {
         (*napi).generation = 0;
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_c_deferred_empty() -> bool {
+pub(crate) fn quiescent() -> bool {
     unsafe {
         (0..4).all(|slot| {
             (*state()).napi[slot].is_null()
@@ -143,8 +142,7 @@ pub extern "C" fn kutox_c_deferred_empty() -> bool {
         })
     }
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kutox_c_retire_napi_device(device: *mut NetDevice) {
+pub(super) unsafe fn retire_device(device: *mut NetDevice) {
     unsafe {
         for slot in 0..4 {
             let napi = (*state()).napi[slot];

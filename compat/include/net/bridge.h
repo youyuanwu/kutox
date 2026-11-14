@@ -24,8 +24,4 @@ struct kutox_result {
 _Static_assert(sizeof(struct kutox_result) == 24, "Rust/C result size mismatch");
 _Static_assert(offsetof(struct kutox_result, mac) == 16, "Rust/C MAC offset mismatch");
 
-void kutox_read_mac(uintptr_t base, size_t length, uint16_t vendor,
-                   uint16_t device, uint8_t revision, uint8_t deny_grant,
-                   struct kutox_result *result);
-
 #endif

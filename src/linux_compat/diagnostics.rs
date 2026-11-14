@@ -6,11 +6,6 @@ use core::{
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
-unsafe extern "C" {
-    fn kutox_serial_byte(byte: u8);
-    fn kutox_driver_tracing() -> bool;
-    fn kutox_linux_ratelimit() -> bool;
-}
 static BEGINNING: Bsp<bool> = Bsp(UnsafeCell::new(true));
 static ONCE: [AtomicPtr<c_char>; 32] = [const { AtomicPtr::new(ptr::null_mut()) }; 32];
 struct Output {
@@ -32,11 +27,11 @@ impl Output {
         require(self.count < 4096, c"diagnostic_length");
         unsafe {
             if self.serial {
-                if *BEGINNING.0.get() && kutox_driver_tracing() {
-                    kutox_serial_byte(b'#');
-                    kutox_serial_byte(b' ');
+                if *BEGINNING.0.get() && crate::linux_driver::tracing() {
+                    crate::serial::byte(b'#');
+                    crate::serial::byte(b' ');
                 }
-                kutox_serial_byte(value);
+                crate::serial::byte(value);
                 *BEGINNING.0.get() = value == b'\n';
             } else if self.capacity != 0 && self.count < self.capacity - 1 {
                 self.buffer.add(self.count).write(value);
@@ -119,7 +114,7 @@ unsafe fn length(text: *const u8) -> usize {
             return i;
         }
     }
-    unsafe { kutox_platform_fail(c"diagnostic_string_length".as_ptr()) }
+    crate::platform_fail(c"diagnostic_string_length")
 }
 unsafe fn format_message(
     buffer: *mut u8,
@@ -258,7 +253,7 @@ unsafe fn format_message(
                     1 => args.next_arg::<c_ulong>(),
                     _ => u64::from(args.next_arg::<c_uint>()),
                 },
-                _ => kutox_platform_fail(c"diagnostic_format".as_ptr()),
+                _ => crate::platform_fail(c"diagnostic_format"),
             };
             out.number(
                 value,
@@ -353,7 +348,7 @@ unsafe fn log_prefix(
         });
         let bit = match bit {
             Some(bit) => bit,
-            None => unsafe { kutox_platform_fail(c"diagnostic_message_level".as_ptr()) },
+            None => crate::platform_fail(c"diagnostic_message_level"),
         };
         if mask & (1 << bit) == 0 {
             return false;
@@ -392,7 +387,7 @@ pub unsafe extern "C" fn warn_on(condition: bool, expression: *const u8) -> bool
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn bug() -> ! {
-    unsafe { kutox_platform_fail(c"linux_bug".as_ptr()) }
+    crate::platform_fail(c"linux_bug")
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn bug_on(condition: bool) {
@@ -440,7 +435,7 @@ pub extern "C" fn netif_msg_tx_done(mask: u32) -> bool {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn net_ratelimit() -> bool {
-    unsafe { kutox_linux_ratelimit() }
+    crate::linux_runtime::ratelimit()
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn print_hex_dump(
@@ -495,15 +490,15 @@ unsafe fn storage_log(format: *const c_char, args: &mut VaList<'_>) -> i32 {
     let mut text = [0u8; 512];
     let n = unsafe { format_message(text.as_mut_ptr(), text.len(), format.cast(), args, false) };
     require(n >= 0 && (n as usize) < text.len(), c"storage_log_capacity");
-    unsafe {
+    {
         for byte in b"# STORAGE_LINUX " {
-            kutox_serial_byte(*byte);
+            crate::serial::byte(*byte);
         }
         for &byte in &text[..n as usize] {
-            kutox_serial_byte(byte);
+            crate::serial::byte(byte);
         }
         if n == 0 || text[n as usize - 1] != b'\n' {
-            kutox_serial_byte(b'\n');
+            crate::serial::byte(b'\n');
         }
     }
     n
@@ -525,9 +520,9 @@ pub extern "C" fn kutox_storage_trace_callback(kind: u32, address: usize) {
     out.number(address as u64, 16, 0, false, false, false, false, false);
     out.emit(b'\n');
     require(out.count <= text.len(), c"storage_callback_capacity");
-    unsafe {
+    {
         for &byte in &text[..out.count] {
-            kutox_serial_byte(byte);
+            crate::serial::byte(byte);
         }
     }
 }
@@ -640,7 +635,7 @@ pub unsafe extern "C" fn dev_set_name(
     if device.is_null() || format.is_null() {
         return -22;
     }
-    let name = storage::kutox_compat_device_name(device);
+    let name = storage::device_name(device);
     let count = unsafe { format_message(name.cast(), 32, format.cast(), &mut args, false) };
     if count < 32 { 0 } else { -36 }
 }
@@ -672,7 +667,7 @@ pub unsafe extern "C" fn storage_dev_printk(
 pub unsafe extern "C" fn panic(format: *const c_char, mut args: ...) -> ! {
     unsafe {
         storage_log(format, &mut args);
-        kutox_platform_fail(c"storage_linux_panic".as_ptr())
+        crate::platform_fail(c"storage_linux_panic")
     }
 }
 #[unsafe(no_mangle)]

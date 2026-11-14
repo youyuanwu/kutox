@@ -102,7 +102,7 @@ fn dispatch() -> Result<(), Failure> {
     };
     // The original-signature handler owns the read-to-clear device cause.
     let result = unsafe {
-        crate::linux_driver::kutox_driver_trace(
+        crate::linux_driver::trace(
             9,
             registration.handler.expect("IRQ handler missing") as usize,
             registration.device,
@@ -113,7 +113,7 @@ fn dispatch() -> Result<(), Failure> {
             registration.device as *mut c_void,
         )
     };
-    crate::linux_driver::kutox_driver_trace(
+    crate::linux_driver::trace(
         15,
         registration.handler.expect("IRQ handler missing") as usize,
         registration.device,
@@ -137,8 +137,9 @@ fn dispatch() -> Result<(), Failure> {
     Ok(())
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_request_irq(
+/// # Safety
+/// Handler data remains valid until masked, synchronized and unregistered.
+pub(crate) unsafe fn request_irq(
     number: u32,
     handler: Option<Handler>,
     flags: u64,
@@ -168,20 +169,14 @@ extern "C" fn kutox_linux_request_irq(
         }
         binding.handler = handler;
         binding.device = device;
-        crate::linux_driver::kutox_driver_trace(
-            8,
-            handler.expect("IRQ handler missing") as usize,
-            device,
-            0,
-        );
+        crate::linux_driver::trace(8, handler.expect("IRQ handler missing") as usize, device, 0);
         binding.token
     };
     external::set_bound_mask(token, false).unwrap_or_else(|error| fail(error.stage, error.code));
     0
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_irq(number: u32, device: usize, free: u32) -> i32 {
+pub(crate) fn operation(number: u32, device: usize, free: u32) -> i32 {
     if threads::check_boot_or_thread_context().is_err() {
         return -106;
     }
@@ -224,11 +219,6 @@ pub fn counts() -> (u64, u64) {
         HANDLED.load(Ordering::Acquire),
         UNHANDLED.load(Ordering::Acquire),
     )
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_irq_pending() -> i32 {
-    i32::from(pending().unwrap_or_else(|error| fail(error.stage, error.code)))
 }
 
 pub fn pending() -> Result<bool, Failure> {

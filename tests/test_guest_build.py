@@ -1,14 +1,44 @@
 import sys
 import struct
 from pathlib import Path
+import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from guest_build_check import GUEST_SYMBOLS, RUNTIME_SYMBOLS, INIT_MAGIC, validate_native_metadata, validate_symbols
+from guest_build_check import GUEST_SYMBOLS, RUNTIME_SYMBOLS, INIT_MAGIC, GUEST_C_ARCHIVES, C_BOUNDARY_BRIDGES, guest_c_archives, validate_c_boundary, validate_native_metadata, validate_symbols, validate_runtime_dependencies
+from linux_compat_check import ROOT
 from qemu_test import REVISION, validate_result
 
 
 class GuestBuildTests(unittest.TestCase):
+    def test_c_fixtures_use_linux_apis_and_only_reviewed_c_bridges(self):
+        validate_c_boundary(C_BOUNDARY_BRIDGES | {"dma_alloc_coherent", "blk_rq_map_sg", "memcpy"})
+        for symbol in ("kutox_linux_dma_alloc", "kutox_driver_free", "kutox_c_tx_begin",
+                       "kutox_block_prepare", "kutox_destroy_work", "kutox_unreviewed_bridge"):
+            with self.subTest(symbol=symbol), self.assertRaisesRegex(AssertionError, "bypass"):
+                validate_c_boundary({"dma_alloc_coherent", symbol})
+
+    def test_c_fixture_archives_are_bound_to_active_build_not_stale_siblings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "active/out"
+            output.mkdir(parents=True)
+            (root / "stale").mkdir()
+            (root / "stale/libkutox_guest_tests.a").write_bytes(b"stale")
+            (output.parent / "output").write_text("".join(
+                f"cargo:rustc-link-lib=static={name}\n" for name in GUEST_C_ARCHIVES))
+            for name in GUEST_C_ARCHIVES:
+                (output / f"lib{name}.a").write_bytes(b"fixture")
+            dependencies = [str(output / "user.elf")]
+            self.assertEqual(set(guest_c_archives(dependencies)),
+                             {output / f"lib{name}.a" for name in GUEST_C_ARCHIVES})
+            for wrong in ([], [*dependencies, str(root / "stale/user.elf")]):
+                with self.assertRaisesRegex(ValueError, "active"):
+                    guest_c_archives(wrong)
+            (output / "libkutox_guest_tests.a").unlink()
+            with self.assertRaisesRegex(ValueError, "archive"):
+                guest_c_archives(dependencies)
+
     def native_metadata(self, enabled=True):
         address = 0x8000
         functions = {f"kutox_guest_native_init_{identity}": 0x1000 + identity for identity in (10, 20, 30, 40)}
@@ -96,6 +126,66 @@ class GuestBuildTests(unittest.TestCase):
     def test_either_profile_rejects_missing_real_driver(self):
         with self.assertRaises(AssertionError):
             validate_symbols((RUNTIME_SYMBOLS - {"e1000_xmit_frame"}) | GUEST_SYMBOLS, True)
+
+    def test_native_backends_have_no_export_but_linux_allocation_remains_required(self):
+        for enabled in (False, True):
+            symbols = (RUNTIME_SYMBOLS | GUEST_SYMBOLS if enabled else RUNTIME_SYMBOLS) - {"kutox_driver_alloc"}
+            validate_symbols(symbols, enabled)
+            obsolete = ("kutox_driver_alloc", "kutox_driver_dma_map", "kutox_storage_dma",
+                        "kutox_block_deallocate", "kutox_linux_dma_publish",
+                        "kutox_linux_request_irq", "kutox_linux_napi_init",
+                        "kutox_linux_static_objects_retire", "kutox_driver_trace",
+                        "kutox_driver_known", "kutox_storage_fail")
+            for wrong in (*[symbols | {name} for name in obsolete], symbols - {"kmalloc"}):
+                with self.subTest(enabled=enabled, wrong=wrong), self.assertRaises(AssertionError):
+                    validate_symbols(wrong, enabled)
+
+    def test_c_boundary_fixtures_are_required_only_in_enabled_profile(self):
+        for name in ("kutox_c_execution_boundary", "kutox_c_dma_boundary", "kutox_c_packet_boundary",
+                     "kutox_c_block_request", "kutox_thread_yield_probe", "kutox_platform_fail"):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(AssertionError, "guest fixture"):
+                    validate_symbols((RUNTIME_SYMBOLS | GUEST_SYMBOLS) - {name}, True)
+                with self.assertRaisesRegex(AssertionError, "guest-only"):
+                    validate_symbols(RUNTIME_SYMBOLS | {name}, False)
+        for enabled in (False, True):
+            with self.assertRaisesRegex(AssertionError, "runtime driver"):
+                validate_symbols((RUNTIME_SYMBOLS | (GUEST_SYMBOLS if enabled else set())) - {"kutox_jiffies"}, enabled)
+
+    def test_removed_compatibility_facades_cannot_return_in_either_profile(self):
+        for enabled in (False, True):
+            symbols = RUNTIME_SYMBOLS | (GUEST_SYMBOLS if enabled else set())
+            for name in ("kutox_c_linux_info", "kutox_c_linux_many", "kutox_c_driver_device",
+                         "kutox_c_packet_empty", "kutox_c_tx_mapped", "kutox_block_registered_disk",
+                         "kutox_storage_start", "kutox_compat_device_name", "kutox_read_mac",
+                         "kutox_c_tx_begin", "kutox_c_driver_endpoint", "kutox_block_prepare",
+                         "kutox_driver_receive", "kutox_linux_workers_stop", "kutox_linux_irq_pending",
+                         "kutox_linux_irq_depth", "kutox_linux_test_now_us", "kutox_driver_fail_after",
+                         "kutox_guest_memory_storage", "kutox_destroy_work", "kutox_dma_publish",
+                         "kutox_c_execution_worker", "kutox_c_services_allocations"):
+                with self.subTest(enabled=enabled, name=name), self.assertRaisesRegex(AssertionError, "obsolete compatibility"):
+                    validate_symbols(symbols | {name}, enabled)
+
+    def test_runtime_dependencies_reject_audit_sources_including_aliases_and_missing_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            kernel = Path(directory) / "kutox"
+            dependencies = kernel.with_suffix(".d")
+            with self.assertRaises(FileNotFoundError):
+                validate_runtime_dependencies(kernel)
+            native = [ROOT / "src/main.rs", ROOT / "src/driver_memory.rs"]
+            dependencies.write_text("kutox: " + " ".join(map(str, native)) + "\n")
+            self.assertEqual(validate_runtime_dependencies(kernel), sorted(map(str, native)))
+            alias = Path(directory) / "backend.rs"
+            alias.symlink_to(ROOT / "compat/audit/common/native_backend.rs")
+            for path in (ROOT / "compat/audit/common/native_backend.rs",
+                         ROOT / "src/../compat/audit/common/rust_services.rs", alias):
+                dependencies.write_text("kutox: " + " ".join(map(str, [*native, path])) + "\n")
+                with self.subTest(path=path), self.assertRaisesRegex(ValueError, "audit source"):
+                    validate_runtime_dependencies(kernel)
+            for paths in ([], native[:1]):
+                dependencies.write_text("kutox: " + " ".join(map(str, paths)) + "\n")
+                with self.assertRaisesRegex(ValueError, "missing native kernel"):
+                    validate_runtime_dependencies(kernel)
 
 
 if __name__ == "__main__":

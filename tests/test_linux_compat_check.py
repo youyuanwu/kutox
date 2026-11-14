@@ -1,5 +1,6 @@
 import struct
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -20,6 +21,29 @@ def elf(symbols, marked=False):
 
 
 class SharedCompatibilityTests(unittest.TestCase):
+    def test_native_dispositions_reject_missing_extra_and_overlapping_roles(self):
+        bindings = compat.native_dispositions()
+        self.assertIn("kutox_jiffies", bindings["c"])
+        self.assertNotIn("kutox_jiffies", bindings["rust"])
+        for changed in (
+            {name: api for name, api in compat.NATIVE_BINDINGS.items() if name != "kutox_linux_work"},
+            {**compat.NATIVE_BINDINGS, "hidden_backend": "crate::hidden"},
+            {**compat.NATIVE_BINDINGS, "kutox_jiffies": "crate::linux_runtime::jiffies"},
+        ):
+            with patch.object(compat, "NATIVE_BINDINGS", changed), self.assertRaisesRegex(ValueError, "dispositions"):
+                compat.native_dispositions()
+
+    def test_private_control_exclusions_cannot_hide_live_unknown_or_unexplained_dependencies(self):
+        private = compat.PRIVATE_CONTROL_BACKENDS
+        for changed in (
+            {name: reason for name, reason in private.items() if name != "kutox_check_boot_context"},
+            {**private, "kutox_check_boot_context": ""},
+            {**private, "hidden_backend": "unreviewed native role"},
+            {**private, "kutox_linux_work": "attempt to waive a live dependency"},
+        ):
+            with patch.object(compat, "PRIVATE_CONTROL_BACKENDS", changed), self.assertRaisesRegex(ValueError, "dispositions"):
+                compat.native_dispositions()
+
     def test_rust_services_cannot_be_replaced_by_c_local_data_or_declarations(self):
         with patch.object(compat, "RUST_PROVIDERS", {"open"}):
             self.assertEqual(compat.rust_providers([symbol("open", 1, 2)]), ["open"])
@@ -38,6 +62,44 @@ class SharedCompatibilityTests(unittest.TestCase):
                          include / "common/../../audit/common/marker.h"):
                 with self.subTest(profile=profile, path=path), self.assertRaises(ValueError):
                     compat.runtime_headers([str(path)], profile)
+
+    def test_verify_rechecks_adapter_source_commands_and_compiled_dependencies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            root = compat.ROOT / "compat/audit/common/rust_services.rs"
+            adapter = compat.ROOT / compat.NATIVE_BACKEND
+            dependencies = output / "rust-services.d"
+            dependencies.write_text(f"rust-services.o: {root} \\\n {adapter}\n\n{root}:\n")
+            for name in ("rust-services", "abi-rust", "abi-boot", "abi-net", "abi-storage",
+                         "shared-runtime"):
+                (output / f"{name}.o").write_bytes(b"object")
+            providers = [symbol(name, 1, 2) for name in compat.RUST_PROVIDERS]
+            args = SimpleNamespace(clang="clang")
+            with (
+                patch.object(compat, "UNITS", ()),
+                patch.object(compat, "inventory", return_value={}),
+                patch.object(compat, "layout", return_value=[]),
+                patch.object(compat, "isolation_evidence", return_value=[]),
+                patch.object(driver, "Elf", return_value=elf(providers)),
+            ):
+                saved = compat.evidence(args, output)
+                self.assertIn(compat.NATIVE_BACKEND, saved["build_inputs"])
+                self.assertIn(str(adapter.relative_to(compat.ROOT)),
+                              [source["path"] for source in saved["rust"]["sources"]])
+                compat.verify(args, output, saved)
+                original_digest = driver.digest
+                with patch.object(driver, "digest", side_effect=lambda path:
+                                  "changed" if path == adapter else original_digest(path)):
+                    with self.assertRaisesRegex(ValueError, "stale"):
+                        compat.verify(args, output, saved)
+                command = compat.rust_command
+                with patch.object(compat, "rust_command", side_effect=lambda *args:
+                                  [*command(*args), "-C", "opt-level=0"]):
+                    with self.assertRaisesRegex(ValueError, "stale"):
+                        compat.verify(args, output, saved)
+                dependencies.write_text(f"rust-services.o: {root}\n")
+                with self.assertRaisesRegex(ValueError, "did not compile"):
+                    compat.verify(args, output, saved)
 
     def test_complete_real_provider_closure_cannot_hide_dependencies_or_use_local_definitions(self):
         source = [symbol("queue", 1, 2), symbol("provider"), symbol("shared"),

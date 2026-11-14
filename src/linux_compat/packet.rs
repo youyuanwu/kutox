@@ -1,4 +1,5 @@
 //! Network-class services; descriptor programming and completion stay in Linux.
+use super::memory_ffi as memory;
 use super::*;
 use core::{mem::size_of, ptr};
 
@@ -97,26 +98,16 @@ static PACKETS: Bsp<Packets> = Bsp(UnsafeCell::new(Packets {
     rx: Rx::EMPTY,
 }));
 
-unsafe extern "C" {
-    fn kutox_driver_size(pointer: usize) -> usize;
-    fn kutox_driver_alloc(size: usize, flags: u32, kind: u32) -> usize;
-    fn kutox_driver_free(pointer: usize) -> i32;
-    fn kutox_driver_range(pointer: usize, size: usize, operation: u32) -> i32;
-    fn kutox_driver_ingress(pointer: usize, size: usize) -> i32;
-    fn kutox_net_wake();
-    fn kutox_c_retire_napi_device(device: *mut NetDevice);
-}
-
 // Driver callbacks run on the BSP with IF clear and can reenter these services.
 // Keep state access raw: no Rust borrow may span a driver or native callback.
 fn state() -> *mut Packets {
     PACKETS.0.get()
 }
 fn tx_event(event: u32, result: i32) {
-    unsafe { kutox_driver_trace(event, 0, (*state()).tx.identity, result) }
+    unsafe { crate::linux_driver::trace(event, 0, (*state()).tx.identity, result) }
 }
 fn rx_event(event: u32, result: i32) {
-    unsafe { kutox_driver_trace(event, 0, (*state()).rx.identity, result) }
+    unsafe { crate::linux_driver::trace(event, 0, (*state()).rx.identity, result) }
 }
 fn netdev_check(device: *const NetDevice) {
     require(
@@ -130,7 +121,7 @@ fn data_align(size: usize) -> usize {
 fn skb_check(skb: *const SkBuff) {
     unsafe {
         require(
-            !skb.is_null() && kutox_driver_size(skb as usize) == size_of::<SkBuff>(),
+            !skb.is_null() && crate::driver_memory::size(skb as usize) == size_of::<SkBuff>(),
             c"skb_metadata",
         );
         require(
@@ -142,7 +133,7 @@ fn skb_check(skb: *const SkBuff) {
                 && (*skb).len as usize == (*skb).tail as usize - (*skb).data as usize,
             c"skb_metadata",
         );
-        let backing = kutox_driver_size((*skb).head as usize);
+        let backing = crate::driver_memory::size((*skb).head as usize);
         require(
             backing >= size_of::<SkbSharedInfo>()
                 && (*skb).end as usize - (*skb).head as usize
@@ -151,8 +142,7 @@ fn skb_check(skb: *const SkBuff) {
         );
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_c_registered_netdev() -> *mut NetDevice {
+pub(super) fn registered_netdev() -> *mut NetDevice {
     unsafe {
         let device = (*state()).netdev;
         if !device.is_null() && (*device).registered {
@@ -162,8 +152,7 @@ pub extern "C" fn kutox_c_registered_netdev() -> *mut NetDevice {
         }
     }
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kutox_c_netdev_close(device: *mut NetDevice) -> i32 {
+pub(super) unsafe fn netdev_close(device: *mut NetDevice) -> i32 {
     unsafe {
         if device.is_null()
             || device != (*state()).netdev
@@ -215,8 +204,8 @@ pub unsafe extern "C" fn free_netdev(device: *mut NetDevice) {
                 && !(*state()).many.live,
             c"free_netdev_live",
         );
-        kutox_c_retire_napi_device(device);
-        pci::kutox_c_pci_clear_data(device.cast());
+        napi::retire_device(device);
+        pci::clear_data(device.cast());
         memory::kfree((*device).private_data);
         memory::kfree(device.cast());
         (*state()).netdev = ptr::null_mut();
@@ -232,7 +221,7 @@ pub unsafe extern "C" fn netdev_priv(device: *const NetDevice) -> *mut c_void {
 pub unsafe extern "C" fn set_netdev_dev(device: *mut NetDevice, parent: *mut Device) {
     netdev_check(device);
     require(
-        parent as usize == unsafe { kutox_driver_device() },
+        parent as usize == { crate::driver_platform::device_key() },
         c"netdev_parent",
     );
     unsafe { (*device).parent = parent }
@@ -273,8 +262,7 @@ pub unsafe extern "C" fn register_netdev(device: *mut NetDevice) -> i32 {
         0
     }
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kutox_c_netdev_open(device: *mut NetDevice) -> i32 {
+pub(super) unsafe fn netdev_open(device: *mut NetDevice) -> i32 {
     netdev_check(device);
     unsafe {
         if !(*device).registered || (*device).running || (*device).detached {
@@ -284,7 +272,7 @@ pub unsafe extern "C" fn kutox_c_netdev_open(device: *mut NetDevice) -> i32 {
         let result = callback((*(*device).netdev_ops).open, c"netdev_open_callback")(device);
         if result < 0 {
             (*device).running = false;
-            kutox_driver_gate();
+            crate::driver_platform::gate();
         }
         result
     }
@@ -309,7 +297,7 @@ pub unsafe extern "C" fn netif_carrier_off(device: *mut NetDevice) {
     netdev_check(device);
     unsafe {
         (*device).carrier = false;
-        kutox_net_wake();
+        crate::net_device::wake();
     }
 }
 #[unsafe(no_mangle)]
@@ -317,8 +305,8 @@ pub unsafe extern "C" fn netif_carrier_on(device: *mut NetDevice) {
     netdev_check(device);
     unsafe {
         (*device).carrier = true;
-        kutox_driver_trace(14, 0, device as usize, 0);
-        kutox_net_wake();
+        crate::linux_driver::trace(14, 0, device as usize, 0);
+        crate::net_device::wake();
     }
 }
 #[unsafe(no_mangle)]
@@ -360,7 +348,7 @@ pub unsafe extern "C" fn netif_wake_queue(device: *mut NetDevice) {
     unsafe {
         if !(*device).detached && (*device).stopped {
             (*device).stopped = false;
-            kutox_net_wake();
+            crate::net_device::wake();
         }
     }
 }
@@ -386,7 +374,7 @@ pub unsafe extern "C" fn netdev_sent_queue(device: *mut NetDevice, bytes: u32) {
         (*device).sent_packets += 1;
         (*device).sent_bytes += bytes as usize;
         if (*state()).many.live {
-            kutox_driver_trace(48, 0, device as usize, bytes as i32);
+            crate::linux_driver::trace(48, 0, device as usize, bytes as i32);
         }
         if (*state()).tx.live && !(*state()).tx.aborting {
             require(
@@ -413,7 +401,7 @@ pub unsafe extern "C" fn netdev_completed_queue(device: *mut NetDevice, packets:
         (*device).completed_packets = (*device).completed_packets.wrapping_add(packets as usize);
         (*device).completed_bytes = (*device).completed_bytes.wrapping_add(bytes as usize);
         if (*state()).many.live && packets != 0 {
-            kutox_driver_trace(49, 0, device as usize, packets as i32);
+            crate::linux_driver::trace(49, 0, device as usize, packets as i32);
         }
         if (*state()).tx.live && packets != 0 && !(*state()).tx.aborting {
             require(
@@ -428,7 +416,7 @@ pub unsafe extern "C" fn netdev_completed_queue(device: *mut NetDevice, packets:
             );
             (*state()).tx.completed = true;
             tx_event(24, bytes as i32);
-            kutox_net_wake();
+            crate::net_device::wake();
         }
     }
 }
@@ -541,7 +529,7 @@ pub extern "C" fn alloc_skb(size: u32, flags: u32) -> *mut SkBuff {
     let capacity = data_align(size as usize) + data_align(size_of::<SkbSharedInfo>());
     let head = memory::kzalloc(capacity, flags).cast::<u8>();
     if head.is_null() {
-        memory::kfree(skb.cast());
+        unsafe { memory::kfree(skb.cast()) };
         return ptr::null_mut();
     }
     unsafe {
@@ -591,7 +579,7 @@ pub unsafe extern "C" fn skb_put(skb: *mut SkBuff, size: u32) -> *mut c_void {
         let tail = (*skb).tail;
         if size != 0 {
             checked(
-                kutox_driver_range(tail as usize, size as usize, 0),
+                crate::driver_memory::range(tail as usize, size as usize, 0),
                 c"skb_put_device_owned",
             );
         }
@@ -667,7 +655,7 @@ unsafe fn free_skb(skb: *mut SkBuff) {
             );
             (*state()).tx.freed = true;
             (*state()).tx.skb = ptr::null_mut();
-            kutox_net_wake();
+            crate::net_device::wake();
             if !(*state()).tx.sent || (*state()).tx.aborting {
                 tx_event(28, 0);
             }
@@ -727,7 +715,7 @@ pub unsafe extern "C" fn eth_skb_pad(skb: *mut SkBuff) -> i32 {
             return -12;
         }
         checked(
-            kutox_driver_range((*skb).data as usize, (*skb).len as usize, 0),
+            crate::driver_memory::range((*skb).data as usize, (*skb).len as usize, 0),
             c"pad_device_owned",
         );
         ptr::copy_nonoverlapping((*skb).data, head.add(headroom), (*skb).len as usize);
@@ -758,8 +746,7 @@ pub unsafe extern "C" fn skb_checksum_none_assert(skb: *const SkBuff) {
     skb_check(skb);
     require(unsafe { (*skb).ip_summed == 0 }, c"skb_checksum_profile");
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kutox_c_netdev_transmit(device: *mut NetDevice, skb: *mut SkBuff) -> i32 {
+pub(super) unsafe fn netdev_transmit(device: *mut NetDevice, skb: *mut SkBuff) -> i32 {
     netdev_check(device);
     unsafe {
         if !(*device).registered
@@ -773,7 +760,7 @@ pub unsafe extern "C" fn kutox_c_netdev_transmit(device: *mut NetDevice, skb: *m
         skb_check(skb);
         let info = skb_shinfo(skb);
         checked(
-            kutox_driver_range((*skb).data as usize, (*skb).len as usize, 0),
+            crate::driver_memory::range((*skb).data as usize, (*skb).len as usize, 0),
             c"transmit_device_owned",
         );
         if (*skb).len < ETH_HLEN
@@ -793,12 +780,12 @@ pub unsafe extern "C" fn kutox_c_netdev_transmit(device: *mut NetDevice, skb: *m
         let callback = callback((*(*device).netdev_ops).start_xmit, c"netdev_xmit_callback");
         let identity = skb as usize;
         if tracked {
-            kutox_driver_trace(17, callback as usize, identity, (*skb).len as i32);
+            crate::linux_driver::trace(17, callback as usize, identity, (*skb).len as i32);
         }
         let result = callback(skb, device);
         require(result == TX_OK || result == TX_BUSY, c"transmit_return");
         if tracked {
-            kutox_driver_trace(18, callback as usize, identity, result);
+            crate::linux_driver::trace(18, callback as usize, identity, result);
         }
         result
     }
@@ -815,8 +802,7 @@ unsafe fn copy_tx_skb(device: *mut NetDevice, bytes: *const u8, size: u32) -> *m
     }
     skb
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kutox_c_tx_begin(
+pub(super) unsafe fn tx_begin(
     device: *mut NetDevice,
     mmio: usize,
     bytes: *const c_void,
@@ -851,8 +837,7 @@ pub unsafe extern "C" fn kutox_c_tx_begin(
         0
     }
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kutox_c_tx_retry(device: *mut NetDevice) -> i32 {
+pub(super) unsafe fn tx_retry(device: *mut NetDevice) -> i32 {
     netdev_check(device);
     unsafe {
         if !(*state()).tx.live
@@ -862,7 +847,7 @@ pub unsafe extern "C" fn kutox_c_tx_retry(device: *mut NetDevice) -> i32 {
         {
             return -22;
         }
-        let result = kutox_c_netdev_transmit(device, (*state()).tx.skb);
+        let result = netdev_transmit(device, (*state()).tx.skb);
         if result == TX_OK {
             (*state()).tx.accepted = true;
             (*state()).tx.skb = ptr::null_mut();
@@ -883,8 +868,7 @@ pub unsafe extern "C" fn kutox_c_tx_retry(device: *mut NetDevice) -> i32 {
         result
     }
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kutox_c_tx_status(device: *mut NetDevice) -> i32 {
+pub(super) unsafe fn tx_status(device: *mut NetDevice) -> i32 {
     netdev_check(device);
     unsafe {
         if !(*state()).tx.live || (*state()).tx.aborting {
@@ -914,8 +898,7 @@ pub unsafe extern "C" fn kutox_c_tx_status(device: *mut NetDevice) -> i32 {
         if (*state()).tx.freed { -5 } else { 1 }
     }
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kutox_c_tx_release(device: *mut NetDevice) {
+pub(super) unsafe fn tx_release(device: *mut NetDevice) {
     netdev_check(device);
     unsafe {
         require(
@@ -938,8 +921,7 @@ pub unsafe extern "C" fn kutox_c_tx_release(device: *mut NetDevice) {
         (*state()).tx = Tx::EMPTY;
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_c_tx_abort(device: *mut NetDevice) {
+pub(super) fn tx_abort(device: *mut NetDevice) {
     netdev_check(device);
     unsafe {
         if (*state()).tx.live {
@@ -951,8 +933,7 @@ pub extern "C" fn kutox_c_tx_abort(device: *mut NetDevice) {
         }
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_c_tx_mapped(data: usize, dma: u64, size: usize, direction: u32) {
+pub(super) fn tx_mapped(data: usize, dma: u64, size: usize, direction: u32) {
     unsafe {
         if !(*state()).tx.live || data != (*state()).tx.data || direction != 1 || dma == u64::MAX {
             return;
@@ -966,8 +947,7 @@ pub extern "C" fn kutox_c_tx_mapped(data: usize, dma: u64, size: usize, directio
         tx_event(19, size as i32);
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_c_tx_unmapped(dma: u64, size: usize, direction: u32) {
+pub(super) fn tx_unmapped(dma: u64, size: usize, direction: u32) {
     unsafe {
         if !(*state()).tx.live || dma != (*state()).tx.dma || direction != 1 {
             return;
@@ -982,8 +962,7 @@ pub extern "C" fn kutox_c_tx_unmapped(dma: u64, size: usize, direction: u32) {
         tx_event(22, size as i32);
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_c_tx_mmio(address: usize, value: u32, writing: bool) {
+pub(super) fn tx_mmio(address: usize, value: u32, writing: bool) {
     unsafe {
         if !(*state()).tx.live || (*state()).tx.closing {
             return;
@@ -1034,7 +1013,7 @@ pub extern "C" fn netdev_alloc_frag(size: u32) -> *mut c_void {
             diagnostic(c"fragment_capacity", -12);
             return ptr::null_mut();
         };
-        let pointer = kutox_driver_alloc(size as usize, GFP_ATOMIC, 1) as *mut c_void;
+        let pointer = crate::driver_memory::allocate(size as usize, GFP_ATOMIC, 1) as *mut c_void;
         if !pointer.is_null() {
             (*state()).fragments[slot] = pointer;
         } else if (*state()).rx.enabled && (*state()).rx.identity != 0 {
@@ -1049,12 +1028,12 @@ fn fragment_slot(pointer: *const c_void) -> usize {
             let base = (*state()).fragments[slot] as usize;
             if base != 0
                 && pointer as usize >= base
-                && (pointer as usize) - base < kutox_driver_size(base)
+                && (pointer as usize) - base < crate::driver_memory::size(base)
             {
                 return slot;
             }
         }
-        kutox_platform_fail(c"fragment_provenance".as_ptr())
+        crate::platform_fail(c"fragment_provenance")
     }
 }
 #[unsafe(no_mangle)]
@@ -1062,7 +1041,7 @@ pub extern "C" fn skb_free_frag(pointer: *mut c_void) {
     let slot = fragment_slot(pointer);
     unsafe {
         checked(
-            kutox_driver_free((*state()).fragments[slot] as usize),
+            crate::driver_memory::free((*state()).fragments[slot] as usize),
             c"fragment_free_pinned",
         );
         (*state()).fragments[slot] = ptr::null_mut();
@@ -1074,7 +1053,7 @@ pub unsafe extern "C" fn napi_build_skb(pointer: *mut c_void, size: u32) -> *mut
     unsafe {
         require(
             (*state()).fragments[slot] == pointer
-                && kutox_driver_size(pointer as usize) == size as usize
+                && crate::driver_memory::size(pointer as usize) == size as usize
                 && size as usize >= data_align(size_of::<SkbSharedInfo>()),
             c"build_skb_provenance",
         );
@@ -1083,7 +1062,7 @@ pub unsafe extern "C" fn napi_build_skb(pointer: *mut c_void, size: u32) -> *mut
             return skb;
         }
         checked(
-            kutox_driver_range(pointer as usize, size as usize, 1),
+            crate::driver_memory::range(pointer as usize, size as usize, 1),
             c"build_skb_claim",
         );
         (*skb).head = pointer.cast();
@@ -1093,7 +1072,7 @@ pub unsafe extern "C" fn napi_build_skb(pointer: *mut c_void, size: u32) -> *mut
             .cast::<u8>()
             .add(size as usize - data_align(size_of::<SkbSharedInfo>()));
         checked(
-            kutox_driver_range((*skb).end as usize, size_of::<SkbSharedInfo>(), 0),
+            crate::driver_memory::range((*skb).end as usize, size_of::<SkbSharedInfo>(), 0),
             c"build_skb_sharedinfo_owned",
         );
         (*skb).end.write_bytes(0, size_of::<SkbSharedInfo>());
@@ -1151,7 +1130,7 @@ pub unsafe extern "C" fn eth_type_trans(skb: *mut SkBuff, device: *mut NetDevice
             return 0;
         }
         checked(
-            kutox_driver_range((*skb).data as usize, (*skb).len as usize, 0),
+            crate::driver_memory::range((*skb).data as usize, (*skb).len as usize, 0),
             c"ethernet_device_owned",
         );
         (*skb).device = device;
@@ -1186,14 +1165,14 @@ pub unsafe extern "C" fn napi_gro_receive(napi: *mut Napi, skb: *mut SkBuff) -> 
             || protocol == 0x88a8;
         if size != 0 {
             checked(
-                kutox_driver_range(frame as usize, size, 0),
+                crate::driver_memory::range(frame as usize, size, 0),
                 c"ingress_device_owned",
             );
         }
         let result = if unsupported {
             diagnostic(c"ingress_profile", -95)
         } else {
-            kutox_driver_ingress(frame as usize, size)
+            crate::driver_memory::ingress(frame as usize, size)
         };
         if result < 0 {
             (*(*state()).netdev).stats.rx_dropped =
@@ -1209,8 +1188,7 @@ pub unsafe extern "C" fn napi_gro_receive(napi: *mut Napi, skb: *mut SkBuff) -> 
         result
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_c_packet_empty() -> bool {
+pub(crate) fn quiescent() -> bool {
     unsafe {
         (0..512).all(|slot| (*state()).fragments[slot].is_null())
             && (*state()).netdev.is_null()
@@ -1220,15 +1198,14 @@ pub extern "C" fn kutox_c_packet_empty() -> bool {
             && !(*state()).many.live
     }
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kutox_c_tx_many_retry(device: *mut NetDevice) -> i32 {
+pub(super) unsafe fn tx_many_retry(device: *mut NetDevice) -> i32 {
     netdev_check(device);
     unsafe {
         if !(*state()).many.live || (*state()).many.pending.is_null() {
             return -22;
         }
         let before = (*device).sent_packets;
-        let result = kutox_c_netdev_transmit(device, (*state()).many.pending);
+        let result = netdev_transmit(device, (*state()).many.pending);
         if result == TX_OK {
             (*state()).many.pending = ptr::null_mut();
             if (*device).sent_packets != before.wrapping_add(1) {
@@ -1241,8 +1218,7 @@ pub unsafe extern "C" fn kutox_c_tx_many_retry(device: *mut NetDevice) -> i32 {
         result
     }
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kutox_c_tx_many(
+pub(super) unsafe fn tx_many(
     device: *mut NetDevice,
     bytes: *const c_void,
     count: u32,
@@ -1263,7 +1239,7 @@ pub unsafe extern "C" fn kutox_c_tx_many(
             if (*state()).many.pending.is_null() {
                 return -12;
             }
-            let result = kutox_c_tx_many_retry(device);
+            let result = tx_many_retry(device);
             if result == TX_BUSY {
                 return i as i32;
             }
@@ -1274,8 +1250,7 @@ pub unsafe extern "C" fn kutox_c_tx_many(
         count as i32
     }
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kutox_c_tx_many_finish(device: *mut NetDevice) {
+pub(super) unsafe fn tx_many_finish(device: *mut NetDevice) {
     netdev_check(device);
     unsafe {
         require(
@@ -1288,8 +1263,7 @@ pub unsafe extern "C" fn kutox_c_tx_many_finish(device: *mut NetDevice) {
         (*state()).many = Many::EMPTY;
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_c_rx_start(device: *mut NetDevice, mmio: usize) {
+pub(super) fn rx_start(device: *mut NetDevice, mmio: usize) {
     netdev_check(device);
     unsafe {
         require(
@@ -1304,8 +1278,7 @@ pub extern "C" fn kutox_c_rx_start(device: *mut NetDevice, mmio: usize) {
         };
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_c_rx_stop() {
+pub(super) fn rx_stop() {
     unsafe {
         require(
             (*state()).rx.enabled && !(*state()).rx.active_skb,
@@ -1314,8 +1287,7 @@ pub extern "C" fn kutox_c_rx_stop() {
         (*state()).rx = Rx::EMPTY;
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_c_rx_path() -> i32 {
+pub(super) fn rx_path() -> i32 {
     unsafe {
         if !(*state()).rx.enabled || (*state()).rx.active_skb || (*state()).rx.identity == 0 {
             return -22;
@@ -1323,8 +1295,7 @@ pub extern "C" fn kutox_c_rx_path() -> i32 {
         if (*state()).rx.copy { 1 } else { 2 }
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_c_rx_dma(dma: u64, size: usize, event: u32) {
+pub(super) fn rx_dma(dma: u64, size: usize, event: u32) {
     unsafe {
         if !(*state()).rx.enabled || (*state()).rx.identity == 0 {
             return;
@@ -1336,14 +1307,13 @@ pub extern "C" fn kutox_c_rx_dma(dma: u64, size: usize, event: u32) {
         rx_event(event, size as i32);
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_c_rx_mmio(address: usize, value: u32, writing: bool) {
+pub(super) fn rx_mmio(address: usize, value: u32, writing: bool) {
     unsafe {
         if !(*state()).rx.enabled {
             return;
         }
         if !writing && address == (*state()).rx.mmio + 0xc0 {
-            kutox_driver_trace(47, 0, (*state()).rx.device as usize, value as i32);
+            crate::linux_driver::trace(47, 0, (*state()).rx.device as usize, value as i32);
         } else if writing && address == (*state()).rx.mmio + 0x2818 && (*state()).rx.identity != 0 {
             rx_event(45, value as i32);
         }

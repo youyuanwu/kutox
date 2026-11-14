@@ -469,6 +469,7 @@ extern "C" fn kutox_thread_entry(entry_rsp: usize) -> ! {
     exit_current()
 }
 
+#[cfg(feature = "guest-tests")]
 #[unsafe(no_mangle)]
 extern "C" fn kutox_thread_yield_probe() -> usize {
     usize::from(yield_now().is_err())

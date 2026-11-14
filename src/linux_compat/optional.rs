@@ -4,7 +4,6 @@ use core::ptr;
 #[unsafe(no_mangle)]
 pub static mut system_state: i32 = 3;
 unsafe extern "C" {
-    fn kutox_driver_range(pointer: usize, size: usize, operation: u32) -> i32;
     fn kutox_tcp_header_bytes(header: *const c_void) -> u32;
 }
 #[unsafe(no_mangle)]
@@ -146,7 +145,7 @@ unsafe fn header(skb: *const SkBuff, offset: u32, size: usize) -> *mut c_void {
         );
         let pointer = (*skb).head.add(offset as usize);
         checked(
-            kutox_driver_range(pointer as usize, size, 0),
+            crate::driver_memory::range(pointer as usize, size, 0),
             c"skb_header_device_owned",
         );
         pointer.cast()

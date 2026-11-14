@@ -299,13 +299,14 @@ five implemented Rust allocation/context/diagnostic entry points. Its combined
 audit object retains runtime exclusion.
 
 The new `storage.block_services` case makes the kernel registry 76 cases. A
-guest-only C transport fixture exercises four allocation rollback points,
+guest-only Rust transport fixture exercises four allocation rollback points,
 sixteen request/teardown epochs, invalid ranges/metadata, tags, read-only and
 limit rejection, retained backpressure, stale tickets, successful/error result
 bytes and cancellation before/after publication. A real timer IRQ then marks a
 request pending after disk admission closes; only the off-IRQ pump completes
 it. Existing fixture guards require exact heap/frame balance and block allocator
-quiescence. This remains service acceptance, separate from the real driver
+quiescence. A small C fixture checks the request/PDU/scatterlist interface.
+This remains service acceptance, separate from the real driver
 acceptance below.
 
 ## Linux virtio-blk runtime
@@ -378,6 +379,20 @@ and `/bin/init` loader continue to use the immutable Limine RAM module.
 
 ## Shared Linux compatibility boundary
 
+The [native ABI cleanup](linux-compat-abi-cleanup.md) documents which
+internal C-ABI round trips became ordinary Rust calls while preserving
+real Linux, fixture, callback and audit contracts. All audited compatibility-to-
+native calls now use Rust APIs, retaining C jiffies and guest C failure reporting.
+Internal lifecycle, storage, packet/NAPI/PCI and boot control also use Rust APIs;
+genuine Linux-facing C exports and original callback types remain intact.
+Guest scenarios also use Rust for native controls, fault injection and
+ownership assertions. The small C fixtures call Linux-facing APIs and required
+C macro/formatting bridges only; their former native and packet/PCI/block
+control shims are removed.
+The final accounting distinguishes all 77 baseline native C-ABI definitions
+from the executable audit's 62 dependencies and six separately recorded private
+Rust roles; these are different inventories, not interchangeable export counts.
+
 [The common Rust modules](../src/linux_compat/) implement the selected
 Linux-facing C ABI using `#[unsafe(no_mangle)] extern "C"` exports:
 
@@ -385,19 +400,28 @@ Linux-facing C ABI using `#[unsafe(no_mangle)] extern "C"` exports:
   sleep/IRQ/work entry points, reusing existing native registries and waiters.
 - `pci.rs`: stable owned endpoint objects, matching/probe/remove, driver data,
   resource/config access and MMIO dispatch for both original drivers.
-- `memory.rs`: checked allocation/array helpers and device-keyed coherent and
-  streaming DMA adapters. Backing allocators, masks, pins and reset proofs stay
-  with each device's existing Rust owner.
+- `memory.rs`: unsafe-free owned allocations, checked ranges and typed device,
+  direction and DMA-address services. `memory_ffi.rs` retains C ownership,
+  raw strings/lists and rejected APIs; `memory_raw.rs` supplies native calls,
+  raw-pointer adoption and completion witnesses. Backing allocators, masks,
+  pins and reset proofs stay with each device's existing Rust owner.
 - `storage.rs`: bus/driver/device references, local config-work queue, native
-  read tickets, admission checks and reset/remove/reprobe sequencing.
+  read tickets, admission checks and reset/remove/reprobe sequencing. Rust
+  controls return owned tickets and copy results into borrowed slices, using
+  actual shared block types rather than opaque-pointer extern declarations.
 - `packet.rs`: network-device lifecycle/queues, linear sk_buffs, fragment
   provenance, TX ownership/completion and native Ethernet ingress.
-- `lifecycle.rs`: module bind/open/close/remove orchestration and generation
-  tickets, using small C accessors for original private e1000 structures.
+- `lifecycle.rs`: safe module bind/open/close/remove services, generation-bearing
+  handles, owned information/statistics snapshots and borrowed packet input.
+  `lifecycle_raw.rs` confines driver pointers, private-header access and callbacks.
+  The redundant C facade is removed; Rust fixtures call the service/test APIs.
 - `napi.rs`: generation-bearing NAPI registrations, queue associations and
-  retirement, forwarding to the existing native executor.
+  retirement, calling the native executor with the same ABI NAPI callback type
+  and original callback pointer.
 - `mmio.rs`: checked MMIO, barriers, port forwarding and boot-MAC ownership/
   EEPROM fault policy; original e1000 initialization remains a C header bridge.
+  The raw-address Rust probe is unsafe; its caller must retain the identified
+  device's owned mapping for the complete C probe.
 - `block.rs`: owned request/PDU/payload, queue/scatterlist services, cancellation
   and deferred completion, with separate [block ABI types](../src/block_abi.rs).
 - `optional.rs`: explicit unsupported operations and bounded network helpers.
@@ -462,6 +486,41 @@ The old C packet, deferred
 and block-service implementations are removed rather than left as parallel
 providers. Existing C ABI names remain, including the historical `kutox_c_`
 prefix. Original Linux hardware/packet/ring algorithms remain unchanged C.
+
+The lifecycle service is compiled with `forbid(unsafe_code)`. Native Rust
+callers use it directly rather than round-tripping through C exports. Every
+operation checks boot/thread context and admits one lifecycle operation on the
+BSP; nested lifecycle admission returns `-EBUSY`. This admission flag is not an
+IRQ lock and does not prevent scheduling or reentrant packet/work callbacks.
+No reference to Linux device memory or mutable registry borrow spans a callback.
+Private device access borrows the admission token, so removal requires exclusive
+token access and cannot occur while a device accessor exists. Each operation
+revalidates its handle generation, and only owned snapshots escape admission.
+C pointer validity, lifetime, capacity and alignment remain caller obligations;
+null checks do not establish those properties. Packet/block internals and the
+remaining compatibility providers are not yet converted to this structure.
+Native Rust-only helpers such as `kutox_net_wake` may inline out of the optimized
+kernel; guest acceptance checks their wake behavior rather than requiring a
+standalone helper symbol. Original driver callback and fixture gates remain.
+
+The memory service also uses `forbid(unsafe_code)`. Its allocation tokens are
+non-cloneable and BSP-local; explicit transfer to C consumes the token. Safe CPU
+copies are bounded and available only while Rust owns the allocation; no Rust
+slice or reference into C/DMA-owned backing is returned. Streaming mapping moves
+the allocation into a mapping token, and unmapping returns it only after consuming
+an exact, non-cloneable completion/unpublished-abort witness. Such witnesses can
+only be created through an unsafe boundary that establishes the driver's actual
+completion or stopped/drained transport contract. Numeric address equality or a
+memory barrier is not a completion proof.
+
+Allocation, mapping and coherent tokens deliberately have no automatic freeing
+`Drop`: failed release/unmap returns the retained token, and dropping it leaves
+backing registered rather than risking DMA into reclaimed memory. Coherent
+release still uses the native ring/IRQ/reset checks; C frees and CPU ownership
+transitions are explicitly unsafe. The native allocators and DMA registries
+remain authoritative, with distinct network and storage domains and no new
+shadow registry. Unsupported identity DMA, `sg_phys`, indirect/premapped storage
+DMA and bidirectional mappings remain rejected.
 
 Lifecycle/NAPI/block owners use raw BSP-owned state across original callbacks.
 No Rust registry borrow spans an original callback or native reentry. Completion
@@ -943,9 +1002,11 @@ both builds, with all images and acceptance code ON-only.
   quiescence obligation, and device destruction rejects live buffers.
   Streaming DMA, bounce buffers and IOMMU mappings are not stubbed.
 - [DMA acceptance tests](../src/guest_tests/dma.rs) and the
-  [C test](../compat/guest_tests/dma_test.c) check exact alignment/mask boundaries, zeroing,
+  [Rust service scenarios](../src/guest_tests/linux_dma.rs) check exact alignment/mask boundaries, zeroing,
   disjoint buffers, exhaustion/reuse, counters, live/stale ownership, output
   preservation, invalid free/lifecycle/context requests and full cleanup.
+  The [C boundary test](../compat/guest_tests/dma_test.c) covers real DMA
+  declarations/macros and unchanged handle outputs on exhaustion.
   They never enable bus mastering or a DMA engine.
 - [The original Linux TX fixture](../src/linux_driver.rs) calls registered source
   callbacks through [the Rust lifecycle adapter](../src/linux_compat/lifecycle.rs).
@@ -1093,11 +1154,11 @@ both builds, with all images and acceptance code ON-only.
   objects without retaining mutable C references across scheduling. Static definitions
   can register lazily; `mutex_init`/`init_completion` explicitly register.
   Initialization cannot reset live native state. `reinit_completion` clears
-  credits/latches only without in-flight waits. `mutex_destroy` and the native
-  extension `kutox_destroy_completion` require cleared idle registered objects
+  credits/latches only without in-flight waits. `mutex_destroy` and the Rust
+  completion-retirement helper require cleared idle registered objects
   before releasing a registry slot. Capacity exhaustion, null objects, invalid
   operations, and invalid lifecycle transitions fail explicitly. Callers must
-  pair every C lock/unlock; the C test entry rejects return with owned mutexes.
+  pair every C lock/unlock; the Rust scenario worker rejects return with owned mutexes.
   Hardware IRQs may signal, inspect, or try-wait on preinitialized completion
   objects, but may not initialize/reset/destroy or lazily register them.
 - The supported completion subset is `complete`, `complete_all`,

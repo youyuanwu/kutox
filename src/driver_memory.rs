@@ -2,7 +2,7 @@ use crate::{
     Failure,
     boot::BootInfo,
     cpu::{self, X86Cpu},
-    exceptions, io, linux_deferred, linux_runtime, memory, serial, threads,
+    exceptions, linux_deferred, linux_runtime, memory, serial, threads,
 };
 use core::cell::UnsafeCell;
 #[cfg(feature = "guest-tests")]
@@ -78,9 +78,10 @@ static INGRESS: SpinLockIrq<Ingress, X86Cpu> = SpinLockIrq::new(Ingress {
     count: 0,
 });
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn kutox_driver_ingress(pointer: usize, size: usize) -> i32 {
-    if !(14..=1514).contains(&size) || kutox_driver_range(pointer, size, 0) != 0 {
+/// # Safety
+/// The caller owns a readable allocation range with no concurrent writer.
+pub(crate) unsafe fn ingress(pointer: usize, size: usize) -> i32 {
+    if !(14..=1514).contains(&size) || range(pointer, size, 0) != 0 {
         return report("ingress", -22);
     }
     let mut ingress = INGRESS.lock_save_irq();
@@ -105,8 +106,7 @@ unsafe extern "C" fn kutox_driver_ingress(pointer: usize, size: usize) -> i32 {
     crate::net_device::wake();
     0
 }
-#[unsafe(no_mangle)]
-unsafe extern "C" fn kutox_driver_receive(pointer: *mut u8, capacity: usize) -> usize {
+unsafe fn receive_into(pointer: *mut u8, capacity: usize) -> usize {
     let mut ingress = INGRESS.lock_save_irq();
     if ingress.count == 0 {
         return 0;
@@ -127,7 +127,7 @@ unsafe extern "C" fn kutox_driver_receive(pointer: *mut u8, capacity: usize) -> 
 }
 
 pub fn receive(output: &mut [u8; 1514]) -> usize {
-    unsafe { kutox_driver_receive(output.as_mut_ptr(), output.len()) }
+    unsafe { receive_into(output.as_mut_ptr(), output.len()) }
 }
 
 pub fn discard_ingress() {
@@ -186,8 +186,7 @@ fn range_index(state: &State, pointer: usize, size: usize) -> Result<usize, i32>
         .ok_or(-22)
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_driver_alloc(size: usize, flags: u32, kind: u32) -> usize {
+pub(crate) fn allocate(size: usize, flags: u32, kind: u32) -> usize {
     let result = state(|state| {
         // Actual selected GFP_KERNEL/GFP_ATOMIC, not the boot fixture's zero tag.
         if flags != GFP_KERNEL && flags != GFP_ATOMIC {
@@ -248,8 +247,7 @@ extern "C" fn kutox_driver_alloc(size: usize, flags: u32, kind: u32) -> usize {
     })
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_driver_size(pointer: usize) -> usize {
+pub(crate) fn size(pointer: usize) -> usize {
     state(|state| {
         let index = range_index(state, pointer, 1)?;
         let allocation = state.allocations[index].as_ref().ok_or(-22)?;
@@ -261,8 +259,7 @@ extern "C" fn kutox_driver_size(pointer: usize) -> usize {
     })
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_driver_range(pointer: usize, size: usize, operation: u32) -> i32 {
+pub(crate) fn range(pointer: usize, size: usize, operation: u32) -> i32 {
     let result = state(|state| {
         let index = range_index(state, pointer, size)?;
         let allocation = state.allocations[index].as_mut().ok_or(-22)?;
@@ -298,8 +295,9 @@ extern "C" fn kutox_driver_range(pointer: usize, size: usize, operation: u32) ->
     result.map_or_else(|error| report("range", error), |_| 0)
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_driver_free(pointer: usize) -> i32 {
+/// # Safety
+/// On success the caller relinquishes the allocation and all CPU aliases.
+pub(crate) unsafe fn free(pointer: usize) -> i32 {
     if pointer == 0 {
         return 0;
     }
@@ -322,13 +320,9 @@ extern "C" fn kutox_driver_free(pointer: usize) -> i32 {
     result.map_or_else(|error| report("free", error), |_| 0)
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_driver_dma_map(
-    device: usize,
-    pointer: usize,
-    size: usize,
-    direction: u32,
-) -> u64 {
+/// # Safety
+/// The caller retains the allocation and relinquishes CPU access for the DMA lease.
+pub(crate) unsafe fn dma_map(device: usize, pointer: usize, size: usize, direction: u32) -> u64 {
     let result = state(|state| {
         crate::driver_platform::check_device(device)?;
         if direction != 1 && direction != 2 {
@@ -382,10 +376,10 @@ extern "C" fn kutox_driver_dma_map(
     })
 }
 
-/// Standard DMA unmap/sync callers must establish device completion or an
-/// unpublished/engine-quiesced abort before giving the region back to the CPU.
-#[unsafe(no_mangle)]
-extern "C" fn kutox_driver_dma_operation(
+/// # Safety
+/// Unmap/CPU-sync requires completion or an unpublished/engine-quiesced abort.
+/// Device-sync relinquishes all CPU access to the region.
+pub(crate) unsafe fn dma_operation(
     device: usize,
     dma: u64,
     size: usize,
@@ -440,7 +434,7 @@ pub fn coherent_allocate(size: usize, flags: u32) -> Result<(usize, u64), i32> {
     if crate::driver_platform::mask() == 0 {
         return Err(-5);
     }
-    let pointer = kutox_driver_alloc(size, flags, 3);
+    let pointer = allocate(size, flags, 3);
     if pointer == 0 {
         return Err(-12);
     }
@@ -462,15 +456,13 @@ pub fn coherent_allocate(size: usize, flags: u32) -> Result<(usize, u64), i32> {
         Ok((pointer, dma))
     });
     if result.is_err() {
-        assert_eq!(
-            kutox_driver_free(pointer),
-            0,
-            "coherent mask rollback failed"
-        );
+        assert_eq!(unsafe { free(pointer) }, 0, "coherent mask rollback failed");
     }
     result
 }
-pub fn coherent_free(pointer: usize, size: usize, dma: u64) -> Result<(), i32> {
+/// # Safety
+/// The caller relinquishes all CPU aliases; the native ring/drain guards must pass.
+pub unsafe fn coherent_free(pointer: usize, size: usize, dma: u64) -> Result<(), i32> {
     state(|state| {
         let index = range_index(state, pointer, size)?;
         let allocation = state.allocations[index].as_ref().ok_or(-22)?;
@@ -484,7 +476,7 @@ pub fn coherent_free(pointer: usize, size: usize, dma: u64) -> Result<(), i32> {
         Ok(())
     })?;
     crate::driver_platform::ring_release(dma)?;
-    let result = kutox_driver_free(pointer);
+    let result = unsafe { free(pointer) };
     if result < 0 { Err(result) } else { Ok(()) }
 }
 pub fn has_resources() -> bool {
@@ -501,12 +493,6 @@ pub fn quiescent() -> bool {
         && state.maps.iter().all(Option::is_none)
         && INGRESS.lock_save_irq().count == 0
         && !linux_deferred::atomic_context()
-}
-#[cfg(feature = "guest-tests")]
-#[unsafe(no_mangle)]
-extern "C" fn kutox_driver_fail_after(count: usize) {
-    FAIL_KIND.store(u32::MAX, Ordering::Relaxed);
-    FAIL_AFTER.store(count, Ordering::Relaxed);
 }
 
 pub fn snapshot() -> (usize, usize, usize) {
@@ -543,13 +529,7 @@ pub fn rx_cpu_grants() -> usize {
         .count()
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_driver_diag(operation: *const core::ffi::c_char, error: i32) {
-    if operation.is_null() {
-        io::finish(false);
-    }
-    let operation = unsafe { core::ffi::CStr::from_ptr(operation) }
-        .to_str()
-        .expect("invalid driver error encoding");
+pub(crate) fn diag(operation: &core::ffi::CStr, error: i32) {
+    let operation = operation.to_str().expect("invalid driver error encoding");
     report(operation, error);
 }

@@ -72,9 +72,8 @@ static COMPLETIONS: [CompletionSlot; CAPACITY] = [const { CompletionSlot::new() 
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 static RATE: SpinLockIrq<(u64, u32), X86Cpu> = SpinLockIrq::new((0, 0));
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_ratelimit() -> bool {
-    let now = kutox_jiffies();
+pub(crate) fn ratelimit() -> bool {
+    let now = jiffies();
     let mut rate = RATE.lock_save_irq();
     if now.wrapping_sub(rate.0) >= 5000 {
         *rate = (now, 0);
@@ -95,8 +94,7 @@ fn generation() -> Result<u64, i32> {
         .map_err(|_| INVALID)
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_object_generation(key: usize, kind: u32) -> u64 {
+pub(crate) fn object_generation(key: usize, kind: u32) -> u64 {
     if key == 0 {
         return 0;
     }
@@ -201,13 +199,13 @@ fn completion_slot(key: usize, create: bool) -> Result<Option<&'static Completio
     Ok(Some(slot))
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_context() -> i32 {
+pub(crate) fn context_code() -> i32 {
     context().map(i32::from).unwrap_or_else(|error| error)
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_mutex(key: usize, operation: u32) -> i32 {
+/// # Safety
+/// Registered keys name live ABI mutex objects retained until retirement.
+pub(crate) unsafe fn mutex(key: usize, operation: u32) -> i32 {
     mutex_operation(key, operation).unwrap_or_else(|error| error)
 }
 
@@ -268,8 +266,9 @@ fn mutex_operation(key: usize, operation: u32) -> Result<i32, i32> {
     }
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_completion(key: usize, operation: u32) -> i32 {
+/// # Safety
+/// Registered keys name live ABI completion objects retained until retirement.
+pub(crate) unsafe fn completion(key: usize, operation: u32) -> i32 {
     completion_operation(key, operation).unwrap_or_else(|error| error)
 }
 
@@ -329,8 +328,9 @@ fn completion_operation(key: usize, operation: u32) -> Result<i32, i32> {
     }
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_wait_completion(key: usize, ticks: u64, timed: u8) -> u64 {
+/// # Safety
+/// The completion key and backing remain live through waiting and retirement.
+pub(crate) unsafe fn wait_completion(key: usize, ticks: u64, timed: u8) -> u64 {
     thread_context().unwrap_or_else(|error| fatal("completion_wait_context", error));
     if timed > 1 {
         fatal("completion_wait_arguments", INVALID);
@@ -386,8 +386,7 @@ extern "C" fn kutox_linux_wait_completion(key: usize, ticks: u64, timed: u8) -> 
     }
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_msleep(msec: u32) {
+pub(crate) fn msleep(msec: u32) {
     thread_context().unwrap_or_else(|error| fatal("msleep_context", error));
     match threads::sleep_us(u64::from(msec) * 1000) {
         Ok(threads::WakeReason::TimedOut) => {}
@@ -396,8 +395,7 @@ extern "C" fn kutox_linux_msleep(msec: u32) {
     }
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_cond_resched() -> i32 {
+pub(crate) fn cond_resched() -> i32 {
     if !context().unwrap_or_else(|error| fatal("cond_resched_context", error)) {
         return 0;
     }
@@ -405,8 +403,7 @@ extern "C" fn kutox_linux_cond_resched() -> i32 {
     1
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_irq_save() -> u64 {
+pub(crate) fn irq_save() -> u64 {
     let flags: u64;
     unsafe { asm!("pushfq", "pop {}", "cli", out(reg) flags) };
     if !exceptions::is_hardware_irq() {
@@ -415,8 +412,7 @@ extern "C" fn kutox_linux_irq_save() -> u64 {
     flags & IF
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_spin_owner() -> u64 {
+pub(crate) fn spin_owner() -> u64 {
     if exceptions::is_hardware_irq() {
         if cpu::interrupts_enabled() {
             fatal("irq_spin_if", INVALID);
@@ -428,18 +424,11 @@ extern "C" fn kutox_linux_spin_owner() -> u64 {
         .map_or(0, |handle| handle.ticket())
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_irq_acquired() {
+pub(crate) fn irq_acquired() {
     X86Cpu::irq_lock_acquired();
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_irq_depth() -> usize {
-    X86Cpu::irq_lock_depth()
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_irq_released(flags: u64) {
+pub(crate) fn irq_released(flags: u64) {
     if flags & !IF != 0 || cpu::interrupts_enabled() || X86Cpu::irq_lock_depth() == 0 {
         fatal("spin_restore_state", INVALID);
     }
@@ -452,20 +441,16 @@ extern "C" fn kutox_linux_irq_released(flags: u64) {
     }
 }
 
-#[cfg(feature = "guest-tests")]
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_test_now_us() -> u64 {
-    let ticks = time::ticks_for_us(1).unwrap_or_else(|error| fatal(error.stage, error.code));
-    time::now_ticks() / ticks
-}
-
 #[unsafe(no_mangle)]
 extern "C" fn kutox_jiffies() -> u64 {
+    jiffies()
+}
+
+pub(crate) fn jiffies() -> u64 {
     time::elapsed_jiffies().unwrap_or_else(|error| fatal(error.stage, error.code))
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kutox_linux_sleep_range(minimum: u64, maximum: u64) {
+pub(crate) fn sleep_range(minimum: u64, maximum: u64) {
     thread_context().unwrap_or_else(|error| fatal("usleep_context", error));
     if minimum > maximum || maximum > 1_000_000 {
         fatal("usleep_range", INVALID);
@@ -500,35 +485,6 @@ pub fn can_retire_range(base: usize, size: usize) -> Result<(), i32> {
             return Err(BUSY);
         }
 
-        #[unsafe(no_mangle)]
-        extern "C" fn kutox_linux_static_objects_retire() {
-            context().unwrap_or_else(|error| fatal("static_retire_context", error));
-            if MUTEXES.iter().any(|slot| {
-                slot.object.snapshot() != MutexState::new()
-                    || unsafe { (&*slot.guard.get()).is_some() }
-            }) || COMPLETIONS
-                .iter()
-                .any(|slot| slot.object.snapshot() != CompletionState::new())
-            {
-                fatal("static_objects_live", BUSY);
-            }
-            for slot in &MUTEXES {
-                let key = slot.key.swap(0, Ordering::AcqRel);
-                if key != 0 {
-                    unsafe {
-                        (*(key as *mut kutox::linux_abi::Mutex)).generation = 0;
-                    }
-                }
-            }
-            for slot in &COMPLETIONS {
-                let key = slot.key.swap(0, Ordering::AcqRel);
-                if key != 0 {
-                    unsafe {
-                        (*(key as *mut kutox::linux_abi::Completion)).generation = 0;
-                    }
-                }
-            }
-        }
         if slot.object.snapshot() != MutexState::new() || unsafe { (&*slot.guard.get()).is_some() }
         {
             return Err(BUSY);
@@ -562,6 +518,34 @@ pub fn retire_range(base: usize, size: usize) -> Result<(), i32> {
         }
     }
     Ok(())
+}
+
+pub(crate) fn retire_static_objects() {
+    context().unwrap_or_else(|error| fatal("static_retire_context", error));
+    if MUTEXES.iter().any(|slot| {
+        slot.object.snapshot() != MutexState::new() || unsafe { (&*slot.guard.get()).is_some() }
+    }) || COMPLETIONS
+        .iter()
+        .any(|slot| slot.object.snapshot() != CompletionState::new())
+    {
+        fatal("static_objects_live", BUSY);
+    }
+    for slot in &MUTEXES {
+        let key = slot.key.swap(0, Ordering::AcqRel);
+        if key != 0 {
+            unsafe {
+                (*(key as *mut kutox::linux_abi::Mutex)).generation = 0;
+            }
+        }
+    }
+    for slot in &COMPLETIONS {
+        let key = slot.key.swap(0, Ordering::AcqRel);
+        if key != 0 {
+            unsafe {
+                (*(key as *mut kutox::linux_abi::Completion)).generation = 0;
+            }
+        }
+    }
 }
 
 #[cfg(feature = "guest-tests")]

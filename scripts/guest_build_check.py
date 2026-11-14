@@ -6,7 +6,8 @@ from pathlib import Path
 import re
 import struct
 import subprocess
-from linux_driver_check import Elf
+from linux_driver_check import Elf, digest
+from linux_compat_check import NATIVE_BINDINGS, NATIVE_C_BINDINGS, runtime_rust_sources, rust_dependencies
 from make_iso import validate_image
 
 NATIVE_INIT_SYMBOLS = {f"kutox_guest_native_init_{identity}" for identity in (10, 20, 30, 40)}
@@ -17,11 +18,55 @@ USER_PROGRAM_SYMBOLS = {
 }
 INIT_MAGIC = 0x4b44494e
 INIT_RECORD_BYTES = 24
+FIXTURE_BACKEND_SYMBOLS = {
+    "kutox_platform_fail",
+}
+REMOVED_FIXTURE_SYMBOLS = {
+    "kutox_c_netdev_open", "kutox_c_netdev_transmit",
+    "kutox_c_tx_begin", "kutox_c_tx_retry", "kutox_c_tx_status", "kutox_c_tx_release",
+    "kutox_c_driver_endpoint", "kutox_c_driver_endpoint_release",
+    "kutox_block_prepare", "kutox_block_submit", "kutox_block_pump", "kutox_block_result",
+    "kutox_block_cancel", "kutox_block_release", "kutox_block_quiescent",
+    "kutox_driver_receive", "kutox_linux_workers_stop",
+    "kutox_linux_irq_pending", "kutox_linux_irq_depth", "kutox_linux_test_now_us",
+    "kutox_driver_fail_after", "kutox_block_fail_after", "kutox_guest_memory_storage",
+    "kutox_dma_publish", "kutox_dma_reclaim", "kutox_destroy_dma_device",
+    "kutox_destroy_completion", "kutox_destroy_work", "kutox_destroy_rtnl",
+    "kutox_c_execution_init", "kutox_c_execution_worker", "kutox_c_execution_verify",
+    "kutox_c_execution_destroy", "kutox_c_irq_init", "kutox_c_irq_signal",
+    "kutox_c_irq_worker", "kutox_c_irq_destroy", "kutox_c_dma_key", "kutox_c_dma_worker",
+    "kutox_c_driver_work", "kutox_c_driver_napi", "kutox_c_driver_irq_config",
+    "kutox_c_driver_irq", "kutox_c_driver_lifecycle",
+    "kutox_c_block_services", "kutox_c_block_irq_begin", "kutox_c_block_irq_deliver",
+    "kutox_c_block_irq_finish",
+    "kutox_c_services_begin", "kutox_c_services_end", "kutox_c_services_allocations",
+    "kutox_c_services_dma", "kutox_c_services_packets", "kutox_c_services_capacity",
+    "kutox_c_services_failed_open",
+}
+REMOVED_COMPAT_PATTERN = re.compile(
+    r"^kutox_c_linux_|"
+    r"^kutox_c_(?:registered_netdev|netdev_close|packet_empty|"
+    r"tx_(?:abort|mapped|unmapped|mmio|many(?:_retry|_finish)?)|"
+    r"rx_(?:start|stop|path|dma|mmio)|driver_device|pci_clear_data|retire_napi_device|deferred_empty)$|"
+    r"^kutox_(?:storage_(?:start|stop|capacity|prepare|submit|poll|result|release|reset_request|empty)|"
+    r"block_(?:registered_(?:disk|queue)|reset_complete|ready)|compat_device_name|read_mac)$"
+)
+GUEST_C_ARCHIVES = {
+    "kutox_guest_tests", "kutox_source_guest_tests",
+    "kutox_block_guest_tests", "kutox_storage_config_guest",
+}
+C_BOUNDARY_BRIDGES = {
+    "kutox_platform_fail", "kutox_jiffies", "kutox_vformat", "kutox_vprint",
+    "kutox_check_read_once", "kutox_check_write_once",
+    "kutox_check_load_acquire", "kutox_check_store_release",
+    "kutox_check_spin_lock_irqsave", "kutox_check_spin_unlock_irqrestore",
+    "kutox_spin_lock_irqsave", "kutox_spin_unlock_irqrestore",
+}
 
 
 GUEST_SYMBOLS = {
-    "kutox_c_execution_worker", "kutox_c_driver_atomics",
-    "kutox_c_services_allocations", "kutox_c_dma_worker",
+    "kutox_c_execution_boundary", "kutox_c_driver_atomics",
+    "kutox_c_packet_boundary", "kutox_c_dma_boundary", "kutox_c_block_request",
     "kutox_thread_register_probe", "kutox_irq_register_probe",
     "kutox_guest_native_probe",
     "kutox_guest_runtime_work",
@@ -42,16 +87,14 @@ GUEST_SYMBOLS = {
     "kutox_guest_user_timeout",
     "kutox_guest_user_tasks",
     "kutox_guest_async_hardening",
-    "kutox_c_block_services",
     "kutox_guest_storage_config",
     "kutox_e1000_rx_resident",
-} | NATIVE_INIT_SYMBOLS | USER_PROGRAM_SYMBOLS
+    "kutox_thread_yield_probe",
+} | NATIVE_INIT_SYMBOLS | USER_PROGRAM_SYMBOLS | FIXTURE_BACKEND_SYMBOLS
 RUNTIME_SYMBOLS = {
     "e1000_probe", "e1000_open", "e1000_close", "e1000_xmit_frame",
-    "e1000_intr", "e1000_clean", "kutox_driver_alloc", "kutox_driver_free",
-    "kutox_driver_dma_map", "kutox_driver_dma_operation",
-    "kutox_linux_request_irq", "kutox_linux_work_init", "kutox_linux_napi_init",
-    "kutox_e1000_init", "kutox_net_wake",
+    "e1000_intr", "e1000_clean",
+    "kutox_e1000_init",
     "kutox_async_executor",
     "kutox_packet_broker",
     "kutox_ipv4_service",
@@ -63,15 +106,15 @@ RUNTIME_SYMBOLS = {
     "kutox_user_bringup", "kutox_user_enter", "kutox_user_resume", "kutox_user_dispatch",
     "kutox_user_load_elf",
     "kutox_boot_filesystem",
-    "kutox_storage_start", "virtblk_probe",
+    "virtblk_probe",
     "virtio_queue_rq", "virtblk_request_done", "vp_interrupt",
     "virtblk_done", "virtqueue_add_sgs", "virtqueue_get_buf", "vp_modern_probe",
     "pci_register_driver", "dma_map_page_attrs", "kmalloc", "mutex_lock",
     "kutox_user_dispatch_next",
     "kutox_runtime_users",
-}
+} | NATIVE_C_BINDINGS.keys()
 GUEST_ONLY_PATTERN = re.compile(
-    r"::(?:guest_tests|tests|wait_tests|irq_tests|test_cleanup)::|"
+    r"::(?:guest_tests|guest_ffi|tests|wait_tests|irq_tests|test_cleanup)::|"
     r"::(?:FAIL_AFTER|FAIL_KIND|MAP_FAIL_AFTER|MAP_FAIL_DIRECTION|FAIL_OPERATION|FAIL_REQUEST)$|"
     r"^(?:kutox_c_execution_|kutox_c_irq_|kutox_c_services_|kutox_c_dma_|kutox_c_block_)|"
     r"^kutox_block_fail_after$|"
@@ -131,6 +174,8 @@ def validate_native_metadata(data, address, bounds, functions, enabled):
 
 def validate_native_elf(kernel, enabled):
     elf = Elf(kernel, expected_kind=2)
+    if ".kutox.compile_only" in elf.by_name:
+        raise AssertionError("compile-only object in kernel runtime")
     section = elf.by_name.get(".kutox.native_inits")
     if section is None or section["type"] != 1 or section["flags"] & ~0x200000 != 2 or section["alignment"] < 8:
         raise AssertionError("native initializers must be retained read-only aligned metadata")
@@ -142,6 +187,13 @@ def validate_native_elf(kernel, enabled):
 
 
 def validate_symbols(symbols, enabled):
+    obsolete = ((NATIVE_BINDINGS.keys() - FIXTURE_BACKEND_SYMBOLS)
+                | {"kutox_driver_known", "kutox_storage_fail"}) & symbols
+    if obsolete:
+        raise AssertionError(f"obsolete native backend C facades in kernel runtime: {sorted(obsolete)}")
+    obsolete = sorted(name for name in symbols if name in REMOVED_FIXTURE_SYMBOLS or REMOVED_COMPAT_PATTERN.search(name))
+    if obsolete:
+        raise AssertionError(f"obsolete compatibility C facades in kernel runtime: {obsolete}")
     missing = RUNTIME_SYMBOLS - symbols
     if missing:
         raise AssertionError(f"runtime driver/services missing: {sorted(missing)}")
@@ -155,6 +207,39 @@ def validate_symbols(symbols, enabled):
             raise AssertionError(f"guest-only symbols in feature-off kernel: {found[:12]}")
 
 
+def validate_runtime_dependencies(kernel):
+    return runtime_rust_sources(rust_dependencies(kernel.with_suffix(".d")))
+
+
+def guest_c_archives(dependencies):
+    outputs = {Path(path).parent for path in dependencies if Path(path).name == "user.elf"}
+    if len(outputs) != 1:
+        raise ValueError("missing or ambiguous active guest build output")
+    output = outputs.pop()
+    libraries = set(re.findall(r"^cargo:rustc-link-lib=static=(.+)$",
+                              (output.parent / "output").read_text(), re.MULTILINE))
+    if not GUEST_C_ARCHIVES <= libraries:
+        raise ValueError("missing active C boundary fixture libraries")
+    archives = [output / f"lib{name}.a" for name in sorted(GUEST_C_ARCHIVES)]
+    if any(not archive.is_file() for archive in archives):
+        raise ValueError("missing active C boundary fixture archive")
+    return archives
+
+
+def validate_c_boundary(symbols):
+    unexpected = sorted(name for name in symbols if name.startswith("kutox_") and name not in C_BOUNDARY_BRIDGES)
+    if unexpected:
+        raise AssertionError(f"C guest fixtures bypass the Linux boundary: {unexpected}")
+
+
+def validate_guest_c_boundary(kernel, nm):
+    archives = guest_c_archives(rust_dependencies(kernel.with_suffix(".d")))
+    for archive in archives:
+        output = subprocess.check_output([nm, "--undefined-only", "--format=just-symbols", str(archive)], text=True)
+        validate_c_boundary({line for line in output.splitlines() if re.fullmatch(r"[A-Za-z_]\w*", line)})
+    return len(archives)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--kernel", required=True, type=Path)
@@ -162,6 +247,7 @@ def main():
     parser.add_argument("--guest-tests", required=True, choices=("enabled", "disabled"))
     parser.add_argument("--image", type=Path)
     args = parser.parse_args()
+    sources = validate_runtime_dependencies(args.kernel)
     if args.image is not None:
         validate_image(args.image, args.kernel, "ON" if args.guest_tests == "enabled" else "OFF")
     output = subprocess.check_output(
@@ -173,7 +259,11 @@ def main():
         if match:
             symbols.add(match[1])
     validate_symbols(symbols, args.guest_tests == "enabled")
+    if args.guest_tests == "enabled":
+        print(f"KUTOX_GUEST_C_BOUNDARY_VERIFIED archives={validate_guest_c_boundary(args.kernel, args.nm)}")
     production, tests = validate_native_elf(args.kernel, args.guest_tests == "enabled")
+    print(f"KUTOX_RUNTIME_SOURCES_VERIFIED rust={len(sources)} "
+          f"dependencies_sha256={digest(args.kernel.with_suffix('.d'))} audit_sources=0")
     print(f"KUTOX_NATIVE_INIT_VERIFIED production={production} test={tests} record_bytes={INIT_RECORD_BYTES}")
     print(f"KUTOX_GUEST_BUILD_VERIFIED guest_tests={args.guest_tests}")
 

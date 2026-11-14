@@ -21,11 +21,6 @@ impl Endpoint {
 }
 static NET: Bsp<Endpoint> = Bsp(UnsafeCell::new(Endpoint::EMPTY));
 static STORAGE: Bsp<Endpoint> = Bsp(UnsafeCell::new(Endpoint::EMPTY));
-unsafe extern "C" {
-    fn kutox_driver_pci(operation: u32, first: u64, second: u64) -> i32;
-    fn kutox_driver_pci_value(operation: u32) -> u64;
-    fn kutox_storage_pci(operation: u32, first: u64, second: u64) -> u64;
-}
 fn net() -> *mut Endpoint {
     NET.0.get()
 }
@@ -48,24 +43,22 @@ fn owner(p: *const PciDevice) -> *mut Endpoint {
     if p == storage_pointer() && unsafe { (*storage()).bound } {
         return storage();
     }
-    unsafe { kutox_platform_fail(c"pci_device_identity".as_ptr()) }
+    crate::platform_fail(c"pci_device_identity")
 }
 fn is_storage(p: *const PciDevice) -> bool {
     owner(p) == storage()
 }
 fn net_operation(op: u32, first: u64, second: u64) -> i32 {
-    unsafe { kutox_driver_pci(op, first, second) }
+    crate::driver_platform::pci_operation(op, first, second)
 }
 fn storage_operation(op: u32, first: u64, second: u64) -> u64 {
-    unsafe { kutox_storage_pci(op, first, second) }
+    crate::storage::pci(op, first, second)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_c_driver_device() -> usize {
+pub(crate) fn device_key() -> usize {
     net_pointer() as usize
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_c_driver_endpoint(irq: u32) -> *mut PciDevice {
+pub(super) fn driver_endpoint(irq: u32) -> *mut PciDevice {
     context();
     require(unsafe { !(*net()).bound }, c"pci_endpoint_live");
     let read = |offset| checked(net_operation(10, offset, 0), c"pci_identity") as u16;
@@ -85,7 +78,7 @@ pub extern "C" fn kutox_c_driver_endpoint(irq: u32) -> *mut PciDevice {
         (*p).subsystem_vendor = read(0x2c);
         (*p).subsystem_device = read(0x2e);
     }
-    let address = unsafe { kutox_driver_pci_value(3) };
+    let address = { crate::driver_platform::pci_value(3) };
     require(
         address >> 24 == 0 && (address >> 8 & 255) < 32 && (address & 255) < 8,
         c"pci_location_profile",
@@ -150,12 +143,10 @@ pub fn quiescent() -> bool {
             && (*storage()).driver.is_null()
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_c_driver_endpoint_release() {
+pub(super) fn release_driver_endpoint() {
     release(net());
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn kutox_c_pci_clear_data(data: *mut c_void) {
+pub(super) fn clear_data(data: *mut c_void) {
     unsafe {
         if (*net()).device.dev.driver_data == data {
             (*net()).device.dev.driver_data = ptr::null_mut();
@@ -206,11 +197,11 @@ pub unsafe extern "C" fn pci_register_driver(candidate: *mut PciDriver) -> i32 {
             continue;
         }
         if bound_net {
-            unsafe { kutox_driver_trace(3, probe as usize, p as usize, 0) }
+            crate::linux_driver::trace(3, probe as usize, p as usize, 0)
         }
         let result = unsafe { probe(p, ids.add(i)) };
         if bound_net {
-            unsafe { kutox_driver_trace(4, probe as usize, p as usize, result) }
+            crate::linux_driver::trace(4, probe as usize, p as usize, result)
         }
         if result < 0 {
             unsafe {
@@ -227,7 +218,7 @@ pub unsafe extern "C" fn pci_register_driver(candidate: *mut PciDriver) -> i32 {
         }
         return result;
     }
-    unsafe { kutox_platform_fail(c"pci_id_table_bound".as_ptr()) }
+    crate::platform_fail(c"pci_id_table_bound")
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pci_unregister_driver(candidate: *mut PciDriver) {
@@ -245,10 +236,10 @@ pub unsafe extern "C" fn pci_unregister_driver(candidate: *mut PciDriver) {
         let p = unsafe { ptr::addr_of_mut!((*e).device) };
         let remove = match unsafe { (*candidate).remove } {
             Some(f) => f,
-            None => unsafe { kutox_platform_fail(c"pci_remove_missing".as_ptr()) },
+            None => crate::platform_fail(c"pci_remove_missing"),
         };
         if e == net() {
-            unsafe { kutox_driver_trace(5, remove as usize, p as usize, 0) }
+            crate::linux_driver::trace(5, remove as usize, p as usize, 0)
         }
         unsafe { remove(p) };
     }
@@ -331,7 +322,7 @@ pub extern "C" fn pci_resource_len(p: *mut PciDevice, bar: i32) -> usize {
         storage_operation(4, bar as u64, 0) as usize
     } else {
         match bar {
-            0 => unsafe { kutox_driver_pci_value(1) as usize },
+            0 => crate::driver_platform::pci_value(1) as usize,
             1 => 64,
             _ => 0,
         }
@@ -359,8 +350,8 @@ pub extern "C" fn pci_resource_start(p: *mut PciDevice, bar: i32) -> usize {
         storage_operation(5, bar as u64, 0) as usize
     } else {
         match bar {
-            0 => unsafe { kutox_driver_pci_value(0) as usize },
-            1 => unsafe { kutox_driver_pci_value(4) as usize },
+            0 => crate::driver_platform::pci_value(0) as usize,
+            1 => crate::driver_platform::pci_value(4) as usize,
             _ => 0,
         }
     }
@@ -406,12 +397,13 @@ pub extern "C" fn pci_ioremap_bar(p: *mut PciDevice, bar: i32) -> *mut c_void {
     if net_operation(6, 0, 0) < 0 {
         return ptr::null_mut();
     }
-    unsafe { kutox_driver_pci_value(2) as *mut c_void }
+    crate::driver_platform::pci_value(2) as *mut c_void
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn ioremap(address: usize, n: usize) -> *mut c_void {
-    if unsafe { kutox_driver_pci_value(0) } != address as u64
-        || unsafe { kutox_driver_pci_value(1) } != n as u64
+    if { crate::driver_platform::pci_value(0) } != address as u64 || {
+        crate::driver_platform::pci_value(1)
+    } != n as u64
     {
         diagnostic(c"ioremap_profile", -95);
         return ptr::null_mut();
@@ -424,7 +416,7 @@ pub extern "C" fn iounmap(address: *mut c_void) {
         return;
     }
     require(
-        address as usize == unsafe { kutox_driver_pci_value(2) } as usize,
+        address as usize == { crate::driver_platform::pci_value(2) } as usize,
         c"iounmap_identity",
     );
     checked(net_operation(7, 0, 0), c"iounmap");
@@ -439,7 +431,7 @@ pub extern "C" fn pci_iomap_range(
     require(is_storage(p), c"pci_iomap_range_profile");
     let length = pci_resource_len(p, bar);
     if !(0..6).contains(&bar) || n == 0 || offset >= length || n > length - offset {
-        unsafe { kutox_block_diag(c"storage_bar_span".as_ptr(), -22) };
+        crate::block_services::diag(c"storage_bar_span", -22);
         return ptr::null_mut();
     }
     storage_operation(8, ((bar as u64) << 32) | offset as u64, n as u64) as *mut c_void
@@ -477,7 +469,7 @@ unsafe fn read_config(p: *mut PciDevice, offset: i32, width: u64, out: *mut c_vo
             1 => out.cast::<u8>().write(value as u8),
             2 => out.cast::<u16>().write(value as u16),
             4 => out.cast::<u32>().write(value as u32),
-            _ => kutox_platform_fail(c"pci_config_width".as_ptr()),
+            _ => crate::platform_fail(c"pci_config_width"),
         }
     }
     0
@@ -641,7 +633,7 @@ pub extern "C" fn pci_alloc_irq_vectors_affinity(
 #[unsafe(no_mangle)]
 pub extern "C" fn pci_free_irq_vectors(p: *mut PciDevice) {
     owner(p);
-    unsafe { kutox_platform_fail(c"storage_msix_free".as_ptr()) }
+    crate::platform_fail(c"storage_msix_free")
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn pci_irq_vector(p: *mut PciDevice, _v: u32) -> i32 {
@@ -656,13 +648,15 @@ pub extern "C" fn pci_irq_get_affinity(p: *mut PciDevice, _v: i32) -> *const c_v
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn alloc_cpumask_var(out: *mut *mut usize, g: u32) -> bool {
     validate(out);
-    let p = super::memory::storage_kzalloc(core::mem::size_of::<usize>(), g).cast();
+    let p = super::memory_ffi::storage_kzalloc(core::mem::size_of::<usize>(), g).cast();
     unsafe { out.write(p) };
     !p.is_null()
 }
 #[unsafe(no_mangle)]
-pub extern "C" fn free_cpumask_var(p: *const usize) {
-    super::memory::storage_kfree(p.cast());
+/// # Safety
+/// p is the uniquely owned storage allocation returned by alloc_cpumask_var.
+pub unsafe extern "C" fn free_cpumask_var(p: *const usize) {
+    unsafe { super::memory_ffi::storage_kfree(p.cast()) };
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn cpumask_copy(dst: *mut usize, src: *const usize) {
@@ -709,48 +703,45 @@ pub extern "C" fn pci_iov_vf_id(p: *mut PciDevice) -> i32 {
 pub extern "C" fn xen_domain() -> bool {
     false
 }
-unsafe extern "C" {
-    fn kutox_storage_mmio(address: usize, width: usize);
-}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ioread8(p: *const u8) -> u8 {
     unsafe {
-        kutox_storage_mmio(p as usize, 1);
+        crate::storage::mmio(p as usize, 1);
         p.read_volatile()
     }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ioread16(p: *const u16) -> u16 {
     unsafe {
-        kutox_storage_mmio(p as usize, 2);
+        crate::storage::mmio(p as usize, 2);
         p.read_volatile()
     }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ioread32(p: *const u32) -> u32 {
     unsafe {
-        kutox_storage_mmio(p as usize, 4);
+        crate::storage::mmio(p as usize, 4);
         p.read_volatile()
     }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn iowrite8(v: u8, p: *mut u8) {
     unsafe {
-        kutox_storage_mmio(p as usize, 1);
+        crate::storage::mmio(p as usize, 1);
         p.write_volatile(v)
     }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn iowrite16(v: u16, p: *mut u16) {
     unsafe {
-        kutox_storage_mmio(p as usize, 2);
+        crate::storage::mmio(p as usize, 2);
         p.write_volatile(v)
     }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn iowrite32(v: u32, p: *mut u32) {
     unsafe {
-        kutox_storage_mmio(p as usize, 4);
+        crate::storage::mmio(p as usize, 4);
         p.write_volatile(v)
     }
 }

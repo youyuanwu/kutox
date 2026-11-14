@@ -627,11 +627,13 @@ The audit additionally compiles all eleven original e1000/VirtIO units with
 their runtime headers, four C header-access adapter units and
 [the real Rust providers](../src/linux_compat/). This second
 relocatable closure has no compile-only marker, no garbage collection and no
-missing source-facing APIs. Its exact **68 backend/libc entry points** are
+missing source-facing APIs. Its exact **62 backend/libc entry points** are
 listed in [service-ffi.txt](../compat/audit/common/service-ffi.txt).
 This boundary includes the existing device-specific Rust allocation/DMA/PCI
 backends and shared native execution/IRQ services. Both source audits use the
 same provider/compiler proof implementation and allowlist.
+The [native ABI cleanup](linux-compat-abi-cleanup.md) accounts separately for
+six private Rust control roles that no longer enter the C-provider object.
 Rejected optional paths have explicit failure providers, not fake successful
 hardware services. The original 203/57/146 baseline counts are preserved as
 dependency evidence rather than misrepresented as the executable closure.

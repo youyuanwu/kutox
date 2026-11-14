@@ -1,3 +1,4 @@
+use crate::linux_compat::storage as driver_services;
 use crate::{
     Failure,
     boot::BootInfo,
@@ -10,7 +11,6 @@ use alloc::alloc::{alloc_zeroed, dealloc};
 use core::{
     alloc::Layout,
     cell::UnsafeCell,
-    ffi::{CStr, c_char},
     sync::atomic::{Ordering, compiler_fence},
 };
 use moss_libkernel::memory::allocators::phys::PageAllocation;
@@ -56,19 +56,6 @@ struct Registry(UnsafeCell<Option<State>>);
 unsafe impl Sync for Registry {}
 static STATE: Registry = Registry(UnsafeCell::new(None));
 
-unsafe extern "C" {
-    fn kutox_storage_start(irq: u32) -> i32;
-    fn kutox_storage_stop();
-    fn kutox_storage_empty() -> bool;
-    fn kutox_storage_prepare(sector: u64, bytes: usize, ticket: *mut u64) -> i32;
-    fn kutox_storage_submit(ticket: u64) -> i32;
-    fn kutox_storage_poll(ticket: u64) -> i32;
-    fn kutox_storage_result(ticket: u64, output: *mut u8, size: usize) -> i32;
-    fn kutox_storage_release(ticket: u64) -> i32;
-    fn kutox_storage_reset_request(ticket: u64) -> i32;
-    fn kutox_storage_capacity() -> u64;
-}
-
 fn state() -> &'static mut State {
     assert!(
         !cpu::interrupts_enabled(),
@@ -77,7 +64,7 @@ fn state() -> &'static mut State {
     unsafe { (&mut *STATE.0.get()).as_mut() }.expect("storage platform not bound")
 }
 pub fn quiescent() -> bool {
-    !cpu::interrupts_enabled() && unsafe { kutox_storage_empty() && (&*STATE.0.get()).is_none() }
+    !cpu::interrupts_enabled() && unsafe { driver_services::empty() && (&*STATE.0.get()).is_none() }
 }
 fn checked(code: i32, operation: &'static str) -> Result<(), Failure> {
     if code < 0 {
@@ -214,7 +201,7 @@ impl PlatformOwner {
 impl Drop for PlatformOwner {
     fn drop(&mut self) {
         assert!(
-            unsafe { kutox_storage_empty() },
+            { driver_services::empty() },
             "storage C lifecycle remains live"
         );
         let s = state();
@@ -234,17 +221,17 @@ impl Drop for PlatformOwner {
 struct Driver(bool);
 impl Driver {
     fn start(gsi: u32) -> Result<Self, Failure> {
-        checked(unsafe { kutox_storage_start(gsi) }, "storage_probe")?;
+        checked(driver_services::start(gsi), "storage_probe")?;
         Ok(Self(true))
     }
     fn restart(&mut self, gsi: u32) -> Result<(), Failure> {
         if self.0 {
-            unsafe {
-                kutox_storage_stop();
+            {
+                driver_services::stop();
             }
         }
         self.0 = false;
-        checked(unsafe { kutox_storage_start(gsi) }, "storage_reprobe")?;
+        checked(driver_services::start(gsi), "storage_reprobe")?;
         self.0 = true;
         Ok(())
     }
@@ -252,8 +239,8 @@ impl Driver {
 impl Drop for Driver {
     fn drop(&mut self) {
         if self.0 {
-            unsafe {
-                kutox_storage_stop();
+            {
+                driver_services::stop();
             }
         }
     }
@@ -266,7 +253,7 @@ pub struct Disk<'a, 'storage> {
 }
 impl Disk<'_, '_> {
     pub fn capacity(&self) -> u64 {
-        unsafe { kutox_storage_capacity() }
+        driver_services::capacity()
     }
     pub fn read(&mut self, sector: u64, output: &mut [u8]) -> Result<(), Failure> {
         if !self.driver.0 {
@@ -281,22 +268,19 @@ impl Disk<'_, '_> {
         lose_irq: bool,
     ) -> Result<(), Failure> {
         let deadline = time::deadline_after_us(100_000)?;
-        let mut ticket = 0;
-        checked(
-            unsafe { kutox_storage_prepare(sector, output.len(), &mut ticket) },
-            "storage_prepare",
-        )?;
+        let ticket = driver_services::prepare(sector, output.len())
+            .map_err(|code| Failure::new("storage_prepare", code))?;
         if lose_irq && let Err(error) = linux_irq::gate() {
             checked(
-                unsafe { kutox_storage_release(ticket) },
+                driver_services::release(ticket),
                 "storage_release_before_submit",
             )?;
             return Err(error);
         }
-        let submit = unsafe { kutox_storage_submit(ticket) };
+        let submit = { driver_services::submit(ticket) };
         if submit < 0 {
             checked(
-                unsafe { kutox_storage_release(ticket) },
+                driver_services::release(ticket),
                 "storage_release_failed_submit",
             )?;
             if lose_irq {
@@ -306,7 +290,7 @@ impl Disk<'_, '_> {
         }
         let waited = (|| {
             loop {
-                let ready = unsafe { kutox_storage_poll(ticket) };
+                let ready = { driver_services::poll(ticket) };
                 if ready != 0 {
                     return checked(ready, "storage_poll");
                 }
@@ -321,18 +305,15 @@ impl Disk<'_, '_> {
         if let Err(error) = waited {
             self.timer.stop()?;
             checked(
-                unsafe { kutox_storage_reset_request(ticket) },
+                driver_services::reset_request(ticket),
                 "storage_timeout_reset",
             )?;
-            checked(
-                unsafe { kutox_storage_release(ticket) },
-                "storage_timeout_release",
-            )?;
+            checked(driver_services::release(ticket), "storage_timeout_release")?;
             self.driver.restart(self.gsi)?;
             return Err(error);
         }
-        let result = unsafe { kutox_storage_result(ticket, output.as_mut_ptr(), output.len()) };
-        checked(unsafe { kutox_storage_release(ticket) }, "storage_release")?;
+        let result = driver_services::result(ticket, output);
+        checked(driver_services::release(ticket), "storage_release")?;
         checked(result, "storage_read")?;
         if result as usize != output.len() {
             return Err(Failure::new("storage_short_read", -5));
@@ -406,15 +387,7 @@ pub fn run(
     result
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn kutox_storage_fail(operation: *const c_char) -> ! {
-    let name = unsafe { CStr::from_ptr(operation) }
-        .to_str()
-        .expect("storage operation encoding");
-    panic!("storage invariant: {name}");
-}
-#[unsafe(no_mangle)]
-extern "C" fn kutox_storage_alloc(size: usize, alignment: usize, gfp: u32) -> usize {
+pub(crate) fn allocate(size: usize, alignment: usize, gfp: u32) -> usize {
     if driver_memory::context(false).is_err()
         || gfp & !kutox::linux_abi::GFP_ZERO != kutox::linux_abi::GFP_KERNEL
         || size == 0
@@ -459,8 +432,9 @@ extern "C" fn kutox_storage_alloc(size: usize, alignment: usize, gfp: u32) -> us
     });
     pointer
 }
-#[unsafe(no_mangle)]
-extern "C" fn kutox_storage_free(pointer: usize) {
+/// # Safety
+/// DMA has completed or stopped/drained, and the caller relinquishes all CPU aliases.
+pub(crate) unsafe fn free(pointer: usize) {
     assert_eq!(driver_memory::context(false), Ok(()));
     let s = state();
     let slot = s
@@ -483,8 +457,7 @@ extern "C" fn kutox_storage_free(pointer: usize) {
         Backing::Frame(frame) => drop(frame),
     }
 }
-#[unsafe(no_mangle)]
-extern "C" fn kutox_storage_pci(operation: u32, first: u64, second: u64) -> u64 {
+pub(crate) fn pci(operation: u32, first: u64, second: u64) -> u64 {
     assert_eq!(driver_memory::context(false), Ok(()));
     let s = state();
     match operation {
@@ -577,8 +550,7 @@ extern "C" fn kutox_storage_pci(operation: u32, first: u64, second: u64) -> u64 
         _ => panic!("unknown storage PCI operation {operation}"),
     }
 }
-#[unsafe(no_mangle)]
-extern "C" fn kutox_storage_mmio(address: usize, width: usize) {
+pub(crate) fn mmio(address: usize, width: usize) {
     let s = state();
     assert!(
         matches!(width, 1 | 2 | 4)
@@ -590,13 +562,10 @@ extern "C" fn kutox_storage_mmio(address: usize, width: usize) {
         "storage MMIO span"
     );
 }
-#[unsafe(no_mangle)]
-extern "C" fn kutox_storage_dma(
-    operation: u32,
-    pointer: usize,
-    size: usize,
-    direction: u32,
-) -> u64 {
+/// # Safety
+/// Mapping retains valid backing and relinquishes CPU access. Unmapping requires
+/// completion or an unpublished/stopped-and-drained abort for the exact lease.
+pub(crate) unsafe fn dma(operation: u32, pointer: usize, size: usize, direction: u32) -> u64 {
     let s = state();
     match operation {
         0 => {
@@ -669,12 +638,10 @@ extern "C" fn kutox_storage_dma(
         _ => panic!("unknown storage DMA operation"),
     }
 }
-#[unsafe(no_mangle)]
-extern "C" fn kutox_storage_begin_reset() {
+pub(crate) fn begin_reset() {
     state().reset_deadline = time::deadline_after_us(100_000).expect("storage reset deadline");
 }
-#[unsafe(no_mangle)]
-extern "C" fn kutox_storage_clock(operation: u32) -> u64 {
+pub(crate) fn clock(operation: u32) -> u64 {
     assert_eq!(operation, 1);
     assert!(
         time::now_ticks() < state().reset_deadline,

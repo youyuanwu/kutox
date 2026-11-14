@@ -26,10 +26,6 @@ static PROBE: Bsp<Probe> = Bsp(UnsafeCell::new(Probe {
     denied: 0,
 }));
 unsafe extern "C" {
-    fn kutox_driver_mmio(address: usize, value: u32, writing: bool) -> bool;
-    fn kutox_driver_outl(value: u32, port: usize);
-    fn kutox_delay_us(usec: u64);
-    fn kutox_check_boot_context();
     fn kutox_e1000_mac(base: usize, vendor: u16, device: u16, revision: u8, result: *mut MacResult);
 }
 fn state() -> *mut Probe {
@@ -37,7 +33,7 @@ fn state() -> *mut Probe {
 }
 fn check(address: usize, value: u32, writing: bool) {
     unsafe {
-        if !(*state()).active && kutox_driver_mmio(address, value, writing) {
+        if !(*state()).active && crate::driver_platform::check_mmio(address, value, writing) {
             return;
         }
         require(
@@ -59,8 +55,8 @@ pub unsafe extern "C" fn readl(address: *const u32) -> u32 {
     }
     unsafe {
         if !(*state()).active {
-            packet::kutox_c_tx_mmio(address as usize, value, false);
-            packet::kutox_c_rx_mmio(address as usize, value, false);
+            packet::tx_mmio(address as usize, value, false);
+            packet::rx_mmio(address as usize, value, false);
         }
         if (*state()).active && address as usize == (*state()).base + 0x10 {
             (*state()).reads = (*state()).reads.wrapping_add(1);
@@ -83,18 +79,18 @@ pub unsafe extern "C" fn writel(value: u32, address: *mut u32) {
     compiler_fence(Ordering::SeqCst);
     unsafe {
         if !(*state()).active {
-            packet::kutox_c_tx_mmio(address as usize, value, true);
-            packet::kutox_c_rx_mmio(address as usize, value, true);
+            packet::tx_mmio(address as usize, value, true);
+            packet::rx_mmio(address as usize, value, true);
         }
     }
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn udelay(usec: usize) {
-    unsafe { kutox_delay_us(usec as u64) }
+    crate::time::delay_us(usec as u64)
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn outl(value: u32, port: usize) {
-    unsafe { kutox_driver_outl(value, port) }
+    crate::driver_platform::outl(value, port)
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn phys_to_virt(_address: usize) -> *mut c_void {
@@ -113,25 +109,26 @@ pub extern "C" fn iowrite16_rep(_address: *mut c_void, _buffer: *const c_void, _
 pub extern "C" fn memcpy_fromio(_dst: *mut c_void, _src: *const c_void, _count: usize) {
     require(false, c"memcpy_fromio");
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kutox_read_mac(
+/// # Safety
+/// Call on the owning BSP during quiescent boot with IF clear. The supplied
+/// range must remain a live, writable MMIO mapping for the identified device,
+/// without conflicting device access, for the entire probe.
+pub(crate) unsafe fn read_mac(
     base: usize,
     length: usize,
     vendor: u16,
     device: u16,
     revision: u8,
     deny: u8,
-    out: *mut MacResult,
-) {
-    validate(out);
+) -> MacResult {
+    let mut out = MacResult {
+        code: -1,
+        stage: 0,
+        denied_grants: 0,
+        eeprom_reads: 0,
+        mac: [0; 6],
+    };
     unsafe {
-        out.write(MacResult {
-            code: -1,
-            stage: 0,
-            denied_grants: 0,
-            eeprom_reads: 0,
-            mac: [0; 6],
-        });
         if (*state()).active
             || base == 0
             || base & 4095 != 0
@@ -141,13 +138,13 @@ pub unsafe extern "C" fn kutox_read_mac(
             || device != 0x100e
             || deny > 1
         {
-            return;
+            return out;
         }
-        kutox_check_boot_context();
+        crate::check_boot_context();
         #[cfg(not(feature = "guest-tests"))]
         if deny != 0 {
-            (*out).code = -95;
-            return;
+            out.code = -95;
+            return out;
         }
         (*state()).active = true;
         (*state()).base = base;
@@ -158,14 +155,15 @@ pub unsafe extern "C" fn kutox_read_mac(
             (*state()).deny = deny != 0;
             (*state()).denied = 0;
         }
-        kutox_e1000_mac(base, vendor, device, revision, out);
-        (*out).eeprom_reads = (*state()).reads;
+        kutox_e1000_mac(base, vendor, device, revision, &mut out);
+        out.eeprom_reads = (*state()).reads;
         #[cfg(feature = "guest-tests")]
         {
-            (*out).denied_grants = (*state()).denied;
+            out.denied_grants = (*state()).denied;
         }
         (*state()).active = false;
         (*state()).base = 0;
         (*state()).length = 0;
     }
+    out
 }

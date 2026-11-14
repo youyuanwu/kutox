@@ -25,31 +25,124 @@ ENTRY_POINTS = {
 PACKET_LAYOUT_VALUES = 122
 BLOCK_LAYOUT_VALUES = 135
 ACCESSOR_LAYOUT_VALUES = 41
+NATIVE_BACKEND = "compat/audit/common/native_backend.rs"
+NATIVE_BINDINGS = {
+    "kutox_block_allocate": "crate::block_services::allocate",
+    "kutox_block_context": "crate::block_services::context",
+    "kutox_block_deallocate": "crate::block_services::deallocate",
+    "kutox_block_diag": "crate::block_services::diag",
+    "kutox_block_fail": "crate::block_services::fail",
+    "kutox_check_boot_context": "crate::check_boot_context",
+    "kutox_delay_us": "crate::time::delay_us",
+    "kutox_driver_alloc": "crate::driver_memory::allocate",
+    "kutox_driver_device": "crate::driver_platform::device_key",
+    "kutox_driver_diag": "crate::driver_memory::diag",
+    "kutox_driver_dma_map": "crate::driver_memory::dma_map",
+    "kutox_driver_dma_operation": "crate::driver_memory::dma_operation",
+    "kutox_driver_free": "crate::driver_memory::free",
+    "kutox_driver_gate": "crate::driver_platform::gate",
+    "kutox_driver_ingress": "crate::driver_memory::ingress",
+    "kutox_driver_mmio": "crate::driver_platform::check_mmio",
+    "kutox_driver_outl": "crate::driver_platform::outl",
+    "kutox_driver_pci": "crate::driver_platform::pci_operation",
+    "kutox_driver_pci_value": "crate::driver_platform::pci_value",
+    "kutox_driver_range": "crate::driver_memory::range",
+    "kutox_driver_size": "crate::driver_memory::size",
+    "kutox_driver_trace": "crate::linux_driver::trace",
+    "kutox_driver_tracing": "crate::linux_driver::tracing",
+    "kutox_linux_bh": "crate::linux_deferred::bh",
+    "kutox_linux_completion": "crate::linux_runtime::completion",
+    "kutox_linux_cond_resched": "crate::linux_runtime::cond_resched",
+    "kutox_linux_context": "crate::linux_runtime::context_code",
+    "kutox_linux_dma_alloc": "crate::linux_dma::allocate",
+    "kutox_linux_dma_free": "crate::linux_dma::free",
+    "kutox_linux_dma_mask": "crate::linux_dma::set_mask",
+    "kutox_linux_dma_publish": "crate::linux_dma::publish",
+    "kutox_linux_dma_reclaim": "crate::linux_dma::reclaim",
+    "kutox_linux_dma_rmb": "crate::dma::read_barrier",
+    "kutox_linux_dma_unregister": "crate::linux_dma::unregister",
+    "kutox_linux_dma_wmb": "crate::dma::write_barrier",
+    "kutox_linux_irq": "crate::linux_irq::operation",
+    "kutox_linux_irq_acquired": "crate::linux_runtime::irq_acquired",
+    "kutox_linux_irq_released": "crate::linux_runtime::irq_released",
+    "kutox_linux_irq_save": "crate::linux_runtime::irq_save",
+    "kutox_linux_local_work": "crate::linux_deferred::local_work",
+    "kutox_linux_msleep": "crate::linux_runtime::msleep",
+    "kutox_linux_mutex": "crate::linux_runtime::mutex",
+    "kutox_linux_napi": "crate::linux_deferred::napi_operation",
+    "kutox_linux_napi_init": "crate::linux_deferred::register_napi",
+    "kutox_linux_object_generation": "crate::linux_runtime::object_generation",
+    "kutox_linux_ratelimit": "crate::linux_runtime::ratelimit",
+    "kutox_linux_request_irq": "crate::linux_irq::request_irq",
+    "kutox_linux_sleep_range": "crate::linux_runtime::sleep_range",
+    "kutox_linux_spin_owner": "crate::linux_runtime::spin_owner",
+    "kutox_linux_static_objects_retire": "crate::linux_runtime::retire_static_objects",
+    "kutox_linux_wait_completion": "crate::linux_runtime::wait_completion",
+    "kutox_linux_work": "crate::linux_deferred::work_operation",
+    "kutox_linux_work_init": "crate::linux_deferred::register_work",
+    "kutox_net_wake": "crate::net_device::wake",
+    "kutox_platform_fail": "crate::platform_fail",
+    "kutox_serial_byte": "crate::serial::byte",
+    "kutox_storage_alloc": "crate::storage::allocate",
+    "kutox_storage_begin_reset": "crate::storage::begin_reset",
+    "kutox_storage_clock": "crate::storage::clock",
+    "kutox_storage_dma": "crate::storage::dma",
+    "kutox_storage_free": "crate::storage::free",
+    "kutox_storage_mmio": "crate::storage::mmio",
+    "kutox_storage_pci": "crate::storage::pci",
+}
+NATIVE_C_BINDINGS = {
+    "kutox_jiffies": "crate::linux_runtime::jiffies",
+}
+PRIVATE_CONTROL_BACKENDS = {
+    "kutox_check_boot_context": "Only the private Rust boot-MAC path calls this backend.",
+    "kutox_linux_static_objects_retire": "Only private Rust lifecycle bind/unbind paths retire static objects.",
+    "kutox_storage_begin_reset": "Only private Rust storage start/reset controls establish the reset deadline.",
+    "kutox_linux_dma_publish": "Coherent ownership publication is a Rust service; its fixture-only C extension was removed.",
+    "kutox_linux_dma_reclaim": "Coherent ownership reclaim and its quiescence proof are Rust services, not Linux C APIs.",
+    "kutox_linux_dma_unregister": "Rust fixture/device teardown owns this operation; no production C consumer requires it.",
+}
+
+
+def native_dispositions():
+    from linux_driver_check import lines
+    expected = set(lines(ROOT / "compat/audit/common/service-ffi.txt")) - {
+        "memcpy", "memmove", "memset", "strlen",
+    }
+    private = PRIVATE_CONTROL_BACKENDS
+    if (NATIVE_BINDINGS.keys() & NATIVE_C_BINDINGS.keys()
+            or private.keys() & expected
+            or not private.keys() <= NATIVE_BINDINGS.keys()
+            or any(not isinstance(reason, str) or not reason.strip() for reason in private.values())
+            or NATIVE_BINDINGS.keys() | NATIVE_C_BINDINGS.keys() != expected | private.keys()):
+        raise ValueError("native backend dispositions do not match the explicit dependency ledger")
+    return {"rust": dict(NATIVE_BINDINGS), "c": dict(NATIVE_C_BINDINGS), "private": dict(private)}
+
+
 PACKET_PROVIDERS = {
     "alloc_etherdev", "register_netdev", "unregister_netdev", "free_netdev",
     "alloc_skb", "skb_put", "dev_kfree_skb", "netdev_alloc_frag", "skb_free_frag",
     "napi_build_skb", "napi_alloc_skb", "eth_type_trans", "napi_gro_receive",
-    "netdev_sent_queue", "netdev_completed_queue", "kutox_c_packet_empty",
-    "kutox_c_netdev_transmit", "kutox_c_tx_begin", "kutox_c_tx_retry",
-    "kutox_c_tx_status", "kutox_c_tx_release", "kutox_c_tx_abort",
-    "kutox_c_tx_mapped", "kutox_c_tx_unmapped", "kutox_c_tx_mmio",
-    "kutox_c_tx_many", "kutox_c_tx_many_retry", "kutox_c_tx_many_finish",
-    "kutox_c_rx_start", "kutox_c_rx_stop", "kutox_c_rx_path",
-    "kutox_c_rx_dma", "kutox_c_rx_mmio",
+    "netdev_sent_queue", "netdev_completed_queue",
 }
-RUST_PROVIDERS = PACKET_PROVIDERS | {
-    "kutox_c_linux_bind_irq", "kutox_c_linux_bind", "kutox_c_linux_open",
-    "kutox_c_linux_ready", "kutox_c_linux_close", "kutox_c_linux_unbind",
-    "kutox_c_linux_info", "kutox_c_linux_statistics", "kutox_c_linux_empty",
-    "kutox_c_linux_tx_begin", "kutox_c_linux_tx", "kutox_c_linux_tx_release",
-    "kutox_c_linux_rx_start", "kutox_c_linux_rx_stop", "kutox_c_linux_rx_path",
+MEMORY_PROVIDERS = {
+    "kmalloc", "kzalloc", "kmalloc_array", "kcalloc", "kfree", "vmalloc", "vzalloc", "vfree",
+    "storage_kmalloc", "storage_kzalloc", "storage_kmalloc_array", "storage_kcalloc", "storage_kfree",
+    "dma_set_mask_and_coherent", "dma_alloc_coherent", "dma_free_coherent",
+    "dma_map_single", "dma_mapping_error", "dma_unmap_single",
+    "dma_sync_single_for_cpu", "dma_sync_single_for_device",
+    "dma_map_page_attrs", "dma_unmap_page_attrs", "sg_phys",
+    "strcpy", "strscpy", "INIT_LIST_HEAD", "list_add", "list_add_tail",
+    "list_del", "list_del_init", "list_empty", "ida_init", "ida_alloc_range",
+    "ida_alloc", "ida_free", "ida_destroy", "match_string",
+}
+RUST_PROVIDERS = PACKET_PROVIDERS | MEMORY_PROVIDERS | {
     "netif_napi_add", "netif_napi_set_irq", "netif_queue_set_napi",
     "napi_schedule_prep", "__napi_schedule", "napi_complete_done",
     "napi_enable", "napi_disable", "netif_napi_del",
-    "kutox_c_retire_napi_device", "kutox_c_deferred_empty",
     "pcix_get_mmrbc", "pci_set_power_state", "dma_map_page",
     "skb_frag_size", "skb_tcp_all_headers", "ethtool_convert_link_mode_to_legacy_u32",
-    "readl", "writel", "udelay", "outl", "kutox_read_mac",
+    "readl", "writel", "udelay", "outl",
     "kutox_vformat", "kutox_vprint", "printk", "netdev_printk", "dev_printk",
     "netdev_warn_once", "netif_log", "kutox_debug", "warn_on", "net_ratelimit",
     "print_hex_dump", "kutox_storage_trace_callback", "storage_snprintf",
@@ -61,9 +154,7 @@ RUST_PROVIDERS = PACKET_PROVIDERS | {
     "blk_mq_complete_request", "blk_mq_end_request", "blk_rq_map_sg",
     "sg_init_one", "sg_page", "sg_next", "bvec_set_virt", "bvec_virt",
     "blk_mq_quiesce_queue_nowait", "blk_mq_freeze_queue", "blk_mq_unfreeze_queue",
-    "kutox_block_prepare", "kutox_block_submit", "kutox_block_result",
-    "kutox_block_cancel", "kutox_block_release", "kutox_block_pump",
-    "kutox_block_reset_complete", "kutox_block_quiescent", "kutox_storage_stop",
+    "kutox_block_operations",
 }
 
 
@@ -79,9 +170,17 @@ def inputs():
     from linux_driver_check import digest
     files = [
         Path(__file__).resolve(), ROOT / "rust-toolchain.toml",
-        ROOT / "compat/audit/common/rust_services.rs", ROOT / "compat/audit/common/abi_probe.rs", ROOT / "compat/audit/common/common_layout.c",
+        ROOT / "compat/audit/common/rust_services.rs", ROOT / NATIVE_BACKEND,
+        ROOT / "compat/audit/common/abi_probe.rs", ROOT / "compat/audit/common/common_layout.c",
         ROOT / "compat/include/common/base_types.h", ROOT / "compat/include/common/device_types.h",
-        ROOT / "src/linux_abi.rs", ROOT / "src/block_abi.rs", ROOT / "compat/audit/common/service-ffi.txt",
+        ROOT / "src/linux_abi.rs", ROOT / "src/block_abi.rs", ROOT / "src/driver_memory.rs",
+        ROOT / "src/linux_dma.rs", ROOT / "src/dma.rs", ROOT / "src/block_services.rs",
+        ROOT / "src/storage.rs",
+        ROOT / "src/linux_runtime.rs", ROOT / "src/linux_deferred.rs", ROOT / "src/linux_irq.rs",
+        ROOT / "src/linux_driver.rs", ROOT / "src/driver_platform.rs", ROOT / "src/main.rs",
+        ROOT / "src/net_device.rs", ROOT / "src/serial.rs", ROOT / "src/time.rs",
+        ROOT / "src/threads.rs",
+        ROOT / "compat/audit/common/service-ffi.txt",
     ]
     files.extend((ROOT / "src/linux_compat").glob("*.rs"))
     files.extend(path for path in (ROOT / "compat/include").rglob("*") if path.is_file())
@@ -111,8 +210,49 @@ def c_flags(output, profile):
 
 
 def rust_command(output, probe=False):
+    artifact = "abi-rust" if probe else "rust-services"
     return ["rustc", *rust_flags(), str(ROOT / ("compat/audit/common/abi_probe.rs" if probe else "compat/audit/common/rust_services.rs")),
-            "-o", str(output / ("abi-rust.o" if probe else "rust-services.o"))]
+            "--emit", f"obj,dep-info={output / (artifact + '.d')}",
+            "-o", str(output / (artifact + ".o"))]
+
+
+def rust_dependencies(path):
+    from linux_driver_check import dependency_paths
+    # rustc also emits rules for the dep-info target and each source.
+    first = path.read_text().replace("\\\n", "").splitlines()
+    return dependency_paths(first[0] if first else "")
+
+
+def rust_source_provenance(dependency, root):
+    from linux_driver_check import digest
+    sources = {Path(path).resolve() for path in rust_dependencies(dependency)}
+    if not {ROOT / root, ROOT / NATIVE_BACKEND} <= sources:
+        raise ValueError("Rust provider did not compile the audit backend bindings")
+    return [{"path": str(path.relative_to(ROOT)), "sha256": digest(path)}
+            for path in sorted(sources)]
+
+
+def rust_provenance(output):
+    from linux_driver_check import digest
+    bindings = native_dispositions()
+    return {
+        "command": rust_command(output),
+        "object_sha256": digest(output / "rust-services.o"),
+        "sources": rust_source_provenance(output / "rust-services.d", "compat/audit/common/rust_services.rs"),
+        "native_bindings": bindings["rust"],
+        "native_c_bindings": bindings["c"],
+        "private_backends": bindings["private"],
+    }
+
+
+def runtime_rust_sources(dependencies):
+    sources = {Path(path).resolve() for path in dependencies}
+    for path in sources:
+        if path.is_relative_to(ROOT / "compat/audit"):
+            raise ValueError(f"kernel runtime depends on an audit source: {path}")
+    if not {ROOT / "src/main.rs", ROOT / "src/driver_memory.rs"} <= sources:
+        raise ValueError("missing native kernel Rust dependency evidence")
+    return sorted(str(path) for path in sources if path.suffix == ".rs")
 
 
 def c_command(args, output, source, profile, *, probe=False):
@@ -183,7 +323,7 @@ def evidence(args, output):
     abi_paths = [output / "abi-rust.o", *(output / f"abi-{p}.o" for p in ("boot", "net", "storage"))]
     return {
         **shared, "units": units, "build_inputs": inputs(),
-        "rust": {"command": rust_command(output), "object_sha256": digest(rust), "defined": rust_defined},
+        "rust": {**rust_provenance(output), "defined": rust_defined},
         "linked_sha256": digest(output / "shared-runtime.o"), "compile_only_marker": False,
         "abi": {"values": layout(abi_paths),
                 "packet_values": layout([output / "abi-rust.o", output / "abi-net.o"],

@@ -11,7 +11,7 @@ from linux_driver_check import (
     Elf, REVISION, ROOT, check_runtime_exclusion, dependency_paths, digest, lines,
     make_headers, run, source_identity,
 )
-from linux_compat_check import audit as audit_runtime, inputs as shared_inputs, verify as verify_runtime, rust_flags
+from linux_compat_check import audit as audit_runtime, inputs as shared_inputs, verify as verify_runtime, rust_flags, rust_source_provenance, NATIVE_BINDINGS
 
 DECLARATIONS = ROOT / "compat/audit/storage"
 SOURCES = (
@@ -202,6 +202,8 @@ def service_evidence(output, baseline):
         raise ValueError("storage service closure hid dependencies or supplied unexpected providers")
     return {
         "source": str(source.relative_to(ROOT)), "source_sha256": digest(source),
+        "sources": rust_source_provenance(output / "block-services.d", "compat/audit/storage/block_services.rs"),
+        "native_bindings": {name: api for name, api in NATIVE_BINDINGS.items() if name.startswith("kutox_block_")},
         "object_sha256": digest(obj), "linked_sha256": digest(combined),
         "provided_apis": sorted(provided), "remaining_apis": sorted(set(baseline) - provided),
         "platform_ffi": sorted(ffi), "undefined": sorted(undefined),
@@ -210,6 +212,7 @@ def service_evidence(output, baseline):
 
 def service_command(output):
     return ["rustc", *rust_flags(), str(ROOT / "compat/audit/storage/block_services.rs"),
+            "--emit", f"obj,dep-info={output / 'block-services.d'}",
             "-o", str(output / "block-services.o")]
 
 
